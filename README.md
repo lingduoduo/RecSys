@@ -53,3 +53,11 @@ Server: Jetty(11.0.18)
 (base)  🐍 base  linghuang@Mac  ~/Git/RecSys/recsys-api   main ±  curl "http://localhost:6010/getrecommendation?userId=42&type=similar&movieId=99&k=3"
 { "userId": "42", "recommendations": ["Inception", "Interstellar"] }
 ```
+
+### Redis
+
+```
+docker exec -it redis-dev redis-cli SET i2vEmb:1 "1 0 0"
+docker exec -it redis-dev redis-cli SET i2vEmb:2 "0.9 0.1 0"
+docker exec -it redis-dev redis-cli SET i2vEmb:3 "0 1 0"
+```

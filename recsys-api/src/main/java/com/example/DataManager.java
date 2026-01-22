@@ -1,5 +1,6 @@
 package com.example;
 
+import java.util.Set;
 import java.util.List;
 import java.util.Arrays;
 import java.util.Map;
@@ -49,5 +50,9 @@ public class DataManager {
             );
         }
         return List.of();
+    }
+
+    public Set<Integer> getAllMovieIds() {
+    return movies.keySet();
     }
 }
