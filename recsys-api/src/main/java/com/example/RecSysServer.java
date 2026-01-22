@@ -15,18 +15,22 @@ public class RecSysServer {
     }
 
     public void run() throws Exception {
-        InetSocketAddress inetAddress = new InetSocketAddress("0.0.0.0", DEFAULT_PORT);
+        int port = DEFAULT_PORT;
+
+        InetSocketAddress inetAddress = new InetSocketAddress("0.0.0.0", port);
         Server server = new Server(inetAddress);
 
         ServletContextHandler context = new ServletContextHandler();
         context.setContextPath("/");
+        context.setWelcomeFiles(new String[]{"index.html"});
 
-        // Register endpoint(s)
+        // APIs
         context.addServlet(new ServletHolder(new MovieService()), "/getmovie");
         context.addServlet(new ServletHolder(new UserService()), "/getuser");
-        context.addServlet(new ServletHolder(new RecommendationService()), "/getrecommendation");
+        context.addServlet(new ServletHolder(new SimilarMovieService()), "/getsimilarmovie");
 
-        // Attach handler AFTER config
+        // context.addServlet(new ServletHolder(new RecommendationService()), "/getrecommendation");
+
         server.setHandler(context);
 
         server.setStopAtShutdown(true);
