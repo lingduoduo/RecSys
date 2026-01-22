@@ -28,8 +28,7 @@ public class RecSysServer {
         context.addServlet(new ServletHolder(new MovieService()), "/getmovie");
         context.addServlet(new ServletHolder(new UserService()), "/getuser");
         context.addServlet(new ServletHolder(new SimilarMovieService()), "/getsimilarmovie");
-
-        // context.addServlet(new ServletHolder(new RecommendationService()), "/getrecommendation");
+        context.addServlet(new ServletHolder(new RecommendationService()), "/getrecommendation");
 
         server.setHandler(context);
 
