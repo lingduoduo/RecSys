@@ -24,6 +24,7 @@ public class RecSysServer {
         // Register endpoint(s)
         context.addServlet(new ServletHolder(new MovieService()), "/getmovie");
         context.addServlet(new ServletHolder(new UserService()), "/getuser");
+        context.addServlet(new ServletHolder(new RecommendationService()), "/getrecommendation");
 
         // Attach handler AFTER config
         server.setHandler(context);
