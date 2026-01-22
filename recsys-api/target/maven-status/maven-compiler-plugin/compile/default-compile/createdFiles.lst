@@ -1,2 +1,4 @@
 com/example/App.class
-com/example/HelloServlet.class
+com/example/RecSysServer.class
+com/example/UserService.class
+com/example/MovieService.class
