@@ -44,4 +44,12 @@ Content-Length: 69
 Server: Jetty(11.0.18)
 
 { "movieId": "42", "similar": ["Interstellar", "Tenet", "Memento"] }
+
+(base)  🐍 base  linghuang@Mac  ~/Git/RecSys/recsys-api   main ±  curl "http://localhost:6010/getrecommendation?userId=42"
+{ "userId": "42", "recommendations": ["Inception", "Interstellar"] }
+(base)  🐍 base  linghuang@Mac  ~/Git/RecSys/recsys-api   main ±  curl "http://localhost:6010/getrecommendation?userId=42&type=home&k=5"
+
+{ "userId": "42", "recommendations": ["Inception", "Interstellar"] }
+(base)  🐍 base  linghuang@Mac  ~/Git/RecSys/recsys-api   main ±  curl "http://localhost:6010/getrecommendation?userId=42&type=similar&movieId=99&k=3"
+{ "userId": "42", "recommendations": ["Inception", "Interstellar"] }
 ```
