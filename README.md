@@ -24,4 +24,7 @@ Content-Length: 32
 Server: Jetty(11.0.18)
 
 {"userId":"123","name":"Alice"}
+
+(base)  🐍 base  linghuang@Mac  ~/Git/RecSys/recsys-api   initial-setup ±  curl "http://localhost:6010/getrecommendation"
+{ "userId": "123", "recommendations": ["Inception", "Interstellar", "The Dark Knight"] }
 ```
