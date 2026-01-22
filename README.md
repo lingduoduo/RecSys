@@ -27,4 +27,21 @@ Server: Jetty(11.0.18)
 
 (base)  🐍 base  linghuang@Mac  ~/Git/RecSys/recsys-api   initial-setup ±  curl "http://localhost:6010/getrecommendation"
 { "userId": "123", "recommendations": ["Inception", "Interstellar", "The Dark Knight"] }
+
+(base)  🐍 base  linghuang@Mac  ~/Git/RecSys/recsys-api   initial-setup ±  curl -i "http://localhost:6010/getsimilarmovie"
+HTTP/1.1 200 OK
+Date: Thu, 22 Jan 2026 20:21:37 GMT
+Content-Type: application/json
+Content-Length: 68
+Server: Jetty(11.0.18)
+
+{ "movieId": "1", "similar": ["Interstellar", "Tenet", "Memento"] }
+(base)  🐍 base  linghuang@Mac  ~/Git/RecSys/recsys-api   initial-setup ±  curl -i "http://localhost:6010/getsimilarmovie?movieId=42"
+HTTP/1.1 200 OK
+Date: Thu, 22 Jan 2026 20:21:43 GMT
+Content-Type: application/json
+Content-Length: 69
+Server: Jetty(11.0.18)
+
+{ "movieId": "42", "similar": ["Interstellar", "Tenet", "Memento"] }
 ```
