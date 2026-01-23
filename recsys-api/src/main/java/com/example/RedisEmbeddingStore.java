@@ -1,9 +1,13 @@
 package com.example;
 
 import redis.clients.jedis.Jedis;
+import redis.clients.jedis.params.ScanParams;
+import redis.clients.jedis.resps.ScanResult;
 
 import java.util.ArrayList;
+import java.util.HashSet;
 import java.util.List;
+import java.util.Set;
 
 public class RedisEmbeddingStore {
     private final String host;
@@ -24,11 +28,48 @@ public class RedisEmbeddingStore {
         }
     }
 
-    // OPTIONAL for prototyping: write embedding (so you can seed data quickly)
     public void setMovieEmbedding(int movieId, float[] vector) {
         try (Jedis jedis = new Jedis(host, port)) {
             jedis.set(keyPrefix + ":" + movieId, toVectorString(vector));
         }
+    }
+
+    public List<Integer> getCandidateMovieIds() {
+        return new ArrayList<>(DataManager.getInstance().getAllMovieIds());
+    }
+
+    public Set<Integer> scanMovieIds(int maxKeys) {
+        Set<Integer> ids = new HashSet<>();
+
+        ScanParams params = new ScanParams()
+                .match(keyPrefix + ":*")
+                .count(200);
+
+        String cursor = "0";
+
+        try (Jedis jedis = new Jedis(host, port)) {
+            while (true) {
+                ScanResult<String> res = jedis.scan(cursor, params);
+
+                for (String key : res.getResult()) {
+                    // key format: i2vEmb:<id>
+                    int idx = key.lastIndexOf(':');
+                    if (idx >= 0 && idx + 1 < key.length()) {
+                        try {
+                            ids.add(Integer.parseInt(key.substring(idx + 1)));
+                        } catch (NumberFormatException ignore) {
+                            // skip
+                        }
+                    }
+                    if (ids.size() >= maxKeys) return ids;
+                }
+
+                cursor = res.getCursor();
+                if ("0".equals(cursor)) break;
+            }
+        }
+
+        return ids;
     }
 
     private static float[] parseVector(String s) {
@@ -45,11 +86,5 @@ public class RedisEmbeddingStore {
             sb.append(vec[i]);
         }
         return sb.toString();
-    }
-
-    // Used for brute-force similarity prototype: list candidate IDs somehow
-    // For a quick start, we’ll keep IDs in DataManager (movie catalog).
-    public List<Integer> getCandidateMovieIds() {
-        return new ArrayList<>(DataManager.getInstance().getAllMovieIds());
     }
 }

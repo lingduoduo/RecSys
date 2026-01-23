@@ -30,6 +30,8 @@ public class RecSysServer {
         context.addServlet(new ServletHolder(new SimilarMovieService()), "/getsimilarmovie");
         context.addServlet(new ServletHolder(new RecommendationService()), "/getrecommendation");
 
+        context.addServlet(new org.eclipse.jetty.servlet.ServletHolder(new SetEmbeddingService()), "/setembedding");
+
         server.setHandler(context);
 
         server.setStopAtShutdown(true);
