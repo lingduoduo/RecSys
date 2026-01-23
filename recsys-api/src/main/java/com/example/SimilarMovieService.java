@@ -46,8 +46,8 @@ public class SimilarMovieService extends HttpServlet {
                 return;
             }
 
-            // brute-force over catalog IDs (prototype)
-            List<Integer> candidates = store.getCandidateMovieIds();
+            // brute-force over Redis keys (prototype)
+            List<Integer> candidates = new ArrayList<>(store.scanMovieIds(5000));
             List<ScoredMovie> scored = new ArrayList<>();
 
             for (int candId : candidates) {

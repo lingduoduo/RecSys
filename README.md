@@ -1,6 +1,14 @@
 # RecSys
 
+### Redis
 
+```
+docker exec -it redis-dev redis-cli SET i2vEmb:1 "1 0 0"
+docker exec -it redis-dev redis-cli SET i2vEmb:2 "0.9 0.1 0"
+docker exec -it redis-dev redis-cli SET i2vEmb:3 "0 1 0"
+```
+
+### Test Runs
 ```
 mvn clean compile
 mvn exec:java -Dexec.mainClass="com.example.RecSysServer"
@@ -52,12 +60,30 @@ Server: Jetty(11.0.18)
 { "userId": "42", "recommendations": ["Inception", "Interstellar"] }
 (base)  🐍 base  linghuang@Mac  ~/Git/RecSys/recsys-api   main ±  curl "http://localhost:6010/getrecommendation?userId=42&type=similar&movieId=99&k=3"
 { "userId": "42", "recommendations": ["Inception", "Interstellar"] }
+
+
+(base)  🐍 base  linghuang@Mac  ~/Git/RecSys/recsys-api   similar-items ±  curl -i -X POST "http://localhost:6010/setembedding?movieId=4" \
+  -H "Content-Type: text/plain" \
+  --data-binary "0.2 0.2 0.6"
+
+HTTP/1.1 200 OK
+Date: Thu, 22 Jan 2026 23:56:05 GMT
+Content-Type: application/json;charset=utf-8
+Access-Control-Allow-Origin: *
+Content-Length: 32
+Server: Jetty(11.0.18)
+
+{"ok":true,"movieId":4,"dim":3}
+(base)  🐍 base  linghuang@Mac  ~/Git/RecSys/recsys-api   similar-items ±  curl -i -X POST "http://localhost:6010/setembedding?movieId=5" \
+  --data-urlencode "vec=0.1 0.3 0.6"
+HTTP/1.1 200 OK
+Date: Thu, 22 Jan 2026 23:56:13 GMT
+Content-Type: application/json;charset=utf-8
+Access-Control-Allow-Origin: *
+Content-Length: 32
+Server: Jetty(11.0.18)
+
+{"ok":true,"movieId":5,"dim":3}
+
 ```
 
-### Redis
-
-```
-docker exec -it redis-dev redis-cli SET i2vEmb:1 "1 0 0"
-docker exec -it redis-dev redis-cli SET i2vEmb:2 "0.9 0.1 0"
-docker exec -it redis-dev redis-cli SET i2vEmb:3 "0 1 0"
-```
