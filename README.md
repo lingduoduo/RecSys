@@ -1,5 +1,43 @@
 # RecSys
 
+## Feature Encoder and engineering
+
+- Directly leverage LLM embeddings
+  - GPT embedding is already commonly used in retrieval tasks, Scaling laws on embedding performance vs. model size
+  - LLM derived features based on eCommerce item textual data
+    
+- LLM augmented features
+  - Encoded into text embeddings
+  - Categorized as sparse features
+  
+## LLM used as a ranker/re-ranker
+
+- Off the shelf LLM as a recommender with prompt engineering
+  - Prompting is needed, and tuning is mainly focusing on the prompts
+    
+- Fine-tuned LLM
+  - Supervised Fine Tuning (SFT), Directly generate the target item to recommend
+  - Instruction Tuning (Human Alignment)
+    
+- LLM as a reranker
+  - LLM can be used to aim for specific goals - diverse reranking, relevance, freshness
+    - Enhancing Recommendation Diversity by Re-ranking with Large Language Models
+    - Large Language Models are Zero-Shot Rankers for Recommender Systems
+      - struggle to perceive the order of historical interactions, and
+      - can be biased by popularity or item positions in the prompts
+      - van be overcome by careful prompt engineering
+  - LLM as a domain specialist helping recommendation: e.g., Health, Finance, Medical Care, Law
+
+## LLM for user-interaction
+
+- Conversational Recommendation
+  
+## LM inspired architecture
+
+- Generative Sequence Training / modeling
+- New Transformer Arch: HSTU
+- MoE
+
 ### Redis
 
 ```
