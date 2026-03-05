@@ -1,44 +1,85 @@
 # RecSys
 
-## Feature Encoder and engineering
+```
+docker compose -f docker-compose.streaming.yml up -d
+```
 
-- Directly leverage LLM embeddings
-  - GPT embedding is already commonly used in retrieval tasks, Scaling laws on embedding performance vs. model size
-  - LLM derived features based on eCommerce item textual data
-    
-- LLM augmented features
-  - Encoded into text embeddings
-  - Categorized as sparse features
-  
-## LLM used as a ranker/re-ranker
+It should start:
 
-- Off the shelf LLM as a recommender with prompt engineering
-  - Prompting is needed, and tuning is mainly focusing on the prompts
-    
-- Fine-tuned LLM
-  - Supervised Fine Tuning (SFT), Directly generate the target item to recommend
-  - Instruction Tuning (Human Alignment)
-    
-- LLM as a reranker
-  - LLM can be used to aim for specific goals - diverse reranking, relevance, freshness
-    - Enhancing Recommendation Diversity by Re-ranking with Large Language Models
-    - Large Language Models are Zero-Shot Rankers for Recommender Systems
-      - struggle to perceive the order of historical interactions, and
-      - can be biased by popularity or item positions in the prompts
-      - van be overcome by careful prompt engineering
-  - LLM as a domain specialist helping recommendation: e.g., Health, Finance, Medical Care, Law
+- Zookeeper
+- Kafka
+- Redis
+- Flink JobManager
+- Flink TaskManager
 
-## LLM for user-interaction
+## Kafka Topic Setup
 
-- Conversational Recommendation
-  
-## LM inspired architecture
+```
+docker exec -it recsys-kafka-1 \
+kafka-topics --bootstrap-server localhost:9092 \
+--create --topic video_views --partitions 1 --replication-factor 1
 
-- Generative Sequence Training / modeling
-- New Transformer Arch: HSTU
-- MoE
+docker exec -it recsys-kafka-1 \
+kafka-topics --bootstrap-server kafka:9092 --list
 
-### Redis
+docker exec -it recsys-kafka-1 \
+kafka-console-producer --bootstrap-server kafka:9092 --topic video_views
+
+```
+
+Sampled Data
+```
+{"videoId":"1","eventTimeMillis":1700000000000}
+{"videoId":"2","eventTimeMillis":1700000001000}
+{"videoId":"2","eventTimeMillis":1700000002000}
+{"videoId":"2","eventTimeMillis":1700000003000}
+{"videoId":"2","eventTimeMillis":1700000004000}
+{"videoId":"3","eventTimeMillis":1700000005000}
+```
+
+```
+docker exec -it recsys-kafka-1 \
+kafka-topics --bootstrap-server localhost:9092 \
+--delete --topic video_views
+```
+
+## Flink UI
+
+http://localhost:8081
+
+
+## Redis
+
+### Recommendation by Top-K
+
+```
+docker exec -it redis-dev redis-cli DEL topk:last_hour
+docker exec -it redis-dev redis-cli ZADD topk:last_hour 50 2 20 1 10 3
+docker exec -it redis-dev redis-cli ZREVRANGE topk:last_hour 0 9 WITHSCORES
+```
+
+Test Runs
+
+```
+mvn clean compile
+mvn exec:java -Dexec.mainClass="com.example.RecSysServer"
+```
+
+
+```
+(base)  🐍 base  linghuang@Mac  ~/Git/RecSys   main ±  curl "http://localhost:6010/getmovie?id=1"
+
+(base)  🐍 base  linghuang@Mac  ~/Git/RecSys   main ±  docker exec -it redis-dev redis-cli ZREVRANGE topk:last_hour 0 9 WITHSCORES
+1) "2"
+2) "50"
+3) "1"
+4) "20"
+5) "3"
+6) "10"
+```
+
+
+### Recommendation by embedding vector
 
 ```
 docker exec -it redis-dev redis-cli SET i2vEmb:1 "1 0 0"
@@ -46,7 +87,8 @@ docker exec -it redis-dev redis-cli SET i2vEmb:2 "0.9 0.1 0"
 docker exec -it redis-dev redis-cli SET i2vEmb:3 "0 1 0"
 ```
 
-### Test Runs
+Test Runs
+
 ```
 mvn clean compile
 mvn exec:java -Dexec.mainClass="com.example.RecSysServer"
@@ -124,4 +166,44 @@ Server: Jetty(11.0.18)
 {"ok":true,"movieId":5,"dim":3}
 
 ```
+
+---
+
+## Feature Encoder and engineering
+
+- Directly leverage LLM embeddings
+  - GPT embedding is already commonly used in retrieval tasks, Scaling laws on embedding performance vs. model size
+  - LLM derived features based on eCommerce item textual data
+    
+- LLM augmented features
+  - Encoded into text embeddings
+  - Categorized as sparse features
+  
+## LLM used as a ranker/re-ranker
+
+- Off the shelf LLM as a recommender with prompt engineering
+  - Prompting is needed, and tuning is mainly focusing on the prompts
+    
+- Fine-tuned LLM
+  - Supervised Fine Tuning (SFT), Directly generate the target item to recommend
+  - Instruction Tuning (Human Alignment)
+    
+- LLM as a reranker
+  - LLM can be used to aim for specific goals - diverse reranking, relevance, freshness
+    - Enhancing Recommendation Diversity by Re-ranking with Large Language Models
+    - Large Language Models are Zero-Shot Rankers for Recommender Systems
+      - struggle to perceive the order of historical interactions, and
+      - can be biased by popularity or item positions in the prompts
+      - van be overcome by careful prompt engineering
+  - LLM as a domain specialist helping recommendation: e.g., Health, Finance, Medical Care, Law
+
+## LLM for user-interaction
+
+- Conversational Recommendation
+  
+## LM inspired architecture
+
+- Generative Sequence Training / modeling
+- New Transformer Arch: HSTU
+- MoE
 
