@@ -3,6 +3,48 @@
 ```
 docker compose -f docker-compose.streaming.yml up -d
 ```
+<<<<<<< HEAD
+=======
+
+It should start:
+
+- Zookeeper
+- Kafka
+- Redis
+- Flink JobManager
+- Flink TaskManager
+
+## Kafka Topic Setup
+
+```
+docker exec -it recsys-kafka-1 \
+kafka-topics --bootstrap-server localhost:9092 \
+--create --topic video_views --partitions 1 --replication-factor 1
+
+docker exec -it recsys-kafka-1 \
+kafka-topics --bootstrap-server kafka:9092 --list
+
+docker exec -it recsys-kafka-1 \
+kafka-console-producer --bootstrap-server kafka:9092 --topic video_views
+
+```
+
+Sampled Data
+```
+{"videoId":"1","eventTimeMillis":1700000000000}
+{"videoId":"2","eventTimeMillis":1700000001000}
+{"videoId":"2","eventTimeMillis":1700000002000}
+```
+
+
+## Flink UI
+
+http://localhost:8081
+
+
+
+## Feature Encoder and engineering
+>>>>>>> 5752b9e0150af0e953984470788f1d2b3e296856
 
 It should start:
 
