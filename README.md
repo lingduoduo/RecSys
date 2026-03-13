@@ -34,15 +34,12 @@ Sampled Data
 {"videoId":"2","eventTimeMillis":1700000002000}
 ```
 
-
 ## Flink UI
 
 http://localhost:8081
 
 
-
 ## Feature Encoder and engineering
->>>>>>> 5752b9e0150af0e953984470788f1d2b3e296856
 
 It should start:
 
