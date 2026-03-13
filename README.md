@@ -3,8 +3,6 @@
 ```
 docker compose -f docker-compose.streaming.yml up -d
 ```
-<<<<<<< HEAD
-=======
 
 It should start:
 
@@ -109,9 +107,9 @@ mvn exec:java -Dexec.mainClass="com.example.RecSysServer"
 
 
 ```
-(base)  🐍 base  linghuang@Mac  ~/Git/RecSys   main ±  curl "http://localhost:6010/getmovie?id=1"
+(base)  🐍 base  @Mac  ~/Git/RecSys   main ±  curl "http://localhost:6010/getmovie?id=1"
 
-(base)  🐍 base  linghuang@Mac  ~/Git/RecSys   main ±  docker exec -it redis-dev redis-cli ZREVRANGE topk:last_hour 0 9 WITHSCORES
+(base)  🐍 base  @Mac  ~/Git/RecSys   main ±  docker exec -it redis-dev redis-cli ZREVRANGE topk:last_hour 0 9 WITHSCORES
 1) "2"
 2) "50"
 3) "1"
@@ -137,7 +135,7 @@ mvn exec:java -Dexec.mainClass="com.example.RecSysServer"
 ```
 
 ```
-(base)  🐍 base  linghuang@Mac  ~/Git/RecSys/recsys-api   main ±  curl -i http://localhost:6010/getmovie
+(base)  🐍 base  @Mac  ~/Git/RecSys/recsys-api   main ±  curl -i http://localhost:6010/getmovie
 
 HTTP/1.1 200 OK
 Date: Thu, 22 Jan 2026 19:53:25 GMT
@@ -146,7 +144,7 @@ Content-Length: 34
 Server: Jetty(11.0.18)
 
 {"movie":"Inception","year":2010}
-(base)  🐍 base  linghuang@Mac  ~/Git/RecSys/recsys-api   main ±  curl -i "http://localhost:6010/getuser"
+(base)  🐍 base  @Mac  ~/Git/RecSys/recsys-api   main ±  curl -i "http://localhost:6010/getuser"
 HTTP/1.1 200 OK
 Date: Thu, 22 Jan 2026 19:55:32 GMT
 Content-Type: application/json
@@ -155,10 +153,10 @@ Server: Jetty(11.0.18)
 
 {"userId":"123","name":"Alice"}
 
-(base)  🐍 base  linghuang@Mac  ~/Git/RecSys/recsys-api   initial-setup ±  curl "http://localhost:6010/getrecommendation"
+(base)  🐍 base  @Mac  ~/Git/RecSys/recsys-api   initial-setup ±  curl "http://localhost:6010/getrecommendation"
 { "userId": "123", "recommendations": ["Inception", "Interstellar", "The Dark Knight"] }
 
-(base)  🐍 base  linghuang@Mac  ~/Git/RecSys/recsys-api   initial-setup ±  curl -i "http://localhost:6010/getsimilarmovie"
+(base)  🐍 base  @Mac  ~/Git/RecSys/recsys-api   initial-setup ±  curl -i "http://localhost:6010/getsimilarmovie"
 HTTP/1.1 200 OK
 Date: Thu, 22 Jan 2026 20:21:37 GMT
 Content-Type: application/json
@@ -166,7 +164,7 @@ Content-Length: 68
 Server: Jetty(11.0.18)
 
 { "movieId": "1", "similar": ["Interstellar", "Tenet", "Memento"] }
-(base)  🐍 base  linghuang@Mac  ~/Git/RecSys/recsys-api   initial-setup ±  curl -i "http://localhost:6010/getsimilarmovie?movieId=42"
+(base)  🐍 base  @Mac  ~/Git/RecSys/recsys-api   initial-setup ±  curl -i "http://localhost:6010/getsimilarmovie?movieId=42"
 HTTP/1.1 200 OK
 Date: Thu, 22 Jan 2026 20:21:43 GMT
 Content-Type: application/json
@@ -175,16 +173,16 @@ Server: Jetty(11.0.18)
 
 { "movieId": "42", "similar": ["Interstellar", "Tenet", "Memento"] }
 
-(base)  🐍 base  linghuang@Mac  ~/Git/RecSys/recsys-api   main ±  curl "http://localhost:6010/getrecommendation?userId=42"
+(base)  🐍 base  @Mac  ~/Git/RecSys/recsys-api   main ±  curl "http://localhost:6010/getrecommendation?userId=42"
 { "userId": "42", "recommendations": ["Inception", "Interstellar"] }
-(base)  🐍 base  linghuang@Mac  ~/Git/RecSys/recsys-api   main ±  curl "http://localhost:6010/getrecommendation?userId=42&type=home&k=5"
+(base)  🐍 base  @Mac  ~/Git/RecSys/recsys-api   main ±  curl "http://localhost:6010/getrecommendation?userId=42&type=home&k=5"
 
 { "userId": "42", "recommendations": ["Inception", "Interstellar"] }
-(base)  🐍 base  linghuang@Mac  ~/Git/RecSys/recsys-api   main ±  curl "http://localhost:6010/getrecommendation?userId=42&type=similar&movieId=99&k=3"
+(base)  🐍 base  @Mac  ~/Git/RecSys/recsys-api   main ±  curl "http://localhost:6010/getrecommendation?userId=42&type=similar&movieId=99&k=3"
 { "userId": "42", "recommendations": ["Inception", "Interstellar"] }
 
 
-(base)  🐍 base  linghuang@Mac  ~/Git/RecSys/recsys-api   similar-items ±  curl -i -X POST "http://localhost:6010/setembedding?movieId=4" \
+(base)  🐍 base  @Mac  ~/Git/RecSys/recsys-api   similar-items ±  curl -i -X POST "http://localhost:6010/setembedding?movieId=4" \
   -H "Content-Type: text/plain" \
   --data-binary "0.2 0.2 0.6"
 
@@ -196,7 +194,7 @@ Content-Length: 32
 Server: Jetty(11.0.18)
 
 {"ok":true,"movieId":4,"dim":3}
-(base)  🐍 base  linghuang@Mac  ~/Git/RecSys/recsys-api   similar-items ±  curl -i -X POST "http://localhost:6010/setembedding?movieId=5" \
+(base)  🐍 base  @Mac  ~/Git/RecSys/recsys-api   similar-items ±  curl -i -X POST "http://localhost:6010/setembedding?movieId=5" \
   --data-urlencode "vec=0.1 0.3 0.6"
 HTTP/1.1 200 OK
 Date: Thu, 22 Jan 2026 23:56:13 GMT
