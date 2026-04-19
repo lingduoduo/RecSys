@@ -1,4 +1,4 @@
-package com.example;
+package com.recsys.features;
 
 import redis.clients.jedis.Jedis;
 import redis.clients.jedis.JedisPool;

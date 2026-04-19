@@ -1,64 +1,86 @@
-package com.example;
+package com.recsys.features;
 
 import redis.clients.jedis.Jedis;
+import redis.clients.jedis.JedisPool;
 import redis.clients.jedis.params.ScanParams;
 import redis.clients.jedis.resps.ScanResult;
 
-import java.util.ArrayList;
+import java.util.Collection;
+import java.util.HashMap;
 import java.util.HashSet;
 import java.util.List;
+import java.util.Map;
 import java.util.Set;
 
 public class RedisEmbeddingStore {
-    private final String host;
-    private final int port;
+    private final JedisPool pool;
     private final String keyPrefix;
 
-    public RedisEmbeddingStore(String host, int port, String keyPrefix) {
-        this.host = host;
-        this.port = port;
+    public RedisEmbeddingStore(JedisPool pool, String keyPrefix) {
+        this.pool = pool;
         this.keyPrefix = keyPrefix;
     }
 
     public float[] getMovieEmbedding(int movieId) {
-        try (Jedis jedis = new Jedis(host, port)) {
+        try (Jedis jedis = pool.getResource()) {
             String v = jedis.get(keyPrefix + ":" + movieId);
             if (v == null || v.isBlank()) return null;
-            return parseVector(v);
+            return VectorMath.parseVector(v);
         }
     }
 
     public void setMovieEmbedding(int movieId, float[] vector) {
-        try (Jedis jedis = new Jedis(host, port)) {
+        try (Jedis jedis = pool.getResource()) {
             jedis.set(keyPrefix + ":" + movieId, toVectorString(vector));
         }
     }
 
-    public List<Integer> getCandidateMovieIds() {
-        return new ArrayList<>(DataManager.getInstance().getAllMovieIds());
+    public Map<Integer, float[]> getMovieEmbeddings(Collection<Integer> movieIds) {
+        Map<Integer, float[]> embeddings = new HashMap<>();
+        if (movieIds == null || movieIds.isEmpty()) return embeddings;
+
+        int i = 0;
+        int[] idArray = new int[movieIds.size()];
+        String[] keys = new String[movieIds.size()];
+        for (int id : movieIds) {
+            idArray[i] = id;
+            keys[i] = keyPrefix + ":" + id;
+            i++;
+        }
+
+        try (Jedis jedis = pool.getResource()) {
+            List<String> values = jedis.mget(keys);
+            for (int j = 0; j < values.size(); j++) {
+                String value = values.get(j);
+                if (value == null || value.isBlank()) continue;
+                embeddings.put(idArray[j], VectorMath.parseVector(value));
+            }
+        }
+
+        return embeddings;
     }
 
     public Set<Integer> scanMovieIds(int maxKeys) {
         Set<Integer> ids = new HashSet<>();
 
+        int countHint = Math.min(maxKeys, 500);
         ScanParams params = new ScanParams()
                 .match(keyPrefix + ":*")
-                .count(200);
+                .count(countHint);
 
         String cursor = "0";
 
-        try (Jedis jedis = new Jedis(host, port)) {
+        try (Jedis jedis = pool.getResource()) {
             while (true) {
                 ScanResult<String> res = jedis.scan(cursor, params);
 
                 for (String key : res.getResult()) {
-                    // key format: i2vEmb:<id>
                     int idx = key.lastIndexOf(':');
                     if (idx >= 0 && idx + 1 < key.length()) {
                         try {
                             ids.add(Integer.parseInt(key.substring(idx + 1)));
                         } catch (NumberFormatException ignore) {
-                            // skip
+                            // skip malformed keys
                         }
                     }
                     if (ids.size() >= maxKeys) return ids;
@@ -70,13 +92,6 @@ public class RedisEmbeddingStore {
         }
 
         return ids;
-    }
-
-    private static float[] parseVector(String s) {
-        String[] parts = s.trim().split("\\s+");
-        float[] vec = new float[parts.length];
-        for (int i = 0; i < parts.length; i++) vec[i] = Float.parseFloat(parts[i]);
-        return vec;
     }
 
     private static String toVectorString(float[] vec) {

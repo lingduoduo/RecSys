@@ -1,4 +1,4 @@
-package com.example;
+package com.recsys.models;
 
 public class User {
     private int userId;

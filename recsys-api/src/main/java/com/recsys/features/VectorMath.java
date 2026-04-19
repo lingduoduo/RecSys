@@ -1,4 +1,4 @@
-package com.example;
+package com.recsys.features;
 
 public class VectorMath {
 
@@ -13,6 +13,13 @@ public class VectorMath {
             nb += y * y;
         }
         if (na == 0.0 || nb == 0.0) return Double.NEGATIVE_INFINITY;
-        return dot / (Math.sqrt(na) * Math.sqrt(nb));
+        return dot / Math.sqrt(na * nb);
+    }
+
+    public static float[] parseVector(String s) {
+        String[] parts = s.trim().split("\\s+");
+        float[] vec = new float[parts.length];
+        for (int i = 0; i < parts.length; i++) vec[i] = Float.parseFloat(parts[i]);
+        return vec;
     }
 }

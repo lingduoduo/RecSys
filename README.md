@@ -1,71 +1,44 @@
 # RecSys
 
-```
+A movie recommendation API built on Jetty + Redis, with a Kafka/Flink streaming pipeline for real-time Top-K trending.
+
+## Package Structure
+
+| Package | Contents |
+|---|---|
+| `models/` | DTOs: `Movie`, `User`, `RecommendationResponse` |
+| `features/` | `DataManager`, `RedisEmbeddingStore`, `RedisTopKStore`, `VectorMath` |
+| `serving/` | Jetty server and HTTP servlet endpoints |
+
+## Infrastructure
+
+```bash
 docker compose -f docker-compose.streaming.yml up -d
 ```
 
-It should start:
+Starts: Zookeeper, Kafka, Redis, Flink JobManager, Flink TaskManager.
 
-- Zookeeper
-- Kafka
-- Redis
-- Flink JobManager
-- Flink TaskManager
+Flink UI: http://localhost:8081
 
 ## Kafka Topic Setup
 
-```
+```bash
+# Create topic
 docker exec -it recsys-kafka-1 \
-kafka-topics --bootstrap-server localhost:9092 \
---create --topic video_views --partitions 1 --replication-factor 1
+  kafka-topics --bootstrap-server localhost:9092 \
+  --create --topic video_views --partitions 1 --replication-factor 1
 
+# List topics
 docker exec -it recsys-kafka-1 \
-kafka-topics --bootstrap-server kafka:9092 --list
+  kafka-topics --bootstrap-server kafka:9092 --list
 
+# Produce sample events
 docker exec -it recsys-kafka-1 \
-kafka-console-producer --bootstrap-server kafka:9092 --topic video_views
-
+  kafka-console-producer --bootstrap-server kafka:9092 --topic video_views
 ```
 
-Sampled Data
-```
-{"videoId":"1","eventTimeMillis":1700000000000}
-{"videoId":"2","eventTimeMillis":1700000001000}
-{"videoId":"2","eventTimeMillis":1700000002000}
-```
-
-## Flink UI
-
-http://localhost:8081
-
-
-## Feature Encoder and engineering
-
-It should start:
-
-- Zookeeper
-- Kafka
-- Redis
-- Flink JobManager
-- Flink TaskManager
-
-## Kafka Topic Setup
-
-```
-docker exec -it recsys-kafka-1 \
-kafka-topics --bootstrap-server localhost:9092 \
---create --topic video_views --partitions 1 --replication-factor 1
-
-docker exec -it recsys-kafka-1 \
-kafka-topics --bootstrap-server kafka:9092 --list
-
-docker exec -it recsys-kafka-1 \
-kafka-console-producer --bootstrap-server kafka:9092 --topic video_views
-
-```
-
-Sampled Data
-```
+Sample events:
+```json
 {"videoId":"1","eventTimeMillis":1700000000000}
 {"videoId":"2","eventTimeMillis":1700000001000}
 {"videoId":"2","eventTimeMillis":1700000002000}
@@ -74,173 +47,113 @@ Sampled Data
 {"videoId":"3","eventTimeMillis":1700000005000}
 ```
 
-```
+Delete topic:
+```bash
 docker exec -it recsys-kafka-1 \
-kafka-topics --bootstrap-server localhost:9092 \
---delete --topic video_views
+  kafka-topics --bootstrap-server localhost:9092 --delete --topic video_views
 ```
-
-## Flink UI
-
-http://localhost:8081
-
 
 ## Redis
 
-### Recommendation by Top-K
+### Top-K (trending)
 
-```
+```bash
 docker exec -it redis-dev redis-cli DEL topk:last_hour
 docker exec -it redis-dev redis-cli ZADD topk:last_hour 50 2 20 1 10 3
 docker exec -it redis-dev redis-cli ZREVRANGE topk:last_hour 0 9 WITHSCORES
 ```
 
-Test Runs
+### Embeddings (item-to-vec)
 
-```
-mvn clean compile
-mvn exec:java -Dexec.mainClass="com.example.RecSysServer"
-```
-
-
-```
-(base)  🐍 base  @Mac  ~/Git/RecSys   main ±  curl "http://localhost:6010/getmovie?id=1"
-
-(base)  🐍 base  @Mac  ~/Git/RecSys   main ±  docker exec -it redis-dev redis-cli ZREVRANGE topk:last_hour 0 9 WITHSCORES
-1) "2"
-2) "50"
-3) "1"
-4) "20"
-5) "3"
-6) "10"
-```
-
-
-### Recommendation by embedding vector
-
-```
+```bash
 docker exec -it redis-dev redis-cli SET i2vEmb:1 "1 0 0"
 docker exec -it redis-dev redis-cli SET i2vEmb:2 "0.9 0.1 0"
 docker exec -it redis-dev redis-cli SET i2vEmb:3 "0 1 0"
 ```
 
-Test Runs
+## Build & Run
 
-```
+```bash
 mvn clean compile
-mvn exec:java -Dexec.mainClass="com.example.RecSysServer"
+mvn exec:java -Dexec.mainClass="com.recsys.serving.RecSysServer"
 ```
 
+Redis host/port can be overridden via env vars: `REDIS_HOST` (default `localhost`), `REDIS_PORT` (default `6379`).
+
+## API Endpoints
+
+### GET `/getmovie?id={int}`
+
+```bash
+curl "http://localhost:6010/getmovie?id=1"
+# {"id":1,"title":"Inception","year":2010}
 ```
-(base)  🐍 base  @Mac  ~/Git/RecSys/recsys-api   main ±  curl -i http://localhost:6010/getmovie
 
-HTTP/1.1 200 OK
-Date: Thu, 22 Jan 2026 19:53:25 GMT
-Content-Type: application/json
-Content-Length: 34
-Server: Jetty(11.0.18)
+### GET `/getuser?userId={int}`
 
-{"movie":"Inception","year":2010}
-(base)  🐍 base  @Mac  ~/Git/RecSys/recsys-api   main ±  curl -i "http://localhost:6010/getuser"
-HTTP/1.1 200 OK
-Date: Thu, 22 Jan 2026 19:55:32 GMT
-Content-Type: application/json
-Content-Length: 32
-Server: Jetty(11.0.18)
+```bash
+curl "http://localhost:6010/getuser?userId=123"
+# {"userId":123,"name":"Alice"}
+```
 
-{"userId":"123","name":"Alice"}
+### GET `/getrecommendation?userId={int}`
 
-(base)  🐍 base  @Mac  ~/Git/RecSys/recsys-api   initial-setup ±  curl "http://localhost:6010/getrecommendation"
-{ "userId": "123", "recommendations": ["Inception", "Interstellar", "The Dark Knight"] }
+Default mode (similar items from seed movie):
+```bash
+curl "http://localhost:6010/getrecommendation?userId=123"
+curl "http://localhost:6010/getrecommendation?userId=123&seedMovieId=2"
+```
 
-(base)  🐍 base  @Mac  ~/Git/RecSys/recsys-api   initial-setup ±  curl -i "http://localhost:6010/getsimilarmovie"
-HTTP/1.1 200 OK
-Date: Thu, 22 Jan 2026 20:21:37 GMT
-Content-Type: application/json
-Content-Length: 68
-Server: Jetty(11.0.18)
+Trending mode (Top-K from Redis ZSET):
+```bash
+curl "http://localhost:6010/getrecommendation?userId=123&mode=topk&window=last_hour&k=5"
+# window: last_hour | last_day | last_month  (default: last_hour)
+# k: 1–200 (default: 20)
+```
 
-{ "movieId": "1", "similar": ["Interstellar", "Tenet", "Memento"] }
-(base)  🐍 base  @Mac  ~/Git/RecSys/recsys-api   initial-setup ±  curl -i "http://localhost:6010/getsimilarmovie?movieId=42"
-HTTP/1.1 200 OK
-Date: Thu, 22 Jan 2026 20:21:43 GMT
-Content-Type: application/json
-Content-Length: 69
-Server: Jetty(11.0.18)
+### GET `/getsimilarmovie?movieId={int}`
 
-{ "movieId": "42", "similar": ["Interstellar", "Tenet", "Memento"] }
+Cosine similarity search over Redis embeddings:
+```bash
+curl "http://localhost:6010/getsimilarmovie?movieId=1&k=5"
+# {"movieId":1,"similar":[{"movieId":2,"score":0.994},{"movieId":3,"score":0.0}]}
+```
 
-(base)  🐍 base  @Mac  ~/Git/RecSys/recsys-api   main ±  curl "http://localhost:6010/getrecommendation?userId=42"
-{ "userId": "42", "recommendations": ["Inception", "Interstellar"] }
-(base)  🐍 base  @Mac  ~/Git/RecSys/recsys-api   main ±  curl "http://localhost:6010/getrecommendation?userId=42&type=home&k=5"
+### POST `/setembedding?movieId={int}`
 
-{ "userId": "42", "recommendations": ["Inception", "Interstellar"] }
-(base)  🐍 base  @Mac  ~/Git/RecSys/recsys-api   main ±  curl "http://localhost:6010/getrecommendation?userId=42&type=similar&movieId=99&k=3"
-{ "userId": "42", "recommendations": ["Inception", "Interstellar"] }
-
-
-(base)  🐍 base  @Mac  ~/Git/RecSys/recsys-api   similar-items ±  curl -i -X POST "http://localhost:6010/setembedding?movieId=4" \
+Store a float vector embedding (space-separated values in body):
+```bash
+curl -X POST "http://localhost:6010/setembedding?movieId=4" \
   -H "Content-Type: text/plain" \
   --data-binary "0.2 0.2 0.6"
+# {"ok":true,"movieId":4,"dim":3}
 
-HTTP/1.1 200 OK
-Date: Thu, 22 Jan 2026 23:56:05 GMT
-Content-Type: application/json;charset=utf-8
-Access-Control-Allow-Origin: *
-Content-Length: 32
-Server: Jetty(11.0.18)
-
-{"ok":true,"movieId":4,"dim":3}
-(base)  🐍 base  @Mac  ~/Git/RecSys/recsys-api   similar-items ±  curl -i -X POST "http://localhost:6010/setembedding?movieId=5" \
+curl -X POST "http://localhost:6010/setembedding?movieId=5" \
   --data-urlencode "vec=0.1 0.3 0.6"
-HTTP/1.1 200 OK
-Date: Thu, 22 Jan 2026 23:56:13 GMT
-Content-Type: application/json;charset=utf-8
-Access-Control-Allow-Origin: *
-Content-Length: 32
-Server: Jetty(11.0.18)
-
-{"ok":true,"movieId":5,"dim":3}
-
+# {"ok":true,"movieId":5,"dim":3}
 ```
 
 ---
 
-## Feature Encoder and engineering
+## LLM Integration Notes
 
-- Directly leverage LLM embeddings
-  - GPT embedding is already commonly used in retrieval tasks, Scaling laws on embedding performance vs. model size
-  - LLM derived features based on eCommerce item textual data
-    
-- LLM augmented features
-  - Encoded into text embeddings
-  - Categorized as sparse features
-  
-## LLM used as a ranker/re-ranker
+### Feature Encoding
 
-- Off the shelf LLM as a recommender with prompt engineering
-  - Prompting is needed, and tuning is mainly focusing on the prompts
-    
-- Fine-tuned LLM
-  - Supervised Fine Tuning (SFT), Directly generate the target item to recommend
-  - Instruction Tuning (Human Alignment)
-    
-- LLM as a reranker
-  - LLM can be used to aim for specific goals - diverse reranking, relevance, freshness
-    - Enhancing Recommendation Diversity by Re-ranking with Large Language Models
-    - Large Language Models are Zero-Shot Rankers for Recommender Systems
-      - struggle to perceive the order of historical interactions, and
-      - can be biased by popularity or item positions in the prompts
-      - van be overcome by careful prompt engineering
-  - LLM as a domain specialist helping recommendation: e.g., Health, Finance, Medical Care, Law
+- **LLM embeddings** — GPT-style embeddings for item retrieval; text embeddings encoded as sparse features
+- **LLM augmented features** — derive structured features from item textual data
 
-## LLM for user-interaction
+### Ranking / Re-ranking
 
-- Conversational Recommendation
-  
-## LM inspired architecture
+- **Zero-shot LLM ranker** — prompt engineering; note: sensitive to item order and popularity bias in prompts
+- **Fine-tuned LLM** — SFT to directly generate target items; instruction tuning for alignment
+- **Goal-directed reranking** — diversity, relevance, freshness; domain specialist use cases (health, finance, legal)
 
-- Generative Sequence Training / modeling
-- New Transformer Arch: HSTU
-- MoE
+### User Interaction
 
+- Conversational recommendation
+
+### Architecture
+
+- Generative sequence modeling
+- Transformer variants: HSTU
+- Mixture of Experts (MoE)

@@ -1,4 +1,4 @@
-package com.example;
+package com.recsys.models;
 
 public class Movie {
     private int id;

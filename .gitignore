@@ -1,16 +1,9 @@
-# Compiled class file
+# Java / Maven
 *.class
+target/
+**/target/
 
-# Log file
-*.log
-
-# BlueJ files
-*.ctxt
-
-# Mobile Tools for Java (J2ME)
-.mtj.tmp/
-
-# Package Files #
+# Packaged artifacts
 *.jar
 *.war
 *.nar
@@ -19,8 +12,36 @@
 *.tar.gz
 *.rar
 
-target/
+# Logs and runtime output
+*.log
+logs/
+*.pid
 
-# virtual machine crash logs
+# Local configuration / secrets
+.env
+.env.*
+!.env.example
+
+# IDEs and editors
+.vscode/
+.idea/
+*.iml
+*.ipr
+*.iws
+.project
+.classpath
+.settings/
+
+# OS files
+.DS_Store
+Thumbs.db
+
+# BlueJ
+*.ctxt
+
+# Mobile Tools for Java (J2ME)
+.mtj.tmp/
+
+# JVM crash logs
 hs_err_pid*
 replay_pid*
