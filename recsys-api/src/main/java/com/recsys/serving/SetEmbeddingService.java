@@ -6,6 +6,7 @@ import jakarta.servlet.http.HttpServletRequest;
 import jakarta.servlet.http.HttpServletResponse;
 
 import java.io.IOException;
+import java.util.Map;
 import java.util.stream.Collectors;
 
 public class SetEmbeddingService extends BaseApiServlet {
@@ -20,12 +21,7 @@ public class SetEmbeddingService extends BaseApiServlet {
     protected void doPost(HttpServletRequest request, HttpServletResponse response) throws IOException {
         prepareJson(response);
         try {
-            String movieIdStr = request.getParameter("movieId");
-            if (movieIdStr == null || movieIdStr.isBlank()) {
-                writeError(response, HttpServletResponse.SC_BAD_REQUEST, "missing required query parameter: movieId");
-                return;
-            }
-            int movieId = Integer.parseInt(movieIdStr);
+            int movieId = requiredIntParam(request, "movieId");
 
             String body = "";
             String contentType = request.getContentType();
@@ -51,9 +47,14 @@ public class SetEmbeddingService extends BaseApiServlet {
             float[] vec = VectorMath.parseVector(body);
             store.setMovieEmbedding(movieId, vec);
 
-            response.setStatus(HttpServletResponse.SC_OK);
-            response.getWriter().println("{\"ok\":true,\"movieId\":" + movieId + ",\"dim\":" + vec.length + "}");
+            writeJson(response, HttpServletResponse.SC_OK, Map.of(
+                    "ok", true,
+                    "movieId", movieId,
+                    "dim", vec.length
+            ));
 
+        } catch (BadRequestException e) {
+            writeError(response, HttpServletResponse.SC_BAD_REQUEST, e.getMessage());
         } catch (NumberFormatException e) {
             writeError(response, HttpServletResponse.SC_BAD_REQUEST, "invalid numeric parameter format");
         } catch (Exception e) {

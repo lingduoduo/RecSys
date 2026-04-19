@@ -2,9 +2,11 @@ package com.recsys.serving;
 
 import com.fasterxml.jackson.databind.ObjectMapper;
 import jakarta.servlet.http.HttpServlet;
+import jakarta.servlet.http.HttpServletRequest;
 import jakarta.servlet.http.HttpServletResponse;
 
 import java.io.IOException;
+import java.util.Map;
 
 abstract class BaseApiServlet extends HttpServlet {
 
@@ -22,18 +24,48 @@ abstract class BaseApiServlet extends HttpServlet {
     }
 
     protected static void writeError(HttpServletResponse response, int status, String message) throws IOException {
-        response.setStatus(status);
-        response.getWriter().println("{\"error\":\"" + escapeJson(message) + "\"}");
+        writeJson(response, status, Map.of("error", message == null ? "" : message));
     }
 
     protected static void writeError(HttpServletResponse response, int status, String message, String field, int value)
             throws IOException {
-        response.setStatus(status);
-        response.getWriter().println("{\"error\":\"" + escapeJson(message) + "\",\"" + field + "\":" + value + "}");
+        writeJson(response, status, Map.of(
+                "error", message == null ? "" : message,
+                field, value
+        ));
     }
 
-    private static String escapeJson(String s) {
-        if (s == null) return "";
-        return s.replace("\\", "\\\\").replace("\"", "\\\"");
+    protected static int requiredIntParam(HttpServletRequest request, String name) {
+        String value = request.getParameter(name);
+        if (value == null || value.isBlank()) {
+            throw new BadRequestException("missing required query parameter: " + name);
+        }
+        try {
+            return Integer.parseInt(value.trim());
+        } catch (NumberFormatException e) {
+            throw new BadRequestException("invalid numeric parameter format");
+        }
+    }
+
+    protected static int optionalIntParam(HttpServletRequest request,
+                                          String name,
+                                          int defaultValue,
+                                          int min,
+                                          int max) {
+        String value = request.getParameter(name);
+        if (value == null || value.isBlank()) return defaultValue;
+        try {
+            int parsed = Integer.parseInt(value.trim());
+            if (parsed < min) return defaultValue;
+            return Math.min(parsed, max);
+        } catch (NumberFormatException e) {
+            throw new BadRequestException("invalid numeric parameter format");
+        }
+    }
+
+    protected static final class BadRequestException extends RuntimeException {
+        BadRequestException(String message) {
+            super(message);
+        }
     }
 }

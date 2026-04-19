@@ -24,18 +24,8 @@ public class SimilarMovieService extends BaseApiServlet {
     protected void doGet(HttpServletRequest request, HttpServletResponse response) throws IOException {
         prepareJson(response);
         try {
-            String movieIdStr = request.getParameter("movieId");
-            if (movieIdStr == null || movieIdStr.isBlank()) {
-                writeError(response, HttpServletResponse.SC_BAD_REQUEST, "missing required query parameter: movieId");
-                return;
-            }
-            int movieId = Integer.parseInt(movieIdStr);
-
-            int k = 10;
-            String kStr = request.getParameter("k");
-            if (kStr != null && !kStr.isBlank()) k = Integer.parseInt(kStr);
-            if (k <= 0) k = 10;
-            if (k > 200) k = 200;
+            int movieId = requiredIntParam(request, "movieId");
+            int k = optionalIntParam(request, "k", 10, 1, 200);
 
             float[] queryVec = store.getMovieEmbedding(movieId);
             if (queryVec == null) {
@@ -70,8 +60,8 @@ public class SimilarMovieService extends BaseApiServlet {
 
             writeJson(response, HttpServletResponse.SC_OK, new SimilarMoviesResult(movieId, scored));
 
-        } catch (NumberFormatException e) {
-            writeError(response, HttpServletResponse.SC_BAD_REQUEST, "invalid numeric parameter format");
+        } catch (BadRequestException e) {
+            writeError(response, HttpServletResponse.SC_BAD_REQUEST, e.getMessage());
         } catch (Exception e) {
             e.printStackTrace();
             writeError(response, HttpServletResponse.SC_INTERNAL_SERVER_ERROR, "internal server error");

@@ -19,13 +19,7 @@ public class UserService extends BaseApiServlet {
     protected void doGet(HttpServletRequest request, HttpServletResponse response) throws IOException {
         prepareJson(response);
         try {
-            String userIdStr = request.getParameter("userId");
-            if (userIdStr == null || userIdStr.isBlank()) {
-                writeError(response, HttpServletResponse.SC_BAD_REQUEST, "missing required query parameter: userId");
-                return;
-            }
-
-            int userId = Integer.parseInt(userIdStr);
+            int userId = requiredIntParam(request, "userId");
             User user = dataManager.getUserById(userId);
 
             if (user == null) {
@@ -35,8 +29,8 @@ public class UserService extends BaseApiServlet {
 
             writeJson(response, HttpServletResponse.SC_OK, user);
 
-        } catch (NumberFormatException e) {
-            writeError(response, HttpServletResponse.SC_BAD_REQUEST, "invalid userId format");
+        } catch (BadRequestException e) {
+            writeError(response, HttpServletResponse.SC_BAD_REQUEST, e.getMessage());
         } catch (Exception e) {
             e.printStackTrace();
             writeError(response, HttpServletResponse.SC_INTERNAL_SERVER_ERROR, "internal server error");

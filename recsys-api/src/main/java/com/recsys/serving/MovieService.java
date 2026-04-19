@@ -19,13 +19,7 @@ public class MovieService extends BaseApiServlet {
     protected void doGet(HttpServletRequest request, HttpServletResponse response) throws IOException {
         prepareJson(response);
         try {
-            String movieIdStr = request.getParameter("id");
-            if (movieIdStr == null || movieIdStr.isBlank()) {
-                writeError(response, HttpServletResponse.SC_BAD_REQUEST, "missing required query parameter: id");
-                return;
-            }
-
-            int movieId = Integer.parseInt(movieIdStr);
+            int movieId = requiredIntParam(request, "id");
             Movie movie = dataManager.getMovieById(movieId);
 
             if (movie == null) {
@@ -35,8 +29,8 @@ public class MovieService extends BaseApiServlet {
 
             writeJson(response, HttpServletResponse.SC_OK, movie);
 
-        } catch (NumberFormatException e) {
-            writeError(response, HttpServletResponse.SC_BAD_REQUEST, "invalid movie id format");
+        } catch (BadRequestException e) {
+            writeError(response, HttpServletResponse.SC_BAD_REQUEST, e.getMessage());
         } catch (Exception e) {
             e.printStackTrace();
             writeError(response, HttpServletResponse.SC_INTERNAL_SERVER_ERROR, "internal server error");

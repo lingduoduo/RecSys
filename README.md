@@ -78,9 +78,22 @@ mvn clean compile
 mvn exec:java -Dexec.mainClass="com.recsys.serving.RecSysServer"
 ```
 
-Redis host/port can be overridden via env vars: `REDIS_HOST` (default `localhost`), `REDIS_PORT` (default `6379`).
+Server and Redis settings can be overridden via env vars:
+
+| Env var | Default |
+|---|---|
+| `PORT` | `6010` |
+| `REDIS_HOST` | `localhost` |
+| `REDIS_PORT` | `6379` |
 
 ## API Endpoints
+
+### GET `/health`
+
+```bash
+curl "http://localhost:6010/health"
+# {"ok":true}
+```
 
 ### GET `/getmovie?id={int}`
 

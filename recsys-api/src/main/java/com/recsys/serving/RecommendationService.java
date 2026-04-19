@@ -29,15 +29,8 @@ public class RecommendationService extends BaseApiServlet {
         try {
             String mode = request.getParameter("mode");
             String window = request.getParameter("window");
-            String kStr = request.getParameter("k");
 
-            String userIdStr = request.getParameter("userId");
-            if (userIdStr == null || userIdStr.isBlank()) {
-                writeError(response, HttpServletResponse.SC_BAD_REQUEST, "missing required query parameter: userId");
-                return;
-            }
-
-            int userId = Integer.parseInt(userIdStr);
+            int userId = requiredIntParam(request, "userId");
             User user = dataManager.getUserById(userId);
             if (user == null) {
                 writeError(response, HttpServletResponse.SC_NOT_FOUND, "user not found", "userId", userId);
@@ -46,11 +39,7 @@ public class RecommendationService extends BaseApiServlet {
 
             if ("topk".equalsIgnoreCase(mode) || "trending".equalsIgnoreCase(mode)) {
                 String w = (window == null || window.isBlank()) ? "last_hour" : window.trim();
-
-                int k = 20;
-                if (kStr != null && !kStr.isBlank()) k = Integer.parseInt(kStr);
-                if (k <= 0) k = 20;
-                if (k > 200) k = 200;
+                int k = optionalIntParam(request, "k", 20, 1, 200);
 
                 List<Movie> recs = getTopKMoviesFromRedis(w, k);
                 writeJson(response, HttpServletResponse.SC_OK, new RecommendationResponse(user, recs));
@@ -60,7 +49,7 @@ public class RecommendationService extends BaseApiServlet {
             String seedMovieIdStr = request.getParameter("seedMovieId");
             List<Movie> recs;
             if (seedMovieIdStr != null && !seedMovieIdStr.isBlank()) {
-                int seedMovieId = Integer.parseInt(seedMovieIdStr);
+                int seedMovieId = requiredIntParam(request, "seedMovieId");
                 Movie seed = dataManager.getMovieById(seedMovieId);
                 if (seed == null) {
                     writeError(response, HttpServletResponse.SC_NOT_FOUND, "seed movie not found", "seedMovieId", seedMovieId);
@@ -73,8 +62,8 @@ public class RecommendationService extends BaseApiServlet {
 
             writeJson(response, HttpServletResponse.SC_OK, new RecommendationResponse(user, recs));
 
-        } catch (NumberFormatException e) {
-            writeError(response, HttpServletResponse.SC_BAD_REQUEST, "invalid numeric parameter format");
+        } catch (BadRequestException e) {
+            writeError(response, HttpServletResponse.SC_BAD_REQUEST, e.getMessage());
         } catch (IllegalArgumentException e) {
             writeError(response, HttpServletResponse.SC_BAD_REQUEST, e.getMessage());
         } catch (Exception e) {
