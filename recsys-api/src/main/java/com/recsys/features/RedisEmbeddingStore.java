@@ -103,10 +103,11 @@ public class RedisEmbeddingStore {
      */
     public Map<Integer, float[]> loadValidEmbeddings(Set<Integer> knownMovieIds) {
         Set<Integer> redisIds = scanMovieIds(Integer.MAX_VALUE);
+        int scannedCount = redisIds.size();
         redisIds.retainAll(knownMovieIds);  // skip IDs not in the movie store
         Map<Integer, float[]> embeddings = getMovieEmbeddings(redisIds);
         System.out.printf("[RedisEmbeddingStore] loaded %d valid embeddings (scanned %d keys in Redis, %d known movies)%n",
-                embeddings.size(), redisIds.size(), knownMovieIds.size());
+                embeddings.size(), scannedCount, knownMovieIds.size());
         return embeddings;
     }
 

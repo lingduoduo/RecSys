@@ -7,6 +7,7 @@ import com.recsys.models.User;
 import java.util.List;
 import java.util.Map;
 import java.util.Set;
+import java.util.stream.Collectors;
 
 public class DataManager {
 
@@ -15,12 +16,21 @@ public class DataManager {
     private final Map<Integer, Movie> movies;
     private final Map<Integer, User> users;
     private final List<Rating> ratings;
+    private final Map<Integer, List<Rating>> ratingsByUser;
     private final Map<Integer, List<Movie>> similarMovies;
 
     private DataManager() {
         movies = DataLoader.loadMovies();
         users = DataLoader.loadUsers();
         ratings = DataLoader.loadRatings();
+        ratingsByUser = ratings.stream()
+                .collect(Collectors.groupingBy(Rating::userId))
+                .entrySet()
+                .stream()
+                .collect(Collectors.toUnmodifiableMap(
+                        Map.Entry::getKey,
+                        entry -> List.copyOf(entry.getValue())
+                ));
         similarMovies = DataLoader.buildSimilarMovies(movies, ratings);
     }
 
@@ -45,7 +55,7 @@ public class DataManager {
     }
 
     public List<Rating> getRatingsByUser(int userId) {
-        return ratings.stream().filter(r -> r.userId() == userId).toList();
+        return ratingsByUser.getOrDefault(userId, List.of());
     }
 
     public List<Rating> getAllRatings() {

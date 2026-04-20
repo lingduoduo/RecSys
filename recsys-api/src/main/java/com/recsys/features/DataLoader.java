@@ -11,22 +11,27 @@ import java.io.InputStreamReader;
 import java.nio.charset.StandardCharsets;
 import java.util.ArrayList;
 import java.util.Arrays;
-import java.util.Collections;
 import java.util.HashMap;
 import java.util.HashSet;
 import java.util.LinkedHashMap;
 import java.util.List;
 import java.util.Map;
 import java.util.Objects;
+import java.util.PriorityQueue;
 import java.util.Set;
 
 public class DataLoader {
 
     private static final int SIMILAR_MOVIES_LIMIT = 5;
+    private static final String MOVIES_RESOURCE = "/com/recsys/data/movies.txt";
+    private static final String USERS_RESOURCE = "/com/recsys/data/users.txt";
+    private static final String RATINGS_RESOURCE = "/com/recsys/data/ratings.txt";
+    private static final String MOVIE_EMBEDDINGS_RESOURCE = "/com/recsys/data/movie_embeddings.txt";
+    private static final String USER_EMBEDDINGS_RESOURCE = "/com/recsys/data/user_embeddings.txt";
 
     public static Map<Integer, Movie> loadMovies() {
         Map<Integer, Movie> movies = new LinkedHashMap<>();
-        try (BufferedReader reader = openResource("/com/recsys/data/movies.txt")) {
+        try (BufferedReader reader = openResource(MOVIES_RESOURCE)) {
             String line;
             boolean header = true;
             while ((line = reader.readLine()) != null) {
@@ -44,12 +49,12 @@ public class DataLoader {
         } catch (IOException e) {
             throw new RuntimeException("failed to load movies.txt", e);
         }
-        return Collections.unmodifiableMap(movies);
+        return Map.copyOf(movies);
     }
 
     public static Map<Integer, User> loadUsers() {
         Map<Integer, User> users = new LinkedHashMap<>();
-        try (BufferedReader reader = openResource("/com/recsys/data/users.txt")) {
+        try (BufferedReader reader = openResource(USERS_RESOURCE)) {
             String line;
             boolean header = true;
             while ((line = reader.readLine()) != null) {
@@ -63,12 +68,12 @@ public class DataLoader {
         } catch (IOException e) {
             throw new RuntimeException("failed to load users.txt", e);
         }
-        return Collections.unmodifiableMap(users);
+        return Map.copyOf(users);
     }
 
     public static List<Rating> loadRatings() {
         List<Rating> ratings = new ArrayList<>();
-        try (BufferedReader reader = openResource("/com/recsys/data/ratings.txt")) {
+        try (BufferedReader reader = openResource(RATINGS_RESOURCE)) {
             String line;
             boolean header = true;
             while ((line = reader.readLine()) != null) {
@@ -84,7 +89,7 @@ public class DataLoader {
         } catch (IOException e) {
             throw new RuntimeException("failed to load ratings.txt", e);
         }
-        return Collections.unmodifiableList(ratings);
+        return List.copyOf(ratings);
     }
 
     // Derives similar-movie lists from co-rating: movies rated by the same user are
@@ -114,25 +119,20 @@ public class DataLoader {
 
         Map<Integer, List<Movie>> similarMovies = new HashMap<>();
         for (Map.Entry<Integer, Map<Integer, Integer>> entry : coRatings.entrySet()) {
-            List<Movie> similar = entry.getValue().entrySet().stream()
-                    .sorted(Map.Entry.<Integer, Integer>comparingByValue().reversed())
-                    .limit(SIMILAR_MOVIES_LIMIT)
-                    .map(e -> movies.get(e.getKey()))
-                    .filter(Objects::nonNull)
-                    .toList();
+            List<Movie> similar = topSimilarMovies(entry.getValue(), movies);
             if (!similar.isEmpty()) {
-                similarMovies.put(entry.getKey(), similar);
+                similarMovies.put(entry.getKey(), List.copyOf(similar));
             }
         }
-        return Collections.unmodifiableMap(similarMovies);
+        return Map.copyOf(similarMovies);
     }
 
     public static Map<Integer, float[]> loadMovieEmbeddings() {
-        return loadEmbeddings("/com/recsys/data/embeddings.txt", "movieId");
+        return loadEmbeddings(MOVIE_EMBEDDINGS_RESOURCE, "movieId");
     }
 
     public static Map<Integer, float[]> loadUserEmbeddings() {
-        return loadEmbeddings("/com/recsys/data/user_embeddings.txt", "userId");
+        return loadEmbeddings(USER_EMBEDDINGS_RESOURCE, "userId");
     }
 
     private static Map<Integer, float[]> loadEmbeddings(String path, String idColumn) {
@@ -151,7 +151,27 @@ public class DataLoader {
         } catch (IOException e) {
             throw new RuntimeException("failed to load " + path, e);
         }
-        return Collections.unmodifiableMap(out);
+        return Map.copyOf(out);
+    }
+
+    private static List<Movie> topSimilarMovies(Map<Integer, Integer> coRatings, Map<Integer, Movie> movies) {
+        PriorityQueue<Map.Entry<Integer, Integer>> best = new PriorityQueue<>(
+                Map.Entry.comparingByValue()
+        );
+        for (Map.Entry<Integer, Integer> entry : coRatings.entrySet()) {
+            if (best.size() < SIMILAR_MOVIES_LIMIT) {
+                best.offer(entry);
+            } else if (entry.getValue() > best.peek().getValue()) {
+                best.poll();
+                best.offer(entry);
+            }
+        }
+
+        return best.stream()
+                .sorted(Map.Entry.<Integer, Integer>comparingByValue().reversed())
+                .map(e -> movies.get(e.getKey()))
+                .filter(Objects::nonNull)
+                .toList();
     }
 
     private static BufferedReader openResource(String path) {

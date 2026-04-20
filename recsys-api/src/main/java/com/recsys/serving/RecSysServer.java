@@ -76,7 +76,7 @@ public class RecSysServer {
                                        RedisEmbeddingStore userEmbStore) {
         if (embStore.scanMovieIds(1).isEmpty()) {
             embStore.setMovieEmbeddings(DataLoader.loadMovieEmbeddings(), 0);
-            System.out.println("[RecSysServer] seeded movie embeddings from embeddings.txt");
+            System.out.println("[RecSysServer] seeded movie embeddings from movie_embeddings.txt");
         }
         if (userEmbStore.scanMovieIds(1).isEmpty()) {
             userEmbStore.setMovieEmbeddings(DataLoader.loadUserEmbeddings(), 0);
