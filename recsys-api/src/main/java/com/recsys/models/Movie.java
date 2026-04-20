@@ -1,24 +1,5 @@
 package com.recsys.models;
 
-public class Movie {
-    private int id;
-    private String title;
-    private int year;
+import java.util.List;
 
-    public Movie() {} // Jackson needs no-arg constructor
-
-    public Movie(int id, String title, int year) {
-        this.id = id;
-        this.title = title;
-        this.year = year;
-    }
-
-    public int getId() { return id; }
-    public void setId(int id) { this.id = id; }
-
-    public String getTitle() { return title; }
-    public void setTitle(String title) { this.title = title; }
-
-    public int getYear() { return year; }
-    public void setYear(int year) { this.year = year; }
-}
+public record Movie(int id, String title, int year, List<String> genres) {}

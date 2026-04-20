@@ -63,6 +63,16 @@ abstract class BaseApiServlet extends HttpServlet {
         }
     }
 
+    protected static long optionalLongParam(HttpServletRequest request, String name, long defaultValue) {
+        String value = request.getParameter(name);
+        if (value == null || value.isBlank()) return defaultValue;
+        try {
+            return Long.parseLong(value.trim());
+        } catch (NumberFormatException e) {
+            throw new BadRequestException("invalid numeric parameter format");
+        }
+    }
+
     protected static final class BadRequestException extends RuntimeException {
         BadRequestException(String message) {
             super(message);

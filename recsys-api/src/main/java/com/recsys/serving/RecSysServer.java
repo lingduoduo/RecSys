@@ -1,5 +1,6 @@
 package com.recsys.serving;
 
+import com.recsys.features.DataLoader;
 import com.recsys.features.DataManager;
 import com.recsys.features.RedisEmbeddingStore;
 import com.recsys.features.RedisTopKStore;
@@ -32,8 +33,11 @@ public class RecSysServer {
 
         try (JedisPool jedisPool = new JedisPool(redisHost, redisPort)) {
             DataManager dataManager = DataManager.getInstance();
-            RedisEmbeddingStore embStore = new RedisEmbeddingStore(jedisPool, "i2vEmb");
+            RedisEmbeddingStore embStore     = new RedisEmbeddingStore(jedisPool, "i2vEmb");
+            RedisEmbeddingStore userEmbStore = new RedisEmbeddingStore(jedisPool, "u2vEmb");
             RedisTopKStore topkStore = new RedisTopKStore(jedisPool, "topk:");
+
+            seedEmbeddings(embStore, userEmbStore);
 
             InetSocketAddress inetAddress = new InetSocketAddress(DEFAULT_HOST, port);
             Server server = new Server(inetAddress);
@@ -67,9 +71,26 @@ public class RecSysServer {
         context.addServlet(new ServletHolder(new HealthService()), ROUTE_HEALTH);
     }
 
+    // Seeds Redis with sample embeddings only if not already present.
+    private static void seedEmbeddings(RedisEmbeddingStore embStore,
+                                       RedisEmbeddingStore userEmbStore) {
+        if (embStore.scanMovieIds(1).isEmpty()) {
+            embStore.setMovieEmbeddings(DataLoader.loadMovieEmbeddings(), 0);
+            System.out.println("[RecSysServer] seeded movie embeddings from embeddings.txt");
+        }
+        if (userEmbStore.scanMovieIds(1).isEmpty()) {
+            userEmbStore.setMovieEmbeddings(DataLoader.loadUserEmbeddings(), 0);
+            System.out.println("[RecSysServer] seeded user embeddings from user_embeddings.txt");
+        }
+    }
+
     private static int readIntEnv(String name, int defaultValue) {
         String value = System.getenv(name);
         if (value == null || value.isBlank()) return defaultValue;
-        return Integer.parseInt(value);
+        try {
+            return Integer.parseInt(value.trim());
+        } catch (NumberFormatException e) {
+            throw new IllegalStateException("env var " + name + " is not a valid integer: " + value);
+        }
     }
 }

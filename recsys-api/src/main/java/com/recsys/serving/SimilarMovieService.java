@@ -40,10 +40,11 @@ public class SimilarMovieService extends BaseApiServlet {
                     Comparator.comparingDouble(ScoredMovie::score)
             );
 
+            double queryNormSq = VectorMath.normSq(queryVec);
             for (int candId : candidates) {
                 float[] v = embeddings.get(candId);
                 if (v == null) continue;
-                double score = VectorMath.cosine(queryVec, v);
+                double score = VectorMath.cosine(queryVec, queryNormSq, v);
                 if (score == Double.NEGATIVE_INFINITY) continue;
 
                 ScoredMovie scoredMovie = new ScoredMovie(candId, score);

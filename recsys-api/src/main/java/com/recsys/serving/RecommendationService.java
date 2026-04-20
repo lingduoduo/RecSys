@@ -11,7 +11,6 @@ import jakarta.servlet.http.HttpServletResponse;
 import java.io.IOException;
 import java.util.List;
 import java.util.Objects;
-import java.util.stream.Collectors;
 
 public class RecommendationService extends BaseApiServlet {
 
@@ -62,9 +61,7 @@ public class RecommendationService extends BaseApiServlet {
 
             writeJson(response, HttpServletResponse.SC_OK, new RecommendationResponse(user, recs));
 
-        } catch (BadRequestException e) {
-            writeError(response, HttpServletResponse.SC_BAD_REQUEST, e.getMessage());
-        } catch (IllegalArgumentException e) {
+        } catch (BadRequestException | IllegalArgumentException e) {
             writeError(response, HttpServletResponse.SC_BAD_REQUEST, e.getMessage());
         } catch (Exception e) {
             e.printStackTrace();
@@ -82,6 +79,6 @@ public class RecommendationService extends BaseApiServlet {
                     catch (NumberFormatException ignore) { return null; }
                 })
                 .filter(Objects::nonNull)
-                .collect(Collectors.toList());
+                .toList();
     }
 }

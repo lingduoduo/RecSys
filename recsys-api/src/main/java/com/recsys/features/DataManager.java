@@ -1,6 +1,7 @@
 package com.recsys.features;
 
 import com.recsys.models.Movie;
+import com.recsys.models.Rating;
 import com.recsys.models.User;
 
 import java.util.List;
@@ -13,26 +14,14 @@ public class DataManager {
 
     private final Map<Integer, Movie> movies;
     private final Map<Integer, User> users;
+    private final List<Rating> ratings;
     private final Map<Integer, List<Movie>> similarMovies;
 
     private DataManager() {
-        Movie inception = new Movie(1, "Inception", 2010);
-        Movie interstellar = new Movie(2, "Interstellar", 2014);
-        Movie darkKnight = new Movie(3, "The Dark Knight", 2008);
-
-        movies = Map.of(
-                inception.getId(), inception,
-                interstellar.getId(), interstellar,
-                darkKnight.getId(), darkKnight
-        );
-        users = Map.of(
-                123, new User(123, "Alice"),
-                456, new User(456, "Bob")
-        );
-        similarMovies = Map.of(
-                inception.getId(), List.of(interstellar, darkKnight),
-                interstellar.getId(), List.of(inception, darkKnight)
-        );
+        movies = DataLoader.loadMovies();
+        users = DataLoader.loadUsers();
+        ratings = DataLoader.loadRatings();
+        similarMovies = DataLoader.buildSimilarMovies(movies, ratings);
     }
 
     public static DataManager getInstance() {
@@ -53,5 +42,18 @@ public class DataManager {
 
     public Set<Integer> getAllMovieIds() {
         return movies.keySet();
+    }
+
+    public List<Rating> getRatingsByUser(int userId) {
+        return ratings.stream().filter(r -> r.userId() == userId).toList();
+    }
+
+    public List<Rating> getAllRatings() {
+        return ratings;
+    }
+
+    // Convenience: load all embeddings from Redis for movies known to this DataManager.
+    public Map<Integer, float[]> loadEmbeddings(RedisEmbeddingStore store) {
+        return store.loadValidEmbeddings(movies.keySet());
     }
 }

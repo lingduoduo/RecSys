@@ -1,0 +1,11 @@
+id,title,year,genres
+1,Inception,2010,Sci-Fi|Thriller
+2,Interstellar,2014,Sci-Fi|Drama
+3,The Dark Knight,2008,Action|Crime
+4,The Matrix,1999,Sci-Fi|Action
+5,Avatar,2009,Sci-Fi|Adventure
+6,Titanic,1997,Romance|Drama
+7,The Godfather,1972,Crime|Drama
+8,Toy Story,1995,Animation|Comedy
+9,Finding Nemo,2003,Animation|Adventure
+10,Shrek,2001,Animation|Comedy

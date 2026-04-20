@@ -23,20 +23,12 @@ public class SetEmbeddingService extends BaseApiServlet {
         try {
             int movieId = requiredIntParam(request, "movieId");
 
-            String body = "";
-            String contentType = request.getContentType();
-            if (contentType != null && contentType.startsWith("application/x-www-form-urlencoded")) {
-                String vecParam = request.getParameter("vec");
-                if (vecParam != null) body = vecParam.trim();
-            }
+            // getParameter covers both URL query params and form-urlencoded body params
+            String vecParam = request.getParameter("vec");
+            String body = (vecParam != null) ? vecParam.trim() : "";
 
             if (body.isBlank()) {
                 body = request.getReader().lines().collect(Collectors.joining()).trim();
-            }
-
-            if (body.isBlank()) {
-                String vecParam = request.getParameter("vec");
-                if (vecParam != null) body = vecParam.trim();
             }
 
             if (body.isBlank()) {
@@ -45,18 +37,20 @@ public class SetEmbeddingService extends BaseApiServlet {
             }
 
             float[] vec = VectorMath.parseVector(body);
-            store.setMovieEmbedding(movieId, vec);
+            long ttl = optionalLongParam(request, "ttl", 86400);  // default: 24h, 0 = no expiry
+            store.setMovieEmbedding(movieId, vec, ttl);
 
             writeJson(response, HttpServletResponse.SC_OK, Map.of(
                     "ok", true,
                     "movieId", movieId,
-                    "dim", vec.length
+                    "dim", vec.length,
+                    "ttl", ttl
             ));
 
         } catch (BadRequestException e) {
             writeError(response, HttpServletResponse.SC_BAD_REQUEST, e.getMessage());
         } catch (NumberFormatException e) {
-            writeError(response, HttpServletResponse.SC_BAD_REQUEST, "invalid numeric parameter format");
+            writeError(response, HttpServletResponse.SC_BAD_REQUEST, "invalid vector format: could not parse float");
         } catch (Exception e) {
             e.printStackTrace();
             writeError(response, HttpServletResponse.SC_INTERNAL_SERVER_ERROR, "internal server error");

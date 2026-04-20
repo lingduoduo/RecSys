@@ -6,7 +6,7 @@ A movie recommendation API built on Jetty + Redis, with a Kafka/Flink streaming 
 
 | Package | Contents |
 |---|---|
-| `models/` | DTOs: `Movie`, `User`, `RecommendationResponse` |
+| `models/` | Immutable record DTOs: `Movie`, `User`, `RecommendationResponse` |
 | `features/` | `DataManager`, `RedisEmbeddingStore`, `RedisTopKStore`, `VectorMath` |
 | `serving/` | Jetty server and HTTP servlet endpoints |
 
@@ -132,19 +132,50 @@ curl "http://localhost:6010/getsimilarmovie?movieId=1&k=5"
 # {"movieId":1,"similar":[{"movieId":2,"score":0.994},{"movieId":3,"score":0.0}]}
 ```
 
-### POST `/setembedding?movieId={int}`
+### POST `/setembedding?movieId={int}[&ttl={seconds}]`
 
-Store a float vector embedding (space-separated values in body):
+Store a float vector embedding with an optional TTL (default 86400 = 24 h; `ttl=0` disables expiry).
+
+Three accepted vector forms:
 ```bash
+# Raw body (text/plain)
 curl -X POST "http://localhost:6010/setembedding?movieId=4" \
   -H "Content-Type: text/plain" \
   --data-binary "0.2 0.2 0.6"
-# {"ok":true,"movieId":4,"dim":3}
 
+# Form-encoded body
 curl -X POST "http://localhost:6010/setembedding?movieId=5" \
   --data-urlencode "vec=0.1 0.3 0.6"
-# {"ok":true,"movieId":5,"dim":3}
+
+# Query parameter
+curl -X POST "http://localhost:6010/setembedding?movieId=6&vec=0.5+0.5+0.0"
+
+# Custom TTL (1 hour)
+curl -X POST "http://localhost:6010/setembedding?movieId=4&ttl=3600" \
+  -H "Content-Type: text/plain" --data-binary "0.2 0.2 0.6"
+
+# {"ok":true,"movieId":4,"dim":3,"ttl":86400}
 ```
+
+---
+
+## Embedding Bulk Load
+
+`RedisEmbeddingStore` provides two methods for loading embeddings in bulk after model training:
+
+```java
+// Write N embeddings in one Redis pipeline round-trip (with 24 h TTL)
+embStore.setMovieEmbeddings(Map<Integer, float[]> vectors, long ttlSeconds);
+
+// Scan all i2vEmb:* keys in Redis, validate against known movie IDs,
+// batch-fetch with MGET, and return the valid map
+Map<Integer, float[]> embeddings = embStore.loadValidEmbeddings(Set<Integer> knownMovieIds);
+
+// Convenience wrapper on DataManager
+Map<Integer, float[]> embeddings = dataManager.loadEmbeddings(embStore);
+```
+
+`loadValidEmbeddings` uses `SCAN` + `MGET` (not `KEYS` + N×`GET`) for production safety.
 
 ---
 
