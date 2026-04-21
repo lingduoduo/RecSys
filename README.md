@@ -25,7 +25,6 @@ docker compose -f docker-compose.streaming.yml up -d
 Run the API:
 
 ```bash
-cd recsys-api
 mvn clean compile
 mvn exec:java -Dexec.mainClass="com.recsys.serving.RecSysServer"
 ```
@@ -65,10 +64,10 @@ On startup, the server seeds Redis with bundled movie and user embeddings if the
 
 | Path | Purpose |
 |---|---|
-| `recsys-api/src/main/java/com/recsys/models/` | Immutable API/domain records |
-| `recsys-api/src/main/java/com/recsys/features/` | Data loading, vector math, Redis stores |
-| `recsys-api/src/main/java/com/recsys/serving/` | Jetty server and servlet endpoints |
-| `recsys-api/src/main/java/com/recsys/data/` | Bundled sample data and embeddings |
+| `src/main/java/com/recsys/models/` | Immutable API/domain records |
+| `src/main/java/com/recsys/features/` | Data loading, vector math, Redis stores |
+| `src/main/java/com/recsys/serving/` | Jetty server and servlet endpoints |
+| `src/main/java/com/recsys/data/` | Bundled sample data and embeddings |
 | `docker-compose.streaming.yml` | Redis, Kafka, Zookeeper, Flink |
 
 Key data files:
