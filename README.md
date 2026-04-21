@@ -14,13 +14,18 @@ Prerequisites:
 
 - Java 18, matching `pom.xml`
 - Maven
-- Docker, for Redis/Kafka/Flink services
+- Docker with Docker Compose, for Redis/Kafka/Flink services
 
 Start infrastructure from the repo root:
 
 ```bash
+colima start # if you use Colima
 docker compose -f docker-compose.streaming.yml up -d
 ```
+
+If your Docker install uses legacy Compose, replace `docker compose` with
+`docker-compose`. If `docker compose version` and `docker-compose version` both
+fail, install Docker Compose first.
 
 Run the API:
 
