@@ -27,15 +27,15 @@ public class SimilarMovieService extends BaseApiServlet {
             int movieId = requiredIntParam(request, "movieId");
             int k = optionalIntParam(request, "k", 10, 1, 200);
 
-            float[] queryVec = store.getMovieEmbedding(movieId);
+            float[] queryVec = store.getEmbedding(movieId);
             if (queryVec == null) {
                 writeError(response, HttpServletResponse.SC_NOT_FOUND, "embedding not found for movieId", "movieId", movieId);
                 return;
             }
 
-            List<Integer> candidates = new ArrayList<>(store.scanMovieIds(5000));
+            List<Integer> candidates = new ArrayList<>(store.scanIds(5000));
             candidates.removeIf(candId -> candId == movieId);
-            Map<Integer, float[]> embeddings = store.getMovieEmbeddings(candidates);
+            Map<Integer, float[]> embeddings = store.getEmbeddings(candidates);
             PriorityQueue<ScoredMovie> best = new PriorityQueue<>(
                     Comparator.comparingDouble(ScoredMovie::score)
             );

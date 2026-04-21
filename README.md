@@ -1,6 +1,16 @@
 # RecSys
 
-Movie recommendation API built with Jetty, Redis, and a small local dataset. It supports:
+Recommendation-system demos in one Maven repo. There are two runnable paths:
+
+- **Movie API:** Jetty, Redis, and a small local movie dataset.
+- **Two-tower retrieval demo:** PyTorch training, ONNX export, and Java Spring Boot serving.
+
+The repo also contains two offline item embedding strategies under `src/main/java/com/recsys/training/`:
+
+- **Rule-based** (`training/rulebased/`) — Spark Word2Vec trained on user interaction sequences. Item-only embeddings, no user tower.
+- **Model-based** (`training/modelbased/twotower/`) — PyTorch two-tower model. Exports a user tower ONNX for online inference and precomputed item embeddings for retrieval.
+
+The movie API supports:
 
 - movie and user lookup
 - co-rating based recommendations
@@ -8,7 +18,7 @@ Movie recommendation API built with Jetty, Redis, and a small local dataset. It 
 - Redis item-embedding similarity search
 - runtime embedding updates
 
-## Quick Start
+## Quick Start: Movie API
 
 Prerequisites:
 
@@ -48,6 +58,143 @@ Stop infrastructure:
 docker compose -f docker-compose.streaming.yml down
 ```
 
+## Quick Start: Two-Tower Demo
+
+This path shows a simple end-to-end retrieval pattern:
+
+1. Train a two-tower model in PyTorch from `src/main/java/com/recsys/data/ratings.txt`.
+2. Export the user tower to ONNX.
+3. Precompute item embeddings offline.
+4. Load the ONNX model and item embeddings in a Spring Boot service.
+5. Build user features in Java and retrieve items with brute-force cosine similarity.
+
+It is intentionally small so the feature contract between training and serving
+is easy to inspect.
+
+### Layout
+
+| Path | Purpose |
+|---|---|
+| `python-training/model.py` | `UserTower`, `ItemTower`, `TwoTower` PyTorch model definitions |
+| `python-training/data.py` | Data loading, vocabulary building, and batch construction |
+| `python-training/train_and_export.py` | Training loop and artifact export orchestration |
+| `python-training/artifacts/` | Local copy of generated training artifacts |
+| `src/main/resources/model/` | Classpath copy of generated artifacts used by Spring Boot |
+| `src/main/java/com/recsys/training/modelbased/twotower/` | Spring Boot recommendation service |
+| `src/main/java/com/recsys/training/modelbased/twotower/service/FeatureEncoder.java` | Java feature encoder matching the training vocabularies |
+| `src/main/java/com/recsys/training/modelbased/twotower/service/UserTowerInferenceService.java` | ONNX Runtime user-tower inference |
+| `src/main/java/com/recsys/training/modelbased/twotower/service/RetrievalService.java` | Brute-force cosine retrieval over item embeddings |
+
+### Feature Contract
+
+User tower inputs:
+
+- `user_id`
+
+Item tower inputs:
+
+- `item_id`
+
+`ratings.txt` provides `userId`, `movieId`, `rating`, and `timestamp`. The
+Python trainer treats ratings `>= 3.5` as positive user-item interactions.
+
+### Python Training
+
+Prerequisites:
+
+- Python 3.10+
+- pip
+
+Create a local virtualenv and install dependencies:
+
+```bash
+python3 -m venv .venv
+.venv/bin/pip install -r python-training/requirements.txt
+```
+
+Train and export artifacts:
+
+```bash
+.venv/bin/python python-training/train_and_export.py
+```
+
+This writes artifacts to both `python-training/artifacts/` and
+`src/main/resources/model/`:
+
+```text
+feature_config.json
+item_embeddings.json
+metadata.json
+user_tower.onnx
+```
+
+The exporter writes directly into `src/main/resources/model/`, so the Java
+service can use the artifacts immediately after training.
+
+The training pipeline is split across three modules:
+
+- **`model.py`** — `UserTower`, `ItemTower`, and `TwoTower` model definitions.
+- **`data.py`** — ratings loading, vocabulary building (`build_vocab`, `build_training_state`), and batch construction. `MIN_POSITIVE_RATING` is defined here as the single source of truth.
+- **`train_and_export.py`** — training loop and export orchestration. Item embeddings are computed in a single batched forward pass over all items rather than individually.
+
+### Spring Boot Serving
+
+Start the two-tower service from the repo root:
+
+```bash
+mvn spring-boot:run
+```
+
+Health:
+
+```bash
+curl http://localhost:8080/health
+```
+
+Expected response:
+
+```text
+ok
+```
+
+Recommend:
+
+```bash
+curl -X POST http://localhost:8080/recommend \
+  -H 'Content-Type: application/json' \
+  -d '{
+    "userId": "123",
+    "k": 5,
+    "excludeItemIds": ["2"]
+  }'
+```
+
+Example response:
+
+```json
+{
+  "userId": "123",
+  "modelVersion": "demo-two-tower-ratings-v1",
+  "recommendations": [
+    {"itemId": "1", "score": 0.9997},
+    {"itemId": "3", "score": 0.7100}
+  ]
+}
+```
+
+The Spring Boot service entry point is
+`com.recsys.training.modelbased.twotower.TwoTowerApplication`. The original Jetty API remains
+available through `com.recsys.serving.RecSysServer`.
+
+Notes:
+
+- Training data comes from bundled movie ratings in `src/main/java/com/recsys/data/ratings.txt`.
+- Retrieval is brute-force cosine similarity over exported item embeddings.
+- For production-scale retrieval, replace brute force with ANN such as FAISS,
+  HNSW, OpenSearch kNN, Vespa, or Milvus.
+- In production, item embeddings are usually generated offline and reloaded
+  periodically by the serving layer.
+
 ## Configuration
 
 | Env var | Default | Purpose |
@@ -72,7 +219,9 @@ On startup, the server seeds Redis with bundled movie and user embeddings if the
 | `src/main/java/com/recsys/models/` | Immutable API/domain records |
 | `src/main/java/com/recsys/features/` | Data loading, vector math, Redis stores |
 | `src/main/java/com/recsys/serving/` | Jetty server and servlet endpoints |
+| `src/main/java/com/recsys/training/` | Offline embedding strategies: `rulebased/` (Spark Word2Vec) and `modelbased/twotower/` (ONNX serving) |
 | `src/main/java/com/recsys/data/` | Bundled sample data and embeddings |
+| `python-training/` | `model.py` (towers), `data.py` (loading/vocab), `train_and_export.py` (orchestration) |
 | `docker-compose.streaming.yml` | Redis, Kafka, Zookeeper, Flink |
 
 Key data files:
@@ -229,13 +378,15 @@ Kafka / HDFS -> Spark -> embedding training / batch generation -> model registry
 The bundled `ratings.txt` rows model the batch/HDFS-style positive feedback
 used by Spark Word2Vec. The `movie_embeddings.txt` and `user_embeddings.txt`
 files model the generated artifacts that get loaded into Redis for retrieval.
-Spark dependencies are isolated behind the `offline-embedding` Maven profile.
+Spark dependencies are isolated behind the `offline-embedding` Maven profile and
+declared `provided` scope — the cluster supplies Spark at runtime so it is not
+bundled into the JAR.
 
 Train Word2Vec item embeddings from bundled ratings:
 
 ```bash
 mvn -Poffline-embedding exec:java \
-  -Dexec.mainClass="com.recsys.offline.ItemEmbeddingJob" \
+  -Dexec.mainClass="com.recsys.training.rulebased.ItemEmbeddingJob" \
   -Dexec.args="--output=output/item_embeddings"
 ```
 
@@ -249,6 +400,7 @@ Useful options:
 --min-count=1
 --max-iter=10
 --step-size=0.025
+--min-rating=3.5
 --synonym-movie-id=1
 ```
 
@@ -261,8 +413,10 @@ for retrieval.
 
 - `DataLoader` loads bundled text resources from `com/recsys/data`.
 - `DataManager` keeps immutable maps and precomputed indexes for request-time reads.
+- `RedisEmbeddingStore` is a generic key-prefix store (`getEmbedding`, `setEmbedding`, `setEmbeddings`, `scanIds`). The same class backs both `i2vEmb:` (item) and `u2vEmb:` (user) Redis namespaces.
 - `RedisEmbeddingStore` uses Redis pipelines for bulk writes and `SCAN` + `MGET` for safe bulk reads.
 - `BaseApiServlet` centralizes JSON headers, serialization, and request parameter parsing.
+- `RetrievalService` delegates cosine similarity to `VectorMath.cosine(a, normSqA, b)`, precomputing the query vector's norm once before scanning all candidate item embeddings.
 
 ## LLM Integration Ideas
 

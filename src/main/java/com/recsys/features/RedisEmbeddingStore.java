@@ -23,7 +23,7 @@ public class RedisEmbeddingStore {
         this.keyPrefix = keyPrefix;
     }
 
-    public float[] getMovieEmbedding(int movieId) {
+    public float[] getEmbedding(int movieId) {
         try (Jedis jedis = pool.getResource()) {
             String v = jedis.get(keyPrefix + ":" + movieId);
             if (v == null || v.isBlank()) return null;
@@ -31,16 +31,16 @@ public class RedisEmbeddingStore {
         }
     }
 
-    public void setMovieEmbedding(int movieId, float[] vector) {
+    public void setEmbedding(int movieId, float[] vector) {
         try (Jedis jedis = pool.getResource()) {
             jedis.set(keyPrefix + ":" + movieId, toVectorString(vector));
         }
     }
 
     // ttlSeconds <= 0 means no expiry
-    public void setMovieEmbedding(int movieId, float[] vector, long ttlSeconds) {
+    public void setEmbedding(int movieId, float[] vector, long ttlSeconds) {
         if (ttlSeconds <= 0) {
-            setMovieEmbedding(movieId, vector);
+            setEmbedding(movieId, vector);
             return;
         }
         SetParams params = SetParams.setParams().ex(ttlSeconds);
@@ -51,7 +51,7 @@ public class RedisEmbeddingStore {
 
     // Bulk write — mirrors the Spark/Scala pattern of iterating model vectors after training.
     // Uses a pipeline to send all SETs in one round-trip instead of N.
-    public void setMovieEmbeddings(Map<Integer, float[]> vectors, long ttlSeconds) {
+    public void setEmbeddings(Map<Integer, float[]> vectors, long ttlSeconds) {
         if (vectors == null || vectors.isEmpty()) return;
         SetParams params = ttlSeconds > 0 ? SetParams.setParams().ex(ttlSeconds) : null;
         try (Jedis jedis = pool.getResource()) {
@@ -69,7 +69,7 @@ public class RedisEmbeddingStore {
         }
     }
 
-    public Map<Integer, float[]> getMovieEmbeddings(Collection<Integer> movieIds) {
+    public Map<Integer, float[]> getEmbeddings(Collection<Integer> movieIds) {
         Map<Integer, float[]> embeddings = new HashMap<>();
         if (movieIds == null || movieIds.isEmpty()) return embeddings;
 
@@ -102,16 +102,16 @@ public class RedisEmbeddingStore {
      * Returns a map of movieId -> embedding and logs the valid count.
      */
     public Map<Integer, float[]> loadValidEmbeddings(Set<Integer> knownMovieIds) {
-        Set<Integer> redisIds = scanMovieIds(Integer.MAX_VALUE);
+        Set<Integer> redisIds = scanIds(Integer.MAX_VALUE);
         int scannedCount = redisIds.size();
         redisIds.retainAll(knownMovieIds);  // skip IDs not in the movie store
-        Map<Integer, float[]> embeddings = getMovieEmbeddings(redisIds);
+        Map<Integer, float[]> embeddings = getEmbeddings(redisIds);
         System.out.printf("[RedisEmbeddingStore] loaded %d valid embeddings (scanned %d keys in Redis, %d known movies)%n",
                 embeddings.size(), scannedCount, knownMovieIds.size());
         return embeddings;
     }
 
-    public Set<Integer> scanMovieIds(int maxKeys) {
+    public Set<Integer> scanIds(int maxKeys) {
         Set<Integer> ids = new HashSet<>();
 
         int countHint = Math.min(maxKeys, 500);

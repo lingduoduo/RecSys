@@ -74,12 +74,12 @@ public class RecSysServer {
     // Seeds Redis with sample embeddings only if not already present.
     private static void seedEmbeddings(RedisEmbeddingStore embStore,
                                        RedisEmbeddingStore userEmbStore) {
-        if (embStore.scanMovieIds(1).isEmpty()) {
-            embStore.setMovieEmbeddings(DataLoader.loadMovieEmbeddings(), 0);
+        if (embStore.scanIds(1).isEmpty()) {
+            embStore.setEmbeddings(DataLoader.loadMovieEmbeddings(), 0);
             System.out.println("[RecSysServer] seeded movie embeddings from movie_embeddings.txt");
         }
-        if (userEmbStore.scanMovieIds(1).isEmpty()) {
-            userEmbStore.setMovieEmbeddings(DataLoader.loadUserEmbeddings(), 0);
+        if (userEmbStore.scanIds(1).isEmpty()) {
+            userEmbStore.setEmbeddings(DataLoader.loadUserEmbeddings(), 0);
             System.out.println("[RecSysServer] seeded user embeddings from user_embeddings.txt");
         }
     }

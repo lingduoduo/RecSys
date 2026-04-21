@@ -1,0 +1,12 @@
+{
+  "training_data": "src/main/java/com/recsys/data/ratings.txt",
+  "num_positive_samples": 17,
+  "num_users": 5,
+  "num_items": 12,
+  "user_tower_inputs": [
+    "user_id"
+  ],
+  "item_tower_inputs": [
+    "item_id"
+  ]
+}

@@ -128,14 +128,14 @@ public class DataLoader {
     }
 
     public static Map<Integer, float[]> loadMovieEmbeddings() {
-        return loadEmbeddings(MOVIE_EMBEDDINGS_RESOURCE, "movieId");
+        return loadEmbeddings(MOVIE_EMBEDDINGS_RESOURCE);
     }
 
     public static Map<Integer, float[]> loadUserEmbeddings() {
-        return loadEmbeddings(USER_EMBEDDINGS_RESOURCE, "userId");
+        return loadEmbeddings(USER_EMBEDDINGS_RESOURCE);
     }
 
-    private static Map<Integer, float[]> loadEmbeddings(String path, String idColumn) {
+    private static Map<Integer, float[]> loadEmbeddings(String path) {
         Map<Integer, float[]> out = new LinkedHashMap<>();
         try (BufferedReader reader = openResource(path)) {
             String line;

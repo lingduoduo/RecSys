@@ -1,4 +1,4 @@
-package com.recsys.offline;
+package com.recsys.training.rulebased;
 
 import org.apache.spark.ml.feature.Word2Vec;
 import org.apache.spark.ml.feature.Word2VecModel;
@@ -38,7 +38,7 @@ public class ItemEmbeddingJob {
         try {
             spark.sparkContext().setLogLevel("WARN");
 
-            Dataset<Row> sequenceDf = buildItemSequences(spark, config.ratingsPath());
+            Dataset<Row> sequenceDf = buildItemSequences(spark, config.ratingsPath(), config.minRating());
             System.out.println("=== User item sequences ===");
             sequenceDf.show(10, false);
 
@@ -69,7 +69,7 @@ public class ItemEmbeddingJob {
         }
     }
 
-    static Dataset<Row> buildItemSequences(SparkSession spark, String ratingsPath) {
+    static Dataset<Row> buildItemSequences(SparkSession spark, String ratingsPath, double minRating) {
         Dataset<Row> ratings = spark.read()
                 .format("csv")
                 .option("header", "true")
@@ -83,7 +83,7 @@ public class ItemEmbeddingJob {
 
         Column event = struct(col("timestamp"), col("movieId"));
         return ratings
-                .where(col("rating").geq(3.5))
+                .where(col("rating").geq(minRating))
                 .groupBy("userId")
                 .agg(collect_list(event).alias("events"))
                 .select(
@@ -121,6 +121,7 @@ public class ItemEmbeddingJob {
             int minCount,
             int maxIter,
             double stepSize,
+            double minRating,
             String synonymMovieId,
             int synonymCount
     ) {
@@ -133,6 +134,7 @@ public class ItemEmbeddingJob {
             int minCount = 1;
             int maxIter = 10;
             double stepSize = 0.025;
+            double minRating = 3.5;
             String synonymMovieId = "1";
             int synonymCount = 10;
 
@@ -152,6 +154,7 @@ public class ItemEmbeddingJob {
                     case "min-count" -> minCount = Integer.parseInt(value);
                     case "max-iter" -> maxIter = Integer.parseInt(value);
                     case "step-size" -> stepSize = Double.parseDouble(value);
+                    case "min-rating" -> minRating = Double.parseDouble(value);
                     case "synonym-movie-id" -> synonymMovieId = value.isBlank() ? null : value;
                     case "synonym-count" -> synonymCount = Integer.parseInt(value);
                     default -> throw new IllegalArgumentException("Unknown argument: " + arg);
@@ -167,6 +170,7 @@ public class ItemEmbeddingJob {
                     minCount,
                     maxIter,
                     stepSize,
+                    minRating,
                     synonymMovieId,
                     synonymCount
             );

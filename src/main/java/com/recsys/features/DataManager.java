@@ -62,8 +62,5 @@ public class DataManager {
         return ratings;
     }
 
-    // Convenience: load all embeddings from Redis for movies known to this DataManager.
-    public Map<Integer, float[]> loadEmbeddings(RedisEmbeddingStore store) {
-        return store.loadValidEmbeddings(movies.keySet());
-    }
+
 }

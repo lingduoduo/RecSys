@@ -38,7 +38,7 @@ public class SetEmbeddingService extends BaseApiServlet {
 
             float[] vec = VectorMath.parseVector(body);
             long ttl = optionalLongParam(request, "ttl", 86400);  // default: 24h, 0 = no expiry
-            store.setMovieEmbedding(movieId, vec, ttl);
+            store.setEmbedding(movieId, vec, ttl);
 
             writeJson(response, HttpServletResponse.SC_OK, Map.of(
                     "ok", true,

@@ -17,6 +17,12 @@ target/
 logs/
 *.pid
 
+# Python local environments
+.venv/
+
+# Generated training artifacts — reproduced by running train_and_export.py
+python-training/artifacts/
+
 # Local configuration / secrets
 .env
 .env.*
