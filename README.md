@@ -12,7 +12,7 @@ Movie recommendation API built with Jetty, Redis, and a small local dataset. It 
 
 Prerequisites:
 
-- Java 18, matching `pom.xml`
+- Java 17, matching `pom.xml`
 - Maven
 - Docker with Docker Compose, for Redis/Kafka/Flink services
 
@@ -80,6 +80,8 @@ Key data files:
 - `movies.txt`
 - `users.txt`
 - `ratings.txt`
+- `events.txt`
+- `online_features.txt`
 - `movie_embeddings.txt`
 - `user_embeddings.txt`
 
@@ -156,7 +158,8 @@ Seed trending data manually:
 
 ```bash
 docker exec -it redis-dev redis-cli DEL topk:last_hour
-docker exec -it redis-dev redis-cli ZADD topk:last_hour 50 2 20 1 10 3
+docker exec -it redis-dev redis-cli ZADD topk:last_hour \
+  2 11 1 1 1 2 1 3 1 4 1 5 1 7 1 8 1 9 1 12
 docker exec -it redis-dev redis-cli ZREVRANGE topk:last_hour 0 9 WITHSCORES
 ```
 
@@ -182,27 +185,77 @@ Create and populate the sample topic:
 ```bash
 docker exec -it recsys-kafka-1 \
   kafka-topics --bootstrap-server localhost:9092 \
-  --create --topic video_views --partitions 1 --replication-factor 1
+  --create --topic movie_events --partitions 1 --replication-factor 1
 
 docker exec -it recsys-kafka-1 \
-  kafka-console-producer --bootstrap-server kafka:9092 --topic video_views
+  kafka-console-producer --bootstrap-server kafka:9092 --topic movie_events
 ```
 
-Sample events:
+Sample events, matching `src/main/java/com/recsys/data/events.txt`:
 
 ```json
-{"videoId":"1","eventTimeMillis":1700000000000}
-{"videoId":"2","eventTimeMillis":1700000001000}
-{"videoId":"2","eventTimeMillis":1700000002000}
-{"videoId":"3","eventTimeMillis":1700000005000}
+{"eventId":"evt-001","userId":123,"movieId":1,"eventType":"view","watchMs":720000,"eventTimeMillis":1713503000000,"source":"web"}
+{"eventId":"evt-002","userId":123,"movieId":2,"eventType":"view","watchMs":680000,"eventTimeMillis":1713503060000,"source":"web"}
+{"eventId":"evt-003","userId":124,"movieId":5,"eventType":"view","watchMs":540000,"eventTimeMillis":1713503120000,"source":"mobile"}
+{"eventId":"evt-004","userId":124,"movieId":6,"eventType":"like","rating":5,"eventTimeMillis":1713503180000,"source":"mobile"}
 ```
 
 Delete the topic:
 
 ```bash
 docker exec -it recsys-kafka-1 \
-  kafka-topics --bootstrap-server localhost:9092 --delete --topic video_views
+  kafka-topics --bootstrap-server localhost:9092 --delete --topic movie_events
 ```
+
+## Offline Item Embeddings
+
+This repo's default path is online prediction:
+
+```text
+Kafka -> Flink -> online feature / event store -> retrieval / prediction service
+```
+
+The bundled `events.txt` rows model the Kafka payloads. The
+`online_features.txt` rows model the low-latency aggregates a Flink job would
+write into Redis or another online store, such as `user:<id>:last_3_movies`,
+`movie:<id>:views_1h`, and `topk:last_hour`.
+
+Item embedding training is a separate offline preparation path:
+
+```text
+Kafka / HDFS -> Spark -> embedding training / batch generation -> model registry / vector store / feature store -> service
+```
+
+The bundled `ratings.txt` rows model the batch/HDFS-style positive feedback
+used by Spark Word2Vec. The `movie_embeddings.txt` and `user_embeddings.txt`
+files model the generated artifacts that get loaded into Redis for retrieval.
+Spark dependencies are isolated behind the `offline-embedding` Maven profile.
+
+Train Word2Vec item embeddings from bundled ratings:
+
+```bash
+mvn -Poffline-embedding exec:java \
+  -Dexec.mainClass="com.recsys.offline.ItemEmbeddingJob" \
+  -Dexec.args="--output=output/item_embeddings"
+```
+
+Useful options:
+
+```text
+--ratings=/path/to/ratings.csv
+--output=output/item_embeddings
+--vector-size=16
+--window-size=5
+--min-count=1
+--max-iter=10
+--step-size=0.025
+--synonym-movie-id=1
+```
+
+The output CSV uses the same `movieId,vector` shape as
+`src/main/java/com/recsys/data/movie_embeddings.txt`, so generated vectors can
+be copied into the bundled seed data or loaded into Redis as `i2vEmb:<movieId>`
+for retrieval.
 
 ## Developer Notes
 

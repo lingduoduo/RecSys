@@ -9,8 +9,8 @@
   <version>1.0-SNAPSHOT</version>
 
   <properties>
-    <!-- You have Corretto 18; 17 is more common LTS, but 18 works -->
-    <maven.compiler.release>18</maven.compiler.release>
+    <!-- Spark 3.5 runs reliably on Java 17 LTS. -->
+    <maven.compiler.release>17</maven.compiler.release>
     <project.build.sourceEncoding>UTF-8</project.build.sourceEncoding>
   </properties>
 
@@ -27,6 +27,18 @@
         </includes>
       </resource>
     </resources>
+    <plugins>
+      <plugin>
+        <groupId>org.apache.maven.plugins</groupId>
+        <artifactId>maven-compiler-plugin</artifactId>
+        <version>3.13.0</version>
+        <configuration>
+          <excludes>
+            <exclude>com/recsys/offline/**</exclude>
+          </excludes>
+        </configuration>
+      </plugin>
+    </plugins>
   </build>
 
   <dependencies>
@@ -57,6 +69,39 @@
       <artifactId>jedis</artifactId>
       <version>5.1.3</version>
     </dependency>
+
   </dependencies>
+
+  <profiles>
+    <profile>
+      <id>offline-embedding</id>
+      <dependencies>
+        <!-- Offline item embedding training with Spark ML Word2Vec. -->
+        <dependency>
+          <groupId>org.apache.spark</groupId>
+          <artifactId>spark-sql_2.12</artifactId>
+          <version>3.5.1</version>
+        </dependency>
+
+        <dependency>
+          <groupId>org.apache.spark</groupId>
+          <artifactId>spark-mllib_2.12</artifactId>
+          <version>3.5.1</version>
+        </dependency>
+      </dependencies>
+      <build>
+        <plugins>
+          <plugin>
+            <groupId>org.apache.maven.plugins</groupId>
+            <artifactId>maven-compiler-plugin</artifactId>
+            <version>3.13.0</version>
+            <configuration>
+              <excludes combine.self="override" />
+            </configuration>
+          </plugin>
+        </plugins>
+      </build>
+    </profile>
+  </profiles>
 
 </project>
