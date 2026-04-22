@@ -19,6 +19,8 @@ logs/
 
 # Python local environments
 .venv/
+__pycache__/
+*.py[cod]
 
 # Generated training artifacts — reproduced by running train_and_export.py
 python-training/artifacts/

@@ -1,0 +1,10 @@
+package com.recsys.features;
+
+import java.util.List;
+import java.util.Set;
+
+public interface VectorIndex {
+    List<SearchResult> search(float[] query, int k, Set<Integer> excludeIds);
+
+    String name();
+}

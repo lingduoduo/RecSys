@@ -95,6 +95,8 @@ def export_artifacts(model, samples, users, items, user_vocab, item_vocab):
     with open(os.path.join(artifact_dir, "item_embeddings.json"), "w", encoding="utf-8") as f:
         json.dump(item_embeddings, f, indent=2)
 
+    maybe_export_faiss_index(item_embeddings, artifact_dir)
+
     with open(os.path.join(artifact_dir, "metadata.json"), "w", encoding="utf-8") as f:
         json.dump({
             "training_data": "src/main/java/com/recsys/data/ratings.txt",
@@ -105,12 +107,42 @@ def export_artifacts(model, samples, users, items, user_vocab, item_vocab):
             "item_tower_inputs": ["item_id"],
         }, f, indent=2)
 
-    # Copy artifacts into Java resources
-    for name in ["user_tower.onnx", "feature_config.json", "item_embeddings.json", "metadata.json"]:
-        shutil.copy2(os.path.join(artifact_dir, name), os.path.join(java_model_dir, name))
+    # Copy artifacts into Java resources. FAISS artifacts are optional.
+    artifact_names = [
+        "user_tower.onnx",
+        "feature_config.json",
+        "item_embeddings.json",
+        "metadata.json",
+        "item_embeddings.faiss",
+        "item_ids.json",
+    ]
+    for name in artifact_names:
+        src = os.path.join(artifact_dir, name)
+        if os.path.exists(src):
+            shutil.copy2(src, os.path.join(java_model_dir, name))
 
     print(f"Artifacts written to: {artifact_dir}")
     print(f"Artifacts copied to: {java_model_dir}")
+
+
+def maybe_export_faiss_index(item_embeddings, artifact_dir):
+    try:
+        import faiss
+    except ImportError:
+        print("FAISS not installed; skipping item_embeddings.faiss export.")
+        print("Install with: .venv/bin/pip install faiss-cpu")
+        return
+
+    item_ids = list(item_embeddings.keys())
+    matrix = np.asarray([item_embeddings[item_id] for item_id in item_ids], dtype="float32")
+    faiss.normalize_L2(matrix)
+
+    index = faiss.IndexFlatIP(matrix.shape[1])
+    index.add(matrix)
+
+    faiss.write_index(index, os.path.join(artifact_dir, "item_embeddings.faiss"))
+    with open(os.path.join(artifact_dir, "item_ids.json"), "w", encoding="utf-8") as f:
+        json.dump(item_ids, f, indent=2)
 
 
 if __name__ == "__main__":

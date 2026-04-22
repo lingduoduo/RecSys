@@ -3,12 +3,10 @@ package com.recsys.features;
 import com.recsys.models.Movie;
 import com.recsys.models.Rating;
 
-import java.util.Comparator;
 import java.util.HashSet;
 import java.util.LinkedHashMap;
 import java.util.List;
 import java.util.Map;
-import java.util.PriorityQueue;
 import java.util.Set;
 import java.util.stream.Collectors;
 
@@ -17,11 +15,15 @@ public class CandidateGenerator {
     private final DataManager dataManager;
     private final Map<Integer, float[]> movieEmbeddings;
     private final Map<Integer, float[]> userEmbeddings;
+    private final VectorIndex embeddingIndex;
 
     public CandidateGenerator(DataManager dataManager) {
         this.dataManager = dataManager;
         this.movieEmbeddings = DataLoader.loadMovieEmbeddings();
         this.userEmbeddings = DataLoader.loadUserEmbeddings();
+        this.embeddingIndex = createEmbeddingIndex(movieEmbeddings);
+        System.out.printf("[CandidateGenerator] embedding backend=%s, movies=%d, users=%d%n",
+                embeddingIndex.name(), movieEmbeddings.size(), userEmbeddings.size());
     }
 
     // Genre-based: for each genre on the seed movie, pull top-rated candidates,
@@ -61,8 +63,9 @@ public class CandidateGenerator {
         return List.copyOf(candidates.values());
     }
 
-    // Embedding-based: scores all movies with classpath embeddings against the user vector,
-    // returns top-k by cosine similarity. Precomputes user normSq; min-heap gives O(n log k).
+    // Embedding-based retrieval delegates vector search to the selected index.
+    // Backends are configured with RECSYS_VECTOR_BACKEND or -Drecsys.vector.backend:
+    // lsh (default) or exact. FAISS belongs behind this interface for Linux/JNI deployments.
     public List<Movie> byEmbedding(int userId, int k) {
         float[] userVec = userEmbeddings.get(userId);
         if (userVec == null) return List.of();
@@ -70,28 +73,28 @@ public class CandidateGenerator {
         Set<Integer> watched = dataManager.getRatingsByUser(userId).stream()
                 .map(Rating::movieId).collect(Collectors.toSet());
 
-        double userNormSq = VectorMath.normSq(userVec);
-        PriorityQueue<ScoredId> best = new PriorityQueue<>(Comparator.comparingDouble(ScoredId::score));
-
-        for (Map.Entry<Integer, float[]> entry : movieEmbeddings.entrySet()) {
-            int movieId = entry.getKey();
-            if (watched.contains(movieId)) continue;
-            double score = VectorMath.cosine(userVec, userNormSq, entry.getValue());
-            if (score == Double.NEGATIVE_INFINITY) continue;
-            if (best.size() < k) {
-                best.offer(new ScoredId(movieId, score));
-            } else if (score > best.peek().score()) {
-                best.poll();
-                best.offer(new ScoredId(movieId, score));
-            }
-        }
-
-        return best.stream()
-                .sorted(Comparator.comparingDouble(ScoredId::score).reversed())
-                .map(s -> dataManager.getMovieById(s.movieId()))
+        return embeddingIndex.search(userVec, k, watched).stream()
+                .map(s -> dataManager.getMovieById(s.id()))
                 .filter(m -> m != null)
                 .collect(Collectors.toUnmodifiableList());
     }
 
-    private record ScoredId(int movieId, double score) {}
+    private static VectorIndex createEmbeddingIndex(Map<Integer, float[]> embeddings) {
+        if (embeddings.isEmpty()) return new ExactVectorIndex(Map.of());
+
+        String backend = System.getProperty("recsys.vector.backend");
+        if (backend == null || backend.isBlank()) {
+            backend = System.getenv().getOrDefault("RECSYS_VECTOR_BACKEND", "lsh");
+        }
+
+        return switch (backend.trim().toLowerCase()) {
+            case "exact", "flat" -> new ExactVectorIndex(embeddings);
+            case "lsh", "ann" -> new LshVectorIndex(embeddings);
+            case "faiss" -> {
+                System.err.println("[CandidateGenerator] FAISS backend requested, but native Java FAISS is not enabled in the portable build. Falling back to LSH.");
+                yield new LshVectorIndex(embeddings);
+            }
+            default -> throw new IllegalArgumentException("Unknown vector backend: " + backend);
+        };
+    }
 }

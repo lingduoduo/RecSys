@@ -1,8 +1,11 @@
 package com.recsys.training.rulebased;
 
+import org.apache.spark.ml.feature.BucketedRandomProjectionLSH;
+import org.apache.spark.ml.feature.BucketedRandomProjectionLSHModel;
 import org.apache.spark.ml.feature.Word2Vec;
 import org.apache.spark.ml.feature.Word2VecModel;
 import org.apache.spark.ml.linalg.Vector;
+import org.apache.spark.ml.linalg.Vectors;
 import org.apache.spark.sql.Column;
 import org.apache.spark.sql.Dataset;
 import org.apache.spark.sql.Row;
@@ -66,6 +69,10 @@ public class ItemEmbeddingJob {
                 model.findSynonyms(config.synonymMovieId(), config.synonymCount()).show(false);
             }
 
+            if (config.lshAnalysis()) {
+                runLshAnalysis(spark, itemEmbeddings);
+            }
+
             writeEmbeddings(itemEmbeddings, config.outputPath());
             System.out.printf("Wrote item embeddings to %s%n", config.outputPath());
 
@@ -99,6 +106,32 @@ public class ItemEmbeddingJob {
                         expr("transform(sort_array(events), x -> x.movieId)").alias("movieIds")
                 )
                 .where(size(col("movieIds")).gt(0));
+    }
+
+    // Demonstrates Spark MLlib BucketedRandomProjectionLSH on the trained vectors:
+    // fits a bucket model, shows the bucket assignments, and finds approximate
+    // nearest neighbors for a zero vector probe — same pattern as the reference Scala flow.
+    private static void runLshAnalysis(SparkSession spark, Dataset<Row> itemEmbeddings) {
+        // Word2Vec outputs a "vector" column of type Vector; rename to "emb" to match the LSH contract.
+        Dataset<Row> embDf = itemEmbeddings.withColumnRenamed("vector", "emb");
+
+        BucketedRandomProjectionLSH lsh = new BucketedRandomProjectionLSH()
+                .setBucketLength(0.5)
+                .setNumHashTables(3)
+                .setInputCol("emb")
+                .setOutputCol("bucketId");
+
+        BucketedRandomProjectionLSHModel model = lsh.fit(embDf);
+        Dataset<Row> bucketed = model.transform(embDf);
+
+        System.out.println("=== LSH bucket assignments (word, emb, bucketId) ===");
+        bucketed.show(10, false);
+
+        // Find approximate nearest neighbors to the zero vector as a probe query.
+        int dim = (int) ((Vector) itemEmbeddings.first().getAs("vector")).size();
+        Vector probe = Vectors.zeros(dim);
+        System.out.println("=== Approximate nearest neighbors (probe = zero vector, k=5) ===");
+        model.approxNearestNeighbors(embDf, probe, 5).show(false);
     }
 
     private static void writeEmbeddings(Dataset<Row> itemEmbeddings, String outputPath) {
@@ -165,7 +198,8 @@ public class ItemEmbeddingJob {
             String redisKeyPrefix,
             long redisTtl,
             String synonymMovieId,
-            int synonymCount
+            int synonymCount,
+            boolean lshAnalysis
     ) {
         static JobConfig fromArgs(String[] args) {
             String ratingsPath = defaultRatingsPath();
@@ -184,6 +218,7 @@ public class ItemEmbeddingJob {
             long redisTtl = 60 * 60 * 24;
             String synonymMovieId = "1";
             int synonymCount = 10;
+            boolean lshAnalysis = false;
 
             for (String arg : args) {
                 String[] kv = arg.split("=", 2);
@@ -209,6 +244,7 @@ public class ItemEmbeddingJob {
                     case "redis-ttl"        -> redisTtl = Long.parseLong(value);
                     case "synonym-movie-id" -> synonymMovieId = value.isBlank() ? null : value;
                     case "synonym-count"    -> synonymCount = Integer.parseInt(value);
+                    case "lsh-analysis"     -> lshAnalysis = Boolean.parseBoolean(value);
                     default -> throw new IllegalArgumentException("Unknown argument: " + arg);
                 }
             }
@@ -217,7 +253,7 @@ public class ItemEmbeddingJob {
                     ratingsPath, outputPath, master,
                     vectorSize, windowSize, minCount, maxIter, stepSize, minRating,
                     saveToRedis, redisHost, redisPort, redisKeyPrefix, redisTtl,
-                    synonymMovieId, synonymCount
+                    synonymMovieId, synonymCount, lshAnalysis
             );
         }
 

@@ -14,7 +14,7 @@ The movie API supports:
 
 - movie and user lookup
 - multi-strategy candidate generation: genre-based from user/seed history, global top-rated, latest releases
-- embedding-based retrieval: cosine similarity against classpath item/user embeddings
+- embedding-based retrieval over classpath item/user embeddings with selectable vector backends
 - Redis sorted-set Top-K trending recommendations
 - Redis item-embedding similarity search
 - runtime embedding updates
@@ -51,7 +51,18 @@ Smoke test:
 curl "http://localhost:6010/health"
 curl "http://localhost:6010/getmovie?id=1"
 curl "http://localhost:6010/getsimilarmovie?movieId=1&k=5"
+curl "http://localhost:6010/getrecommendation?userId=123&mode=embedding&k=5"
 ```
+
+Use a specific classpath embedding backend:
+
+```bash
+RECSYS_VECTOR_BACKEND=lsh mvn exec:java -Dexec.mainClass="com.recsys.serving.RecSysServer"
+RECSYS_VECTOR_BACKEND=exact mvn exec:java -Dexec.mainClass="com.recsys.serving.RecSysServer"
+```
+
+`lsh` is the default approximate backend. `exact` is useful for deterministic
+evaluation and recall checks.
 
 Stop infrastructure:
 
@@ -139,6 +150,8 @@ This writes artifacts to both `python-training/artifacts/` and
 ```text
 feature_config.json
 item_embeddings.json
+item_embeddings.faiss  # optional, when faiss-cpu is installed
+item_ids.json          # optional, FAISS row-to-item-id mapping
 metadata.json
 user_tower.onnx
 ```
@@ -146,11 +159,17 @@ user_tower.onnx
 The exporter writes directly into `src/main/resources/model/`, so the Java
 service can use the artifacts immediately after training.
 
+Verify the optional FAISS artifact:
+
+```bash
+.venv/bin/python -c "import faiss; idx=faiss.read_index('src/main/resources/model/item_embeddings.faiss'); print(idx.ntotal, idx.d)"
+```
+
 The training pipeline is split across three modules:
 
 - **`model.py`** — `UserTower`, `ItemTower`, and `TwoTower` model definitions.
 - **`data.py`** — ratings loading, vocabulary building (`build_vocab`, `build_training_state`), and batch construction. `MIN_POSITIVE_RATING` is defined here as the single source of truth.
-- **`train_and_export.py`** — training loop and export orchestration. Item embeddings are computed in a single batched forward pass over all items rather than individually.
+- **`train_and_export.py`** — training loop and export orchestration. Item embeddings are computed in a single batched forward pass over all items rather than individually. If `faiss-cpu` is installed, it also exports a FAISS `IndexFlatIP` artifact over normalized item embeddings.
 
 ### Spring Boot Serving
 
@@ -204,9 +223,8 @@ available through `com.recsys.serving.RecSysServer`.
 Notes:
 
 - Training data comes from bundled movie ratings in `src/main/java/com/recsys/data/ratings.txt`.
-- Retrieval is brute-force cosine similarity over exported item embeddings.
-- For production-scale retrieval, replace brute force with ANN such as FAISS,
-  HNSW, OpenSearch kNN, Vespa, or Milvus.
+- Retrieval is brute-force cosine similarity over exported item embeddings in the portable Java path. Python also exports a FAISS index when `faiss-cpu` is available.
+- For production-scale Java serving, use a Linux native FAISS binding such as `com.criteo.jfaiss:jfaiss-cpu`, or use a managed ANN service such as OpenSearch kNN, Vespa, or Milvus.
 - In production, item embeddings are usually generated offline and reloaded
   periodically by the serving layer.
 
@@ -217,6 +235,7 @@ Notes:
 | `PORT` | `6010` | API server port |
 | `REDIS_HOST` | `localhost` | Redis host |
 | `REDIS_PORT` | `6379` | Redis port |
+| `RECSYS_VECTOR_BACKEND` | `lsh` | Movie API embedding backend: `lsh` or `exact`; `faiss` currently falls back to `lsh` in the portable build |
 
 Example:
 
@@ -298,7 +317,15 @@ Uses `CandidateGenerator.byGenre`: for each genre tag on the seed movie, retriev
 curl "http://localhost:6010/getrecommendation?userId=123&mode=embedding&k=20"
 ```
 
-Uses `CandidateGenerator.byEmbedding`: scores all movies that have a classpath embedding against the user's embedding using cosine similarity. Returns the top-k results. Returns 404 if no user embedding is found. The `k` parameter is capped at 200 (default: 20).
+Uses `CandidateGenerator.byEmbedding`: searches movies with classpath embeddings against the user's embedding. The active backend is controlled by `RECSYS_VECTOR_BACKEND` or `-Drecsys.vector.backend`. Returns 404 if no user embedding is found. The `k` parameter is capped at 200 (default: 20).
+
+Supported portable backends:
+
+- `lsh`: approximate SimHash random-projection LSH with exact cosine reranking.
+- `exact`: full-scan cosine top-k with a bounded min-heap.
+
+`faiss` is reserved for Linux native FAISS deployments and falls back to `lsh`
+in the portable build.
 
 **`mode=topk` / `mode=trending` — Redis sorted-set trending:**
 
@@ -518,7 +545,7 @@ movie_embeddings.txt / user_embeddings.txt (classpath)
   └─ DataLoader.loadMovieEmbeddings / loadUserEmbeddings
        └─ CandidateGenerator (JVM heap)
             └─ byEmbedding(userId, k)
-                 SCAN + min-heap cosine ──► top-k results
+                 VectorIndex backend ──► exact cosine rerank ──► top-k results
 ```
 
 ### Comparison
@@ -529,14 +556,15 @@ movie_embeddings.txt / user_embeddings.txt (classpath)
 | Stored in | Redis (`i2vEmb:{id}`) | Classpath + JVM heap | Classpath + JVM heap |
 | Loaded by | `RedisEmbeddingStore.loadAll()` | `ModelArtifactService` `@PostConstruct` | `CandidateGenerator` constructor |
 | User vector | Not produced | Live via ONNX at request time | Preloaded from `user_embeddings.txt` |
+| Retrieval backend | Redis load + exact cosine | JVM heap exact cosine; optional FAISS artifact for external/native use | `VectorIndex`: `lsh` or `exact` |
 | TTL | 86400 s default | N/A — reloads on restart | N/A — reloads on restart |
 
 ## Developer Notes
 
 - `DataLoader` loads bundled text resources from `com/recsys/data`.
 - `DataManager` is a pure data-access singleton: immutable maps, precomputed sorted lists (`topRatedMovies`, `latestMovies`, `moviesByGenre`, `similarMovies`), and O(1) or subList lookups. No retrieval strategy logic lives here.
-- `CandidateGenerator` owns all three retrieval strategies and the classpath movie/user embeddings. It is constructed once in `RecSysServer` and injected into `RecommendationService`. The three methods map directly to the reference patterns: `byGenre` (seed-movie flow), `byUserHistory` (multi-strategy), `byEmbedding` (embedding cosine search).
-- `CandidateGenerator.byEmbedding` precomputes the user vector's norm once, then runs a min-heap scan for O(n log k) top-k retrieval — avoiding the O(n log n) full sort in the reference.
+- `CandidateGenerator` owns all three retrieval strategies and the classpath movie/user embeddings. It is constructed once in `RecSysServer` and injected into `RecommendationService`. The three methods map directly to the reference patterns: `byGenre` (seed-movie flow), `byUserHistory` (multi-strategy), `byEmbedding` (embedding vector search).
+- `CandidateGenerator.byEmbedding` delegates to `VectorIndex`. The portable backends are `LshVectorIndex` for approximate retrieval and `ExactVectorIndex` for deterministic full-scan evaluation. Select with `RECSYS_VECTOR_BACKEND=lsh` or `RECSYS_VECTOR_BACKEND=exact`.
 - `RedisEmbeddingStore` is a generic key-prefix store (`getEmbedding`, `setEmbedding`, `setEmbeddings`, `scanIds`). The same class backs both `i2vEmb:` (item) and `u2vEmb:` (user) Redis namespaces.
 - `RedisEmbeddingStore` uses Redis pipelines for bulk writes and `SCAN` + `MGET` for safe bulk reads.
 - `BaseApiServlet` centralizes JSON headers, serialization, and request parameter parsing.
