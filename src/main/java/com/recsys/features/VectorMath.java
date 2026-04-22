@@ -34,6 +34,16 @@ public final class VectorMath {
         return dot / Math.sqrt(normSqA * nb);
     }
 
+    public static double innerProduct(float[] a, float[] b) {
+        if (a == null || b == null || a.length != b.length) return Double.NEGATIVE_INFINITY;
+
+        double dot = 0.0;
+        for (int i = 0; i < a.length; i++) {
+            dot += (double) a[i] * b[i];
+        }
+        return dot;
+    }
+
     public static double normSq(float[] v) {
         if (v == null) return 0.0;
         double n = 0.0;

@@ -74,7 +74,7 @@ This path shows the model-based retrieval flow:
 2. Export the user tower to ONNX.
 3. Precompute item embeddings offline.
 4. Load the ONNX model and item embeddings in a Spring Boot service.
-5. Encode the request in Java, infer the user embedding, and retrieve items by cosine similarity.
+5. Encode the request in Java, infer the user embedding, and retrieve items by inner-product similarity.
 
 The demo stays small so the training-serving feature contract is easy to inspect.
 
@@ -182,7 +182,7 @@ The Jetty API remains available through `com.recsys.serving.RecSysServer`.
 Notes:
 
 - Training data comes from `src/main/java/com/recsys/data/ratings.txt`.
-- Retrieval is brute-force cosine similarity in the portable Java path. Python also exports a FAISS index when `faiss-cpu` is available.
+- Retrieval uses inner-product similarity in the portable Java path. Python also exports a FAISS `IndexFlatIP` index when `faiss-cpu` is available.
 - For production-scale Java serving, use a Linux native FAISS binding such as `com.criteo.jfaiss:jfaiss-cpu`, or use a managed ANN service such as OpenSearch kNN, Vespa, or Milvus.
 - In production, item embeddings are usually generated offline and reloaded
   periodically by the serving layer.
@@ -221,7 +221,7 @@ src/main/java/com/recsys/
 │           ├── TwoTowerApplication.java
 │           ├── config/     Model artifact configuration
 │           ├── controller/ Recommendation API
-│           └── service/    Feature encoding, ONNX inference, retrieval orchestration
+│           └── service/    Candidate selection, recall, ranking, ONNX inference
 └── data/                   Bundled sample data and seed embeddings
     ├── movies.txt
     ├── users.txt
@@ -309,8 +309,8 @@ Uses `CandidateGenerator.byEmbedding`: searches movies with classpath embeddings
 
 Supported portable backends:
 
-- `lsh`: approximate SimHash random-projection LSH with exact cosine reranking.
-- `exact`: full-scan cosine top-k with a bounded min-heap.
+- `lsh`: approximate SimHash random-projection candidate generation with inner-product reranking.
+- `exact`: full-scan inner-product top-k with a bounded min-heap.
 
 `faiss` is reserved for Linux native FAISS deployments and falls back to `lsh`
 in the portable build.
@@ -325,7 +325,7 @@ Reads pre-scored movie IDs from a Redis sorted set. Supported windows: `last_hou
 
 ### Similar Movies
 
-Computes cosine similarity against Redis item embeddings:
+Computes inner-product similarity against Redis item embeddings:
 
 ```bash
 curl "http://localhost:6010/getsimilarmovie?movieId=1&k=5"
@@ -486,17 +486,19 @@ The two offline strategies write to different stores.
 ### Rule-based → Redis
 
 `ItemEmbeddingJob` writes directly to Redis after training (when `--save-to-redis=true`).
-At serving time, `SimilarMovieService` calls `RedisEmbeddingStore.loadAll()`, which does
-a full `SCAN` + single `MGET` in one connection to load all vectors into memory for cosine search.
+At serving time, `SimilarMovieService` first builds a metadata candidate set, then calls
+`RedisEmbeddingStore.getEmbeddings(candidateIds)` to fetch only those candidate vectors for inner-product ranking.
 
 ```
 Spark Word2Vec
   └─ Jedis pipeline ──► Redis (i2vEmb:{movieId} → "0.169 0.296 -0.130 ...")
                                 │
                          SimilarMovieService
-                           SCAN + MGET (loadAll)
+                           metadata candidate set
                                 │
-                         cosine similarity ──► top-k results
+                           MGET candidate embeddings
+                                │
+                         inner-product similarity ──► top-k results
 ```
 
 Key format: `{prefix}:{id}`, e.g. `i2vEmb:1`  
@@ -517,8 +519,14 @@ PyTorch item tower
                              ModelArtifactService (@PostConstruct)
                                ConcurrentHashMap<String, float[]>
                                       │
+                             CandidateSelectionService
+                               history-genre + top-rated + latest eligible item IDs
+                                      │
                               RetrievalService
-                                cosine similarity ──► top-k results
+                                embedding recall + metadata recall, merged by item ID
+                                      │
+                              RankingService
+                                recompute inner-product similarity ──► final top-k results
 ```
 
 TTL: none — embeddings reload on service restart.  
@@ -533,7 +541,7 @@ movie_embeddings.txt / user_embeddings.txt (classpath)
   └─ DataLoader.loadMovieEmbeddings / loadUserEmbeddings
        └─ CandidateGenerator (JVM heap)
             └─ byEmbedding(userId, k)
-                 VectorIndex backend ──► exact cosine rerank ──► top-k results
+                 VectorIndex backend ──► inner-product rerank ──► top-k results
 ```
 
 ### Comparison
@@ -542,9 +550,9 @@ movie_embeddings.txt / user_embeddings.txt (classpath)
 |---|---|---|---|
 | Written by | Spark job → Jedis pipeline | Python → JSON file | Bundled text resources |
 | Stored in | Redis (`i2vEmb:{id}`) | Classpath + JVM heap | Classpath + JVM heap |
-| Loaded by | `RedisEmbeddingStore.loadAll()` | `ModelArtifactService` `@PostConstruct` | `CandidateGenerator` constructor |
+| Loaded by | `RedisEmbeddingStore.getEmbeddings(candidateIds)` | `ModelArtifactService` `@PostConstruct` | `CandidateGenerator` constructor |
 | User vector | Not produced | Live via ONNX at request time | Preloaded from `user_embeddings.txt` |
-| Retrieval backend | Redis load + exact cosine | JVM heap exact cosine; optional FAISS artifact for external/native use | `VectorIndex`: `lsh` or `exact` |
+| Retrieval backend | Metadata candidates → Redis MGET → exact inner-product rank | Candidate set → embedding recall + metadata recall → inner-product rank; optional FAISS artifact for external/native use | `VectorIndex`: `lsh` or `exact` |
 | TTL | 86400 s default | N/A — reloads on restart | N/A — reloads on restart |
 
 ## Developer Notes
@@ -556,7 +564,8 @@ movie_embeddings.txt / user_embeddings.txt (classpath)
 - `RedisEmbeddingStore` is a generic key-prefix store (`getEmbedding`, `setEmbedding`, `setEmbeddings`, `scanIds`). The same class backs both `i2vEmb:` (item) and `u2vEmb:` (user) Redis namespaces.
 - `RedisEmbeddingStore` uses Redis pipelines for bulk writes and `SCAN` + `MGET` for safe bulk reads.
 - `BaseApiServlet` centralizes JSON headers, serialization, and request parameter parsing.
-- `RetrievalService` (two-tower path) delegates cosine similarity to `VectorMath.cosine(a, normSqA, b)`, precomputing the query vector's norm once before scanning all candidate item embeddings.
+- `SimilarMovieService` follows the same candidate/recall/rank shape for Redis item embeddings: metadata candidates first, Redis `MGET` for those candidates, then target-vs-candidate inner-product ranking.
+- The two-tower path is intentionally staged: `CandidateSelectionService` chooses eligible item IDs from user-history genres plus global pools, `RetrievalService` performs multi-route recall (`retrievalCandidatesByEmbedding` and `retrievalCandidatesByMetadata`), and `RankingService` recomputes inner-product similarity before sorting and limiting the final response.
 
 ## LLM Integration Ideas
 

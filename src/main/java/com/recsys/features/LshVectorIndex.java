@@ -1,6 +1,7 @@
 package com.recsys.features;
 
 import java.util.Map;
+import java.util.Objects;
 import java.util.Set;
 import java.util.HashSet;
 import java.util.List;
@@ -18,14 +19,15 @@ public class LshVectorIndex extends ExactVectorIndex {
 
     @Override
     public List<SearchResult> search(float[] query, int k, Set<Integer> excludeIds) {
+        Set<Integer> excluded = Objects.requireNonNullElse(excludeIds, Set.of());
         Set<Integer> candidates = new HashSet<>(lsh.candidates(query));
-        candidates.removeAll(excludeIds);
+        candidates.removeAll(excluded);
 
         if (candidates.size() < k) {
             candidates = allIds;
         }
 
-        return topK(query, k, excludeIds, candidates);
+        return topK(query, k, excluded, candidates);
     }
 
     @Override

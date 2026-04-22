@@ -1,19 +1,26 @@
 package com.recsys.serving;
 
 import com.recsys.features.ExactVectorIndex;
+import com.recsys.features.DataManager;
 import com.recsys.features.RedisEmbeddingStore;
 import com.recsys.features.SearchResult;
+import com.recsys.models.Movie;
 import jakarta.servlet.http.HttpServletRequest;
 import jakarta.servlet.http.HttpServletResponse;
 
 import java.io.IOException;
+import java.util.LinkedHashSet;
 import java.util.List;
 import java.util.Map;
 import java.util.Set;
 
 public class SimilarMovieService extends BaseApiServlet {
 
+    private static final int LIMIT_PER_GENRE = 50;
+    private static final int RECALL_MULTIPLIER = 5;
+
     private final RedisEmbeddingStore store;
+    private final DataManager dataManager = DataManager.getInstance();
 
     public SimilarMovieService(RedisEmbeddingStore store) {
         this.store = store;
@@ -32,7 +39,8 @@ public class SimilarMovieService extends BaseApiServlet {
                 return;
             }
 
-            Map<Integer, float[]> embeddings = store.loadAll();
+            Set<Integer> candidateIds = selectCandidates(movieId, k);
+            Map<Integer, float[]> embeddings = store.getEmbeddings(candidateIds);
             List<ScoredMovie> scored = new ExactVectorIndex(embeddings)
                     .search(queryVec, k, Set.of(movieId))
                     .stream()
@@ -51,6 +59,43 @@ public class SimilarMovieService extends BaseApiServlet {
 
     private static ScoredMovie toScoredMovie(SearchResult result) {
         return new ScoredMovie(result.id(), result.score());
+    }
+
+    private Set<Integer> selectCandidates(int movieId, int k) {
+        Set<Integer> candidates = new LinkedHashSet<>();
+        int maxCandidates = k * RECALL_MULTIPLIER;
+
+        for (Movie movie : dataManager.getSimilarMovies(movieId)) {
+            candidates.add(movie.id());
+            if (candidates.size() >= maxCandidates) {
+                return candidates;
+            }
+        }
+
+        Movie seed = dataManager.getMovieById(movieId);
+        if (seed != null) {
+            for (String genre : seed.genres()) {
+                for (Movie movie : dataManager.getMoviesByGenre(genre, LIMIT_PER_GENRE)) {
+                    if (movie.id() != movieId) {
+                        candidates.add(movie.id());
+                    }
+                    if (candidates.size() >= maxCandidates) {
+                        return candidates;
+                    }
+                }
+            }
+        }
+
+        for (Movie movie : dataManager.getTopRatedMovies(maxCandidates)) {
+            if (movie.id() != movieId) {
+                candidates.add(movie.id());
+            }
+            if (candidates.size() >= maxCandidates) {
+                return candidates;
+            }
+        }
+
+        return candidates;
     }
 
     public record ScoredMovie(int movieId, double score) {}

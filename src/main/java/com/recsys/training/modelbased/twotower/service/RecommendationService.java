@@ -12,20 +12,29 @@ import java.util.Set;
 @Service
 public class RecommendationService {
 
+    private static final int RECALL_MULTIPLIER = 5;
+    private static final int MAX_RECALL_SIZE = 500;
+
+    private final CandidateSelectionService candidateSelectionService;
     private final FeatureEncoder featureEncoder;
     private final UserTowerInferenceService inferenceService;
     private final RetrievalService retrievalService;
+    private final RankingService rankingService;
     private final ModelArtifactService artifactService;
 
     public RecommendationService(
+            CandidateSelectionService candidateSelectionService,
             FeatureEncoder featureEncoder,
             UserTowerInferenceService inferenceService,
             RetrievalService retrievalService,
+            RankingService rankingService,
             ModelArtifactService artifactService
     ) {
+        this.candidateSelectionService = candidateSelectionService;
         this.featureEncoder = featureEncoder;
         this.inferenceService = inferenceService;
         this.retrievalService = retrievalService;
+        this.rankingService = rankingService;
         this.artifactService = artifactService;
     }
 
@@ -36,7 +45,10 @@ public class RecommendationService {
         float[] userEmbedding = inferenceService.inferUserEmbedding(encoded);
 
         Set<String> excluded = new HashSet<>(request.getExcludeItemIds());
-        List<ScoredItem> items = retrievalService.retrieve(userEmbedding, request.getK(), excluded);
+        Set<String> candidates = candidateSelectionService.selectCandidates(request.getUserId(), excluded);
+        int recallSize = Math.min(MAX_RECALL_SIZE, Math.max(request.getK(), request.getK() * RECALL_MULTIPLIER));
+        List<ScoredItem> recalled = retrievalService.recall(userEmbedding, request.getUserId(), candidates, recallSize);
+        List<ScoredItem> items = rankingService.rank(userEmbedding, recalled, request.getK());
 
         return new RecommendResponse(request.getUserId(), artifactService.getModelVersion(), items);
     }

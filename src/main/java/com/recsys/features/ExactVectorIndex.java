@@ -25,7 +25,6 @@ public class ExactVectorIndex implements VectorIndex {
         if (query == null || k <= 0) return List.of();
         Set<Integer> excluded = Objects.requireNonNullElse(excludeIds, Set.of());
 
-        double queryNormSq = VectorMath.normSq(query);
         PriorityQueue<SearchResult> best = new PriorityQueue<>(Comparator.comparingDouble(SearchResult::score));
 
         for (int id : candidateIds) {
@@ -33,7 +32,7 @@ public class ExactVectorIndex implements VectorIndex {
             float[] candidate = embeddings.get(id);
             if (candidate == null) continue;
 
-            double score = VectorMath.cosine(query, queryNormSq, candidate);
+            double score = VectorMath.innerProduct(query, candidate);
             if (score == Double.NEGATIVE_INFINITY) continue;
 
             if (best.size() < k) {
