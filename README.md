@@ -1,6 +1,6 @@
 # RecSys
 
-Recommendation-system demos in one Maven repo.
+RecSys is a compact Maven workspace for experimenting with recommendation-system serving, retrieval, ranking, and offline embedding pipelines.
 
 | Area | What it shows |
 |---|---|
@@ -9,16 +9,39 @@ Recommendation-system demos in one Maven repo.
 | Rule-based offline embeddings | Spark Word2Vec item embeddings trained from user interaction sequences |
 | Model-based offline embeddings | Two-tower user inference plus precomputed item embeddings |
 
-The movie API supports:
+The movie API includes:
 
-- movie and user lookup
-- multi-strategy candidate generation: genre-based from user/seed history, global top-rated, latest releases
-- embedding-based retrieval over classpath item/user embeddings with selectable vector backends
+- Movie and user lookup
+- Single-strategy recall from seed-movie genres
+- Multi-way recall from user history, global top-rated movies, and latest releases
+- Embedding-based retrieval over classpath user and item embeddings with selectable vector backends
 - Redis sorted-set Top-K trending recommendations
 - Redis item-embedding similarity search
-- runtime embedding updates
+- Runtime embedding updates
+
+------
+
+## Recommendation Flow
+
+The movie API models a common recommendation-serving pipeline: recall first narrows the catalog to a candidate set, then ranking scores and orders those candidates.
+
+Recall examples:
+
+- Single-strategy recall: `CandidateGenerator.byGenre` expands from the genres of a seed movie.
+- Multi-way recall: `CandidateGenerator.byUserHistory` merges candidates from user-history genres, global top-rated movies, and latest releases.
+- Embedding recall: `CandidateGenerator.byEmbedding` retrieves items by comparing user and item embeddings with the configured vector index.
+
+Ranking example:
+
+- Embedding-similarity ranking: `SimilarMovieService` builds a candidate set, scores each candidate with inner-product similarity, and returns the top-K results.
+
+Future ranking demos can replace embedding similarity with model-based rankers such as LR, GBDT, DNN, Wide & Deep, DIN, or other recommendation models.
+
+------
 
 ## Quick Start: Movie API
+
+Use this path to run the Jetty movie API on port `6010` with Redis-backed embeddings and Top-K state.
 
 Requires:
 
@@ -66,15 +89,24 @@ Stop infrastructure:
 docker compose -f docker-compose.streaming.yml down
 ```
 
+------
+
 ## Quick Start: Two-Tower Demo
 
-This path shows the model-based retrieval flow:
+The two-tower demo is a separate Spring Boot service on port `8080`. It serves model-based retrieval through `TwoTowerApplication` and the `/recommend` endpoint.
 
-1. Train a two-tower model in PyTorch from `src/main/java/com/recsys/data/ratings.txt`.
-2. Export the user tower to ONNX.
-3. Precompute item embeddings offline.
-4. Load the ONNX model and item embeddings in a Spring Boot service.
-5. Encode the request in Java, infer the user embedding, and retrieve items by inner-product similarity.
+It demonstrates:
+
+- ONNX user-tower inference in Java
+- Precomputed item embeddings
+- Model-based retrieval with inner-product similarity
+
+1. `python-training/data.py` reads `src/main/java/com/recsys/data/ratings.txt`, keeps ratings `>= 3.5` as positive interactions, and builds `user_vocab` / `item_vocab` mappings with an `__UNK__` fallback.
+2. `python-training/train_and_export.py` trains the PyTorch `TwoTower` model from `python-training/model.py`: the user tower and item tower learn normalized vectors using in-batch cross-entropy over user-item pairs.
+3. The exporter writes `user_tower.onnx`, `feature_config.json`, `item_embeddings.json`, and `metadata.json` to `python-training/artifacts/`, then copies them into `src/main/resources/model/` for Java serving.
+4. Item embeddings are precomputed offline by running the trained item tower over every known `item_id`; when `faiss-cpu` is installed, the script also exports optional `item_embeddings.faiss` and `item_ids.json` files.
+5. Start the Spring Boot service, where `UserTowerInferenceService` loads `model/user_tower.onnx` and `ModelArtifactService` loads `model/feature_config.json` plus `model/item_embeddings.json` from `src/main/resources/model/`.
+6. At request time, `/recommend` calls `FeatureEncoder` to map `userId` into the training vocab, runs ONNX inference to produce a user embedding, uses `CandidateSelectionService` and `RetrievalService` to recall candidates, and uses `RankingService` to rerank the final top-K by inner-product similarity.
 
 The demo stays small so the training-serving feature contract is easy to inspect.
 
@@ -187,7 +219,11 @@ Notes:
 - In production, item embeddings are usually generated offline and reloaded
   periodically by the serving layer.
 
+------
+
 ## Configuration
+
+These environment variables control the Jetty movie API runtime and its retrieval backend.
 
 | Env var | Default | Purpose |
 |---|---:|---|
@@ -205,7 +241,11 @@ PORT=7010 REDIS_HOST=localhost REDIS_PORT=6379 \
 
 On startup, the server seeds Redis with bundled movie and user embeddings if the Redis keys are empty.
 
+------
+
 ## Project Layout
+
+The repo keeps serving code, training code, bundled data, model artifacts, and local infrastructure definitions in one workspace.
 
 **Java**
 
@@ -256,7 +296,11 @@ python-training/
 docker-compose.streaming.yml Redis, Kafka, Zookeeper, Flink
 ```
 
+------
+
 ## API
+
+The Jetty movie API exposes lookup, recommendation, similarity, and embedding-update endpoints on port `6010`.
 
 ### Health
 
@@ -350,7 +394,11 @@ curl -X POST "http://localhost:6010/setembedding?movieId=5" \
 curl -X POST "http://localhost:6010/setembedding?movieId=6&ttl=3600&vec=0.5+0.5+0.0"
 ```
 
+------
+
 ## Redis Test Data
+
+Use these commands to seed or inspect Redis state for trending recommendations and item embeddings.
 
 Seed trending data manually:
 
@@ -367,6 +415,8 @@ Inspect seeded embeddings:
 docker exec -it redis-dev redis-cli SCAN 0 MATCH 'i2vEmb:*' COUNT 20
 docker exec -it redis-dev redis-cli GET i2vEmb:1
 ```
+
+------
 
 ## Kafka/Flink
 
@@ -404,6 +454,8 @@ Delete the topic:
 docker exec -it recsys-kafka-1 \
   kafka-topics --bootstrap-server localhost:9092 --delete --topic movie_events
 ```
+
+------
 
 ## Offline Item Embeddings
 
@@ -478,6 +530,8 @@ Redis options:
 
 All writes are pipelined in a single round-trip. Key and value formats are compatible with
 `RedisEmbeddingStore` and `VectorMath.parseVector`, so the Jetty API can serve them immediately.
+
+------
 
 ## Embedding Storage Paths
 
@@ -555,19 +609,46 @@ movie_embeddings.txt / user_embeddings.txt (classpath)
 | Retrieval backend | Metadata candidates → Redis MGET → exact inner-product rank | Candidate set → embedding recall + metadata recall → inner-product rank; optional FAISS artifact for external/native use | `VectorIndex`: `lsh` or `exact` |
 | TTL | 86400 s default | N/A — reloads on restart | N/A — reloads on restart |
 
+------
+
 ## Developer Notes
 
+These notes summarize the main implementation boundaries and where each retrieval or ranking responsibility lives.
+
+Data loading and access:
+
 - `DataLoader` loads bundled text resources from `com/recsys/data`.
-- `DataManager` is a pure data-access singleton: immutable maps, precomputed sorted lists (`topRatedMovies`, `latestMovies`, `moviesByGenre`, `similarMovies`), and O(1) or subList lookups. No retrieval strategy logic lives here.
-- `CandidateGenerator` owns all three retrieval strategies and the classpath movie/user embeddings. It is constructed once in `RecSysServer` and injected into `RecommendationService`. The three methods map directly to the reference patterns: `byGenre` (seed-movie flow), `byUserHistory` (multi-strategy), `byEmbedding` (embedding vector search).
-- `CandidateGenerator.byEmbedding` delegates to `VectorIndex`. The portable backends are `LshVectorIndex` for approximate retrieval and `ExactVectorIndex` for deterministic full-scan evaluation. Select with `RECSYS_VECTOR_BACKEND=lsh` or `RECSYS_VECTOR_BACKEND=exact`.
-- `RedisEmbeddingStore` is a generic key-prefix store (`getEmbedding`, `setEmbedding`, `setEmbeddings`, `scanIds`). The same class backs both `i2vEmb:` (item) and `u2vEmb:` (user) Redis namespaces.
-- `RedisEmbeddingStore` uses Redis pipelines for bulk writes and `SCAN` + `MGET` for safe bulk reads.
-- `BaseApiServlet` centralizes JSON headers, serialization, and request parameter parsing.
-- `SimilarMovieService` follows the same candidate/recall/rank shape for Redis item embeddings: metadata candidates first, Redis `MGET` for those candidates, then target-vs-candidate inner-product ranking.
-- The two-tower path is intentionally staged: `CandidateSelectionService` chooses eligible item IDs from user-history genres plus global pools, `RetrievalService` performs multi-route recall (`retrievalCandidatesByEmbedding` and `retrievalCandidatesByMetadata`), and `RankingService` recomputes inner-product similarity before sorting and limiting the final response.
+- `DataManager` is a read-only data-access singleton. It owns immutable maps, precomputed sorted lists such as `topRatedMovies` and `latestMovies`, genre indexes such as `moviesByGenre`, and fast lookup helpers. Retrieval strategy logic stays outside this class.
+
+Movie API retrieval:
+
+- `CandidateGenerator` owns the Jetty movie API recall strategies and classpath movie/user embeddings. It is created once in `RecSysServer` and injected into `RecommendationService`.
+- `CandidateGenerator.byGenre` implements seed-movie genre recall.
+- `CandidateGenerator.byUserHistory` implements multi-way recall from user-history genres, global top-rated movies, and latest releases.
+- `CandidateGenerator.byEmbedding` implements embedding recall through the `VectorIndex` interface. Use `RECSYS_VECTOR_BACKEND=lsh` for approximate retrieval or `RECSYS_VECTOR_BACKEND=exact` for deterministic full-scan evaluation.
+
+Redis-backed embeddings:
+
+- `RedisEmbeddingStore` is a generic key-prefix store for `getEmbedding`, `setEmbedding`, `setEmbeddings`, and `scanIds`.
+- The same store supports both `i2vEmb:` item embeddings and `u2vEmb:` user embeddings.
+- Bulk writes use Redis pipelines. Bulk reads use `SCAN` plus `MGET`, which avoids blocking Redis with large keyspace operations.
+
+Servlet and ranking flow:
+
+- `BaseApiServlet` centralizes JSON headers, Jackson serialization, error responses, and request parameter parsing.
+- `SimilarMovieService` demonstrates candidate recall plus embedding ranking for Redis item embeddings: build metadata candidates, fetch only those vectors with Redis `MGET`, then rank by target-vs-candidate inner product.
+
+Two-tower serving:
+
+- `CandidateSelectionService` chooses eligible item IDs from user-history genres plus global pools.
+- `RetrievalService` performs multi-route recall by combining embedding recall and metadata recall.
+- `RankingService` recomputes inner-product similarity and sorts the final top-K response.
+
+------
 
 ## LLM Integration Ideas
+
+These are possible follow-up directions for combining the existing retrieval stack with LLM-based features.
 
 - Use text embeddings as item/user features for retrieval.
 - Use an LLM as a zero-shot ranker or reranker for diversity, freshness, and domain-specific constraints.
