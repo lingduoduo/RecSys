@@ -1,14 +1,13 @@
 # RecSys
 
-Recommendation-system demos in one Maven repo. There are two runnable paths:
+Recommendation-system demos in one Maven repo.
 
-- **Movie API:** Jetty, Redis, and a small local movie dataset.
-- **Two-tower retrieval demo:** PyTorch training, ONNX export, and Java Spring Boot serving.
-
-The repo also contains two offline item embedding strategies under `src/main/java/com/recsys/training/`:
-
-- **Rule-based** (`training/rulebased/`) — Spark Word2Vec trained on user interaction sequences. Item-only embeddings, no user tower.
-- **Model-based** (`training/modelbased/twotower/`) — PyTorch two-tower model. Exports a user tower ONNX for online inference and precomputed item embeddings for retrieval.
+| Area | What it shows |
+|---|---|
+| Movie API | Jetty, Redis, local movie data, multi-strategy retrieval, and runtime embedding updates |
+| Two-tower demo | PyTorch training, ONNX export, and Spring Boot retrieval serving |
+| Rule-based offline embeddings | Spark Word2Vec item embeddings trained from user interaction sequences |
+| Model-based offline embeddings | Two-tower user inference plus precomputed item embeddings |
 
 The movie API supports:
 
@@ -21,22 +20,20 @@ The movie API supports:
 
 ## Quick Start: Movie API
 
-Prerequisites:
+Requires:
 
 - Java 17, matching `pom.xml`
 - Maven
 - Docker with Docker Compose, for Redis/Kafka/Flink services
 
-Start infrastructure from the repo root:
+Start infrastructure:
 
 ```bash
 colima start # if you use Colima
 docker compose -f docker-compose.streaming.yml up -d
 ```
 
-If your Docker install uses legacy Compose, replace `docker compose` with
-`docker-compose`. If `docker compose version` and `docker-compose version` both
-fail, install Docker Compose first.
+If needed, replace `docker compose` with `docker-compose`.
 
 Run the API:
 
@@ -54,15 +51,14 @@ curl "http://localhost:6010/getsimilarmovie?movieId=1&k=5"
 curl "http://localhost:6010/getrecommendation?userId=123&mode=embedding&k=5"
 ```
 
-Use a specific classpath embedding backend:
+Select a classpath embedding backend:
 
 ```bash
 RECSYS_VECTOR_BACKEND=lsh mvn exec:java -Dexec.mainClass="com.recsys.serving.RecSysServer"
 RECSYS_VECTOR_BACKEND=exact mvn exec:java -Dexec.mainClass="com.recsys.serving.RecSysServer"
 ```
 
-`lsh` is the default approximate backend. `exact` is useful for deterministic
-evaluation and recall checks.
+`lsh` is the default approximate backend. `exact` is useful for deterministic recall checks.
 
 Stop infrastructure:
 
@@ -72,43 +68,37 @@ docker compose -f docker-compose.streaming.yml down
 
 ## Quick Start: Two-Tower Demo
 
-This path shows a simple end-to-end retrieval pattern:
+This path shows the model-based retrieval flow:
 
 1. Train a two-tower model in PyTorch from `src/main/java/com/recsys/data/ratings.txt`.
 2. Export the user tower to ONNX.
 3. Precompute item embeddings offline.
 4. Load the ONNX model and item embeddings in a Spring Boot service.
-5. Build user features in Java and retrieve items with brute-force cosine similarity.
+5. Encode the request in Java, infer the user embedding, and retrieve items by cosine similarity.
 
-It is intentionally small so the feature contract between training and serving
-is easy to inspect.
+The demo stays small so the training-serving feature contract is easy to inspect.
 
 ### Layout
 
-**Python — training**
-```
+**Python training**
+
+```text
 python-training/
-├── model.py              UserTower, ItemTower, TwoTower model definitions
-├── data.py               Data loading, vocabulary building, batch construction
-├── train_and_export.py   Training loop and artifact export orchestration
-└── artifacts/            Generated artifacts (gitignored, reproduced by train_and_export.py)
+├── model.py                UserTower, ItemTower, TwoTower definitions
+├── data.py                 Ratings loading, vocab building, batch construction
+└── train_and_export.py     Training loop and ONNX/embedding artifact export
 ```
 
-**Java — serving**
-```
-src/main/
-├── resources/model/                          Classpath copy of artifacts loaded by Spring Boot
-└── java/com/recsys/training/modelbased/
-    └── twotower/
-        ├── TwoTowerApplication.java          Spring Boot entry point
-        ├── config/ModelConfig.java           Item embedding cache bean
-        ├── controller/RecommendationController.java
-        └── service/
-            ├── ModelArtifactService.java     Loads feature_config.json and item_embeddings.json
-            ├── FeatureEncoder.java           Encodes userId using training vocabulary
-            ├── UserTowerInferenceService.java ONNX Runtime inference for user tower
-            ├── RetrievalService.java         Top-k cosine retrieval over item embeddings
-            └── RecommendationService.java    Orchestrates encode → infer → retrieve
+**Java serving**
+
+```text
+src/main/resources/model/   Classpath artifacts loaded by Spring Boot
+
+src/main/java/com/recsys/training/modelbased/twotower/
+├── TwoTowerApplication.java
+├── controller/             Recommendation API
+├── service/                Feature encoding, ONNX inference, retrieval orchestration
+└── config/                 Model artifact configuration
 ```
 
 ### Feature Contract
@@ -126,7 +116,7 @@ Python trainer treats ratings `>= 3.5` as positive user-item interactions.
 
 ### Python Training
 
-Prerequisites:
+Requires:
 
 - Python 3.10+
 - pip
@@ -156,20 +146,13 @@ metadata.json
 user_tower.onnx
 ```
 
-The exporter writes directly into `src/main/resources/model/`, so the Java
-service can use the artifacts immediately after training.
+The exporter writes directly into `src/main/resources/model/`, so the Java service can use the artifacts immediately after training.
 
 Verify the optional FAISS artifact:
 
 ```bash
 .venv/bin/python -c "import faiss; idx=faiss.read_index('src/main/resources/model/item_embeddings.faiss'); print(idx.ntotal, idx.d)"
 ```
-
-The training pipeline is split across three modules:
-
-- **`model.py`** — `UserTower`, `ItemTower`, and `TwoTower` model definitions.
-- **`data.py`** — ratings loading, vocabulary building (`build_vocab`, `build_training_state`), and batch construction. `MIN_POSITIVE_RATING` is defined here as the single source of truth.
-- **`train_and_export.py`** — training loop and export orchestration. Item embeddings are computed in a single batched forward pass over all items rather than individually. If `faiss-cpu` is installed, it also exports a FAISS `IndexFlatIP` artifact over normalized item embeddings.
 
 ### Spring Boot Serving
 
@@ -216,14 +199,13 @@ Example response:
 }
 ```
 
-The Spring Boot service entry point is
-`com.recsys.training.modelbased.twotower.TwoTowerApplication`. The original Jetty API remains
-available through `com.recsys.serving.RecSysServer`.
+The Spring Boot entry point is `com.recsys.training.modelbased.twotower.TwoTowerApplication`.
+The Jetty API remains available through `com.recsys.serving.RecSysServer`.
 
 Notes:
 
-- Training data comes from bundled movie ratings in `src/main/java/com/recsys/data/ratings.txt`.
-- Retrieval is brute-force cosine similarity over exported item embeddings in the portable Java path. Python also exports a FAISS index when `faiss-cpu` is available.
+- Training data comes from `src/main/java/com/recsys/data/ratings.txt`.
+- Retrieval is brute-force cosine similarity in the portable Java path. Python also exports a FAISS index when `faiss-cpu` is available.
 - For production-scale Java serving, use a Linux native FAISS binding such as `com.criteo.jfaiss:jfaiss-cpu`, or use a managed ANN service such as OpenSearch kNN, Vespa, or Milvus.
 - In production, item embeddings are usually generated offline and reloaded
   periodically by the serving layer.
@@ -248,25 +230,44 @@ On startup, the server seeds Redis with bundled movie and user embeddings if the
 
 ## Project Layout
 
-| Path | Purpose |
-|---|---|
-| `src/main/java/com/recsys/models/` | Immutable API/domain records |
-| `src/main/java/com/recsys/features/` | Data loading (`DataLoader`), indexed data access (`DataManager`), retrieval strategies (`CandidateGenerator`), vector math, Redis stores |
-| `src/main/java/com/recsys/serving/` | Jetty server and servlet endpoints |
-| `src/main/java/com/recsys/training/` | Offline embedding strategies: `rulebased/` (Spark Word2Vec) and `modelbased/twotower/` (ONNX serving) |
-| `src/main/java/com/recsys/data/` | Bundled sample data and embeddings |
-| `python-training/` | `model.py` (towers), `data.py` (loading/vocab), `train_and_export.py` (orchestration) |
-| `docker-compose.streaming.yml` | Redis, Kafka, Zookeeper, Flink |
+**Java**
 
-Key data files:
+```text
+src/main/java/com/recsys/
+├── models/                 Immutable API/domain records
+├── features/               Data loading, indexed access, retrieval, vector math, Redis stores
+├── serving/                Jetty server and servlet endpoints
+├── training/
+│   ├── rulebased/          Spark Word2Vec offline item embeddings
+│   └── modelbased/
+│       └── twotower/       Spring Boot ONNX serving for the two-tower demo
+└── data/                   Bundled sample data and seed embeddings
+    ├── movies.txt
+    ├── users.txt
+    ├── ratings.txt
+    ├── events.txt
+    ├── online_features.txt
+    ├── movie_embeddings.txt
+    └── user_embeddings.txt
 
-- `movies.txt`
-- `users.txt`
-- `ratings.txt`
-- `events.txt`
-- `online_features.txt`
-- `movie_embeddings.txt`
-- `user_embeddings.txt`
+src/main/resources/model/   Exported two-tower artifacts loaded by Spring Boot
+```
+
+**Python**
+
+```text
+python-training/
+├── model.py                UserTower, ItemTower, TwoTower definitions
+├── data.py                 Ratings loading, vocab building, batch construction
+├── train_and_export.py     Training loop and ONNX/embedding artifact export
+└── artifacts/              Generated local artifacts, ignored by Git
+```
+
+**Infrastructure**
+
+```text
+docker-compose.streaming.yml Redis, Kafka, Zookeeper, Flink
+```
 
 ## API
 
