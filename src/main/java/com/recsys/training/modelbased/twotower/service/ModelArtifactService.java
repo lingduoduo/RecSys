@@ -64,10 +64,15 @@ public class ModelArtifactService {
 
     @SuppressWarnings("unchecked")
     private Map<String, Integer> convertToIntMap(Object input) {
-        Map<String, Object> raw = (Map<String, Object>) input;
+        if (!(input instanceof Map<?, ?> raw)) {
+            throw new IllegalStateException("expected a JSON object for vocab, got: " + (input == null ? "null" : input.getClass()));
+        }
         Map<String, Integer> out = new HashMap<>();
-        for (Map.Entry<String, Object> e : raw.entrySet()) {
-            out.put(e.getKey(), ((Number) e.getValue()).intValue());
+        for (Map.Entry<?, ?> e : raw.entrySet()) {
+            if (!(e.getValue() instanceof Number n)) {
+                throw new IllegalStateException("vocab value is not numeric for key: " + e.getKey());
+            }
+            out.put((String) e.getKey(), n.intValue());
         }
         return out;
     }

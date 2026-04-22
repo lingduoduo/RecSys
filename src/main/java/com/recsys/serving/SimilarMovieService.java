@@ -33,21 +33,20 @@ public class SimilarMovieService extends BaseApiServlet {
                 return;
             }
 
-            List<Integer> candidates = new ArrayList<>(store.scanIds(5000));
-            candidates.removeIf(candId -> candId == movieId);
-            Map<Integer, float[]> embeddings = store.getEmbeddings(candidates);
+            Map<Integer, float[]> embeddings = store.loadAll();
+            embeddings.remove(movieId);
+
             PriorityQueue<ScoredMovie> best = new PriorityQueue<>(
                     Comparator.comparingDouble(ScoredMovie::score)
             );
 
             double queryNormSq = VectorMath.normSq(queryVec);
-            for (int candId : candidates) {
-                float[] v = embeddings.get(candId);
-                if (v == null) continue;
+            for (Map.Entry<Integer, float[]> entry : embeddings.entrySet()) {
+                float[] v = entry.getValue();
                 double score = VectorMath.cosine(queryVec, queryNormSq, v);
                 if (score == Double.NEGATIVE_INFINITY) continue;
 
-                ScoredMovie scoredMovie = new ScoredMovie(candId, score);
+                ScoredMovie scoredMovie = new ScoredMovie(entry.getKey(), score);
                 if (best.size() < k) {
                     best.offer(scoredMovie);
                 } else if (score > best.peek().score()) {

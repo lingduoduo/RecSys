@@ -7,6 +7,7 @@ import redis.clients.jedis.params.ScanParams;
 import redis.clients.jedis.params.SetParams;
 import redis.clients.jedis.resps.ScanResult;
 
+import java.util.ArrayList;
 import java.util.Collection;
 import java.util.HashMap;
 import java.util.HashSet;
@@ -94,21 +95,46 @@ public class RedisEmbeddingStore {
         return embeddings;
     }
 
-    /**
-     * Mirrors the Java reference pattern: scan all embedding keys in Redis, validate each
-     * movieId against knownMovieIds (skip unknowns), then batch-fetch and return valid embeddings.
-     *
-     * Uses SCAN + MGET instead of KEYS + N×GET for production safety and efficiency.
-     * Returns a map of movieId -> embedding and logs the valid count.
-     */
+    // SCAN all keys matching the prefix then MGET all values in one connection.
+    // Avoids the two-connection overhead of scanIds() + getEmbeddings() and removes
+    // any arbitrary key cap.
+    public Map<Integer, float[]> loadAll() {
+        List<String> keys = new ArrayList<>();
+        ScanParams scanParams = new ScanParams().match(keyPrefix + ":*").count(500);
+
+        try (Jedis jedis = pool.getResource()) {
+            String cursor = "0";
+            do {
+                ScanResult<String> res = jedis.scan(cursor, scanParams);
+                keys.addAll(res.getResult());
+                cursor = res.getCursor();
+            } while (!"0".equals(cursor));
+
+            if (keys.isEmpty()) return new HashMap<>();
+
+            List<String> values = jedis.mget(keys.toArray(new String[0]));
+            Map<Integer, float[]> result = new HashMap<>();
+            for (int i = 0; i < keys.size(); i++) {
+                String val = values.get(i);
+                if (val == null || val.isBlank()) continue;
+                int sep = keys.get(i).lastIndexOf(':');
+                if (sep < 0) continue;
+                try {
+                    int id = Integer.parseInt(keys.get(i).substring(sep + 1));
+                    result.put(id, VectorMath.parseVector(val));
+                } catch (NumberFormatException ignore) {}
+            }
+            return result;
+        }
+    }
+
     public Map<Integer, float[]> loadValidEmbeddings(Set<Integer> knownMovieIds) {
-        Set<Integer> redisIds = scanIds(Integer.MAX_VALUE);
-        int scannedCount = redisIds.size();
-        redisIds.retainAll(knownMovieIds);  // skip IDs not in the movie store
-        Map<Integer, float[]> embeddings = getEmbeddings(redisIds);
+        Map<Integer, float[]> all = loadAll();
+        int scannedCount = all.size();
+        all.keySet().retainAll(knownMovieIds);
         System.out.printf("[RedisEmbeddingStore] loaded %d valid embeddings (scanned %d keys in Redis, %d known movies)%n",
-                embeddings.size(), scannedCount, knownMovieIds.size());
-        return embeddings;
+                all.size(), scannedCount, knownMovieIds.size());
+        return all;
     }
 
     public Set<Integer> scanIds(int maxKeys) {

@@ -5,7 +5,6 @@ import com.recsys.training.modelbased.twotower.model.ScoredItem;
 import org.springframework.stereotype.Service;
 
 import java.util.*;
-import java.util.stream.Collectors;
 
 @Service
 public class RetrievalService {
@@ -18,20 +17,24 @@ public class RetrievalService {
 
     public List<ScoredItem> retrieve(float[] userEmbedding, int k, Set<String> excludeItems) {
         double userNormSq = VectorMath.normSq(userEmbedding);
-        List<ScoredItem> scored = new ArrayList<>();
+        // Min-heap of size k: O(n log k) instead of O(n log n) sort-then-limit
+        PriorityQueue<ScoredItem> best = new PriorityQueue<>(Comparator.comparingDouble(ScoredItem::score));
 
         for (Map.Entry<String, float[]> entry : artifactService.getItemEmbeddings().entrySet()) {
             String itemId = entry.getKey();
-            if (excludeItems.contains(itemId)) {
-                continue;
-            }
+            if (excludeItems.contains(itemId)) continue;
             double score = VectorMath.cosine(userEmbedding, userNormSq, entry.getValue());
-            scored.add(new ScoredItem(itemId, score));
+            if (score == Double.NEGATIVE_INFINITY) continue;
+            if (best.size() < k) {
+                best.offer(new ScoredItem(itemId, score));
+            } else if (score > best.peek().score()) {
+                best.poll();
+                best.offer(new ScoredItem(itemId, score));
+            }
         }
 
-        return scored.stream()
-                .sorted(Comparator.comparingDouble(ScoredItem::getScore).reversed())
-                .limit(k)
-                .collect(Collectors.toList());
+        List<ScoredItem> result = new ArrayList<>(best);
+        result.sort(Comparator.comparingDouble(ScoredItem::score).reversed());
+        return result;
     }
 }

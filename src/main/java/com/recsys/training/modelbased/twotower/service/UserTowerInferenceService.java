@@ -50,7 +50,10 @@ public class UserTowerInferenceService {
 
     @PreDestroy
     public void close() throws OrtException {
-        if (session != null) session.close();
-        if (environment != null) environment.close();
+        try {
+            if (session != null) session.close();
+        } finally {
+            if (environment != null) environment.close();
+        }
     }
 }

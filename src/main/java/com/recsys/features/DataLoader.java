@@ -23,6 +23,8 @@ import java.util.Set;
 public class DataLoader {
 
     private static final int SIMILAR_MOVIES_LIMIT = 5;
+    // Cap co-rating pairs per user to prevent O(n²) blow-up on power users.
+    private static final int MAX_RATED_PER_USER = 500;
     private static final String MOVIES_RESOURCE = "/com/recsys/data/movies.txt";
     private static final String USERS_RESOURCE = "/com/recsys/data/users.txt";
     private static final String RATINGS_RESOURCE = "/com/recsys/data/ratings.txt";
@@ -107,6 +109,9 @@ public class DataLoader {
         Map<Integer, Map<Integer, Integer>> coRatings = new HashMap<>();
         for (Set<Integer> rated : userMovies.values()) {
             List<Integer> ratedList = new ArrayList<>(rated);
+            if (ratedList.size() > MAX_RATED_PER_USER) {
+                ratedList = ratedList.subList(0, MAX_RATED_PER_USER);
+            }
             for (int i = 0; i < ratedList.size(); i++) {
                 for (int j = i + 1; j < ratedList.size(); j++) {
                     int m1 = ratedList.get(i);

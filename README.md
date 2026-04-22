@@ -73,17 +73,31 @@ is easy to inspect.
 
 ### Layout
 
-| Path | Purpose |
-|---|---|
-| `python-training/model.py` | `UserTower`, `ItemTower`, `TwoTower` PyTorch model definitions |
-| `python-training/data.py` | Data loading, vocabulary building, and batch construction |
-| `python-training/train_and_export.py` | Training loop and artifact export orchestration |
-| `python-training/artifacts/` | Local copy of generated training artifacts |
-| `src/main/resources/model/` | Classpath copy of generated artifacts used by Spring Boot |
-| `src/main/java/com/recsys/training/modelbased/twotower/` | Spring Boot recommendation service |
-| `src/main/java/com/recsys/training/modelbased/twotower/service/FeatureEncoder.java` | Java feature encoder matching the training vocabularies |
-| `src/main/java/com/recsys/training/modelbased/twotower/service/UserTowerInferenceService.java` | ONNX Runtime user-tower inference |
-| `src/main/java/com/recsys/training/modelbased/twotower/service/RetrievalService.java` | Brute-force cosine retrieval over item embeddings |
+**Python — training**
+```
+python-training/
+├── model.py              UserTower, ItemTower, TwoTower model definitions
+├── data.py               Data loading, vocabulary building, batch construction
+├── train_and_export.py   Training loop and artifact export orchestration
+└── artifacts/            Generated artifacts (gitignored, reproduced by train_and_export.py)
+```
+
+**Java — serving**
+```
+src/main/
+├── resources/model/                          Classpath copy of artifacts loaded by Spring Boot
+└── java/com/recsys/training/modelbased/
+    └── twotower/
+        ├── TwoTowerApplication.java          Spring Boot entry point
+        ├── config/ModelConfig.java           Item embedding cache bean
+        ├── controller/RecommendationController.java
+        └── service/
+            ├── ModelArtifactService.java     Loads feature_config.json and item_embeddings.json
+            ├── FeatureEncoder.java           Encodes userId using training vocabulary
+            ├── UserTowerInferenceService.java ONNX Runtime inference for user tower
+            ├── RetrievalService.java         Top-k cosine retrieval over item embeddings
+            └── RecommendationService.java    Orchestrates encode → infer → retrieve
+```
 
 ### Feature Contract
 
@@ -408,6 +422,82 @@ The output CSV uses the same `movieId,vector` shape as
 `src/main/java/com/recsys/data/movie_embeddings.txt`, so generated vectors can
 be copied into the bundled seed data or loaded into Redis as `i2vEmb:<movieId>`
 for retrieval.
+
+To write embeddings directly to Redis after training, add the `--save-to-redis` flag:
+
+```bash
+mvn -Poffline-embedding exec:java \
+  -Dexec.mainClass="com.recsys.training.rulebased.ItemEmbeddingJob" \
+  -Dexec.args="--output=output/item_embeddings --save-to-redis=true --redis-host=localhost --redis-port=6379"
+```
+
+Redis options:
+
+```text
+--save-to-redis=true        Enable Redis output (default: false)
+--redis-host=localhost      Redis host (default: localhost)
+--redis-port=6379           Redis port (default: 6379)
+--redis-key-prefix=i2vEmb  Key prefix — keys are written as {prefix}:{movieId} (default: i2vEmb)
+--redis-ttl=86400           TTL in seconds; 0 = no expiry (default: 86400)
+```
+
+All writes are pipelined in a single round-trip. Key and value formats are compatible with
+`RedisEmbeddingStore` and `VectorMath.parseVector`, so the Jetty API can serve them immediately.
+
+## Embedding Storage Paths
+
+The two offline strategies write to different stores.
+
+### Rule-based → Redis
+
+`ItemEmbeddingJob` writes directly to Redis after training (when `--save-to-redis=true`).
+At serving time, `SimilarMovieService` calls `RedisEmbeddingStore.loadAll()`, which does
+a full `SCAN` + single `MGET` in one connection to load all vectors into memory for cosine search.
+
+```
+Spark Word2Vec
+  └─ Jedis pipeline ──► Redis (i2vEmb:{movieId} → "0.169 0.296 -0.130 ...")
+                                │
+                         SimilarMovieService
+                           SCAN + MGET (loadAll)
+                                │
+                         cosine similarity ──► top-k results
+```
+
+Key format: `{prefix}:{id}`, e.g. `i2vEmb:1`  
+Value format: space-separated floats, e.g. `0.16938460 0.29643180 -0.13044095 ...`  
+TTL: 86400 s by default (configurable via `--redis-ttl`).  
+To update: re-run the job with `--save-to-redis=true`.
+
+### Model-based → classpath, not Redis
+
+`train_and_export.py` writes `item_embeddings.json` into `src/main/resources/model/`.
+At Spring Boot startup, `ModelArtifactService` loads it into a `ConcurrentHashMap` in the JVM heap.
+Redis is not involved in the two-tower path.
+
+```
+PyTorch item tower
+  └─ train_and_export.py ──► item_embeddings.json (classpath)
+                                      │
+                             ModelArtifactService (@PostConstruct)
+                               ConcurrentHashMap<String, float[]>
+                                      │
+                              RetrievalService
+                                cosine similarity ──► top-k results
+```
+
+TTL: none — embeddings reload on service restart.  
+To update: re-run `train_and_export.py` and restart the Spring Boot service.
+
+### Comparison
+
+| | Rule-based | Model-based |
+|---|---|---|
+| Written by | Spark job → Jedis pipeline | Python → JSON file |
+| Stored in | Redis (`i2vEmb:{id}`) | Classpath + JVM heap |
+| Loaded by | `RedisEmbeddingStore.loadAll()` | `ModelArtifactService` `@PostConstruct` |
+| User vector | Not produced | Live via ONNX at request time |
+| TTL | 86400 s default | N/A — reloads on restart |
 
 ## Developer Notes
 

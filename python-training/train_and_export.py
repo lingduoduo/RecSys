@@ -34,7 +34,7 @@ def train(samples, user_vocab, item_vocab):
         total_loss = 0.0
         num_batches = 0
         random.shuffle(samples)
-        for user_ids, item_ids in build_batches(samples, user_vocab, item_vocab, batch_size=16):
+        for user_ids, item_ids in build_batches(samples, user_vocab, item_vocab):
             optimizer.zero_grad()
             user_vecs, item_vecs = model(user_ids, item_ids)
             logits = user_vecs @ item_vecs.T

@@ -3,11 +3,11 @@ import torch.nn.functional as F
 
 
 class UserTower(nn.Module):
-    def __init__(self, n_users, embed_dim):
+    def __init__(self, n_users, embed_dim, user_emb_dim=8, hidden_dim=32):
         super().__init__()
-        self.user_emb = nn.Embedding(n_users, 8)
-        self.fc1 = nn.Linear(8, 32)
-        self.fc2 = nn.Linear(32, embed_dim)
+        self.user_emb = nn.Embedding(n_users, user_emb_dim)
+        self.fc1 = nn.Linear(user_emb_dim, hidden_dim)
+        self.fc2 = nn.Linear(hidden_dim, embed_dim)
 
     def forward(self, user_id):
         x = self.user_emb(user_id)
@@ -17,10 +17,10 @@ class UserTower(nn.Module):
 
 
 class ItemTower(nn.Module):
-    def __init__(self, n_items, embed_dim):
+    def __init__(self, n_items, embed_dim, item_emb_dim=16):
         super().__init__()
-        self.item_emb = nn.Embedding(n_items, 16)
-        self.fc = nn.Linear(16, embed_dim)
+        self.item_emb = nn.Embedding(n_items, item_emb_dim)
+        self.fc = nn.Linear(item_emb_dim, embed_dim)
 
     def forward(self, item_id):
         x = self.item_emb(item_id)

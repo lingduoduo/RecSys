@@ -9,9 +9,13 @@ import org.apache.spark.sql.Row;
 import org.apache.spark.sql.SparkSession;
 import org.apache.spark.sql.api.java.UDF1;
 import org.apache.spark.sql.types.DataTypes;
+import redis.clients.jedis.Jedis;
+import redis.clients.jedis.Pipeline;
+import redis.clients.jedis.params.SetParams;
 
 import java.net.URL;
 import java.util.Arrays;
+import java.util.List;
 import java.util.Locale;
 import java.util.stream.Collectors;
 
@@ -64,6 +68,10 @@ public class ItemEmbeddingJob {
 
             writeEmbeddings(itemEmbeddings, config.outputPath());
             System.out.printf("Wrote item embeddings to %s%n", config.outputPath());
+
+            if (config.saveToRedis()) {
+                saveToRedis(itemEmbeddings, config);
+            }
         } finally {
             spark.stop();
         }
@@ -94,14 +102,12 @@ public class ItemEmbeddingJob {
     }
 
     private static void writeEmbeddings(Dataset<Row> itemEmbeddings, String outputPath) {
-        UDF1<Vector, String> vectorToString = vector -> Arrays.stream(vector.toArray())
-                .mapToObj(value -> String.format(Locale.US, "%.8f", value))
-                .collect(Collectors.joining(" "));
+        UDF1<Vector, String> udf = ItemEmbeddingJob::vectorToString;
 
         Dataset<Row> output = itemEmbeddings
                 .select(
                         col("word").cast("int").alias("movieId"),
-                        udf(vectorToString, DataTypes.StringType).apply(col("vector")).alias("vector")
+                        udf(udf, DataTypes.StringType).apply(col("vector")).alias("vector")
                 )
                 .orderBy("movieId");
 
@@ -110,6 +116,37 @@ public class ItemEmbeddingJob {
                 .mode("overwrite")
                 .option("header", "true")
                 .csv(outputPath);
+    }
+
+    // Collects model vectors to the driver and writes them to Redis in a single
+    // pipelined round-trip. Key format matches RedisEmbeddingStore: {prefix}:{id}.
+    // Value format matches VectorMath.parseVector: space-separated floats.
+    private static void saveToRedis(Dataset<Row> itemEmbeddings, JobConfig config) {
+        List<Row> rows = itemEmbeddings.collectAsList();
+
+        SetParams params = config.redisTtl() > 0
+                ? SetParams.setParams().ex(config.redisTtl())
+                : SetParams.setParams();
+
+        try (Jedis jedis = new Jedis(config.redisHost(), config.redisPort())) {
+            Pipeline pipeline = jedis.pipelined();
+            for (Row row : rows) {
+                String key = config.redisKeyPrefix() + ":" + row.getString(0);
+                String value = vectorToString((Vector) row.get(1));
+                pipeline.set(key, value, params);
+            }
+            pipeline.sync();
+        }
+
+        System.out.printf("Saved %d item embeddings to Redis %s:%d (prefix='%s', ttl=%ds)%n",
+                rows.size(), config.redisHost(), config.redisPort(),
+                config.redisKeyPrefix(), config.redisTtl());
+    }
+
+    private static String vectorToString(Vector vector) {
+        return Arrays.stream(vector.toArray())
+                .mapToObj(v -> String.format(Locale.US, "%.8f", v))
+                .collect(Collectors.joining(" "));
     }
 
     private record JobConfig(
@@ -122,6 +159,11 @@ public class ItemEmbeddingJob {
             int maxIter,
             double stepSize,
             double minRating,
+            boolean saveToRedis,
+            String redisHost,
+            int redisPort,
+            String redisKeyPrefix,
+            long redisTtl,
             String synonymMovieId,
             int synonymCount
     ) {
@@ -135,6 +177,11 @@ public class ItemEmbeddingJob {
             int maxIter = 10;
             double stepSize = 0.025;
             double minRating = 3.5;
+            boolean saveToRedis = false;
+            String redisHost = "localhost";
+            int redisPort = 6379;
+            String redisKeyPrefix = "i2vEmb";
+            long redisTtl = 60 * 60 * 24;
             String synonymMovieId = "1";
             int synonymCount = 10;
 
@@ -146,33 +193,31 @@ public class ItemEmbeddingJob {
                 String name = kv[0].replaceFirst("^--", "");
                 String value = kv[1];
                 switch (name) {
-                    case "ratings" -> ratingsPath = value;
-                    case "output" -> outputPath = value;
-                    case "master" -> master = value;
-                    case "vector-size" -> vectorSize = Integer.parseInt(value);
-                    case "window-size" -> windowSize = Integer.parseInt(value);
-                    case "min-count" -> minCount = Integer.parseInt(value);
-                    case "max-iter" -> maxIter = Integer.parseInt(value);
-                    case "step-size" -> stepSize = Double.parseDouble(value);
-                    case "min-rating" -> minRating = Double.parseDouble(value);
+                    case "ratings"          -> ratingsPath = value;
+                    case "output"           -> outputPath = value;
+                    case "master"           -> master = value;
+                    case "vector-size"      -> vectorSize = Integer.parseInt(value);
+                    case "window-size"      -> windowSize = Integer.parseInt(value);
+                    case "min-count"        -> minCount = Integer.parseInt(value);
+                    case "max-iter"         -> maxIter = Integer.parseInt(value);
+                    case "step-size"        -> stepSize = Double.parseDouble(value);
+                    case "min-rating"       -> minRating = Double.parseDouble(value);
+                    case "save-to-redis"    -> saveToRedis = Boolean.parseBoolean(value);
+                    case "redis-host"       -> redisHost = value;
+                    case "redis-port"       -> redisPort = Integer.parseInt(value);
+                    case "redis-key-prefix" -> redisKeyPrefix = value;
+                    case "redis-ttl"        -> redisTtl = Long.parseLong(value);
                     case "synonym-movie-id" -> synonymMovieId = value.isBlank() ? null : value;
-                    case "synonym-count" -> synonymCount = Integer.parseInt(value);
+                    case "synonym-count"    -> synonymCount = Integer.parseInt(value);
                     default -> throw new IllegalArgumentException("Unknown argument: " + arg);
                 }
             }
 
             return new JobConfig(
-                    ratingsPath,
-                    outputPath,
-                    master,
-                    vectorSize,
-                    windowSize,
-                    minCount,
-                    maxIter,
-                    stepSize,
-                    minRating,
-                    synonymMovieId,
-                    synonymCount
+                    ratingsPath, outputPath, master,
+                    vectorSize, windowSize, minCount, maxIter, stepSize, minRating,
+                    saveToRedis, redisHost, redisPort, redisKeyPrefix, redisTtl,
+                    synonymMovieId, synonymCount
             );
         }
 
