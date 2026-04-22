@@ -4,6 +4,7 @@ import java.util.ArrayList;
 import java.util.Comparator;
 import java.util.List;
 import java.util.Map;
+import java.util.Objects;
 import java.util.PriorityQueue;
 import java.util.Set;
 
@@ -22,12 +23,13 @@ public class ExactVectorIndex implements VectorIndex {
 
     protected List<SearchResult> topK(float[] query, int k, Set<Integer> excludeIds, Iterable<Integer> candidateIds) {
         if (query == null || k <= 0) return List.of();
+        Set<Integer> excluded = Objects.requireNonNullElse(excludeIds, Set.of());
 
         double queryNormSq = VectorMath.normSq(query);
         PriorityQueue<SearchResult> best = new PriorityQueue<>(Comparator.comparingDouble(SearchResult::score));
 
         for (int id : candidateIds) {
-            if (excludeIds.contains(id)) continue;
+            if (excluded.contains(id)) continue;
             float[] candidate = embeddings.get(id);
             if (candidate == null) continue;
 

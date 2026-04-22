@@ -19,6 +19,7 @@ public class ModelArtifactService {
 
     private String modelVersion;
     private Map<String, Integer> userVocab = new HashMap<>();
+    private int embeddingDim;
 
     public ModelArtifactService(ConcurrentMap<String, float[]> itemEmbeddingCache) {
         this.itemEmbeddingCache = itemEmbeddingCache;
@@ -39,6 +40,7 @@ public class ModelArtifactService {
         try (InputStream is = resource.getInputStream()) {
             Map<String, Object> config = objectMapper.readValue(is, new TypeReference<>() {});
             this.modelVersion = String.valueOf(config.getOrDefault("model_version", "unknown"));
+            this.embeddingDim = readPositiveInt(config.get("embedding_dim"), "embedding_dim");
             this.userVocab = convertToIntMap(config.get("user_vocab"));
         }
     }
@@ -51,8 +53,13 @@ public class ModelArtifactService {
 
         try (InputStream is = resource.getInputStream()) {
             Map<String, List<Double>> raw = objectMapper.readValue(is, new TypeReference<>() {});
+            itemEmbeddingCache.clear();
             for (Map.Entry<String, List<Double>> entry : raw.entrySet()) {
                 List<Double> values = entry.getValue();
+                if (values.size() != embeddingDim) {
+                    throw new IllegalStateException("item embedding dimension mismatch for item "
+                            + entry.getKey() + ": expected " + embeddingDim + ", got " + values.size());
+                }
                 float[] vec = new float[values.size()];
                 for (int i = 0; i < values.size(); i++) {
                     vec[i] = values.get(i).floatValue();
@@ -74,7 +81,18 @@ public class ModelArtifactService {
             }
             out.put((String) e.getKey(), n.intValue());
         }
-        return out;
+        return Map.copyOf(out);
+    }
+
+    private int readPositiveInt(Object input, String field) {
+        if (!(input instanceof Number n)) {
+            throw new IllegalStateException("expected numeric " + field + ", got: " + (input == null ? "null" : input.getClass()));
+        }
+        int value = n.intValue();
+        if (value <= 0) {
+            throw new IllegalStateException(field + " must be positive, got: " + value);
+        }
+        return value;
     }
 
     public String getModelVersion() {

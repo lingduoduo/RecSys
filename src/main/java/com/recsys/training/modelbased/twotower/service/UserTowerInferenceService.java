@@ -9,7 +9,6 @@ import org.springframework.stereotype.Service;
 import java.io.IOException;
 import java.io.InputStream;
 import java.nio.LongBuffer;
-import java.util.HashMap;
 import java.util.Map;
 
 @Service
@@ -35,9 +34,7 @@ public class UserTowerInferenceService {
             long[] userArr = new long[]{features.getUserId()};
 
             try (OnnxTensor userTensor = OnnxTensor.createTensor(environment, LongBuffer.wrap(userArr), new long[]{1})) {
-                Map<String, OnnxTensor> inputs = new HashMap<>();
-                inputs.put("user_id", userTensor);
-
+                Map<String, OnnxTensor> inputs = Map.of("user_id", userTensor);
                 try (OrtSession.Result result = session.run(inputs)) {
                     float[][] output = (float[][]) result.get("user_embedding").get().getValue();
                     return output[0];

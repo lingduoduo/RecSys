@@ -1,16 +1,15 @@
 package com.recsys.serving;
 
+import com.recsys.features.ExactVectorIndex;
 import com.recsys.features.RedisEmbeddingStore;
-import com.recsys.features.VectorMath;
+import com.recsys.features.SearchResult;
 import jakarta.servlet.http.HttpServletRequest;
 import jakarta.servlet.http.HttpServletResponse;
 
 import java.io.IOException;
-import java.util.ArrayList;
-import java.util.Comparator;
 import java.util.List;
 import java.util.Map;
-import java.util.PriorityQueue;
+import java.util.Set;
 
 public class SimilarMovieService extends BaseApiServlet {
 
@@ -34,29 +33,11 @@ public class SimilarMovieService extends BaseApiServlet {
             }
 
             Map<Integer, float[]> embeddings = store.loadAll();
-            embeddings.remove(movieId);
-
-            PriorityQueue<ScoredMovie> best = new PriorityQueue<>(
-                    Comparator.comparingDouble(ScoredMovie::score)
-            );
-
-            double queryNormSq = VectorMath.normSq(queryVec);
-            for (Map.Entry<Integer, float[]> entry : embeddings.entrySet()) {
-                float[] v = entry.getValue();
-                double score = VectorMath.cosine(queryVec, queryNormSq, v);
-                if (score == Double.NEGATIVE_INFINITY) continue;
-
-                ScoredMovie scoredMovie = new ScoredMovie(entry.getKey(), score);
-                if (best.size() < k) {
-                    best.offer(scoredMovie);
-                } else if (score > best.peek().score()) {
-                    best.poll();
-                    best.offer(scoredMovie);
-                }
-            }
-
-            List<ScoredMovie> scored = new ArrayList<>(best);
-            scored.sort(Comparator.comparingDouble(ScoredMovie::score).reversed());
+            List<ScoredMovie> scored = new ExactVectorIndex(embeddings)
+                    .search(queryVec, k, Set.of(movieId))
+                    .stream()
+                    .map(SimilarMovieService::toScoredMovie)
+                    .toList();
 
             writeJson(response, HttpServletResponse.SC_OK, new SimilarMoviesResult(movieId, scored));
 
@@ -66,6 +47,10 @@ public class SimilarMovieService extends BaseApiServlet {
             e.printStackTrace();
             writeError(response, HttpServletResponse.SC_INTERNAL_SERVER_ERROR, "internal server error");
         }
+    }
+
+    private static ScoredMovie toScoredMovie(SearchResult result) {
+        return new ScoredMovie(result.id(), result.score());
     }
 
     public record ScoredMovie(int movieId, double score) {}

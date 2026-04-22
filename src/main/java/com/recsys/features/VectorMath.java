@@ -1,6 +1,9 @@
 package com.recsys.features;
 
-public class VectorMath {
+public final class VectorMath {
+
+    private VectorMath() {
+    }
 
     public static double cosine(float[] a, float[] b) {
         if (a == null || b == null || a.length != b.length) return Double.NEGATIVE_INFINITY;
@@ -32,15 +35,25 @@ public class VectorMath {
     }
 
     public static double normSq(float[] v) {
+        if (v == null) return 0.0;
         double n = 0.0;
         for (float x : v) n += (double) x * x;
         return n;
     }
 
     public static float[] parseVector(String s) {
+        if (s == null || s.isBlank()) {
+            throw new IllegalArgumentException("vector must not be blank");
+        }
         String[] parts = s.trim().split("\\s+");
         float[] vec = new float[parts.length];
-        for (int i = 0; i < parts.length; i++) vec[i] = Float.parseFloat(parts[i]);
+        for (int i = 0; i < parts.length; i++) {
+            float value = Float.parseFloat(parts[i]);
+            if (!Float.isFinite(value)) {
+                throw new IllegalArgumentException("vector contains non-finite value: " + parts[i]);
+            }
+            vec[i] = value;
+        }
         return vec;
     }
 }
