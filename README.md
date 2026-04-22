@@ -78,29 +78,6 @@ This path shows the model-based retrieval flow:
 
 The demo stays small so the training-serving feature contract is easy to inspect.
 
-### Layout
-
-**Python training**
-
-```text
-python-training/
-├── model.py                UserTower, ItemTower, TwoTower definitions
-├── data.py                 Ratings loading, vocab building, batch construction
-└── train_and_export.py     Training loop and ONNX/embedding artifact export
-```
-
-**Java serving**
-
-```text
-src/main/resources/model/   Classpath artifacts loaded by Spring Boot
-
-src/main/java/com/recsys/training/modelbased/twotower/
-├── TwoTowerApplication.java
-├── controller/             Recommendation API
-├── service/                Feature encoding, ONNX inference, retrieval orchestration
-└── config/                 Model artifact configuration
-```
-
 ### Feature Contract
 
 User tower inputs:
@@ -241,6 +218,10 @@ src/main/java/com/recsys/
 │   ├── rulebased/          Spark Word2Vec offline item embeddings
 │   └── modelbased/
 │       └── twotower/       Spring Boot ONNX serving for the two-tower demo
+│           ├── TwoTowerApplication.java
+│           ├── config/     Model artifact configuration
+│           ├── controller/ Recommendation API
+│           └── service/    Feature encoding, ONNX inference, retrieval orchestration
 └── data/                   Bundled sample data and seed embeddings
     ├── movies.txt
     ├── users.txt
@@ -251,6 +232,12 @@ src/main/java/com/recsys/
     └── user_embeddings.txt
 
 src/main/resources/model/   Exported two-tower artifacts loaded by Spring Boot
+├── feature_config.json
+├── item_embeddings.json
+├── item_embeddings.faiss
+├── item_ids.json
+├── metadata.json
+└── user_tower.onnx
 ```
 
 **Python**
