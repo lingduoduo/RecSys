@@ -11,6 +11,7 @@ import java.io.InputStreamReader;
 import java.nio.charset.StandardCharsets;
 import java.util.ArrayList;
 import java.util.Arrays;
+import java.util.Comparator;
 import java.util.HashMap;
 import java.util.HashSet;
 import java.util.LinkedHashMap;
@@ -19,6 +20,7 @@ import java.util.Map;
 import java.util.Objects;
 import java.util.PriorityQueue;
 import java.util.Set;
+import java.util.stream.Collectors;
 
 public class DataLoader {
 
@@ -130,6 +132,50 @@ public class DataLoader {
             }
         }
         return Map.copyOf(similarMovies);
+    }
+
+    // Builds a genre → movies index, each list sorted by average rating descending.
+    public static Map<String, List<Movie>> buildMoviesByGenre(
+            Map<Integer, Movie> movies, List<Rating> ratings) {
+
+        Map<Integer, Double> avgRating = computeAvgRatings(ratings);
+
+        Map<String, List<Movie>> byGenre = new HashMap<>();
+        for (Movie movie : movies.values()) {
+            for (String genre : movie.genres()) {
+                byGenre.computeIfAbsent(genre, k -> new ArrayList<>()).add(movie);
+            }
+        }
+
+        byGenre.replaceAll((genre, list) -> {
+            list.sort(Comparator.comparingDouble(
+                    (Movie m) -> avgRating.getOrDefault(m.id(), 0.0)).reversed());
+            return List.copyOf(list);
+        });
+
+        return Map.copyOf(byGenre);
+    }
+
+    // All movies sorted by average rating descending.
+    public static List<Movie> buildTopRatedMovies(
+            Map<Integer, Movie> movies, List<Rating> ratings) {
+        Map<Integer, Double> avgRating = computeAvgRatings(ratings);
+        return movies.values().stream()
+                .sorted(Comparator.comparingDouble(
+                        (Movie m) -> avgRating.getOrDefault(m.id(), 0.0)).reversed())
+                .collect(Collectors.toUnmodifiableList());
+    }
+
+    // All movies sorted by release year descending.
+    public static List<Movie> buildLatestMovies(Map<Integer, Movie> movies) {
+        return movies.values().stream()
+                .sorted(Comparator.comparingInt(Movie::year).reversed())
+                .collect(Collectors.toUnmodifiableList());
+    }
+
+    private static Map<Integer, Double> computeAvgRatings(List<Rating> ratings) {
+        return ratings.stream().collect(Collectors.groupingBy(
+                Rating::movieId, Collectors.averagingDouble(Rating::rating)));
     }
 
     public static Map<Integer, float[]> loadMovieEmbeddings() {

@@ -13,7 +13,8 @@ The repo also contains two offline item embedding strategies under `src/main/jav
 The movie API supports:
 
 - movie and user lookup
-- co-rating based recommendations
+- multi-strategy candidate generation: genre-based from user/seed history, global top-rated, latest releases
+- embedding-based retrieval: cosine similarity against classpath item/user embeddings
 - Redis sorted-set Top-K trending recommendations
 - Redis item-embedding similarity search
 - runtime embedding updates
@@ -231,7 +232,7 @@ On startup, the server seeds Redis with bundled movie and user embeddings if the
 | Path | Purpose |
 |---|---|
 | `src/main/java/com/recsys/models/` | Immutable API/domain records |
-| `src/main/java/com/recsys/features/` | Data loading, vector math, Redis stores |
+| `src/main/java/com/recsys/features/` | Data loading (`DataLoader`), indexed data access (`DataManager`), retrieval strategies (`CandidateGenerator`), vector math, Redis stores |
 | `src/main/java/com/recsys/serving/` | Jetty server and servlet endpoints |
 | `src/main/java/com/recsys/training/` | Offline embedding strategies: `rulebased/` (Spark Word2Vec) and `modelbased/twotower/` (ONNX serving) |
 | `src/main/java/com/recsys/data/` | Bundled sample data and embeddings |
@@ -273,20 +274,39 @@ curl "http://localhost:6010/getuser?userId=123"
 
 ### Recommendations
 
-Default mode uses the in-memory co-rating similarity lists:
+Four retrieval modes are supported. All require `userId`.
+
+**Default (no `mode`) — multi-strategy by user history:**
 
 ```bash
 curl "http://localhost:6010/getrecommendation?userId=123"
+```
+
+Merges three candidate pools via `CandidateGenerator.byUserHistory`: genre-based from the user's rating history (top 20 per genre), global top-100 by average rating, and latest 100 by release year. Already-watched movies are excluded.
+
+**Default with `seedMovieId` — genre-based from seed:**
+
+```bash
 curl "http://localhost:6010/getrecommendation?userId=123&seedMovieId=2"
 ```
 
-Trending mode reads Redis sorted sets such as `topk:last_hour`:
+Uses `CandidateGenerator.byGenre`: for each genre tag on the seed movie, retrieves the top-100 by average rating, deduplicates, and removes the seed itself.
+
+**`mode=embedding` — embedding-based retrieval:**
+
+```bash
+curl "http://localhost:6010/getrecommendation?userId=123&mode=embedding&k=20"
+```
+
+Uses `CandidateGenerator.byEmbedding`: scores all movies that have a classpath embedding against the user's embedding using cosine similarity. Returns the top-k results. Returns 404 if no user embedding is found. The `k` parameter is capped at 200 (default: 20).
+
+**`mode=topk` / `mode=trending` — Redis sorted-set trending:**
 
 ```bash
 curl "http://localhost:6010/getrecommendation?userId=123&mode=topk&window=last_hour&k=5"
 ```
 
-Supported windows: `last_hour`, `last_day`, `last_month`.
+Reads pre-scored movie IDs from a Redis sorted set. Supported windows: `last_hour`, `last_day`, `last_month`.
 
 ### Similar Movies
 
@@ -489,24 +509,38 @@ PyTorch item tower
 TTL: none — embeddings reload on service restart.  
 To update: re-run `train_and_export.py` and restart the Spring Boot service.
 
+### Movie API → classpath (CandidateGenerator)
+
+`CandidateGenerator` also loads `movie_embeddings.txt` and `user_embeddings.txt` from the classpath at startup for the `mode=embedding` retrieval path. This is the same bundled seed data loaded into Redis on first start — the classpath copy is used for direct heap-based scoring without a Redis round-trip.
+
+```
+movie_embeddings.txt / user_embeddings.txt (classpath)
+  └─ DataLoader.loadMovieEmbeddings / loadUserEmbeddings
+       └─ CandidateGenerator (JVM heap)
+            └─ byEmbedding(userId, k)
+                 SCAN + min-heap cosine ──► top-k results
+```
+
 ### Comparison
 
-| | Rule-based | Model-based |
-|---|---|---|
-| Written by | Spark job → Jedis pipeline | Python → JSON file |
-| Stored in | Redis (`i2vEmb:{id}`) | Classpath + JVM heap |
-| Loaded by | `RedisEmbeddingStore.loadAll()` | `ModelArtifactService` `@PostConstruct` |
-| User vector | Not produced | Live via ONNX at request time |
-| TTL | 86400 s default | N/A — reloads on restart |
+| | Rule-based (Redis) | Model-based (two-tower) | Movie API (classpath) |
+|---|---|---|---|
+| Written by | Spark job → Jedis pipeline | Python → JSON file | Bundled text resources |
+| Stored in | Redis (`i2vEmb:{id}`) | Classpath + JVM heap | Classpath + JVM heap |
+| Loaded by | `RedisEmbeddingStore.loadAll()` | `ModelArtifactService` `@PostConstruct` | `CandidateGenerator` constructor |
+| User vector | Not produced | Live via ONNX at request time | Preloaded from `user_embeddings.txt` |
+| TTL | 86400 s default | N/A — reloads on restart | N/A — reloads on restart |
 
 ## Developer Notes
 
 - `DataLoader` loads bundled text resources from `com/recsys/data`.
-- `DataManager` keeps immutable maps and precomputed indexes for request-time reads.
+- `DataManager` is a pure data-access singleton: immutable maps, precomputed sorted lists (`topRatedMovies`, `latestMovies`, `moviesByGenre`, `similarMovies`), and O(1) or subList lookups. No retrieval strategy logic lives here.
+- `CandidateGenerator` owns all three retrieval strategies and the classpath movie/user embeddings. It is constructed once in `RecSysServer` and injected into `RecommendationService`. The three methods map directly to the reference patterns: `byGenre` (seed-movie flow), `byUserHistory` (multi-strategy), `byEmbedding` (embedding cosine search).
+- `CandidateGenerator.byEmbedding` precomputes the user vector's norm once, then runs a min-heap scan for O(n log k) top-k retrieval — avoiding the O(n log n) full sort in the reference.
 - `RedisEmbeddingStore` is a generic key-prefix store (`getEmbedding`, `setEmbedding`, `setEmbeddings`, `scanIds`). The same class backs both `i2vEmb:` (item) and `u2vEmb:` (user) Redis namespaces.
 - `RedisEmbeddingStore` uses Redis pipelines for bulk writes and `SCAN` + `MGET` for safe bulk reads.
 - `BaseApiServlet` centralizes JSON headers, serialization, and request parameter parsing.
-- `RetrievalService` delegates cosine similarity to `VectorMath.cosine(a, normSqA, b)`, precomputing the query vector's norm once before scanning all candidate item embeddings.
+- `RetrievalService` (two-tower path) delegates cosine similarity to `VectorMath.cosine(a, normSqA, b)`, precomputing the query vector's norm once before scanning all candidate item embeddings.
 
 ## LLM Integration Ideas
 

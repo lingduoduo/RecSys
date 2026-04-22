@@ -18,6 +18,9 @@ public class DataManager {
     private final List<Rating> ratings;
     private final Map<Integer, List<Rating>> ratingsByUser;
     private final Map<Integer, List<Movie>> similarMovies;
+    private final Map<String, List<Movie>> moviesByGenre;
+    private final List<Movie> topRatedMovies;
+    private final List<Movie> latestMovies;
 
     private DataManager() {
         movies = DataLoader.loadMovies();
@@ -32,6 +35,9 @@ public class DataManager {
                         entry -> List.copyOf(entry.getValue())
                 ));
         similarMovies = DataLoader.buildSimilarMovies(movies, ratings);
+        moviesByGenre = DataLoader.buildMoviesByGenre(movies, ratings);
+        topRatedMovies = DataLoader.buildTopRatedMovies(movies, ratings);
+        latestMovies = DataLoader.buildLatestMovies(movies);
     }
 
     public static DataManager getInstance() {
@@ -50,6 +56,19 @@ public class DataManager {
         return similarMovies.getOrDefault(movieId, List.of());
     }
 
+    public List<Movie> getMoviesByGenre(String genre, int limit) {
+        List<Movie> all = moviesByGenre.getOrDefault(genre, List.of());
+        return all.size() <= limit ? all : all.subList(0, limit);
+    }
+
+    public List<Movie> getTopRatedMovies(int limit) {
+        return topRatedMovies.size() <= limit ? topRatedMovies : topRatedMovies.subList(0, limit);
+    }
+
+    public List<Movie> getLatestMovies(int limit) {
+        return latestMovies.size() <= limit ? latestMovies : latestMovies.subList(0, limit);
+    }
+
     public Set<Integer> getAllMovieIds() {
         return movies.keySet();
     }
@@ -61,6 +80,4 @@ public class DataManager {
     public List<Rating> getAllRatings() {
         return ratings;
     }
-
-
 }

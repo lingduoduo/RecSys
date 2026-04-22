@@ -1,5 +1,6 @@
 package com.recsys.serving;
 
+import com.recsys.features.CandidateGenerator;
 import com.recsys.features.DataManager;
 import com.recsys.features.RedisTopKStore;
 import com.recsys.models.Movie;
@@ -15,10 +16,14 @@ import java.util.Objects;
 public class RecommendationService extends BaseApiServlet {
 
     private final DataManager dataManager;
+    private final CandidateGenerator candidates;
     private final RedisTopKStore topkStore;
 
-    public RecommendationService(DataManager dataManager, RedisTopKStore topkStore) {
+    public RecommendationService(DataManager dataManager,
+                                 CandidateGenerator candidates,
+                                 RedisTopKStore topkStore) {
         this.dataManager = dataManager;
+        this.candidates = candidates;
         this.topkStore = topkStore;
     }
 
@@ -39,8 +44,18 @@ public class RecommendationService extends BaseApiServlet {
             if ("topk".equalsIgnoreCase(mode) || "trending".equalsIgnoreCase(mode)) {
                 String w = (window == null || window.isBlank()) ? "last_hour" : window.trim();
                 int k = optionalIntParam(request, "k", 20, 1, 200);
-
                 List<Movie> recs = getTopKMoviesFromRedis(w, k);
+                writeJson(response, HttpServletResponse.SC_OK, new RecommendationResponse(user, recs));
+                return;
+            }
+
+            if ("embedding".equalsIgnoreCase(mode)) {
+                int k = optionalIntParam(request, "k", 20, 1, 200);
+                List<Movie> recs = candidates.byEmbedding(userId, k);
+                if (recs.isEmpty()) {
+                    writeError(response, HttpServletResponse.SC_NOT_FOUND, "no embedding found for user", "userId", userId);
+                    return;
+                }
                 writeJson(response, HttpServletResponse.SC_OK, new RecommendationResponse(user, recs));
                 return;
             }
@@ -54,9 +69,9 @@ public class RecommendationService extends BaseApiServlet {
                     writeError(response, HttpServletResponse.SC_NOT_FOUND, "seed movie not found", "seedMovieId", seedMovieId);
                     return;
                 }
-                recs = dataManager.getSimilarMovies(seedMovieId);
+                recs = candidates.byGenre(seed, 100);
             } else {
-                recs = dataManager.getSimilarMovies(1);
+                recs = candidates.byUserHistory(userId, 20);
             }
 
             writeJson(response, HttpServletResponse.SC_OK, new RecommendationResponse(user, recs));
