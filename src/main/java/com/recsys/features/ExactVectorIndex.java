@@ -48,6 +48,29 @@ public class ExactVectorIndex implements VectorIndex {
         return results;
     }
 
+    public static List<SearchResult> search(Map<Integer, float[]> embeddings, float[] query, int k, Set<Integer> excludeIds) {
+        if (query == null || k <= 0) return List.of();
+        Set<Integer> excluded = Objects.requireNonNullElse(excludeIds, Set.of());
+
+        PriorityQueue<SearchResult> best = new PriorityQueue<>(Comparator.comparingDouble(SearchResult::score));
+        for (Map.Entry<Integer, float[]> entry : embeddings.entrySet()) {
+            int id = entry.getKey();
+            if (excluded.contains(id)) continue;
+            double score = VectorMath.innerProduct(query, entry.getValue());
+            if (score == Double.NEGATIVE_INFINITY) continue;
+            if (best.size() < k) {
+                best.offer(new SearchResult(id, score));
+            } else if (score > best.peek().score()) {
+                best.poll();
+                best.offer(new SearchResult(id, score));
+            }
+        }
+
+        List<SearchResult> results = new ArrayList<>(best);
+        results.sort(Comparator.comparingDouble(SearchResult::score).reversed());
+        return results;
+    }
+
     @Override
     public String name() {
         return "exact";

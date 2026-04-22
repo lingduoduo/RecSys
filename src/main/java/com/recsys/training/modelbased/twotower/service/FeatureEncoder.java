@@ -9,22 +9,17 @@ import java.util.Map;
 public class FeatureEncoder {
 
     private final ModelArtifactService artifactService;
+    private final int unkIndex;
 
     public FeatureEncoder(ModelArtifactService artifactService) {
         this.artifactService = artifactService;
+        this.unkIndex = artifactService.getUserVocab().getOrDefault("__UNK__", 0);
     }
 
     public EncodedFeatures encode(RecommendRequest request) {
         Map<String, Integer> userVocab = artifactService.getUserVocab();
-        long userId = lookup(userVocab, request.getUserId());
+        long userId = userVocab.getOrDefault(request.getUserId(), unkIndex);
         return new EncodedFeatures(userId);
-    }
-
-    private long lookup(Map<String, Integer> vocab, String value) {
-        if (value == null) {
-            return vocab.getOrDefault("__UNK__", 0);
-        }
-        return vocab.getOrDefault(value, vocab.getOrDefault("__UNK__", 0));
     }
 
     public static class EncodedFeatures {

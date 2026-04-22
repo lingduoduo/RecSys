@@ -41,8 +41,7 @@ public class SimilarMovieService extends BaseApiServlet {
 
             Set<Integer> candidateIds = selectCandidates(movieId, k);
             Map<Integer, float[]> embeddings = store.getEmbeddings(candidateIds);
-            List<ScoredMovie> scored = new ExactVectorIndex(embeddings)
-                    .search(queryVec, k, Set.of(movieId))
+            List<ScoredMovie> scored = ExactVectorIndex.search(embeddings, queryVec, k, Set.of(movieId))
                     .stream()
                     .map(SimilarMovieService::toScoredMovie)
                     .toList();

@@ -45,12 +45,22 @@ public class RecommendationService {
         float[] userEmbedding = inferenceService.inferUserEmbedding(encoded);
 
         Set<String> excluded = new HashSet<>(request.getExcludeItemIds());
-        Set<String> candidates = candidateSelectionService.selectCandidates(request.getUserId(), excluded);
-        int recallSize = Math.min(MAX_RECALL_SIZE, Math.max(request.getK(), request.getK() * RECALL_MULTIPLIER));
-        List<ScoredItem> recalled = retrievalService.recall(userEmbedding, request.getUserId(), candidates, recallSize);
+        Integer numericUserId = parseUserId(request.getUserId());
+        Set<String> candidates = candidateSelectionService.selectCandidates(numericUserId, excluded);
+        int recallSize = Math.min(MAX_RECALL_SIZE, request.getK() * RECALL_MULTIPLIER);
+        List<ScoredItem> recalled = retrievalService.recall(userEmbedding, numericUserId, candidates, recallSize);
         List<ScoredItem> items = rankingService.rank(userEmbedding, recalled, request.getK());
 
         return new RecommendResponse(request.getUserId(), artifactService.getModelVersion(), items);
+    }
+
+    private static Integer parseUserId(String userId) {
+        if (userId == null || userId.isBlank()) return null;
+        try {
+            return Integer.parseInt(userId);
+        } catch (NumberFormatException e) {
+            return null;
+        }
     }
 
     private void validate(RecommendRequest request) {

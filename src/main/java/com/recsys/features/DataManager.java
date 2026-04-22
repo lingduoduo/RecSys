@@ -35,8 +35,9 @@ public class DataManager {
                         entry -> List.copyOf(entry.getValue())
                 ));
         similarMovies = DataLoader.buildSimilarMovies(movies, ratings);
-        moviesByGenre = DataLoader.buildMoviesByGenre(movies, ratings);
-        topRatedMovies = DataLoader.buildTopRatedMovies(movies, ratings);
+        Map<Integer, Double> avgRatings = DataLoader.computeAvgRatings(ratings);
+        moviesByGenre = DataLoader.buildMoviesByGenre(movies, avgRatings);
+        topRatedMovies = DataLoader.buildTopRatedMovies(movies, avgRatings);
         latestMovies = DataLoader.buildLatestMovies(movies);
     }
 

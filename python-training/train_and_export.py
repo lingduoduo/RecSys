@@ -89,7 +89,7 @@ def export_artifacts(model, samples, users, items, user_vocab, item_vocab):
     # Batch-compute all item embeddings in a single forward pass
     with torch.no_grad():
         all_indices = torch.tensor([item_vocab[item] for item in items], dtype=torch.long)
-        all_embeddings = model.item_tower(all_indices).cpu().numpy().astype(float)
+        all_embeddings = model.item_tower(all_indices).cpu().numpy()  # already float32
     item_embeddings = {item: all_embeddings[i].tolist() for i, item in enumerate(items)}
 
     with open(os.path.join(artifact_dir, "item_embeddings.json"), "w", encoding="utf-8") as f:

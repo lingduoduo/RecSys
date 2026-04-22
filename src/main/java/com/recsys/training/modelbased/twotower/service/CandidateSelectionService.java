@@ -5,8 +5,9 @@ import com.recsys.models.Movie;
 import com.recsys.models.Rating;
 import org.springframework.stereotype.Service;
 
-import java.util.List;
+import java.util.HashSet;
 import java.util.LinkedHashSet;
+import java.util.List;
 import java.util.Set;
 
 @Service
@@ -22,15 +23,14 @@ public class CandidateSelectionService {
         this.artifactService = artifactService;
     }
 
-    public Set<String> selectCandidates(String userId, Set<String> excludedItemIds) {
+    public Set<String> selectCandidates(Integer numericUserId, Set<String> excludedItemIds) {
         Set<String> availableItems = artifactService.getItemEmbeddings().keySet();
         Set<String> excluded = excludedItemIds == null ? Set.of() : excludedItemIds;
         Set<String> candidates = new LinkedHashSet<>();
 
-        Integer numericUserId = parseUserId(userId);
         if (numericUserId != null) {
             List<Rating> history = dataManager.getRatingsByUser(numericUserId);
-            Set<Integer> watched = new LinkedHashSet<>();
+            Set<Integer> watched = new HashSet<>();
             Set<String> genres = new LinkedHashSet<>();
             for (Rating rating : history) {
                 watched.add(rating.movieId());
@@ -67,14 +67,4 @@ public class CandidateSelectionService {
         }
     }
 
-    private static Integer parseUserId(String userId) {
-        if (userId == null || userId.isBlank()) {
-            return null;
-        }
-        try {
-            return Integer.parseInt(userId);
-        } catch (NumberFormatException e) {
-            return null;
-        }
-    }
 }

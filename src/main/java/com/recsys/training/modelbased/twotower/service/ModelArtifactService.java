@@ -9,20 +9,18 @@ import org.springframework.stereotype.Service;
 import java.io.IOException;
 import java.io.InputStream;
 import java.util.*;
-import java.util.concurrent.ConcurrentMap;
 
 @Service
 public class ModelArtifactService {
 
     private final ObjectMapper objectMapper = new ObjectMapper();
-    private final ConcurrentMap<String, float[]> itemEmbeddingCache;
 
     private String modelVersion;
     private Map<String, Integer> userVocab = new HashMap<>();
     private int embeddingDim;
+    private Map<String, float[]> itemEmbeddings = Map.of();
 
-    public ModelArtifactService(ConcurrentMap<String, float[]> itemEmbeddingCache) {
-        this.itemEmbeddingCache = itemEmbeddingCache;
+    public ModelArtifactService() {
     }
 
     @PostConstruct
@@ -53,7 +51,7 @@ public class ModelArtifactService {
 
         try (InputStream is = resource.getInputStream()) {
             Map<String, List<Double>> raw = objectMapper.readValue(is, new TypeReference<>() {});
-            itemEmbeddingCache.clear();
+            Map<String, float[]> map = new HashMap<>(raw.size() * 2);
             for (Map.Entry<String, List<Double>> entry : raw.entrySet()) {
                 List<Double> values = entry.getValue();
                 if (values.size() != embeddingDim) {
@@ -64,8 +62,9 @@ public class ModelArtifactService {
                 for (int i = 0; i < values.size(); i++) {
                     vec[i] = values.get(i).floatValue();
                 }
-                itemEmbeddingCache.put(entry.getKey(), vec);
+                map.put(entry.getKey(), vec);
             }
+            this.itemEmbeddings = Collections.unmodifiableMap(map);
         }
     }
 
@@ -104,6 +103,6 @@ public class ModelArtifactService {
     }
 
     public Map<String, float[]> getItemEmbeddings() {
-        return itemEmbeddingCache;
+        return itemEmbeddings;
     }
 }

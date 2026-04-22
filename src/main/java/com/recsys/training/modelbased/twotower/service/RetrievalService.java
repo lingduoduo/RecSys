@@ -7,7 +7,15 @@ import com.recsys.models.Rating;
 import com.recsys.training.modelbased.twotower.model.ScoredItem;
 import org.springframework.stereotype.Service;
 
-import java.util.*;
+import java.util.ArrayList;
+import java.util.Comparator;
+import java.util.HashSet;
+import java.util.LinkedHashMap;
+import java.util.LinkedHashSet;
+import java.util.List;
+import java.util.Map;
+import java.util.PriorityQueue;
+import java.util.Set;
 
 @Service
 public class RetrievalService {
@@ -24,7 +32,7 @@ public class RetrievalService {
         this.artifactService = artifactService;
     }
 
-    public List<ScoredItem> recall(float[] userEmbedding, String userId, Set<String> candidateItemIds, int recallSize) {
+    public List<ScoredItem> recall(float[] userEmbedding, Integer userId, Set<String> candidateItemIds, int recallSize) {
         if (userEmbedding == null || candidateItemIds == null || candidateItemIds.isEmpty() || recallSize <= 0) {
             return List.of();
         }
@@ -56,17 +64,16 @@ public class RetrievalService {
         return new ArrayList<>(best);
     }
 
-    private List<ScoredItem> retrievalCandidatesByMetadata(String userId, Set<String> candidateItemIds, int recallSize) {
-        Integer numericUserId = parseUserId(userId);
-        if (numericUserId == null) {
+    private List<ScoredItem> retrievalCandidatesByMetadata(Integer userId, Set<String> candidateItemIds, int recallSize) {
+        if (userId == null) {
             return List.of();
         }
 
-        List<Rating> history = dataManager.getRatingsByUser(numericUserId);
-        Set<Integer> watched = new LinkedHashSet<>();
+        List<Rating> history = dataManager.getRatingsByUser(userId);
+        Set<Integer> watched = new HashSet<>();
         Map<String, ScoredItem> recalled = new LinkedHashMap<>();
 
-        Set<String> genres = new LinkedHashSet<>();
+        Set<String> genres = new LinkedHashSet<>(); // preserves genre-encounter order for recall priority
         for (Rating rating : history) {
             watched.add(rating.movieId());
             Movie movie = dataManager.getMovieById(rating.movieId());
@@ -120,14 +127,4 @@ public class RetrievalService {
         }
     }
 
-    private static Integer parseUserId(String userId) {
-        if (userId == null || userId.isBlank()) {
-            return null;
-        }
-        try {
-            return Integer.parseInt(userId);
-        } catch (NumberFormatException e) {
-            return null;
-        }
-    }
 }

@@ -136,9 +136,7 @@ public class DataLoader {
 
     // Builds a genre → movies index, each list sorted by average rating descending.
     public static Map<String, List<Movie>> buildMoviesByGenre(
-            Map<Integer, Movie> movies, List<Rating> ratings) {
-
-        Map<Integer, Double> avgRating = computeAvgRatings(ratings);
+            Map<Integer, Movie> movies, Map<Integer, Double> avgRating) {
 
         Map<String, List<Movie>> byGenre = new HashMap<>();
         for (Movie movie : movies.values()) {
@@ -158,8 +156,7 @@ public class DataLoader {
 
     // All movies sorted by average rating descending.
     public static List<Movie> buildTopRatedMovies(
-            Map<Integer, Movie> movies, List<Rating> ratings) {
-        Map<Integer, Double> avgRating = computeAvgRatings(ratings);
+            Map<Integer, Movie> movies, Map<Integer, Double> avgRating) {
         return movies.values().stream()
                 .sorted(Comparator.comparingDouble(
                         (Movie m) -> avgRating.getOrDefault(m.id(), 0.0)).reversed())
@@ -173,7 +170,7 @@ public class DataLoader {
                 .collect(Collectors.toUnmodifiableList());
     }
 
-    private static Map<Integer, Double> computeAvgRatings(List<Rating> ratings) {
+    public static Map<Integer, Double> computeAvgRatings(List<Rating> ratings) {
         return ratings.stream().collect(Collectors.groupingBy(
                 Rating::movieId, Collectors.averagingDouble(Rating::rating)));
     }
