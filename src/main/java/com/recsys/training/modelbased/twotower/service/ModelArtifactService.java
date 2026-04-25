@@ -3,7 +3,6 @@ package com.recsys.training.modelbased.twotower.service;
 import com.fasterxml.jackson.core.type.TypeReference;
 import com.fasterxml.jackson.databind.ObjectMapper;
 import jakarta.annotation.PostConstruct;
-import org.springframework.core.io.ClassPathResource;
 import org.springframework.stereotype.Service;
 
 import java.io.IOException;
@@ -14,13 +13,15 @@ import java.util.*;
 public class ModelArtifactService {
 
     private final ObjectMapper objectMapper = new ObjectMapper();
+    private final ModelArtifactLocator artifactLocator;
 
     private String modelVersion;
     private Map<String, Integer> userVocab = new HashMap<>();
     private int embeddingDim;
     private Map<String, float[]> itemEmbeddings = Map.of();
 
-    public ModelArtifactService() {
+    public ModelArtifactService(ModelArtifactLocator artifactLocator) {
+        this.artifactLocator = artifactLocator;
     }
 
     @PostConstruct
@@ -30,26 +31,20 @@ public class ModelArtifactService {
     }
 
     private void loadFeatureConfig() throws IOException {
-        ClassPathResource resource = new ClassPathResource("model/feature_config.json");
-        if (!resource.exists()) {
-            throw new IllegalStateException("model/feature_config.json not found. Run python-training/train_and_export.py first.");
-        }
-
-        try (InputStream is = resource.getInputStream()) {
+        try (InputStream is = artifactLocator.openModel("feature_config.json")) {
             Map<String, Object> config = objectMapper.readValue(is, new TypeReference<>() {});
             this.modelVersion = String.valueOf(config.getOrDefault("model_version", "unknown"));
             this.embeddingDim = readPositiveInt(config.get("embedding_dim"), "embedding_dim");
             this.userVocab = convertToIntMap(config.get("user_vocab"));
+        } catch (IllegalStateException e) {
+            throw new IllegalStateException("feature_config.json not found at "
+                    + artifactLocator.describeModelLocation("feature_config.json")
+                    + ". Run python-training/train_and_export.py first or point recsys.model.artifacts-dir to a pipeline output directory.", e);
         }
     }
 
     private void loadItemEmbeddings() throws IOException {
-        ClassPathResource resource = new ClassPathResource("model/item_embeddings.json");
-        if (!resource.exists()) {
-            throw new IllegalStateException("model/item_embeddings.json not found. Run python-training/train_and_export.py first.");
-        }
-
-        try (InputStream is = resource.getInputStream()) {
+        try (InputStream is = artifactLocator.openModel("item_embeddings.json")) {
             Map<String, List<Double>> raw = objectMapper.readValue(is, new TypeReference<>() {});
             Map<String, float[]> map = new HashMap<>(raw.size() * 2);
             for (Map.Entry<String, List<Double>> entry : raw.entrySet()) {
@@ -65,6 +60,10 @@ public class ModelArtifactService {
                 map.put(entry.getKey(), vec);
             }
             this.itemEmbeddings = Collections.unmodifiableMap(map);
+        } catch (IllegalStateException e) {
+            throw new IllegalStateException("item_embeddings.json not found at "
+                    + artifactLocator.describeModelLocation("item_embeddings.json")
+                    + ". Run python-training/train_and_export.py first or point recsys.model.artifacts-dir to a pipeline output directory.", e);
         }
     }
 

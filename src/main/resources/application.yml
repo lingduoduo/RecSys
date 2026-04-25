@@ -7,3 +7,11 @@ logging:
   level:
     root: INFO
     org.springframework: INFO
+
+recsys:
+  model:
+    # Processed serving artifacts: feature configs, pre-computed embeddings (classpath:model/)
+    artifacts-dir: ${RECSYS_MODEL_ARTIFACTS_DIR:}
+  spark:
+    # PySpark model artifacts output by the training pipeline (classpath:artifacts/pyspark/)
+    artifacts-dir: ${RECSYS_SPARK_ARTIFACTS_DIR:}

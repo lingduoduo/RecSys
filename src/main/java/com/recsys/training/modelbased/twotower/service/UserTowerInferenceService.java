@@ -3,36 +3,40 @@ package com.recsys.training.modelbased.twotower.service;
 import ai.onnxruntime.*;
 import jakarta.annotation.PostConstruct;
 import jakarta.annotation.PreDestroy;
-import org.springframework.core.io.ClassPathResource;
 import org.springframework.stereotype.Service;
 
-import java.io.IOException;
-import java.io.InputStream;
 import java.nio.LongBuffer;
 import java.util.Map;
 
 @Service
 public class UserTowerInferenceService {
 
+    private final ModelArtifactLocator artifactLocator;
     private OrtEnvironment environment;
     private OrtSession session;
 
+    public UserTowerInferenceService(ModelArtifactLocator artifactLocator) {
+        this.artifactLocator = artifactLocator;
+    }
+
     @PostConstruct
-    public void init() throws OrtException, IOException {
+    public void init() throws OrtException, Exception {
         environment = OrtEnvironment.getEnvironment();
-        ClassPathResource resource = new ClassPathResource("model/user_tower.onnx");
-        if (!resource.exists()) {
-            throw new IllegalStateException("model/user_tower.onnx not found. Run python-training/train_and_export.py first.");
-        }
-        try (InputStream inputStream = resource.getInputStream()) {
-            session = environment.createSession(inputStream.readAllBytes(), new OrtSession.SessionOptions());
+        try {
+            session = environment.createSession(
+                    artifactLocator.readModelBytes("user_tower.onnx"),
+                    new OrtSession.SessionOptions()
+            );
+        } catch (IllegalStateException e) {
+            throw new IllegalStateException("user_tower.onnx not found at "
+                    + artifactLocator.describeModelLocation("user_tower.onnx")
+                    + ". Run python-training/train_and_export.py first or point recsys.model.artifacts-dir to a pipeline output directory.", e);
         }
     }
 
     public float[] inferUserEmbedding(FeatureEncoder.EncodedFeatures features) {
         try {
             long[] userArr = new long[]{features.getUserId()};
-
             try (OnnxTensor userTensor = OnnxTensor.createTensor(environment, LongBuffer.wrap(userArr), new long[]{1})) {
                 Map<String, OnnxTensor> inputs = Map.of("user_id", userTensor);
                 try (OrtSession.Result result = session.run(inputs)) {

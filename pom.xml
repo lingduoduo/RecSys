@@ -87,6 +87,13 @@
       <version>${onnxruntime.version}</version>
     </dependency>
 
+    <dependency>
+      <groupId>org.springframework.boot</groupId>
+      <artifactId>spring-boot-starter-test</artifactId>
+      <version>${spring-boot.version}</version>
+      <scope>test</scope>
+    </dependency>
+
     <!-- Jedis Support -->
     <dependency>
       <groupId>redis.clients</groupId>

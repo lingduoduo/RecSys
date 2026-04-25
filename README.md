@@ -109,8 +109,17 @@ It demonstrates:
 2. `python-training/train_and_export.py` trains the PyTorch `TwoTower` model from `python-training/model.py`: the user tower and item tower learn normalized vectors using in-batch cross-entropy over user-item pairs.
 3. The exporter writes `user_tower.onnx`, `feature_config.json`, `item_embeddings.json`, and `metadata.json` to `python-training/artifacts/`, then copies them into `src/main/resources/model/` for Java serving.
 4. Item embeddings are precomputed offline by running the trained item tower over every known `item_id`; when `faiss-cpu` is installed, the script also exports optional `item_embeddings.faiss` and `item_ids.json` files.
-5. Start the Spring Boot service, where `UserTowerInferenceService` loads `model/user_tower.onnx` and `ModelArtifactService` loads `model/feature_config.json` plus `model/item_embeddings.json` from `src/main/resources/model/`.
+5. Start the Spring Boot service. `ModelArtifactLocator` resolves all artifacts and exposes two typed groups: **model** (feature configs, ONNX models, pre-computed embeddings at `classpath:model/`) and **spark** (PySpark model files at `classpath:artifacts/pyspark/`). `UserTowerInferenceService` loads `user_tower.onnx` and `ModelArtifactService` loads `feature_config.json` plus `item_embeddings.json` through the model group.
 6. At request time, `/recommend` calls `FeatureEncoder` to map `userId` into the training vocab, runs ONNX inference to produce a user embedding, uses `CandidateSelectionService` and `RetrievalService` to recall candidates, and uses `RankingService` to rerank the final top-K by inner-product similarity.
+
+If your modeling pipeline writes artifacts to its own output directory, point each artifact group to it independently:
+
+```bash
+RECSYS_MODEL_ARTIFACTS_DIR=/path/to/model/artifacts   # overrides classpath:model/
+RECSYS_SPARK_ARTIFACTS_DIR=/path/to/spark/artifacts   # overrides classpath:artifacts/pyspark/
+```
+
+When unset, the service uses the bundled classpath artifacts.
 
 The demo stays small so the training-serving feature contract is easy to inspect.
 
@@ -175,6 +184,12 @@ Start the two-tower service from the repo root:
 mvn spring-boot:run
 ```
 
+Load artifacts directly from a modeling pipeline output directory:
+
+```bash
+RECSYS_MODEL_ARTIFACTS_DIR=python-training/artifacts mvn spring-boot:run
+```
+
 Health:
 
 ```bash
@@ -225,6 +240,28 @@ Notes:
 
 ------
 
+## Testing
+
+Run all unit and integration tests from the repo root:
+
+```bash
+mvn test
+```
+
+The test suite covers the two-tower serving layer:
+
+| Test class | What it covers |
+|---|---|
+| `ModelArtifactLocatorTest` | Classpath and external-dir resolution for model and spark artifact groups; whitespace-only override falls back to classpath |
+| `ModelArtifactServiceTest` | Loads bundled `feature_config.json` and `item_embeddings.json`; asserts model version, vocab contents, embedding dimension, and immutability |
+| `FeatureEncoderTest` | Known user IDs map to their vocab indices; unknown IDs fall back to `__UNK__` (index 0) |
+| `RankingServiceTest` | Items are re-ordered by inner-product score descending; k-truncation, duplicate deduplication, and missing-embedding skip |
+| `RetrievalServiceTest` | Embedding recall returns highest inner-product candidates up to recall size; null embedding, empty candidates, and unknown items |
+| `RecommendationServiceTest` | Validates `userId` and `k`; wires mocked sub-services and asserts the full response shape |
+| `RecommendationControllerTest` | `GET /health`, `POST /recommend` happy path and `IllegalArgumentException` → HTTP 400 via `GlobalExceptionHandler` |
+
+------
+
 ## Configuration
 
 These environment variables control the Jetty movie API runtime and its retrieval backend.
@@ -235,6 +272,8 @@ These environment variables control the Jetty movie API runtime and its retrieva
 | `REDIS_HOST` | `localhost` | Redis host |
 | `REDIS_PORT` | `6379` | Redis port |
 | `RECSYS_VECTOR_BACKEND` | `lsh` | Movie API embedding backend: `lsh` or `exact`; `faiss` currently falls back to `lsh` in the portable build |
+| `RECSYS_MODEL_ARTIFACTS_DIR` | empty | Two-tower model artifact directory; overrides `classpath:model/` for `user_tower.onnx`, `feature_config.json`, and `item_embeddings.json` |
+| `RECSYS_SPARK_ARTIFACTS_DIR` | empty | PySpark artifact directory; overrides `classpath:artifacts/pyspark/` for ALS, Item2Vec, and other Spark model files |
 
 Example:
 
@@ -266,6 +305,7 @@ src/main/java/com/recsys/
 │           ├── config/     Model artifact configuration
 │           ├── controller/ Recommendation API
 │           └── service/    Candidate selection, recall, ranking, ONNX inference
+│                           ModelArtifactLocator — unified locator for model + spark artifact groups
 └── data/                   Bundled sample data and seed embeddings
     ├── movies.txt
     ├── users.txt
@@ -676,9 +716,11 @@ Servlet and ranking flow:
 
 Two-tower serving:
 
+- `ModelArtifactLocator` is the single artifact resolver for the service. It exposes a **model** group (`classpath:model/`, overridden by `RECSYS_MODEL_ARTIFACTS_DIR`) for feature configs, ONNX models, and pre-computed embeddings, and a **spark** group (`classpath:artifacts/pyspark/`, overridden by `RECSYS_SPARK_ARTIFACTS_DIR`) for PySpark model files.
 - `CandidateSelectionService` chooses eligible item IDs from user-history genres plus global pools.
 - `RetrievalService` performs multi-route recall by combining embedding recall and metadata recall.
 - `RankingService` recomputes inner-product similarity and sorts the final top-K response.
+- `GlobalExceptionHandler` maps `IllegalArgumentException` to HTTP 400 with a JSON `{"error": "..."}` body.
 
 ------
 
