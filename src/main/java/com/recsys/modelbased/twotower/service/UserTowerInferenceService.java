@@ -30,7 +30,7 @@ public class UserTowerInferenceService {
         } catch (IllegalStateException e) {
             throw new IllegalStateException("user_tower.onnx not found at "
                     + artifactLocator.describeModelLocation("user_tower.onnx")
-                    + ". Run python-training/train_and_export.py first or point recsys.model.artifacts-dir to a pipeline output directory.", e);
+                    + ". Set recsys.model.artifacts-dir to an external pipeline output directory, or place artifacts under classpath:artifacts/twotower/.", e);
         }
     }
 

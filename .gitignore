@@ -22,13 +22,8 @@ logs/
 __pycache__/
 *.py[cod]
 
-# Generated training artifacts — reproduced by running train_and_export.py
-python-training/artifacts/
-
-# Model artifacts — large binary files managed outside version control
+# Model artifacts — large binary files exported by external pipelines, not bundled in the JAR
 src/main/resources/artifacts/
-src/main/resources/model/*.onnx
-src/main/resources/model/*.faiss
 
 # Local configuration / secrets
 .env

@@ -5,59 +5,60 @@ RecSys is a compact Maven workspace for experimenting with recommendation-system
 | Area | What it shows |
 |---|---|
 | Movie API | Jetty, Redis, local movie data, multi-strategy retrieval, and runtime embedding updates |
-| Two-tower demo | PyTorch training, ONNX export, and Spring Boot retrieval serving |
+| Two-tower demo | Spring Boot ONNX retrieval serving, loads artifacts from any external modeling pipeline |
 | Rule-based offline embeddings | Spark Word2Vec item embeddings trained from user interaction sequences |
 | Model-based offline embeddings | Two-tower user inference plus precomputed item embeddings |
 
-The movie API includes:
+---
 
-- Movie and user lookup
-- Single-strategy recall from seed-movie genres
-- Multi-way recall from user history, global top-rated movies, and latest releases
-- Embedding-based retrieval over classpath user and item embeddings with selectable vector backends
-- Batched pair scoring through a TensorFlow Serving style `POST /v1/models/recmodel:predict` endpoint
-- Redis sorted-set Top-K trending recommendations
-- Redis item-embedding similarity search
-- Runtime embedding updates
+## Contents
 
-------
+- [Recommendation Flow](#recommendation-flow)
+- [Movie API](#movie-api)
+- [Configuration](#configuration)
+- [Project Layout](#project-layout)
+- [API Reference](#api-reference)
+- [Two-Tower Model Demo](#two-tower-model-demo)
+- [Testing](#testing)
+- [Redis Test Data](#redis-test-data)
+- [Kafka / Flink](#kafkaflink)
+- [Offline Item Embeddings](#offline-item-embeddings)
+- [Embedding Storage Paths](#embedding-storage-paths)
+- [Developer Notes](#developer-notes)
+- [LLM Integration Ideas](#llm-integration-ideas)
+
+---
 
 ## Recommendation Flow
 
-The movie API models a common recommendation-serving pipeline: recall first narrows the catalog to a candidate set, then ranking scores and orders those candidates.
+The movie API models a common recommendation-serving pipeline: recall narrows the catalog to a candidate set, then ranking scores and orders those candidates.
 
 Recall examples:
 
-- Single-strategy recall: `CandidateGenerator.byGenre` expands from the genres of a seed movie.
-- Multi-way recall: `CandidateGenerator.byUserHistory` merges candidates from user-history genres, global top-rated movies, and latest releases.
-- Embedding recall: `CandidateGenerator.byEmbedding` retrieves items by comparing user and item embeddings with the configured vector index.
+- **Single-strategy:** `CandidateGenerator.byGenre` expands from the genres of a seed movie.
+- **Multi-way:** `CandidateGenerator.byUserHistory` merges candidates from user-history genres, global top-rated movies, and latest releases.
+- **Embedding:** `CandidateGenerator.byEmbedding` retrieves items by comparing user and item embeddings with the configured vector index.
 
 Ranking example:
 
-- Embedding-similarity ranking: `SimilarMovieService` builds a candidate set, scores each candidate with inner-product similarity, and returns the top-K results.
+- **Embedding-similarity:** `SimilarMovieService` builds a candidate set, scores each candidate with inner-product similarity, and returns the top-K results.
 
-Future ranking demos can replace embedding similarity with model-based rankers such as LR, GBDT, DNN, Wide & Deep, DIN, or other recommendation models.
+Future ranking demos can replace embedding similarity with model-based rankers such as LR, GBDT, DNN, Wide & Deep, or DIN.
 
-------
+---
 
 ## Movie API
 
-Use this path to run the Jetty movie API on port `6010` with Redis-backed embeddings and Top-K state.
+Runs the Jetty movie API on port `6010` with Redis-backed embeddings and Top-K state.
 
-Requires:
-
-- Java 17, matching `pom.xml`
-- Maven
-- Docker with Docker Compose, for Redis/Kafka/Flink services
+**Requirements:** Java 17, Maven, Docker with Docker Compose.
 
 Start infrastructure:
 
 ```bash
-colima start # if you use Colima
+colima start  # if you use Colima
 docker compose -f docker-compose.streaming.yml up -d
 ```
-
-If needed, replace `docker compose` with `docker-compose`.
 
 Run the API:
 
@@ -81,7 +82,7 @@ curl -X POST "http://localhost:6010/v1/models/recmodel:predict" \
 Select a classpath embedding backend:
 
 ```bash
-RECSYS_VECTOR_BACKEND=lsh mvn exec:java -Dexec.mainClass="com.recsys.serving.RecSysServer"
+RECSYS_VECTOR_BACKEND=lsh   mvn exec:java -Dexec.mainClass="com.recsys.serving.RecSysServer"
 RECSYS_VECTOR_BACKEND=exact mvn exec:java -Dexec.mainClass="com.recsys.serving.RecSysServer"
 ```
 
@@ -93,20 +94,20 @@ Stop infrastructure:
 docker compose -f docker-compose.streaming.yml down
 ```
 
-------
+---
 
 ## Configuration
 
-These environment variables control the Jetty movie API runtime and its retrieval backend.
+Environment variables for the Jetty movie API and its retrieval backend.
 
 | Env var | Default | Purpose |
 |---|---:|---|
 | `PORT` | `6010` | API server port |
 | `REDIS_HOST` | `localhost` | Redis host |
 | `REDIS_PORT` | `6379` | Redis port |
-| `RECSYS_VECTOR_BACKEND` | `lsh` | Movie API embedding backend: `lsh` or `exact`; `faiss` currently falls back to `lsh` in the portable build |
-| `RECSYS_MODEL_ARTIFACTS_DIR` | empty | Two-tower model artifact directory; overrides `classpath:model/` for `user_tower.onnx`, `feature_config.json`, and `item_embeddings.json` |
-| `RECSYS_SPARK_ARTIFACTS_DIR` | empty | PySpark artifact directory; overrides `classpath:artifacts/pyspark/` for ALS, Item2Vec, and other Spark model files |
+| `RECSYS_VECTOR_BACKEND` | `lsh` | Embedding backend: `lsh` or `exact`; `faiss` falls back to `lsh` in the portable build |
+| `RECSYS_MODEL_ARTIFACTS_DIR` | _(empty)_ | Two-tower artifact directory; overrides `classpath:artifacts/twotower/` for `user_tower.onnx`, `feature_config.json`, and `item_embeddings.json` |
+| `RECSYS_SPARK_ARTIFACTS_DIR` | _(empty)_ | PySpark artifact directory; overrides `classpath:artifacts/pyspark/` |
 
 Example:
 
@@ -115,15 +116,11 @@ PORT=7010 REDIS_HOST=localhost REDIS_PORT=6379 \
   mvn exec:java -Dexec.mainClass="com.recsys.serving.RecSysServer"
 ```
 
-On startup, the server seeds Redis with bundled movie and user embeddings if the Redis keys are empty.
+On startup the server seeds Redis with bundled movie and user embeddings if the Redis keys are empty.
 
-------
+---
 
 ## Project Layout
-
-The repo keeps serving code, training code, bundled data, model artifacts, and local infrastructure definitions in one workspace.
-
-**Java**
 
 ```text
 src/main/java/com/recsys/
@@ -148,18 +145,20 @@ src/main/java/com/recsys/
     ├── movie_embeddings.txt
     └── user_embeddings.txt
 
-src/main/resources/model/   Exported two-tower artifacts loaded by Spring Boot
+src/main/resources/artifacts/twotower/   Sample two-tower artifacts for local dev/testing
 ├── feature_config.json
 ├── item_embeddings.json
 ├── item_embeddings.faiss
 ├── item_ids.json
 ├── metadata.json
 └── user_tower.onnx
+
+docker-compose.streaming.yml  Redis, Kafka, Zookeeper, Flink
 ```
 
-------
+---
 
-## API
+## API Reference
 
 The Jetty movie API exposes lookup, recommendation, similarity, pair-scoring, and embedding-update endpoints on port `6010`.
 
@@ -196,13 +195,13 @@ curl "http://localhost:6010/getrecommendation?userId=123"
 
 Merges three candidate pools via `CandidateGenerator.byUserHistory`: genre-based from the user's rating history (top 20 per genre), global top-100 by average rating, and latest 100 by release year. Already-watched movies are excluded.
 
-**Default with `seedMovieId` — genre-based from seed:**
+**With `seedMovieId` — genre-based from seed:**
 
 ```bash
 curl "http://localhost:6010/getrecommendation?userId=123&seedMovieId=2"
 ```
 
-Uses `CandidateGenerator.byGenre`: for each genre tag on the seed movie, retrieves the top-100 by average rating, deduplicates, and removes the seed itself.
+Uses `CandidateGenerator.byGenre`: for each genre on the seed movie, retrieves the top-100 by average rating, deduplicates, and removes the seed itself.
 
 **`mode=embedding` — embedding-based retrieval:**
 
@@ -210,15 +209,14 @@ Uses `CandidateGenerator.byGenre`: for each genre tag on the seed movie, retriev
 curl "http://localhost:6010/getrecommendation?userId=123&mode=embedding&k=20"
 ```
 
-Uses `CandidateGenerator.byEmbedding`: searches movies with classpath embeddings against the user's embedding. The active backend is controlled by `RECSYS_VECTOR_BACKEND` or `-Drecsys.vector.backend`. Returns 404 if no user embedding is found. The `k` parameter is capped at 200 (default: 20).
+Uses `CandidateGenerator.byEmbedding` against classpath embeddings. Backend is controlled by `RECSYS_VECTOR_BACKEND`. Returns 404 if no user embedding is found. `k` is capped at 200 (default: 20).
 
 Supported portable backends:
 
-- `lsh`: approximate SimHash random-projection candidate generation with inner-product reranking.
-- `exact`: full-scan inner-product top-k with a bounded min-heap.
+- `lsh` — approximate SimHash random-projection with inner-product reranking.
+- `exact` — full-scan inner-product top-k with a bounded min-heap.
 
-`faiss` is reserved for Linux native FAISS deployments and falls back to `lsh`
-in the portable build.
+`faiss` is reserved for Linux native FAISS deployments and falls back to `lsh` in the portable build.
 
 **`mode=topk` / `mode=trending` — Redis sorted-set trending:**
 
@@ -239,7 +237,7 @@ curl "http://localhost:6010/getsimilarmovie?movieId=1&k=5"
 
 ### Pair Prediction
 
-Scores explicit `(userId, movieId)` pairs with a batched JSON `POST`, shaped like a model-serving inference API:
+Scores explicit `(userId, movieId)` pairs with a batched JSON `POST`:
 
 ```bash
 curl -X POST "http://localhost:6010/v1/models/recmodel:predict" \
@@ -252,8 +250,6 @@ curl -X POST "http://localhost:6010/v1/models/recmodel:predict" \
   }'
 ```
 
-Example response:
-
 ```json
 {
   "predictions": [
@@ -265,9 +261,9 @@ Example response:
 
 Notes:
 
-- This endpoint scores each request pair independently; it does not do candidate generation or top-K recommendation assembly.
-- The current Java implementation uses the bundled classpath user and movie embeddings plus inner-product scoring, which is the local equivalent of `model(user_ids, movie_ids)` in a compact serving demo.
-- Requests return `400` when `instances` is empty, when IDs are non-positive, or when a user/movie embedding is missing.
+- Scores each pair independently; does not do candidate generation or top-K assembly.
+- Uses bundled classpath user and movie embeddings with inner-product scoring.
+- Returns `400` when `instances` is empty, IDs are non-positive, or a user/movie embedding is missing.
 
 ### Set Embedding
 
@@ -287,129 +283,59 @@ curl -X POST "http://localhost:6010/setembedding?movieId=5" \
 curl -X POST "http://localhost:6010/setembedding?movieId=6&ttl=3600&vec=0.5+0.5+0.0"
 ```
 
+---
+
 ## Two-Tower Model Demo
 
-The two-tower demo is a separate Spring Boot service on port `8080`. It serves model-based retrieval through `TwoTowerApplication` and the `/recommend` endpoint.
+A separate Spring Boot service on port `8080` that serves model-based retrieval through `TwoTowerApplication` and the `/recommend` endpoint.
 
-It demonstrates:
+**Demonstrates:**
 
 - ONNX user-tower inference in Java
 - Precomputed item embeddings
 - Model-based retrieval with inner-product similarity
 
-------
+At request time, `/recommend` runs `FeatureEncoder` to map `userId` into the training vocab, runs ONNX inference for the user embedding, recalls candidates via `CandidateSelectionService` + `RetrievalService`, and reranks via `RankingService`.
 
-**Python**
+`ModelArtifactLocator` resolves artifacts into two groups: **model** (`classpath:artifacts/twotower/`, overridden by `RECSYS_MODEL_ARTIFACTS_DIR`) and **spark** (`classpath:artifacts/pyspark/`, overridden by `RECSYS_SPARK_ARTIFACTS_DIR`).
 
-```text
-python-training/
-├── model.py                UserTower, ItemTower, TwoTower definitions
-├── data.py                 Ratings loading, vocab building, batch construction
-├── train_and_export.py     Training loop and ONNX/embedding artifact export
-└── artifacts/              Generated local artifacts, ignored by Git
-```
+### Artifact Contract
 
-**Infrastructure**
+The service expects the following files exported by your modeling pipeline:
 
 ```text
-docker-compose.streaming.yml Redis, Kafka, Zookeeper, Flink
+feature_config.json        User vocab and feature metadata
+item_embeddings.json       Precomputed item embeddings (item_id → float[])
+item_embeddings.faiss      Optional FAISS IndexFlatIP index
+item_ids.json              Optional FAISS row-to-item-id mapping
+metadata.json              Model version and training metadata
+user_tower.onnx            Exported user tower for runtime inference
 ```
 
-1. `python-training/data.py` reads `src/main/java/com/recsys/data/ratings.txt`, keeps ratings `>= 3.5` as positive interactions, and builds `user_vocab` / `item_vocab` mappings with an `__UNK__` fallback.
-2. `python-training/train_and_export.py` trains the PyTorch `TwoTower` model from `python-training/model.py`: the user tower and item tower learn normalized vectors using in-batch cross-entropy over user-item pairs.
-3. The exporter writes `user_tower.onnx`, `feature_config.json`, `item_embeddings.json`, and `metadata.json` to `python-training/artifacts/`, then copies them into `src/main/resources/model/` for Java serving.
-4. Item embeddings are precomputed offline by running the trained item tower over every known `item_id`; when `faiss-cpu` is installed, the script also exports optional `item_embeddings.faiss` and `item_ids.json` files.
-5. Start the Spring Boot service. `ModelArtifactLocator` resolves all artifacts and exposes two typed groups: **model** (feature configs, ONNX models, pre-computed embeddings at `classpath:model/`) and **spark** (PySpark model files at `classpath:artifacts/pyspark/`). `UserTowerInferenceService` loads `user_tower.onnx` and `ModelArtifactService` loads `feature_config.json` plus `item_embeddings.json` through the model group.
-6. At request time, `/recommend` calls `FeatureEncoder` to map `userId` into the training vocab, runs ONNX inference to produce a user embedding, uses `CandidateSelectionService` and `RetrievalService` to recall candidates, and uses `RankingService` to rerank the final top-K by inner-product similarity.
-
-If your modeling pipeline writes artifacts to its own output directory, point each artifact group to it independently:
-
-```bash
-RECSYS_MODEL_ARTIFACTS_DIR=/path/to/model/artifacts   # overrides classpath:model/
-RECSYS_SPARK_ARTIFACTS_DIR=/path/to/spark/artifacts   # overrides classpath:artifacts/pyspark/
-```
-
-When unset, the service uses the bundled classpath artifacts.
-
-The demo stays small so the training-serving feature contract is easy to inspect.
+Point the service at your pipeline's output directory via `RECSYS_MODEL_ARTIFACTS_DIR` (see [Configuration](#configuration)). When unset, the sample classpath artifacts under `src/main/resources/artifacts/twotower/` are used.
 
 ### Feature Contract
 
-User tower inputs:
-
-- `user_id`
-
-Item tower inputs:
-
-- `item_id`
-
-`ratings.txt` provides `userId`, `movieId`, `rating`, and `timestamp`. The
-Python trainer treats ratings `>= 3.5` as positive user-item interactions.
-
-### Python Training
-
-Requires:
-
-- Python 3.10+
-- pip
-
-Create a local virtualenv and install dependencies:
-
-```bash
-python3 -m venv .venv
-.venv/bin/pip install -r python-training/requirements.txt
-```
-
-Train and export artifacts:
-
-```bash
-.venv/bin/python python-training/train_and_export.py
-```
-
-This writes artifacts to both `python-training/artifacts/` and
-`src/main/resources/model/`:
-
-```text
-feature_config.json
-item_embeddings.json
-item_embeddings.faiss  # optional, when faiss-cpu is installed
-item_ids.json          # optional, FAISS row-to-item-id mapping
-metadata.json
-user_tower.onnx
-```
-
-The exporter writes directly into `src/main/resources/model/`, so the Java service can use the artifacts immediately after training.
-
-Verify the optional FAISS artifact:
-
-```bash
-.venv/bin/python -c "import faiss; idx=faiss.read_index('src/main/resources/model/item_embeddings.faiss'); print(idx.ntotal, idx.d)"
-```
+| Input | Field |
+|---|---|
+| User tower | `user_id` |
+| Item tower | `item_id` |
 
 ### Spring Boot Serving
 
-Start the two-tower service from the repo root:
-
 ```bash
+# Use bundled classpath artifacts
 mvn spring-boot:run
-```
 
-Load artifacts directly from a modeling pipeline output directory:
-
-```bash
-RECSYS_MODEL_ARTIFACTS_DIR=python-training/artifacts mvn spring-boot:run
+# Load artifacts from your modeling pipeline's output directory
+RECSYS_MODEL_ARTIFACTS_DIR=/path/to/model/artifacts mvn spring-boot:run
 ```
 
 Health:
 
 ```bash
 curl http://localhost:8080/health
-```
-
-Expected response:
-
-```text
-ok
+# ok
 ```
 
 Recommend:
@@ -417,14 +343,8 @@ Recommend:
 ```bash
 curl -X POST http://localhost:8080/recommend \
   -H 'Content-Type: application/json' \
-  -d '{
-    "userId": "123",
-    "k": 5,
-    "excludeItemIds": ["2"]
-  }'
+  -d '{"userId": "123", "k": 5, "excludeItemIds": ["2"]}'
 ```
-
-Example response:
 
 ```json
 {
@@ -437,44 +357,33 @@ Example response:
 }
 ```
 
-The Spring Boot entry point is `com.recsys.modelbased.twotower.TwoTowerApplication`.
-The Jetty API remains available through `com.recsys.serving.RecSysServer`.
-
 Notes:
 
-- Training data comes from `src/main/java/com/recsys/data/ratings.txt`.
-- Retrieval uses inner-product similarity in the portable Java path. Python also exports a FAISS `IndexFlatIP` index when `faiss-cpu` is available.
-- For production-scale Java serving, use a Linux native FAISS binding such as `com.criteo.jfaiss:jfaiss-cpu`, or use a managed ANN service such as OpenSearch kNN, Vespa, or Milvus.
-- In production, item embeddings are usually generated offline and reloaded
-  periodically by the serving layer.
+- Retrieval uses inner-product similarity in the portable Java path. If your pipeline exports a FAISS `IndexFlatIP` index (`item_embeddings.faiss` + `item_ids.json`), it is picked up automatically when `RECSYS_MODEL_ARTIFACTS_DIR` is set.
+- For production-scale Java serving, use a Linux native FAISS binding (`com.criteo.jfaiss:jfaiss-cpu`) or a managed ANN service (OpenSearch kNN, Vespa, Milvus).
+- Item embeddings reload on service restart; re-point `RECSYS_MODEL_ARTIFACTS_DIR` and restart to pick up a new model version.
 
-------
+---
 
 ## Testing
-
-Run all unit and integration tests from the repo root:
 
 ```bash
 mvn test
 ```
-
-The test suite covers the two-tower serving layer:
 
 | Test class | What it covers |
 |---|---|
 | `ModelArtifactLocatorTest` | Classpath and external-dir resolution for model and spark artifact groups; whitespace-only override falls back to classpath |
 | `ModelArtifactServiceTest` | Loads bundled `feature_config.json` and `item_embeddings.json`; asserts model version, vocab contents, embedding dimension, and immutability |
 | `FeatureEncoderTest` | Known user IDs map to their vocab indices; unknown IDs fall back to `__UNK__` (index 0) |
-| `RankingServiceTest` | Items are re-ordered by inner-product score descending; k-truncation, duplicate deduplication, and missing-embedding skip |
+| `RankingServiceTest` | Items re-ordered by inner-product score descending; k-truncation, duplicate deduplication, and missing-embedding skip |
 | `RetrievalServiceTest` | Embedding recall returns highest inner-product candidates up to recall size; null embedding, empty candidates, and unknown items |
 | `RecommendationServiceTest` | Validates `userId` and `k`; wires mocked sub-services and asserts the full response shape |
 | `RecommendationControllerTest` | `GET /health`, `POST /recommend` happy path and `IllegalArgumentException` → HTTP 400 via `GlobalExceptionHandler` |
 
-------
+---
 
 ## Redis Test Data
-
-Use these commands to seed or inspect Redis state for trending recommendations and item embeddings.
 
 Seed trending data manually:
 
@@ -492,17 +401,13 @@ docker exec -it redis-dev redis-cli SCAN 0 MATCH 'i2vEmb:*' COUNT 20
 docker exec -it redis-dev redis-cli GET i2vEmb:1
 ```
 
-------
+---
 
-## Kafka/Flink
+## Kafka / Flink
 
-The compose file also starts Kafka and Flink for streaming Top-K experiments.
+The compose file starts Kafka and Flink for streaming Top-K experiments.
 
-Flink UI:
-
-```text
-http://localhost:8081
-```
+Flink UI: `http://localhost:8081`
 
 Create and populate the sample topic:
 
@@ -515,7 +420,7 @@ docker exec -it recsys-kafka-1 \
   kafka-console-producer --bootstrap-server kafka:9092 --topic movie_events
 ```
 
-Sample events, matching `src/main/java/com/recsys/data/events.txt`:
+Sample events (matching `src/main/java/com/recsys/data/events.txt`):
 
 ```json
 {"eventId":"evt-001","userId":123,"movieId":1,"eventType":"view","watchMs":720000,"eventTimeMillis":1713503000000,"source":"web"}
@@ -531,33 +436,25 @@ docker exec -it recsys-kafka-1 \
   kafka-topics --bootstrap-server localhost:9092 --delete --topic movie_events
 ```
 
-------
+---
 
 ## Offline Item Embeddings
 
-This repo's default path is online prediction:
+**Online prediction path:**
 
 ```text
-Kafka -> Flink -> online feature / event store -> retrieval / prediction service
+Kafka → Flink → online feature/event store → retrieval/prediction service
 ```
 
-The bundled `events.txt` rows model the Kafka payloads. The
-`online_features.txt` rows model the low-latency aggregates a Flink job would
-write into Redis or another online store, such as `user:<id>:last_3_movies`,
-`movie:<id>:views_1h`, and `topk:last_hour`.
+The bundled `events.txt` rows model the Kafka payloads. The `online_features.txt` rows model the low-latency aggregates a Flink job would write into Redis, such as `user:<id>:last_3_movies`, `movie:<id>:views_1h`, and `topk:last_hour`.
 
-Item embedding training is a separate offline preparation path:
+**Offline embedding path:**
 
 ```text
-Kafka / HDFS -> Spark -> embedding training / batch generation -> model registry / vector store / feature store -> service
+Kafka / HDFS → Spark → embedding training → model registry / vector store → service
 ```
 
-The bundled `ratings.txt` rows model the batch/HDFS-style positive feedback
-used by Spark Word2Vec. The `movie_embeddings.txt` and `user_embeddings.txt`
-files model the generated artifacts that get loaded into Redis for retrieval.
-Spark dependencies are isolated behind the `offline-embedding` Maven profile and
-declared `provided` scope — the cluster supplies Spark at runtime so it is not
-bundled into the JAR.
+The bundled `ratings.txt` rows model the batch/HDFS-style positive feedback used by Spark Word2Vec. Spark dependencies are isolated behind the `offline-embedding` Maven profile and declared `provided` scope — the cluster supplies Spark at runtime.
 
 Train Word2Vec item embeddings from bundled ratings:
 
@@ -581,12 +478,9 @@ Useful options:
 --synonym-movie-id=1
 ```
 
-The output CSV uses the same `movieId,vector` shape as
-`src/main/java/com/recsys/data/movie_embeddings.txt`, so generated vectors can
-be copied into the bundled seed data or loaded into Redis as `i2vEmb:<movieId>`
-for retrieval.
+The output CSV uses the same `movieId,vector` shape as `movie_embeddings.txt`, so generated vectors can be copied into the bundled seed data or loaded into Redis as `i2vEmb:<movieId>`.
 
-To write embeddings directly to Redis after training, add the `--save-to-redis` flag:
+Write embeddings directly to Redis after training:
 
 ```bash
 mvn -Poffline-embedding exec:java \
@@ -600,133 +494,104 @@ Redis options:
 --save-to-redis=true        Enable Redis output (default: false)
 --redis-host=localhost      Redis host (default: localhost)
 --redis-port=6379           Redis port (default: 6379)
---redis-key-prefix=i2vEmb  Key prefix — keys are written as {prefix}:{movieId} (default: i2vEmb)
+--redis-key-prefix=i2vEmb  Key prefix — written as {prefix}:{movieId} (default: i2vEmb)
 --redis-ttl=86400           TTL in seconds; 0 = no expiry (default: 86400)
 ```
 
-All writes are pipelined in a single round-trip. Key and value formats are compatible with
-`RedisEmbeddingStore` and `VectorMath.parseVector`, so the Jetty API can serve them immediately.
+All writes are pipelined in a single round-trip. Key and value formats are compatible with `RedisEmbeddingStore` and `VectorMath.parseVector`.
 
-------
+---
 
 ## Embedding Storage Paths
 
-The two offline strategies write to different stores.
-
 ### Rule-based → Redis
 
-`ItemEmbeddingJob` writes directly to Redis after training (when `--save-to-redis=true`).
-At serving time, `SimilarMovieService` first builds a metadata candidate set, then calls
-`RedisEmbeddingStore.getEmbeddings(candidateIds)` to fetch only those candidate vectors for inner-product ranking.
+`ItemEmbeddingJob` writes to Redis when `--save-to-redis=true`. `SimilarMovieService` builds a metadata candidate set, fetches only those vectors via `RedisEmbeddingStore.getEmbeddings(candidateIds)`, then ranks by inner-product.
 
 ```
 Spark Word2Vec
   └─ Jedis pipeline ──► Redis (i2vEmb:{movieId} → "0.169 0.296 -0.130 ...")
                                 │
                          SimilarMovieService
-                           metadata candidate set
-                                │
-                           MGET candidate embeddings
-                                │
-                         inner-product similarity ──► top-k results
+                           metadata candidate set → MGET embeddings → inner-product top-k
 ```
 
-Key format: `{prefix}:{id}`, e.g. `i2vEmb:1`  
-Value format: space-separated floats, e.g. `0.16938460 0.29643180 -0.13044095 ...`  
-TTL: 86400 s by default (configurable via `--redis-ttl`).  
-To update: re-run the job with `--save-to-redis=true`.
+Key: `{prefix}:{id}` (e.g. `i2vEmb:1`) · Value: space-separated floats · TTL: 86400 s (configurable)
 
-### Model-based → classpath, not Redis
+### Model-based → classpath
 
-`train_and_export.py` writes `item_embeddings.json` into `src/main/resources/model/`.
-At Spring Boot startup, `ModelArtifactService` loads it into a `ConcurrentHashMap` in the JVM heap.
-Redis is not involved in the two-tower path.
+Your modeling pipeline exports `item_embeddings.json` (and optionally `user_tower.onnx`, `feature_config.json`, `metadata.json`). Point `RECSYS_MODEL_ARTIFACTS_DIR` at the output directory, or copy artifacts into `src/main/resources/artifacts/twotower/` to bundle them in the classpath. At startup, `ModelArtifactService` loads item embeddings into a `ConcurrentHashMap` in the JVM heap. Redis is not involved.
 
 ```
-PyTorch item tower
-  └─ train_and_export.py ──► item_embeddings.json (classpath)
+Modeling pipeline (any framework)
+  └─ artifact export ──► item_embeddings.json  (+ optional ONNX / FAISS files)
                                       │
-                             ModelArtifactService (@PostConstruct)
-                               ConcurrentHashMap<String, float[]>
+                             ModelArtifactService (@PostConstruct) → ConcurrentHashMap
                                       │
-                             CandidateSelectionService
-                               history-genre + top-rated + latest eligible item IDs
-                                      │
-                              RetrievalService
-                                embedding recall + metadata recall, merged by item ID
-                                      │
-                              RankingService
-                                recompute inner-product similarity ──► final top-k results
+                             CandidateSelectionService → RetrievalService → RankingService → top-k
 ```
 
-TTL: none — embeddings reload on service restart.  
-To update: re-run `train_and_export.py` and restart the Spring Boot service.
+TTL: none — reloads on service restart.
 
-### Movie API → classpath (CandidateGenerator)
+### Movie API → classpath
 
-`CandidateGenerator` also loads `movie_embeddings.txt` and `user_embeddings.txt` from the classpath at startup for the `mode=embedding` retrieval path. This is the same bundled seed data loaded into Redis on first start — the classpath copy is used for direct heap-based scoring without a Redis round-trip.
+`CandidateGenerator` loads `movie_embeddings.txt` and `user_embeddings.txt` from the classpath at startup for the `mode=embedding` path. This is the same bundled seed data seeded into Redis on first start, used here for direct heap-based scoring without a Redis round-trip.
 
 ```
 movie_embeddings.txt / user_embeddings.txt (classpath)
-  └─ DataLoader.loadMovieEmbeddings / loadUserEmbeddings
-       └─ CandidateGenerator (JVM heap)
-            └─ byEmbedding(userId, k)
-                 VectorIndex backend ──► inner-product rerank ──► top-k results
+  └─ DataLoader → CandidateGenerator (JVM heap)
+       └─ byEmbedding(userId, k) → VectorIndex backend → inner-product rerank → top-k
 ```
 
 ### Comparison
 
 | | Rule-based (Redis) | Model-based (two-tower) | Movie API (classpath) |
 |---|---|---|---|
-| Written by | Spark job → Jedis pipeline | Python → JSON file | Bundled text resources |
+| Written by | Spark job → Jedis pipeline | External modeling pipeline | Bundled text resources |
 | Stored in | Redis (`i2vEmb:{id}`) | Classpath + JVM heap | Classpath + JVM heap |
-| Loaded by | `RedisEmbeddingStore.getEmbeddings(candidateIds)` | `ModelArtifactService` `@PostConstruct` | `CandidateGenerator` constructor |
+| Loaded by | `RedisEmbeddingStore.getEmbeddings` | `ModelArtifactService @PostConstruct` | `CandidateGenerator` constructor |
 | User vector | Not produced | Live via ONNX at request time | Preloaded from `user_embeddings.txt` |
-| Retrieval backend | Metadata candidates → Redis MGET → exact inner-product rank | Candidate set → embedding recall + metadata recall → inner-product rank; optional FAISS artifact for external/native use | `VectorIndex`: `lsh` or `exact` |
+| Retrieval backend | Metadata candidates → Redis MGET → exact inner-product | Candidate set → embedding + metadata recall → inner-product; optional FAISS | `VectorIndex`: `lsh` or `exact` |
 | TTL | 86400 s default | N/A — reloads on restart | N/A — reloads on restart |
 
-------
+---
 
 ## Developer Notes
 
-These notes summarize the main implementation boundaries and where each retrieval or ranking responsibility lives.
-
-Data loading and access:
+**Data loading:**
 
 - `DataLoader` loads bundled text resources from `com/recsys/data`.
-- `DataManager` is a read-only data-access singleton. It owns immutable maps, precomputed sorted lists such as `topRatedMovies` and `latestMovies`, genre indexes such as `moviesByGenre`, and fast lookup helpers. Retrieval strategy logic stays outside this class.
+- `DataManager` is a read-only singleton owning immutable maps, precomputed sorted lists (`topRatedMovies`, `latestMovies`), genre indexes (`moviesByGenre`), and fast lookup helpers. Retrieval logic stays outside this class.
 
-Movie API retrieval:
+**Movie API retrieval:**
 
-- `CandidateGenerator` owns the Jetty movie API recall strategies and classpath movie/user embeddings. It is created once in `RecSysServer` and injected into `RecommendationService`.
-- `CandidateGenerator.byGenre` implements seed-movie genre recall.
-- `CandidateGenerator.byUserHistory` implements multi-way recall from user-history genres, global top-rated movies, and latest releases.
-- `CandidateGenerator.byEmbedding` implements embedding recall through the `VectorIndex` interface. Use `RECSYS_VECTOR_BACKEND=lsh` for approximate retrieval or `RECSYS_VECTOR_BACKEND=exact` for deterministic full-scan evaluation.
+- `CandidateGenerator` owns Jetty recall strategies and classpath embeddings. Created once in `RecSysServer` and injected into `RecommendationService`.
+- `byGenre` — seed-movie genre recall.
+- `byUserHistory` — multi-way recall from user-history genres, global top-rated, and latest releases.
+- `byEmbedding` — embedding recall through the `VectorIndex` interface (`lsh` or `exact`).
 
-Redis-backed embeddings:
+**Redis-backed embeddings:**
 
 - `RedisEmbeddingStore` is a generic key-prefix store for `getEmbedding`, `setEmbedding`, `setEmbeddings`, and `scanIds`.
-- The same store supports both `i2vEmb:` item embeddings and `u2vEmb:` user embeddings.
-- Bulk writes use Redis pipelines. Bulk reads use `SCAN` plus `MGET`, which avoids blocking Redis with large keyspace operations.
+- Supports both `i2vEmb:` item and `u2vEmb:` user embeddings.
+- Bulk writes use Redis pipelines; bulk reads use `SCAN` + `MGET` to avoid blocking large keyspace operations.
 
-Servlet and ranking flow:
+**Servlet and ranking:**
 
 - `BaseApiServlet` centralizes JSON headers, Jackson serialization, error responses, and request parameter parsing.
-- `SimilarMovieService` demonstrates candidate recall plus embedding ranking for Redis item embeddings: build metadata candidates, fetch only those vectors with Redis `MGET`, then rank by target-vs-candidate inner product.
+- `SimilarMovieService` demonstrates candidate recall + embedding ranking: build metadata candidates, fetch vectors via Redis `MGET`, rank by inner product.
 
-Two-tower serving:
+**Two-tower serving:**
 
-- `ModelArtifactLocator` is the single artifact resolver for the service. It exposes a **model** group (`classpath:model/`, overridden by `RECSYS_MODEL_ARTIFACTS_DIR`) for feature configs, ONNX models, and pre-computed embeddings, and a **spark** group (`classpath:artifacts/pyspark/`, overridden by `RECSYS_SPARK_ARTIFACTS_DIR`) for PySpark model files.
-- `CandidateSelectionService` chooses eligible item IDs from user-history genres plus global pools.
-- `RetrievalService` performs multi-route recall by combining embedding recall and metadata recall.
-- `RankingService` recomputes inner-product similarity and sorts the final top-K response.
-- `GlobalExceptionHandler` maps `IllegalArgumentException` to HTTP 400 with a JSON `{"error": "..."}` body.
+- `ModelArtifactLocator` — single artifact resolver exposing **model** and **spark** groups.
+- `CandidateSelectionService` — eligible item IDs from user-history genres plus global pools.
+- `RetrievalService` — multi-route recall combining embedding and metadata recall.
+- `RankingService` — inner-product similarity sort for the final top-K response.
+- `GlobalExceptionHandler` — maps `IllegalArgumentException` to HTTP 400 with `{"error": "..."}`.
 
-------
+---
 
 ## LLM Integration Ideas
-
-These are possible follow-up directions for combining the existing retrieval stack with LLM-based features.
 
 - Use text embeddings as item/user features for retrieval.
 - Use an LLM as a zero-shot ranker or reranker for diversity, freshness, and domain-specific constraints.

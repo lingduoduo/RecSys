@@ -10,7 +10,7 @@ logging:
 
 recsys:
   model:
-    # Processed serving artifacts: feature configs, pre-computed embeddings (classpath:model/)
+    # Two-tower serving artifacts: feature configs, pre-computed embeddings, ONNX model (classpath:artifacts/twotower/)
     artifacts-dir: ${RECSYS_MODEL_ARTIFACTS_DIR:}
   spark:
     # PySpark model artifacts output by the training pipeline (classpath:artifacts/pyspark/)

@@ -39,7 +39,7 @@ public class ModelArtifactService {
         } catch (IllegalStateException e) {
             throw new IllegalStateException("feature_config.json not found at "
                     + artifactLocator.describeModelLocation("feature_config.json")
-                    + ". Run python-training/train_and_export.py first or point recsys.model.artifacts-dir to a pipeline output directory.", e);
+                    + ". Place model artifacts in src/main/resources/artifacts/twotower/ or set recsys.model.artifacts-dir to an external pipeline output directory.", e);
         }
     }
 
@@ -63,7 +63,7 @@ public class ModelArtifactService {
         } catch (IllegalStateException e) {
             throw new IllegalStateException("item_embeddings.json not found at "
                     + artifactLocator.describeModelLocation("item_embeddings.json")
-                    + ". Run python-training/train_and_export.py first or point recsys.model.artifacts-dir to a pipeline output directory.", e);
+                    + ". Place model artifacts in src/main/resources/artifacts/twotower/ or set recsys.model.artifacts-dir to an external pipeline output directory.", e);
         }
     }
 

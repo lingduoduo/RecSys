@@ -52,7 +52,7 @@ class ModelArtifactLocatorTest {
     void describeModelLocation_classpath_returnsClasspathPrefix() {
         var locator = new ModelArtifactLocator("", "");
         assertThat(locator.describeModelLocation("feature_config.json"))
-                .isEqualTo("classpath:model/feature_config.json");
+                .isEqualTo("classpath:artifacts/twotower/feature_config.json");
     }
 
     @Test

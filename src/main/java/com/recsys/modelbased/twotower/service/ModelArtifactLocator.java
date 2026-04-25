@@ -13,8 +13,8 @@ import java.nio.file.Path;
  * Unified locator for all model pipeline artifacts.
  *
  * Artifact types and their defaults:
- *   model  — classpath:model/              (feature configs, pre-computed embeddings, ONNX models)
- *   spark  — classpath:artifacts/pyspark/  (PySpark model directories and metadata)
+ *   model  — classpath:artifacts/twotower/  (feature configs, pre-computed embeddings, ONNX models)
+ *   spark  — classpath:artifacts/pyspark/   (PySpark model directories and metadata)
  *
  * Each type has its own override env var so deployments can point to external
  * pipeline output directories without repackaging the JAR.
@@ -22,7 +22,7 @@ import java.nio.file.Path;
 @Service
 public class ModelArtifactLocator {
 
-    private static final String MODEL_CLASSPATH_DIR = "model";
+    private static final String MODEL_CLASSPATH_DIR = "artifacts/twotower";
     private static final String SPARK_CLASSPATH_DIR = "artifacts/pyspark";
 
     private final String modelDir;
