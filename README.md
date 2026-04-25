@@ -40,7 +40,7 @@ Future ranking demos can replace embedding similarity with model-based rankers s
 
 ------
 
-## Quick Start: Movie API
+## Movie API
 
 Use this path to run the Jetty movie API on port `6010` with Redis-backed embeddings and Top-K state.
 
@@ -95,7 +95,199 @@ docker compose -f docker-compose.streaming.yml down
 
 ------
 
-## Quick Start: Two-Tower Demo
+## Configuration
+
+These environment variables control the Jetty movie API runtime and its retrieval backend.
+
+| Env var | Default | Purpose |
+|---|---:|---|
+| `PORT` | `6010` | API server port |
+| `REDIS_HOST` | `localhost` | Redis host |
+| `REDIS_PORT` | `6379` | Redis port |
+| `RECSYS_VECTOR_BACKEND` | `lsh` | Movie API embedding backend: `lsh` or `exact`; `faiss` currently falls back to `lsh` in the portable build |
+| `RECSYS_MODEL_ARTIFACTS_DIR` | empty | Two-tower model artifact directory; overrides `classpath:model/` for `user_tower.onnx`, `feature_config.json`, and `item_embeddings.json` |
+| `RECSYS_SPARK_ARTIFACTS_DIR` | empty | PySpark artifact directory; overrides `classpath:artifacts/pyspark/` for ALS, Item2Vec, and other Spark model files |
+
+Example:
+
+```bash
+PORT=7010 REDIS_HOST=localhost REDIS_PORT=6379 \
+  mvn exec:java -Dexec.mainClass="com.recsys.serving.RecSysServer"
+```
+
+On startup, the server seeds Redis with bundled movie and user embeddings if the Redis keys are empty.
+
+------
+
+## Project Layout
+
+The repo keeps serving code, training code, bundled data, model artifacts, and local infrastructure definitions in one workspace.
+
+**Java**
+
+```text
+src/main/java/com/recsys/
+├── models/                 Immutable API/domain records
+├── features/               Data loading, indexed access, retrieval, vector math, Redis stores
+├── serving/                Jetty server and servlet endpoints
+├── training/
+│   ├── rulebased/          Spark Word2Vec offline item embeddings
+│   └── modelbased/
+│       └── twotower/       Spring Boot ONNX serving for the two-tower demo
+│           ├── TwoTowerApplication.java
+│           ├── config/     Model artifact configuration
+│           ├── controller/ Recommendation API
+│           └── service/    Candidate selection, recall, ranking, ONNX inference
+│                           ModelArtifactLocator — unified locator for model + spark artifact groups
+└── data/                   Bundled sample data and seed embeddings
+    ├── movies.txt
+    ├── users.txt
+    ├── ratings.txt
+    ├── events.txt
+    ├── online_features.txt
+    ├── movie_embeddings.txt
+    └── user_embeddings.txt
+
+src/main/resources/model/   Exported two-tower artifacts loaded by Spring Boot
+├── feature_config.json
+├── item_embeddings.json
+├── item_embeddings.faiss
+├── item_ids.json
+├── metadata.json
+└── user_tower.onnx
+```
+
+------
+
+## API
+
+The Jetty movie API exposes lookup, recommendation, similarity, pair-scoring, and embedding-update endpoints on port `6010`.
+
+### Health
+
+```bash
+curl "http://localhost:6010/health"
+# {"ok":true}
+```
+
+### Movie Lookup
+
+```bash
+curl "http://localhost:6010/getmovie?id=1"
+# {"id":1,"title":"Inception","year":2010,"genres":["Sci-Fi","Thriller"]}
+```
+
+### User Lookup
+
+```bash
+curl "http://localhost:6010/getuser?userId=123"
+# {"userId":123,"name":"Alice"}
+```
+
+### Recommendations
+
+Four retrieval modes are supported. All require `userId`.
+
+**Default (no `mode`) — multi-strategy by user history:**
+
+```bash
+curl "http://localhost:6010/getrecommendation?userId=123"
+```
+
+Merges three candidate pools via `CandidateGenerator.byUserHistory`: genre-based from the user's rating history (top 20 per genre), global top-100 by average rating, and latest 100 by release year. Already-watched movies are excluded.
+
+**Default with `seedMovieId` — genre-based from seed:**
+
+```bash
+curl "http://localhost:6010/getrecommendation?userId=123&seedMovieId=2"
+```
+
+Uses `CandidateGenerator.byGenre`: for each genre tag on the seed movie, retrieves the top-100 by average rating, deduplicates, and removes the seed itself.
+
+**`mode=embedding` — embedding-based retrieval:**
+
+```bash
+curl "http://localhost:6010/getrecommendation?userId=123&mode=embedding&k=20"
+```
+
+Uses `CandidateGenerator.byEmbedding`: searches movies with classpath embeddings against the user's embedding. The active backend is controlled by `RECSYS_VECTOR_BACKEND` or `-Drecsys.vector.backend`. Returns 404 if no user embedding is found. The `k` parameter is capped at 200 (default: 20).
+
+Supported portable backends:
+
+- `lsh`: approximate SimHash random-projection candidate generation with inner-product reranking.
+- `exact`: full-scan inner-product top-k with a bounded min-heap.
+
+`faiss` is reserved for Linux native FAISS deployments and falls back to `lsh`
+in the portable build.
+
+**`mode=topk` / `mode=trending` — Redis sorted-set trending:**
+
+```bash
+curl "http://localhost:6010/getrecommendation?userId=123&mode=topk&window=last_hour&k=5"
+```
+
+Reads pre-scored movie IDs from a Redis sorted set. Supported windows: `last_hour`, `last_day`, `last_month`.
+
+### Similar Movies
+
+Computes inner-product similarity against Redis item embeddings:
+
+```bash
+curl "http://localhost:6010/getsimilarmovie?movieId=1&k=5"
+# {"movieId":1,"similar":[{"movieId":4,"score":0.99}, ...]}
+```
+
+### Pair Prediction
+
+Scores explicit `(userId, movieId)` pairs with a batched JSON `POST`, shaped like a model-serving inference API:
+
+```bash
+curl -X POST "http://localhost:6010/v1/models/recmodel:predict" \
+  -H "Content-Type: application/json" \
+  -d '{
+    "instances": [
+      {"userId": 123, "movieId": 1},
+      {"userId": 123, "movieId": 2}
+    ]
+  }'
+```
+
+Example response:
+
+```json
+{
+  "predictions": [
+    [0.9231],
+    [0.7412]
+  ]
+}
+```
+
+Notes:
+
+- This endpoint scores each request pair independently; it does not do candidate generation or top-K recommendation assembly.
+- The current Java implementation uses the bundled classpath user and movie embeddings plus inner-product scoring, which is the local equivalent of `model(user_ids, movie_ids)` in a compact serving demo.
+- Requests return `400` when `instances` is empty, when IDs are non-positive, or when a user/movie embedding is missing.
+
+### Set Embedding
+
+Stores or updates a movie embedding in Redis. Default TTL is 24 hours; use `ttl=0` for no expiry.
+
+```bash
+# Raw body
+curl -X POST "http://localhost:6010/setembedding?movieId=4" \
+  -H "Content-Type: text/plain" \
+  --data-binary "0.2 0.2 0.6"
+
+# Form body
+curl -X POST "http://localhost:6010/setembedding?movieId=5" \
+  --data-urlencode "vec=0.1 0.3 0.6"
+
+# Query parameter with custom TTL
+curl -X POST "http://localhost:6010/setembedding?movieId=6&ttl=3600&vec=0.5+0.5+0.0"
+```
+
+## Two-Tower Model Demo
 
 The two-tower demo is a separate Spring Boot service on port `8080`. It serves model-based retrieval through `TwoTowerApplication` and the `/recommend` endpoint.
 
@@ -104,6 +296,24 @@ It demonstrates:
 - ONNX user-tower inference in Java
 - Precomputed item embeddings
 - Model-based retrieval with inner-product similarity
+
+------
+
+**Python**
+
+```text
+python-training/
+├── model.py                UserTower, ItemTower, TwoTower definitions
+├── data.py                 Ratings loading, vocab building, batch construction
+├── train_and_export.py     Training loop and ONNX/embedding artifact export
+└── artifacts/              Generated local artifacts, ignored by Git
+```
+
+**Infrastructure**
+
+```text
+docker-compose.streaming.yml Redis, Kafka, Zookeeper, Flink
+```
 
 1. `python-training/data.py` reads `src/main/java/com/recsys/data/ratings.txt`, keeps ratings `>= 3.5` as positive interactions, and builds `user_vocab` / `item_vocab` mappings with an `__UNK__` fallback.
 2. `python-training/train_and_export.py` trains the PyTorch `TwoTower` model from `python-training/model.py`: the user tower and item tower learn normalized vectors using in-batch cross-entropy over user-item pairs.
@@ -259,216 +469,6 @@ The test suite covers the two-tower serving layer:
 | `RetrievalServiceTest` | Embedding recall returns highest inner-product candidates up to recall size; null embedding, empty candidates, and unknown items |
 | `RecommendationServiceTest` | Validates `userId` and `k`; wires mocked sub-services and asserts the full response shape |
 | `RecommendationControllerTest` | `GET /health`, `POST /recommend` happy path and `IllegalArgumentException` → HTTP 400 via `GlobalExceptionHandler` |
-
-------
-
-## Configuration
-
-These environment variables control the Jetty movie API runtime and its retrieval backend.
-
-| Env var | Default | Purpose |
-|---|---:|---|
-| `PORT` | `6010` | API server port |
-| `REDIS_HOST` | `localhost` | Redis host |
-| `REDIS_PORT` | `6379` | Redis port |
-| `RECSYS_VECTOR_BACKEND` | `lsh` | Movie API embedding backend: `lsh` or `exact`; `faiss` currently falls back to `lsh` in the portable build |
-| `RECSYS_MODEL_ARTIFACTS_DIR` | empty | Two-tower model artifact directory; overrides `classpath:model/` for `user_tower.onnx`, `feature_config.json`, and `item_embeddings.json` |
-| `RECSYS_SPARK_ARTIFACTS_DIR` | empty | PySpark artifact directory; overrides `classpath:artifacts/pyspark/` for ALS, Item2Vec, and other Spark model files |
-
-Example:
-
-```bash
-PORT=7010 REDIS_HOST=localhost REDIS_PORT=6379 \
-  mvn exec:java -Dexec.mainClass="com.recsys.serving.RecSysServer"
-```
-
-On startup, the server seeds Redis with bundled movie and user embeddings if the Redis keys are empty.
-
-------
-
-## Project Layout
-
-The repo keeps serving code, training code, bundled data, model artifacts, and local infrastructure definitions in one workspace.
-
-**Java**
-
-```text
-src/main/java/com/recsys/
-├── models/                 Immutable API/domain records
-├── features/               Data loading, indexed access, retrieval, vector math, Redis stores
-├── serving/                Jetty server and servlet endpoints
-├── training/
-│   ├── rulebased/          Spark Word2Vec offline item embeddings
-│   └── modelbased/
-│       └── twotower/       Spring Boot ONNX serving for the two-tower demo
-│           ├── TwoTowerApplication.java
-│           ├── config/     Model artifact configuration
-│           ├── controller/ Recommendation API
-│           └── service/    Candidate selection, recall, ranking, ONNX inference
-│                           ModelArtifactLocator — unified locator for model + spark artifact groups
-└── data/                   Bundled sample data and seed embeddings
-    ├── movies.txt
-    ├── users.txt
-    ├── ratings.txt
-    ├── events.txt
-    ├── online_features.txt
-    ├── movie_embeddings.txt
-    └── user_embeddings.txt
-
-src/main/resources/model/   Exported two-tower artifacts loaded by Spring Boot
-├── feature_config.json
-├── item_embeddings.json
-├── item_embeddings.faiss
-├── item_ids.json
-├── metadata.json
-└── user_tower.onnx
-```
-
-**Python**
-
-```text
-python-training/
-├── model.py                UserTower, ItemTower, TwoTower definitions
-├── data.py                 Ratings loading, vocab building, batch construction
-├── train_and_export.py     Training loop and ONNX/embedding artifact export
-└── artifacts/              Generated local artifacts, ignored by Git
-```
-
-**Infrastructure**
-
-```text
-docker-compose.streaming.yml Redis, Kafka, Zookeeper, Flink
-```
-
-------
-
-## API
-
-The Jetty movie API exposes lookup, recommendation, similarity, pair-scoring, and embedding-update endpoints on port `6010`.
-
-### Health
-
-```bash
-curl "http://localhost:6010/health"
-# {"ok":true}
-```
-
-### Movie Lookup
-
-```bash
-curl "http://localhost:6010/getmovie?id=1"
-# {"id":1,"title":"Inception","year":2010,"genres":["Sci-Fi","Thriller"]}
-```
-
-### User Lookup
-
-```bash
-curl "http://localhost:6010/getuser?userId=123"
-# {"userId":123,"name":"Alice"}
-```
-
-### Recommendations
-
-Four retrieval modes are supported. All require `userId`.
-
-**Default (no `mode`) — multi-strategy by user history:**
-
-```bash
-curl "http://localhost:6010/getrecommendation?userId=123"
-```
-
-Merges three candidate pools via `CandidateGenerator.byUserHistory`: genre-based from the user's rating history (top 20 per genre), global top-100 by average rating, and latest 100 by release year. Already-watched movies are excluded.
-
-**Default with `seedMovieId` — genre-based from seed:**
-
-```bash
-curl "http://localhost:6010/getrecommendation?userId=123&seedMovieId=2"
-```
-
-Uses `CandidateGenerator.byGenre`: for each genre tag on the seed movie, retrieves the top-100 by average rating, deduplicates, and removes the seed itself.
-
-**`mode=embedding` — embedding-based retrieval:**
-
-```bash
-curl "http://localhost:6010/getrecommendation?userId=123&mode=embedding&k=20"
-```
-
-Uses `CandidateGenerator.byEmbedding`: searches movies with classpath embeddings against the user's embedding. The active backend is controlled by `RECSYS_VECTOR_BACKEND` or `-Drecsys.vector.backend`. Returns 404 if no user embedding is found. The `k` parameter is capped at 200 (default: 20).
-
-Supported portable backends:
-
-- `lsh`: approximate SimHash random-projection candidate generation with inner-product reranking.
-- `exact`: full-scan inner-product top-k with a bounded min-heap.
-
-`faiss` is reserved for Linux native FAISS deployments and falls back to `lsh`
-in the portable build.
-
-**`mode=topk` / `mode=trending` — Redis sorted-set trending:**
-
-```bash
-curl "http://localhost:6010/getrecommendation?userId=123&mode=topk&window=last_hour&k=5"
-```
-
-Reads pre-scored movie IDs from a Redis sorted set. Supported windows: `last_hour`, `last_day`, `last_month`.
-
-### Similar Movies
-
-Computes inner-product similarity against Redis item embeddings:
-
-```bash
-curl "http://localhost:6010/getsimilarmovie?movieId=1&k=5"
-# {"movieId":1,"similar":[{"movieId":4,"score":0.99}, ...]}
-```
-
-### Pair Prediction
-
-Scores explicit `(userId, movieId)` pairs with a batched JSON `POST`, shaped like a model-serving inference API:
-
-```bash
-curl -X POST "http://localhost:6010/v1/models/recmodel:predict" \
-  -H "Content-Type: application/json" \
-  -d '{
-    "instances": [
-      {"userId": 123, "movieId": 1},
-      {"userId": 123, "movieId": 2}
-    ]
-  }'
-```
-
-Example response:
-
-```json
-{
-  "predictions": [
-    [0.9231],
-    [0.7412]
-  ]
-}
-```
-
-Notes:
-
-- This endpoint scores each request pair independently; it does not do candidate generation or top-K recommendation assembly.
-- The current Java implementation uses the bundled classpath user and movie embeddings plus inner-product scoring, which is the local equivalent of `model(user_ids, movie_ids)` in a compact serving demo.
-- Requests return `400` when `instances` is empty, when IDs are non-positive, or when a user/movie embedding is missing.
-
-### Set Embedding
-
-Stores or updates a movie embedding in Redis. Default TTL is 24 hours; use `ttl=0` for no expiry.
-
-```bash
-# Raw body
-curl -X POST "http://localhost:6010/setembedding?movieId=4" \
-  -H "Content-Type: text/plain" \
-  --data-binary "0.2 0.2 0.6"
-
-# Form body
-curl -X POST "http://localhost:6010/setembedding?movieId=5" \
-  --data-urlencode "vec=0.1 0.3 0.6"
-
-# Query parameter with custom TTL
-curl -X POST "http://localhost:6010/setembedding?movieId=6&ttl=3600&vec=0.5+0.5+0.0"
-```
 
 ------
 
