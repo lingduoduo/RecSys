@@ -1,6 +1,7 @@
 package com.recsys.serving;
 
 import com.fasterxml.jackson.databind.ObjectMapper;
+import com.fasterxml.jackson.databind.exc.MismatchedInputException;
 import jakarta.servlet.http.HttpServlet;
 import jakarta.servlet.http.HttpServletRequest;
 import jakarta.servlet.http.HttpServletResponse;
@@ -33,6 +34,19 @@ abstract class BaseApiServlet extends HttpServlet {
                 "error", message == null ? "" : message,
                 field, value
         ));
+    }
+
+    protected static <T> T readJsonBody(HttpServletRequest request, Class<T> bodyType) throws IOException {
+        if (request.getContentLengthLong() == 0) {
+            throw new BadRequestException("empty request body");
+        }
+        try {
+            return MAPPER.readValue(request.getInputStream(), bodyType);
+        } catch (MismatchedInputException e) {
+            throw new BadRequestException("empty or invalid json request body");
+        } catch (IOException e) {
+            throw new BadRequestException("invalid json request body");
+        }
     }
 
     protected static int requiredIntParam(HttpServletRequest request, String name) {

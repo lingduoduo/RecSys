@@ -3,6 +3,7 @@ package com.recsys.serving;
 import com.recsys.features.CandidateGenerator;
 import com.recsys.features.DataLoader;
 import com.recsys.features.DataManager;
+import com.recsys.features.PairPredictionService;
 import com.recsys.features.RedisEmbeddingStore;
 import com.recsys.features.RedisTopKStore;
 import org.eclipse.jetty.server.Server;
@@ -22,6 +23,7 @@ public class RecSysServer {
     private static final String ROUTE_RECOMMENDATION = "/getrecommendation";
     private static final String ROUTE_SET_EMBEDDING = "/setembedding";
     private static final String ROUTE_HEALTH = "/health";
+    private static final String ROUTE_PREDICT = "/v1/models/recmodel:predict";
 
     public static void main(String[] args) throws Exception {
         new RecSysServer().run();
@@ -35,6 +37,7 @@ public class RecSysServer {
         try (JedisPool jedisPool = new JedisPool(redisHost, redisPort)) {
             DataManager dataManager = DataManager.getInstance();
             CandidateGenerator candidateGenerator = new CandidateGenerator(dataManager);
+            PairPredictionService pairPredictionService = new PairPredictionService();
             RedisEmbeddingStore embStore     = new RedisEmbeddingStore(jedisPool, "i2vEmb");
             RedisEmbeddingStore userEmbStore = new RedisEmbeddingStore(jedisPool, "u2vEmb");
             RedisTopKStore topkStore = new RedisTopKStore(jedisPool, "topk:");
@@ -45,7 +48,7 @@ public class RecSysServer {
             Server server = new Server(inetAddress);
 
             ServletContextHandler context = createContext();
-            registerRoutes(context, dataManager, candidateGenerator, embStore, topkStore);
+            registerRoutes(context, dataManager, candidateGenerator, embStore, topkStore, pairPredictionService);
 
             server.setHandler(context);
             server.setStopAtShutdown(true);
@@ -65,13 +68,15 @@ public class RecSysServer {
                                        DataManager dataManager,
                                        CandidateGenerator candidateGenerator,
                                        RedisEmbeddingStore embStore,
-                                       RedisTopKStore topkStore) {
+                                       RedisTopKStore topkStore,
+                                       PairPredictionService pairPredictionService) {
         context.addServlet(new ServletHolder(new MovieService(dataManager)), ROUTE_MOVIE);
         context.addServlet(new ServletHolder(new UserService(dataManager)), ROUTE_USER);
         context.addServlet(new ServletHolder(new SimilarMovieService(embStore)), ROUTE_SIMILAR_MOVIE);
         context.addServlet(new ServletHolder(new RecommendationService(dataManager, candidateGenerator, topkStore)), ROUTE_RECOMMENDATION);
         context.addServlet(new ServletHolder(new SetEmbeddingService(embStore)), ROUTE_SET_EMBEDDING);
         context.addServlet(new ServletHolder(new HealthService()), ROUTE_HEALTH);
+        context.addServlet(new ServletHolder(new PredictionService(pairPredictionService)), ROUTE_PREDICT);
     }
 
     // Seeds Redis with sample embeddings only if not already present.

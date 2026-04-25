@@ -15,6 +15,7 @@ The movie API includes:
 - Single-strategy recall from seed-movie genres
 - Multi-way recall from user history, global top-rated movies, and latest releases
 - Embedding-based retrieval over classpath user and item embeddings with selectable vector backends
+- Batched pair scoring through a TensorFlow Serving style `POST /v1/models/recmodel:predict` endpoint
 - Redis sorted-set Top-K trending recommendations
 - Redis item-embedding similarity search
 - Runtime embedding updates
@@ -72,6 +73,9 @@ curl "http://localhost:6010/health"
 curl "http://localhost:6010/getmovie?id=1"
 curl "http://localhost:6010/getsimilarmovie?movieId=1&k=5"
 curl "http://localhost:6010/getrecommendation?userId=123&mode=embedding&k=5"
+curl -X POST "http://localhost:6010/v1/models/recmodel:predict" \
+  -H "Content-Type: application/json" \
+  -d '{"instances":[{"userId":123,"movieId":1},{"userId":123,"movieId":2}]}'
 ```
 
 Select a classpath embedding backend:
@@ -300,7 +304,7 @@ docker-compose.streaming.yml Redis, Kafka, Zookeeper, Flink
 
 ## API
 
-The Jetty movie API exposes lookup, recommendation, similarity, and embedding-update endpoints on port `6010`.
+The Jetty movie API exposes lookup, recommendation, similarity, pair-scoring, and embedding-update endpoints on port `6010`.
 
 ### Health
 
@@ -375,6 +379,38 @@ Computes inner-product similarity against Redis item embeddings:
 curl "http://localhost:6010/getsimilarmovie?movieId=1&k=5"
 # {"movieId":1,"similar":[{"movieId":4,"score":0.99}, ...]}
 ```
+
+### Pair Prediction
+
+Scores explicit `(userId, movieId)` pairs with a batched JSON `POST`, shaped like a model-serving inference API:
+
+```bash
+curl -X POST "http://localhost:6010/v1/models/recmodel:predict" \
+  -H "Content-Type: application/json" \
+  -d '{
+    "instances": [
+      {"userId": 123, "movieId": 1},
+      {"userId": 123, "movieId": 2}
+    ]
+  }'
+```
+
+Example response:
+
+```json
+{
+  "predictions": [
+    [0.9231],
+    [0.7412]
+  ]
+}
+```
+
+Notes:
+
+- This endpoint scores each request pair independently; it does not do candidate generation or top-K recommendation assembly.
+- The current Java implementation uses the bundled classpath user and movie embeddings plus inner-product scoring, which is the local equivalent of `model(user_ids, movie_ids)` in a compact serving demo.
+- Requests return `400` when `instances` is empty, when IDs are non-positive, or when a user/movie embedding is missing.
 
 ### Set Embedding
 
