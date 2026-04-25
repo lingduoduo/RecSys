@@ -227,7 +227,7 @@ Example response:
 }
 ```
 
-The Spring Boot entry point is `com.recsys.training.modelbased.twotower.TwoTowerApplication`.
+The Spring Boot entry point is `com.recsys.modelbased.twotower.TwoTowerApplication`.
 The Jetty API remains available through `com.recsys.serving.RecSysServer`.
 
 Notes:
