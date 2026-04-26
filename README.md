@@ -9,6 +9,8 @@ RecSys is a compact Maven workspace for experimenting with recommendation-system
 | Rule-based offline embeddings | Spark Word2Vec item embeddings trained from user interaction sequences |
 | Model-based offline embeddings | Two-tower user inference plus precomputed item embeddings |
 
+![Architecture](architecture.png)
+
 ---
 
 ## Contents
