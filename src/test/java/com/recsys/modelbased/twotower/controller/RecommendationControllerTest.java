@@ -5,6 +5,7 @@ import com.recsys.modelbased.twotower.config.GlobalExceptionHandler;
 import com.recsys.modelbased.twotower.model.RecommendRequest;
 import com.recsys.modelbased.twotower.model.RecommendResponse;
 import com.recsys.modelbased.twotower.model.ScoredItem;
+import com.recsys.modelbased.twotower.service.InferenceMetricsService;
 import com.recsys.modelbased.twotower.service.RecommendationService;
 import org.junit.jupiter.api.Test;
 import org.springframework.beans.factory.annotation.Autowired;
@@ -18,7 +19,6 @@ import java.util.List;
 
 import static org.mockito.ArgumentMatchers.any;
 import static org.mockito.Mockito.when;
-import static org.springframework.test.web.servlet.request.MockMvcRequestBuilders.get;
 import static org.springframework.test.web.servlet.request.MockMvcRequestBuilders.post;
 import static org.springframework.test.web.servlet.result.MockMvcResultMatchers.*;
 
@@ -29,13 +29,9 @@ class RecommendationControllerTest {
     @Autowired MockMvc mockMvc;
     @Autowired ObjectMapper objectMapper;
     @MockBean RecommendationService recommendationService;
+    @MockBean InferenceMetricsService metricsService;
 
-    @Test
-    void health_returns200WithOk() throws Exception {
-        mockMvc.perform(get("/health"))
-                .andExpect(status().isOk())
-                .andExpect(content().string("ok"));
-    }
+    // --- happy path ---
 
     @Test
     void recommend_validRequest_returns200WithRecommendations() throws Exception {
@@ -49,7 +45,7 @@ class RecommendationControllerTest {
         req.setUserId("123");
         req.setK(3);
 
-        mockMvc.perform(post("/recommend")
+        mockMvc.perform(post("/api/v1/recommend")
                         .contentType(MediaType.APPLICATION_JSON)
                         .content(objectMapper.writeValueAsString(req)))
                 .andExpect(status().isOk())
@@ -59,23 +55,84 @@ class RecommendationControllerTest {
                 .andExpect(jsonPath("$.recommendations[1].score").value(0.72));
     }
 
-    @Test
-    void recommend_serviceThrowsIllegalArgument_returns400() throws Exception {
-        when(recommendationService.recommend(any()))
-                .thenThrow(new IllegalArgumentException("userId is required"));
+    // --- bean validation ---
 
-        mockMvc.perform(post("/recommend")
+    @Test
+    void recommend_missingUserId_returns400WithViolation() throws Exception {
+        mockMvc.perform(post("/api/v1/recommend")
                         .contentType(MediaType.APPLICATION_JSON)
-                        .content("{\"userId\":\"\",\"k\":5}"))
+                        .content("{\"k\":5}"))
                 .andExpect(status().isBadRequest())
-                .andExpect(jsonPath("$.error").value("userId is required"));
+                .andExpect(jsonPath("$.error").value("validation failed"))
+                .andExpect(jsonPath("$.violations[0].field").value("userId"));
     }
 
     @Test
-    void recommend_emptyBody_returns400() throws Exception {
-        mockMvc.perform(post("/recommend")
+    void recommend_blankUserId_returns400WithViolation() throws Exception {
+        mockMvc.perform(post("/api/v1/recommend")
                         .contentType(MediaType.APPLICATION_JSON)
-                        .content("{}"))
-                .andExpect(status().isOk()); // default userId=null, k=5 — validation is in service
+                        .content("{\"userId\":\"\",\"k\":5}"))
+                .andExpect(status().isBadRequest())
+                .andExpect(jsonPath("$.error").value("validation failed"))
+                .andExpect(jsonPath("$.violations[0].field").value("userId"));
+    }
+
+    @Test
+    void recommend_kZero_returns400WithViolation() throws Exception {
+        mockMvc.perform(post("/api/v1/recommend")
+                        .contentType(MediaType.APPLICATION_JSON)
+                        .content("{\"userId\":\"123\",\"k\":0}"))
+                .andExpect(status().isBadRequest())
+                .andExpect(jsonPath("$.error").value("validation failed"))
+                .andExpect(jsonPath("$.violations[0].field").value("k"));
+    }
+
+    @Test
+    void recommend_kAbove100_returns400WithViolation() throws Exception {
+        mockMvc.perform(post("/api/v1/recommend")
+                        .contentType(MediaType.APPLICATION_JSON)
+                        .content("{\"userId\":\"123\",\"k\":101}"))
+                .andExpect(status().isBadRequest())
+                .andExpect(jsonPath("$.error").value("validation failed"))
+                .andExpect(jsonPath("$.violations[0].field").value("k"));
+    }
+
+    // --- malformed / wrong content-type ---
+
+    @Test
+    void recommend_malformedJson_returns400() throws Exception {
+        mockMvc.perform(post("/api/v1/recommend")
+                        .contentType(MediaType.APPLICATION_JSON)
+                        .content("{not-json}"))
+                .andExpect(status().isBadRequest())
+                .andExpect(jsonPath("$.error").value("malformed request body"));
+    }
+
+    @Test
+    void recommend_wrongContentType_returns415() throws Exception {
+        mockMvc.perform(post("/api/v1/recommend")
+                        .contentType(MediaType.TEXT_PLAIN)
+                        .content("{\"userId\":\"123\",\"k\":5}"))
+                .andExpect(status().isUnsupportedMediaType())
+                .andExpect(jsonPath("$.error").value("Content-Type must be application/json"));
+    }
+
+    // --- service-level error still surfaces as 400 ---
+
+    @Test
+    void recommend_serviceThrowsIllegalArgument_returns400() throws Exception {
+        when(recommendationService.recommend(any()))
+                .thenThrow(new IllegalArgumentException("custom service rule violated"));
+
+        var req = new RecommendRequest();
+        req.setUserId("123");
+        req.setK(5);
+
+        mockMvc.perform(post("/api/v1/recommend")
+                        .contentType(MediaType.APPLICATION_JSON)
+                        .content(objectMapper.writeValueAsString(req)))
+                .andExpect(status().isBadRequest())
+                .andExpect(jsonPath("$.error").value("custom service rule violated"))
+                .andExpect(jsonPath("$.violations").isArray());
     }
 }

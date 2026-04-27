@@ -14,6 +14,7 @@ public class UserTowerInferenceService {
     private final ModelArtifactLocator artifactLocator;
     private OrtEnvironment environment;
     private OrtSession session;
+    private volatile boolean ready = false;
 
     public UserTowerInferenceService(ModelArtifactLocator artifactLocator) {
         this.artifactLocator = artifactLocator;
@@ -27,11 +28,16 @@ public class UserTowerInferenceService {
                     artifactLocator.readModelBytes("user_tower.onnx"),
                     new OrtSession.SessionOptions()
             );
+            ready = true;
         } catch (IllegalStateException e) {
             throw new IllegalStateException("user_tower.onnx not found at "
                     + artifactLocator.describeModelLocation("user_tower.onnx")
                     + ". Set recsys.model.artifacts-dir to an external pipeline output directory, or place artifacts under classpath:artifacts/twotower/.", e);
         }
+    }
+
+    public boolean isReady() {
+        return ready;
     }
 
     public float[] inferUserEmbedding(FeatureEncoder.EncodedFeatures features) {

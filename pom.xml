@@ -14,6 +14,9 @@
     <project.build.sourceEncoding>UTF-8</project.build.sourceEncoding>
     <spring-boot.version>3.3.4</spring-boot.version>
     <onnxruntime.version>1.18.0</onnxruntime.version>
+    <!-- Default: skip @Tag("load") tests. Override to run them:
+         mvn test -DexcludedGroups="" -Dgroups=load -->
+    <excludedGroups>load</excludedGroups>
   </properties>
 
   <build>
@@ -48,6 +51,9 @@
           <!-- ONNX Runtime appends to the bootstrap classpath, which disables CDS and triggers this warning.
                Disabling CDS upfront suppresses it cleanly. -->
           <argLine>-Xshare:off</argLine>
+          <!-- Load tests are opt-in: mvn test -Dgroups=load
+               Normal test runs skip them to keep CI fast. -->
+          <excludedGroups>${excludedGroups}</excludedGroups>
         </configuration>
       </plugin>
       <plugin>
@@ -80,6 +86,12 @@
     <dependency>
       <groupId>org.springframework.boot</groupId>
       <artifactId>spring-boot-starter-web</artifactId>
+      <version>${spring-boot.version}</version>
+    </dependency>
+
+    <dependency>
+      <groupId>org.springframework.boot</groupId>
+      <artifactId>spring-boot-starter-validation</artifactId>
       <version>${spring-boot.version}</version>
     </dependency>
 

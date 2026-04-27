@@ -100,7 +100,7 @@ docker compose -f docker-compose.streaming.yml down
 
 ## Configuration
 
-Environment variables for the Jetty movie API and its retrieval backend.
+### Movie API (Jetty, port 6010)
 
 | Env var | Default | Purpose |
 |---|---:|---|
@@ -108,8 +108,6 @@ Environment variables for the Jetty movie API and its retrieval backend.
 | `REDIS_HOST` | `localhost` | Redis host |
 | `REDIS_PORT` | `6379` | Redis port |
 | `RECSYS_VECTOR_BACKEND` | `lsh` | Embedding backend: `lsh` or `exact`; `faiss` falls back to `lsh` in the portable build |
-| `RECSYS_MODEL_ARTIFACTS_DIR` | _(empty)_ | Two-tower artifact directory; overrides `classpath:artifacts/twotower/` for `user_tower.onnx`, `feature_config.json`, and `item_embeddings.json` |
-| `RECSYS_SPARK_ARTIFACTS_DIR` | _(empty)_ | PySpark artifact directory; overrides `classpath:artifacts/pyspark/` |
 
 Example:
 
@@ -119,6 +117,19 @@ PORT=7010 REDIS_HOST=localhost REDIS_PORT=6379 \
 ```
 
 On startup the server seeds Redis with bundled movie and user embeddings if the Redis keys are empty.
+
+### Two-tower service (Spring Boot, port 8080)
+
+| Env var / property | Default | Purpose |
+|---|---:|---|
+| `RECSYS_MODEL_ARTIFACTS_DIR` | _(empty)_ | Two-tower artifact directory; overrides `classpath:artifacts/twotower/` |
+| `RECSYS_SPARK_ARTIFACTS_DIR` | _(empty)_ | PySpark artifact directory; overrides `classpath:artifacts/pyspark/` |
+| `recsys.health.window-seconds` | `60` | Rolling window width (s) for recent failure rate, latency, and throughput metrics |
+| `recsys.health.min-sample-size` | `5` | Minimum requests in the window before readiness thresholds are enforced |
+| `recsys.health.max-failure-rate` | `0.5` | Failure rate `[0.0, 1.0]` above which `/health/ready` returns 503 |
+| `recsys.health.max-avg-latency-ms` | `2000` | Average latency (ms) above which `/health/ready` returns 503 |
+
+All `recsys.health.*` values are validated at startup — misconfiguration fails fast. Override via `application.yml` or environment variables (e.g. `RECSYS_HEALTH_MAX_FAILURE_RATE=0.3`).
 
 ---
 
@@ -289,15 +300,18 @@ curl -X POST "http://localhost:6010/setembedding?movieId=6&ttl=3600&vec=0.5+0.5+
 
 ## Two-Tower Model Demo
 
-A separate Spring Boot service on port `8080` that serves model-based retrieval through `TwoTowerApplication` and the `/recommend` endpoint.
+A separate Spring Boot service on port `8080` that serves model-based retrieval through `TwoTowerApplication`.
 
 **Demonstrates:**
 
 - ONNX user-tower inference in Java
 - Precomputed item embeddings
 - Model-based retrieval with inner-product similarity
+- Readiness / liveness probes for auto-restart and load-balancer routing
+- Rolling-window inference metrics (latency, failure rate, throughput)
+- Config-driven probe thresholds with startup validation
 
-At request time, `/recommend` runs `FeatureEncoder` to map `userId` into the training vocab, runs ONNX inference for the user embedding, recalls candidates via `CandidateSelectionService` + `RetrievalService`, and reranks via `RankingService`.
+At request time, `POST /api/v1/recommend` runs `FeatureEncoder` to map `userId` into the training vocab, runs ONNX inference for the user embedding, recalls candidates via `CandidateSelectionService` + `RetrievalService`, and reranks via `RankingService`. Every request is timed with a monotonic clock and recorded in `InferenceMetricsService`.
 
 `ModelArtifactLocator` resolves artifacts into two groups: **model** (`classpath:artifacts/twotower/`, overridden by `RECSYS_MODEL_ARTIFACTS_DIR`) and **spark** (`classpath:artifacts/pyspark/`, overridden by `RECSYS_SPARK_ARTIFACTS_DIR`).
 
@@ -333,17 +347,10 @@ mvn spring-boot:run
 RECSYS_MODEL_ARTIFACTS_DIR=/path/to/model/artifacts mvn spring-boot:run
 ```
 
-Health:
+### Recommend
 
 ```bash
-curl http://localhost:8080/health
-# ok
-```
-
-Recommend:
-
-```bash
-curl -X POST http://localhost:8080/recommend \
+curl -X POST http://localhost:8080/api/v1/recommend \
   -H 'Content-Type: application/json' \
   -d '{"userId": "123", "k": 5, "excludeItemIds": ["2"]}'
 ```
@@ -359,6 +366,102 @@ curl -X POST http://localhost:8080/recommend \
 }
 ```
 
+#### Request fields
+
+| Field | Type | Required | Constraints |
+|---|---|---|---|
+| `userId` | string | yes | non-blank, max 50 chars |
+| `k` | integer | no | 1–100, default `5` |
+| `excludeItemIds` | string[] | no | max 500 entries, each max 50 chars |
+
+#### Error response shape
+
+All errors return a consistent JSON body regardless of failure type:
+
+```json
+{
+  "error": "validation failed",
+  "violations": [
+    {"field": "k", "message": "k must be at most 100"}
+  ]
+}
+```
+
+Non-validation errors (`violations` is an empty array):
+
+| Status | Cause |
+|---|---|
+| `400` | Bean-validation failure or service-level guard |
+| `415` | Missing or wrong `Content-Type` (must be `application/json`) |
+| `500` | Unhandled inference or runtime error |
+
+### Health Probes
+
+#### Liveness — `GET /health/live`
+
+Always returns `200 OK` as long as the JVM's HTTP thread pool responds. Configure your orchestrator to restart the container when this endpoint times out or becomes unreachable.
+
+```bash
+curl http://localhost:8080/health/live
+# {"status":"UP"}
+```
+
+#### Readiness — `GET /health/ready`
+
+Returns `200` when the instance is fit to receive load-balancer traffic; `503` otherwise. The instance is pulled from rotation (without restart) when:
+
+- The ONNX model session has not loaded yet.
+- The recent failure rate exceeds `recsys.health.max-failure-rate` (default 50 %).
+- The average inference latency exceeds `recsys.health.max-avg-latency-ms` (default 2000 ms).
+
+Threshold checks are skipped until `recsys.health.min-sample-size` requests are in the window, preventing false draining on cold start.
+
+```bash
+curl http://localhost:8080/health/ready
+# 200: {"status":"UP","recentRequests":42,"recentFailureRate":0.02,"recentAvgLatencyMs":38.5,"throughputPerSecond":0.7}
+# 503: {"status":"DOWN","reason":"high failure rate","recentFailureRate":0.6,"threshold":0.5}
+```
+
+#### Metrics — `GET /health/metrics`
+
+Exposes both all-time counters (lock-free atomic) and rolling-window stats:
+
+```bash
+curl http://localhost:8080/health/metrics
+```
+
+```json
+{
+  "totalRequests": 1042,
+  "successCount": 1038,
+  "failureCount": 4,
+  "allTimeAvgLatencyMs": 41.2,
+  "recentRequests": 18,
+  "recentFailures": 1,
+  "recentAvgLatencyMs": 55.7,
+  "recentFailureRate": 0.055,
+  "throughputPerSecond": 0.3
+}
+```
+
+#### Kubernetes probe config example
+
+```yaml
+livenessProbe:
+  httpGet:
+    path: /health/live
+    port: 8080
+  initialDelaySeconds: 30
+  periodSeconds: 10
+
+readinessProbe:
+  httpGet:
+    path: /health/ready
+    port: 8080
+  initialDelaySeconds: 15
+  periodSeconds: 5
+```
+
 Notes:
 
 - Retrieval uses inner-product similarity in the portable Java path. If your pipeline exports a FAISS `IndexFlatIP` index (`item_embeddings.faiss` + `item_ids.json`), it is picked up automatically when `RECSYS_MODEL_ARTIFACTS_DIR` is set.
@@ -370,7 +473,11 @@ Notes:
 ## Testing
 
 ```bash
+# Unit and integration tests (load tests excluded)
 mvn test
+
+# Load tests only
+mvn test -DexcludedGroups="" -Dgroups=load
 ```
 
 | Test class | What it covers |
@@ -381,7 +488,10 @@ mvn test
 | `RankingServiceTest` | Items re-ordered by inner-product score descending; k-truncation, duplicate deduplication, and missing-embedding skip |
 | `RetrievalServiceTest` | Embedding recall returns highest inner-product candidates up to recall size; null embedding, empty candidates, and unknown items |
 | `RecommendationServiceTest` | Validates `userId` and `k`; wires mocked sub-services and asserts the full response shape |
-| `RecommendationControllerTest` | `GET /health`, `POST /recommend` happy path and `IllegalArgumentException` → HTTP 400 via `GlobalExceptionHandler` |
+| `RecommendationControllerTest` | Bean-validation rejections (blank userId, k out of range), malformed JSON, wrong content-type, and `IllegalArgumentException` → stable `ApiError` shape |
+| `PredictionIntegrationTest` | End-to-end service pipeline against bundled classpath artifacts: ranked results, score ordering, excludeItemIds, unknown users |
+| `RecommendationEndToEndTest` | Full HTTP chain (`@SpringBootTest`): controller → inference → metrics tracking; verifies `InferenceMetricsService` counters, `/health/ready`, and `/health/metrics` reflect real state |
+| `InferenceLoadTest` _(tag: load)_ | 100 concurrent requests across 10 threads; reports avg latency, P95 latency, throughput (req/s), and success rate; asserts P95 ≤ 2000 ms and success rate ≥ 99 % |
 
 ---
 
@@ -589,7 +699,10 @@ movie_embeddings.txt / user_embeddings.txt (classpath)
 - `CandidateSelectionService` — eligible item IDs from user-history genres plus global pools.
 - `RetrievalService` — multi-route recall combining embedding and metadata recall.
 - `RankingService` — inner-product similarity sort for the final top-K response.
-- `GlobalExceptionHandler` — maps `IllegalArgumentException` to HTTP 400 with `{"error": "..."}`.
+- `InferenceMetricsService` — rolling-window metrics (failure rate, avg latency, throughput) backed by lock-free `AtomicLong` counters for all-time stats and a synchronized deque for the recency window.
+- `HealthProperties` — `@ConfigurationProperties(prefix = "recsys.health")` with `@Validated` startup checks; all probe thresholds in one place, overridable via env vars.
+- `HealthController` — `/health/live` (liveness), `/health/ready` (readiness gated on model state and rolling metrics), `/health/metrics` (snapshot).
+- `GlobalExceptionHandler` — maps bean-validation failures, malformed JSON, wrong content-type, and unexpected errors to a consistent `ApiError` shape.
 
 ---
 
