@@ -49,7 +49,8 @@ class InferenceLoadTest {
                 inferenceService,
                 new RetrievalService(artifactSvc),
                 new RankingService(artifactSvc),
-                artifactSvc
+                artifactSvc,
+                new ABTestService(new com.recsys.modelbased.twotower.config.ABTestConfig())
         );
     }
 

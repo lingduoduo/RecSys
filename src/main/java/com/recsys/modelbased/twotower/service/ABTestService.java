@@ -9,6 +9,8 @@ import org.springframework.stereotype.Service;
 public class ABTestService {
 
     private static final Logger log = LoggerFactory.getLogger(ABTestService.class);
+    private static final int VARIANT_A_BUCKET = 0;
+    private static final int VARIANT_B_BUCKET = 1;
 
     private final ABTestConfig config;
 
@@ -21,7 +23,7 @@ public class ABTestService {
      * Shorthand for {@link #getVariantForUser(String, String)}.
      */
     public String getVariantForUser(String userId) {
-        return getVariantForUser(userId, config.getLayerName());
+        return getAssignmentForUser(userId).variant();
     }
 
     /**
@@ -33,21 +35,62 @@ public class ABTestService {
      * Returns the default variant when A/B testing is disabled or userId is blank.
      */
     public String getVariantForUser(String userId, String layerName) {
+        return getAssignmentForUser(userId, layerName).variant();
+    }
+
+    /**
+     * Returns the full deterministic assignment using the configured layer name.
+     */
+    public Assignment getAssignmentForUser(String userId) {
+        return getAssignmentForUser(userId, config.getLayerName());
+    }
+
+    /**
+     * Returns the full deterministic assignment for the provided user and layer.
+     * This is useful when downstream callers need the chosen variant and the bucket metadata
+     * without recomputing the hash more than once.
+     */
+    public Assignment getAssignmentForUser(String userId, String layerName) {
+        String effectiveLayerName = normalizeLayerName(layerName);
+        String defaultVariant = config.getDefaultVariant();
         if (!config.isEnabled() || userId == null || userId.isBlank()) {
-            return config.getDefaultVariant();
+            return Assignment.control(defaultVariant, effectiveLayerName);
         }
-        // Mix userId + layerName so each layer produces an independent bucketing.
-        // Mask the sign bit so modulo always yields a non-negative bucket index.
+
+        int bucket = resolveBucket(userId, effectiveLayerName);
+        if (bucket == VARIANT_A_BUCKET) {
+            String variant = config.getBucketAVariant();
+            log.debug("user {} in layer '{}' bucketed into A ({})", userId, effectiveLayerName, variant);
+            return new Assignment(variant, bucket, effectiveLayerName, true);
+        }
+        if (bucket == VARIANT_B_BUCKET) {
+            String variant = config.getBucketBVariant();
+            log.debug("user {} in layer '{}' bucketed into B ({})", userId, effectiveLayerName, variant);
+            return new Assignment(variant, bucket, effectiveLayerName, true);
+        }
+        return new Assignment(defaultVariant, bucket, effectiveLayerName, false);
+    }
+
+    private int resolveBucket(String userId, String layerName) {
+        int split = config.getTrafficSplitNumber();
+        if (split <= 0) {
+            return -1;
+        }
         String key = userId + ":" + layerName;
-        int bucket = (key.hashCode() & Integer.MAX_VALUE) % config.getTrafficSplitNumber();
-        if (bucket == 0) {
-            log.info("user {} in layer '{}' bucketed into A ({})", userId, layerName, config.getBucketAVariant());
-            return config.getBucketAVariant();
+        return (key.hashCode() & Integer.MAX_VALUE) % split;
+    }
+
+    private String normalizeLayerName(String layerName) {
+        if (layerName == null || layerName.isBlank()) {
+            return config.getLayerName();
         }
-        if (bucket == 1) {
-            log.info("user {} in layer '{}' bucketed into B ({})", userId, layerName, config.getBucketBVariant());
-            return config.getBucketBVariant();
+        return layerName;
+    }
+
+    public record Assignment(String variant, int bucket, String layerName, boolean inExperiment) {
+
+        public static Assignment control(String variant, String layerName) {
+            return new Assignment(variant, -1, layerName, false);
         }
-        return config.getDefaultVariant();
     }
 }

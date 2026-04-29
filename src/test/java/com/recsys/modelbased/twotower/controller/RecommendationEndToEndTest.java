@@ -133,7 +133,7 @@ class RecommendationEndToEndTest {
         var body = Objects.requireNonNull(resp.getBody(), "metrics response body");
         assertThat((Number) body.get("totalRequests")).extracting(Number::longValue)
                 .as("totalRequests > 0").matches(n -> n > 0);
-        assertThat(body).containsKey("avgLatencyMs").containsKey("throughputPerSecond");
+        assertThat(body).containsKey("allTimeAvgLatencyMs").containsKey("throughputPerSecond");
     }
 
     // ── helper ────────────────────────────────────────────────────────────────

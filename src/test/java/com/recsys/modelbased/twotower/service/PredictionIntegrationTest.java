@@ -36,7 +36,8 @@ class PredictionIntegrationTest {
         var retrievalSvc = new RetrievalService(artifactService);
         var rankingSvc = new RankingService(artifactService);
         service = new RecommendationService(
-                candidateSvc, encoder, inferenceService, retrievalSvc, rankingSvc, artifactService);
+                candidateSvc, encoder, inferenceService, retrievalSvc, rankingSvc, artifactService,
+                new ABTestService(new com.recsys.modelbased.twotower.config.ABTestConfig()));
     }
 
     @AfterAll

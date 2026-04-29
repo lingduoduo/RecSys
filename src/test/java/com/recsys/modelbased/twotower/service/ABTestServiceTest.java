@@ -49,6 +49,18 @@ class ABTestServiceTest {
     }
 
     @Test
+    void assignment_exposesBucketAndVariantMetadata() {
+        String userId = findUserInBucket(0, LAYER_A);
+
+        ABTestService.Assignment assignment = service.getAssignmentForUser(userId, LAYER_A);
+
+        assertThat(assignment.variant()).isEqualTo("twotower-v2");
+        assertThat(assignment.bucket()).isEqualTo(0);
+        assertThat(assignment.layerName()).isEqualTo(LAYER_A);
+        assertThat(assignment.inExperiment()).isTrue();
+    }
+
+    @Test
     void bucketZero_returnsVariantA() {
         String userId = findUserInBucket(0, LAYER_A);
         assertThat(service.getVariantForUser(userId, LAYER_A)).isEqualTo("twotower-v2");
@@ -76,6 +88,26 @@ class ABTestServiceTest {
         String first = service.getVariantForUser(userId, LAYER_A);
         assertThat(service.getVariantForUser(userId, LAYER_A)).isEqualTo(first);
         assertThat(service.getVariantForUser(userId, LAYER_A)).isEqualTo(first);
+    }
+
+    @Test
+    void blankLayerName_fallsBackToConfiguredLayer() {
+        String userId = "user-42";
+
+        assertThat(service.getAssignmentForUser(userId, " ").layerName()).isEqualTo("default");
+        assertThat(service.getVariantForUser(userId, " "))
+                .isEqualTo(service.getVariantForUser(userId, "default"));
+    }
+
+    @Test
+    void invalidTrafficSplit_returnsControlAssignment() {
+        config.setTrafficSplitNumber(0);
+
+        ABTestService.Assignment assignment = service.getAssignmentForUser("123", LAYER_A);
+
+        assertThat(assignment.variant()).isEqualTo("twotower");
+        assertThat(assignment.bucket()).isEqualTo(-1);
+        assertThat(assignment.inExperiment()).isFalse();
     }
 
     // ---- same-layer: bucket A and bucket B are disjoint ----
