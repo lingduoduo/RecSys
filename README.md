@@ -5,9 +5,9 @@ RecSys is a compact Maven workspace for experimenting with recommendation-system
 | Area | What it shows |
 |---|---|
 | Movie API | Jetty, Redis, local movie data, multi-strategy retrieval, and runtime embedding updates |
-| Two-tower demo | Spring Boot ONNX retrieval serving, loads artifacts from any external modeling pipeline |
+| Model serving demo | Spring Boot ONNX retrieval serving with variant-aware model artifact loading |
 | Rule-based offline embeddings | Spark Word2Vec item embeddings trained from user interaction sequences |
-| Model-based offline embeddings | Two-tower user inference plus precomputed item embeddings |
+| Model-based offline embeddings | User-tower inference plus precomputed item embeddings |
 
 ![Architecture](architecture.png)
 
@@ -20,7 +20,7 @@ RecSys is a compact Maven workspace for experimenting with recommendation-system
 - [Configuration](#configuration)
 - [Project Layout](#project-layout)
 - [API Reference](#api-reference)
-- [Two-Tower Model Demo](#two-tower-model-demo)
+- [Model Serving Demo](#model-serving-demo)
 - [A/B Testing](#ab-testing)
 - [Testing](#testing)
 - [Redis Test Data](#redis-test-data)
@@ -119,11 +119,11 @@ PORT=7010 REDIS_HOST=localhost REDIS_PORT=6379 \
 
 On startup the server seeds Redis with bundled movie and user embeddings if the Redis keys are empty.
 
-### Two-tower service (Spring Boot, port 8080)
+### Model serving service (Spring Boot, port 8080)
 
 | Env var / property | Default | Purpose |
 |---|---:|---|
-| `RECSYS_MODEL_ARTIFACTS_DIR` | _(empty)_ | Two-tower artifact directory; overrides `classpath:artifacts/twotower/` |
+| `RECSYS_MODEL_ARTIFACTS_DIR` | _(empty)_ | Model artifact directory; resolves `artifacts/model/<variant>/...`; defaults to the bundled `classpath:artifacts/model/training/` |
 | `RECSYS_SPARK_ARTIFACTS_DIR` | _(empty)_ | PySpark artifact directory; overrides `classpath:artifacts/pyspark/` |
 | `recsys.health.window-seconds` | `60` | Rolling window width (s) for recent failure rate, latency, and throughput metrics |
 | `recsys.health.min-sample-size` | `5` | Minimum requests in the window before readiness thresholds are enforced |
@@ -132,16 +132,16 @@ On startup the server seeds Redis with bundled movie and user embeddings if the 
 
 All `recsys.health.*` values are validated at startup — misconfiguration fails fast. Override via `application.yml` or environment variables (e.g. `RECSYS_HEALTH_MAX_FAILURE_RATE=0.3`).
 
-### A/B test configuration (Two-tower service)
+### A/B test configuration (Model serving service)
 
 | Property | Default | Purpose |
 |---|---:|---|
 | `recsys.ab-test.enabled` | `false` | Enable or disable bucketing; when `false` every user gets `default-variant` |
 | `recsys.ab-test.layer-name` | `default` | Experiment name mixed into the hash key — change this to run an independent parallel experiment |
 | `recsys.ab-test.traffic-split-number` | `5` | Modulus for the hash bucket; 20 % of users land in A, 20 % in B, 60 % in control |
-| `recsys.ab-test.bucket-a-variant` | `twotower-v2` | Variant served to users in bucket 0 |
-| `recsys.ab-test.bucket-b-variant` | `twotower-v1` | Variant served to users in bucket 1 |
-| `recsys.ab-test.default-variant` | `twotower` | Variant served to all other users (control group) |
+| `recsys.ab-test.bucket-a-variant` | `test` | Variant served to users in bucket 0 |
+| `recsys.ab-test.bucket-b-variant` | `training` | Variant served to users in bucket 1 |
+| `recsys.ab-test.default-variant` | `training` | Variant served to all other users (control group) |
 
 All `recsys.ab-test.*` values are validated at startup. Override via `application.yml` or environment variables (e.g. `RECSYS_AB_TEST_ENABLED=true`).
 
@@ -157,10 +157,11 @@ src/main/java/com/recsys/
 ├── training/
 │   ├── rulebased/          Spark Word2Vec offline item embeddings
 │   └── modelbased/
-│       └── twotower/       Spring Boot ONNX serving for the two-tower demo
-│           ├── TwoTowerApplication.java
+│       └── model/          Spring Boot ONNX model serving
+│           ├── ModelApplication.java
 │           ├── config/     Model artifact + A/B test configuration
-│           ├── controller/ Recommendation API
+│           ├── controller/ Recommendation and health APIs
+│           ├── dto/        Request / response payloads
 │           └── service/    Candidate selection, recall, ranking, ONNX inference, A/B bucketing
 │                           ModelArtifactLocator — unified locator for model + spark artifact groups
 └── data/                   Bundled sample data and seed embeddings
@@ -172,7 +173,11 @@ src/main/java/com/recsys/
     ├── movie_embeddings.txt
     └── user_embeddings.txt
 
-src/main/resources/artifacts/twotower/   Sample two-tower artifacts for local dev/testing
+src/main/resources/artifacts/model/      Variant-aware model artifact root
+├── training/
+└── test/
+
+src/main/resources/artifacts/model/training/   Bundled sample artifacts for the default variant
 ├── feature_config.json
 ├── item_embeddings.json
 ├── item_embeddings.faiss
@@ -312,9 +317,9 @@ curl -X POST "http://localhost:6010/setembedding?movieId=6&ttl=3600&vec=0.5+0.5+
 
 ---
 
-## Two-Tower Model Demo
+## Model Serving Demo
 
-A separate Spring Boot service on port `8080` that serves model-based retrieval through `TwoTowerApplication`.
+A separate Spring Boot service on port `8080` that serves model-based retrieval through `ModelApplication`.
 
 **Demonstrates:**
 
@@ -325,9 +330,9 @@ A separate Spring Boot service on port `8080` that serves model-based retrieval 
 - Rolling-window inference metrics (latency, failure rate, throughput)
 - Config-driven probe thresholds with startup validation
 
-At request time, `POST /api/v1/recommend` runs `FeatureEncoder` to map `userId` into the training vocab, runs ONNX inference for the user embedding, recalls candidates via `CandidateSelectionService` + `RetrievalService`, and reranks via `RankingService`. Every request is timed with a monotonic clock and recorded in `InferenceMetricsService`.
+At request time, `POST /api/v1/recommend` uses `ABTestService` to choose a model variant, resolves the corresponding runtime, runs `FeatureEncoder` to map `userId` into that variant's vocab, runs ONNX inference for the user embedding, recalls candidates via `CandidateSelectionService` + `RetrievalService`, and reranks via `RankingService`. Every request is timed with a monotonic clock and recorded in `InferenceMetricsService`.
 
-`ModelArtifactLocator` resolves artifacts into two groups: **model** (`classpath:artifacts/twotower/`, overridden by `RECSYS_MODEL_ARTIFACTS_DIR`) and **spark** (`classpath:artifacts/pyspark/`, overridden by `RECSYS_SPARK_ARTIFACTS_DIR`).
+`ModelArtifactLocator` resolves artifacts into two groups: **model** (`classpath:artifacts/model/<variant>/...`, overridden by `RECSYS_MODEL_ARTIFACTS_DIR`) and **spark** (`classpath:artifacts/pyspark/`, overridden by `RECSYS_SPARK_ARTIFACTS_DIR`). When no variant is specified the locator defaults to the `training` variant.
 
 ### Artifact Contract
 
@@ -342,7 +347,7 @@ metadata.json              Model version and training metadata
 user_tower.onnx            Exported user tower for runtime inference
 ```
 
-Point the service at your pipeline's output directory via `RECSYS_MODEL_ARTIFACTS_DIR` (see [Configuration](#configuration)). When unset, the sample classpath artifacts under `src/main/resources/artifacts/twotower/` are used.
+Point the service at your pipeline's output directory via `RECSYS_MODEL_ARTIFACTS_DIR` (see [Configuration](#configuration)). Organize variants as `<artifacts-dir>/<variant>/feature_config.json`, `<artifacts-dir>/<variant>/item_embeddings.json`, and `<artifacts-dir>/<variant>/user_tower.onnx`. When unset, the bundled sample artifacts under `classpath:artifacts/model/training/` are used.
 
 ### Feature Contract
 
@@ -373,7 +378,7 @@ curl -X POST http://localhost:8080/api/v1/recommend \
 {
   "userId": "123",
   "modelVersion": "demo-two-tower-ratings-v1",
-  "abTestVariant": "twotower",
+  "abTestVariant": "training",
   "recommendations": [
     {"itemId": "1", "score": 0.9997},
     {"itemId": "3", "score": 0.7100}
@@ -513,10 +518,10 @@ The `layerName` salt is the key property for running multiple independent experi
 **Across different layers — bucket indices are independent.** A user can be in bucket 0 of `model-arch-test` *and* bucket 0 of `recall-strategy-test` at the same time. The two layers do not interfere.
 
 ```
-Layer "model-arch-test":      user-7 → bucket 0 (twotower-v2)
-Layer "recall-strategy-test": user-7 → bucket 0 (twotower-v2)   ← same bucket, independent layer
-Layer "model-arch-test":      user-7 → bucket 0 (twotower-v2)
-Layer "recall-strategy-test": user-9 → bucket 2 (twotower)      ← different bucket, different layer
+Layer "model-arch-test":      user-7 → bucket 0 (test)
+Layer "recall-strategy-test": user-7 → bucket 0 (test)          ← same bucket, independent layer
+Layer "model-arch-test":      user-7 → bucket 0 (test)
+Layer "recall-strategy-test": user-9 → bucket 2 (training)      ← different bucket, different layer
 ```
 
 To run a second experiment in parallel, deploy a second instance with a different `recsys.ab-test.layer-name`; the user assignments will be orthogonal to the first experiment.
@@ -529,9 +534,9 @@ recsys:
     enabled: true
     layer-name: model-arch-test-2024q2
     traffic-split-number: 5
-    bucket-a-variant: twotower-v2
-    bucket-b-variant: twotower-v1
-    default-variant: twotower
+    bucket-a-variant: test
+    bucket-b-variant: training
+    default-variant: training
 ```
 
 Or via environment variables:
@@ -707,7 +712,7 @@ Key: `{prefix}:{id}` (e.g. `i2vEmb:1`) · Value: space-separated floats · TTL: 
 
 ### Model-based → classpath
 
-Your modeling pipeline exports `item_embeddings.json` (and optionally `user_tower.onnx`, `feature_config.json`, `metadata.json`). Point `RECSYS_MODEL_ARTIFACTS_DIR` at the output directory, or copy artifacts into `src/main/resources/artifacts/twotower/` to bundle them in the classpath. At startup, `ModelArtifactService` loads item embeddings into a `ConcurrentHashMap` in the JVM heap. Redis is not involved.
+Your modeling pipeline exports `item_embeddings.json` (and optionally `user_tower.onnx`, `feature_config.json`, `metadata.json`). Point `RECSYS_MODEL_ARTIFACTS_DIR` at a directory organised as `<dir>/training/` and `<dir>/test/` for variant-aware serving, or leave it unset to use the bundled classpath artifacts under `artifacts/model/training/`. At startup, `ModelArtifactService` loads item embeddings into a `ConcurrentHashMap` in the JVM heap. Redis is not involved.
 
 ```
 Modeling pipeline (any framework)
@@ -732,7 +737,7 @@ movie_embeddings.txt / user_embeddings.txt (classpath)
 
 ### Comparison
 
-| | Rule-based (Redis) | Model-based (two-tower) | Movie API (classpath) |
+| | Rule-based (Redis) | Model-based (ONNX service) | Movie API (classpath) |
 |---|---|---|---|
 | Written by | Spark job → Jedis pipeline | External modeling pipeline | Bundled text resources |
 | Stored in | Redis (`i2vEmb:{id}`) | Classpath + JVM heap | Classpath + JVM heap |

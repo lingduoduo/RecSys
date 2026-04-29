@@ -17,7 +17,7 @@ recsys:
     bucket-b-variant: training
     default-variant: training
   model:
-    # Variant-aware model artifacts: classpath:artifacts/model/<variant>/... with legacy fallback to classpath:artifacts/twotower/
+    # Variant-aware model artifacts: classpath:artifacts/model/<variant>/... (default variant: training)
     artifacts-dir: ${RECSYS_MODEL_ARTIFACTS_DIR:}
   spark:
     # PySpark model artifacts output by the training pipeline (classpath:artifacts/pyspark/)

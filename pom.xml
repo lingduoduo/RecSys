@@ -61,7 +61,7 @@
         <artifactId>spring-boot-maven-plugin</artifactId>
         <version>${spring-boot.version}</version>
         <configuration>
-          <mainClass>com.recsys.modelbased.twotower.TwoTowerApplication</mainClass>
+          <mainClass>com.recsys.modelbased.model.ModelApplication</mainClass>
         </configuration>
       </plugin>
     </plugins>
