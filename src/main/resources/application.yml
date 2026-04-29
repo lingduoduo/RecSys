@@ -13,11 +13,11 @@ recsys:
     enabled: false
     layer-name: default
     traffic-split-number: 5
-    bucket-a-variant: twotower-v2
-    bucket-b-variant: twotower-v1
-    default-variant: twotower
+    bucket-a-variant: test
+    bucket-b-variant: training
+    default-variant: training
   model:
-    # Two-tower serving artifacts: feature configs, pre-computed embeddings, ONNX model (classpath:artifacts/twotower/)
+    # Variant-aware model artifacts: classpath:artifacts/model/<variant>/... with legacy fallback to classpath:artifacts/twotower/
     artifacts-dir: ${RECSYS_MODEL_ARTIFACTS_DIR:}
   spark:
     # PySpark model artifacts output by the training pipeline (classpath:artifacts/pyspark/)

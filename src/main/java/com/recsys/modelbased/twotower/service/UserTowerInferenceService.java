@@ -3,6 +3,7 @@ package com.recsys.modelbased.twotower.service;
 import ai.onnxruntime.*;
 import jakarta.annotation.PostConstruct;
 import jakarta.annotation.PreDestroy;
+import org.springframework.beans.factory.annotation.Autowired;
 import org.springframework.stereotype.Service;
 
 import java.nio.LongBuffer;
@@ -12,12 +13,19 @@ import java.util.Map;
 public class UserTowerInferenceService {
 
     private final ModelArtifactLocator artifactLocator;
+    private final String variant;
     private OrtEnvironment environment;
     private OrtSession session;
     private volatile boolean ready = false;
 
+    @Autowired
     public UserTowerInferenceService(ModelArtifactLocator artifactLocator) {
+        this(artifactLocator, "");
+    }
+
+    public UserTowerInferenceService(ModelArtifactLocator artifactLocator, String variant) {
         this.artifactLocator = artifactLocator;
+        this.variant = variant == null ? "" : variant.trim();
     }
 
     @PostConstruct
@@ -25,14 +33,14 @@ public class UserTowerInferenceService {
         environment = OrtEnvironment.getEnvironment();
         try {
             session = environment.createSession(
-                    artifactLocator.readModelBytes("user_tower.onnx"),
+                    artifactLocator.readModelBytes(variant, "user_tower.onnx"),
                     new OrtSession.SessionOptions()
             );
             ready = true;
         } catch (IllegalStateException e) {
             throw new IllegalStateException("user_tower.onnx not found at "
-                    + artifactLocator.describeModelLocation("user_tower.onnx")
-                    + ". Set recsys.model.artifacts-dir to an external pipeline output directory, or place artifacts under classpath:artifacts/twotower/.", e);
+                    + artifactLocator.describeModelLocation(variant, "user_tower.onnx")
+                    + ". Set recsys.model.artifacts-dir to an external model directory, or place artifacts under classpath:artifacts/model/<variant>/.", e);
         }
     }
 

@@ -32,31 +32,21 @@ class InferenceLoadTest {
     private static final String[] USER_IDS = {"1", "10", "50", "100", "123", "200", "300", "400", "500", "600"};
 
     private RecommendationService service;
-    private UserTowerInferenceService inferenceService;
+    private ModelRuntimeProvider runtimeProvider;
 
     @BeforeAll
     void setUp() throws Exception {
-        var locator      = new ModelArtifactLocator("", "");
-        var artifactSvc  = new ModelArtifactService(locator);
-        artifactSvc.loadArtifacts();
-
-        inferenceService = new UserTowerInferenceService(locator);
-        inferenceService.init();
-
+        var locator = new ModelArtifactLocator("", "");
+        runtimeProvider = new ModelRuntimeProvider(locator);
         service = new RecommendationService(
-                new CandidateSelectionService(artifactSvc),
-                new FeatureEncoder(artifactSvc),
-                inferenceService,
-                new RetrievalService(artifactSvc),
-                new RankingService(artifactSvc),
-                artifactSvc,
+                runtimeProvider,
                 new ABTestService(new com.recsys.modelbased.twotower.config.ABTestConfig())
         );
     }
 
     @AfterAll
     void tearDown() throws Exception {
-        if (inferenceService != null) inferenceService.close();
+        if (runtimeProvider != null) runtimeProvider.close();
     }
 
     @Test

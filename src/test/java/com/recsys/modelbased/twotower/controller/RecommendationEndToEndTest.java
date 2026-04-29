@@ -6,38 +6,48 @@ import com.recsys.modelbased.twotower.model.RecommendResponse;
 import com.recsys.modelbased.twotower.service.InferenceMetricsService;
 import org.junit.jupiter.api.Test;
 import org.springframework.beans.factory.annotation.Autowired;
+import org.springframework.boot.test.autoconfigure.web.servlet.AutoConfigureMockMvc;
 import org.springframework.boot.test.context.SpringBootTest;
-import org.springframework.boot.test.web.client.TestRestTemplate;
-import org.springframework.core.ParameterizedTypeReference;
-import org.springframework.http.HttpMethod;
 import org.springframework.http.HttpStatus;
+import org.springframework.http.MediaType;
+import org.springframework.test.web.servlet.MockMvc;
 
+import java.util.LinkedHashMap;
 import java.util.List;
 import java.util.Map;
 import java.util.Objects;
 
 import static org.assertj.core.api.Assertions.assertThat;
+import static org.springframework.test.web.servlet.request.MockMvcRequestBuilders.get;
+import static org.springframework.test.web.servlet.request.MockMvcRequestBuilders.post;
 
 /**
  * End-to-end tests for the full request chain:
  *   Client → RecommendationController → RecommendationService (inference) → InferenceMetricsService → Response
  *
- * Uses a real Spring Boot context and HTTP server so every layer is exercised.
+ * Uses the full Spring Boot context with MockMvc so every application layer is exercised
+ * without requiring a real TCP listener in constrained test environments.
  */
-@SpringBootTest(webEnvironment = SpringBootTest.WebEnvironment.RANDOM_PORT)
+@SpringBootTest
+@AutoConfigureMockMvc
 class RecommendationEndToEndTest {
 
-    @Autowired TestRestTemplate restTemplate;
+    @Autowired MockMvc mockMvc;
+    @Autowired com.fasterxml.jackson.databind.ObjectMapper objectMapper;
     @Autowired InferenceMetricsService metricsService;
 
     // ── 1. Full chain: valid request produces ranked recommendations ──────────
 
     @Test
-    void fullChain_validRequest_returnsRankedRecommendations() {
-        var resp = restTemplate.postForEntity("/api/v1/recommend", request("123", 5), RecommendResponse.class);
+    void fullChain_validRequest_returnsRankedRecommendations() throws Exception {
+        var resp = mockMvc.perform(post("/api/v1/recommend")
+                        .contentType(MediaType.APPLICATION_JSON)
+                        .content(objectMapper.writeValueAsBytes(request("123", 5))))
+                .andReturn()
+                .getResponse();
 
-        assertThat(resp.getStatusCode()).isEqualTo(HttpStatus.OK);
-        var body = Objects.requireNonNull(resp.getBody(), "recommend response body");
+        assertThat(resp.getStatus()).isEqualTo(HttpStatus.OK.value());
+        var body = readBody(resp.getContentAsByteArray(), RecommendResponse.class);
         assertThat(body.userId()).isEqualTo("123");
         assertThat(body.modelVersion()).isNotBlank();
         assertThat(body.recommendations()).isNotEmpty();
@@ -54,10 +64,13 @@ class RecommendationEndToEndTest {
     // ── 2. MetricsService is updated after a successful request ───────────────
 
     @Test
-    void fullChain_successfulRequest_incrementsSuccessCounter() {
+    void fullChain_successfulRequest_incrementsSuccessCounter() throws Exception {
         var before = metricsService.snapshot();
 
-        restTemplate.postForEntity("/api/v1/recommend", request("123", 3), RecommendResponse.class);
+        mockMvc.perform(post("/api/v1/recommend")
+                        .contentType(MediaType.APPLICATION_JSON)
+                        .content(objectMapper.writeValueAsBytes(request("123", 3))))
+                .andReturn();
 
         var after = metricsService.snapshot();
         assertThat(after.totalRequests()).as("totalRequests").isEqualTo(before.totalRequests() + 1);
@@ -70,11 +83,14 @@ class RecommendationEndToEndTest {
     //       are never called — validation errors are the caller's fault, not ours)
 
     @Test
-    void fullChain_validationRejection_doesNotTouchMetrics() {
+    void fullChain_validationRejection_doesNotTouchMetrics() throws Exception {
         var before = metricsService.snapshot();
 
         // missing userId triggers @NotBlank — Spring MVC rejects before entering the method
-        restTemplate.postForEntity("/api/v1/recommend", Map.of("k", 5), ApiError.class);
+        mockMvc.perform(post("/api/v1/recommend")
+                        .contentType(MediaType.APPLICATION_JSON)
+                        .content(objectMapper.writeValueAsBytes(Map.of("k", 5))))
+                .andReturn();
 
         var after = metricsService.snapshot();
         assertThat(after.totalRequests()).as("totalRequests unchanged").isEqualTo(before.totalRequests());
@@ -84,13 +100,16 @@ class RecommendationEndToEndTest {
     // ── 4. Invalid input → stable ApiError shape with field-level violations ──
 
     @Test
-    void fullChain_invalidInput_returns400WithViolations() {
+    void fullChain_invalidInput_returns400WithViolations() throws Exception {
         // k=0 violates @Min(1); userId missing violates @NotBlank
-        var resp = restTemplate.postForEntity(
-                "/api/v1/recommend", Map.of("k", 0), ApiError.class);
+        var resp = mockMvc.perform(post("/api/v1/recommend")
+                        .contentType(MediaType.APPLICATION_JSON)
+                        .content(objectMapper.writeValueAsBytes(Map.of("k", 0))))
+                .andReturn()
+                .getResponse();
 
-        assertThat(resp.getStatusCode()).isEqualTo(HttpStatus.BAD_REQUEST);
-        var error = Objects.requireNonNull(resp.getBody(), "error response body");
+        assertThat(resp.getStatus()).isEqualTo(HttpStatus.BAD_REQUEST.value());
+        var error = readBody(resp.getContentAsByteArray(), ApiError.class);
         assertThat(error.error()).isEqualTo("validation failed");
         assertThat(error.violations()).isNotEmpty();
         assertThat(error.violations().stream().map(ApiError.Violation::field))
@@ -100,37 +119,40 @@ class RecommendationEndToEndTest {
     // ── 5. Health probes reflect real model + metrics state ───────────────────
 
     @Test
-    void healthLive_alwaysReturnsUp() {
-        var resp = restTemplate.exchange(
-                "/health/live", HttpMethod.GET, null,
-                new ParameterizedTypeReference<Map<String, String>>() {});
+    void healthLive_alwaysReturnsUp() throws Exception {
+        var resp = mockMvc.perform(get("/health/live"))
+                .andReturn()
+                .getResponse();
 
-        assertThat(resp.getStatusCode()).isEqualTo(HttpStatus.OK);
-        assertThat(resp.getBody()).containsEntry("status", "UP");
+        assertThat(resp.getStatus()).isEqualTo(HttpStatus.OK.value());
+        assertThat(readMap(resp.getContentAsByteArray())).containsEntry("status", "UP");
     }
 
     @Test
-    void healthReady_modelLoaded_returnsUp() {
+    void healthReady_modelLoaded_returnsUp() throws Exception {
         // model is loaded by @PostConstruct before any test runs;
         // recentRequests < minSampleSize so threshold checks are skipped — just confirms model ready
-        var resp = restTemplate.exchange(
-                "/health/ready", HttpMethod.GET, null,
-                new ParameterizedTypeReference<Map<String, Object>>() {});
+        var resp = mockMvc.perform(get("/health/ready"))
+                .andReturn()
+                .getResponse();
 
-        assertThat(resp.getStatusCode()).isEqualTo(HttpStatus.OK);
-        assertThat(resp.getBody()).containsEntry("status", "UP");
+        assertThat(resp.getStatus()).isEqualTo(HttpStatus.OK.value());
+        assertThat(readMap(resp.getContentAsByteArray())).containsEntry("status", "UP");
     }
 
     @Test
-    void healthMetrics_afterRequest_reflectsRecordedStats() {
-        restTemplate.postForEntity("/api/v1/recommend", request("123", 5), RecommendResponse.class);
+    void healthMetrics_afterRequest_reflectsRecordedStats() throws Exception {
+        mockMvc.perform(post("/api/v1/recommend")
+                        .contentType(MediaType.APPLICATION_JSON)
+                        .content(objectMapper.writeValueAsBytes(request("123", 5))))
+                .andReturn();
 
-        var resp = restTemplate.exchange(
-                "/health/metrics", HttpMethod.GET, null,
-                new ParameterizedTypeReference<Map<String, Object>>() {});
+        var resp = mockMvc.perform(get("/health/metrics"))
+                .andReturn()
+                .getResponse();
 
-        assertThat(resp.getStatusCode()).isEqualTo(HttpStatus.OK);
-        var body = Objects.requireNonNull(resp.getBody(), "metrics response body");
+        assertThat(resp.getStatus()).isEqualTo(HttpStatus.OK.value());
+        var body = readMap(resp.getContentAsByteArray());
         assertThat((Number) body.get("totalRequests")).extracting(Number::longValue)
                 .as("totalRequests > 0").matches(n -> n > 0);
         assertThat(body).containsKey("allTimeAvgLatencyMs").containsKey("throughputPerSecond");
@@ -143,5 +165,14 @@ class RecommendationEndToEndTest {
         req.setUserId(userId);
         req.setK(k);
         return req;
+    }
+
+    private <T> T readBody(byte[] body, Class<T> type) throws Exception {
+        return Objects.requireNonNull(objectMapper.readValue(body, type), "response body");
+    }
+
+    @SuppressWarnings("unchecked")
+    private Map<String, Object> readMap(byte[] body) throws Exception {
+        return objectMapper.readValue(body, LinkedHashMap.class);
     }
 }

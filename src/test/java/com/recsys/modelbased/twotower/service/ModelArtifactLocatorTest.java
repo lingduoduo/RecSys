@@ -62,6 +62,25 @@ class ModelArtifactLocatorTest {
                 .startsWith(tmp.toAbsolutePath().toString());
     }
 
+    @Test
+    void openModel_variantExternalDir_prefersVariantSubdirectory(@TempDir Path tmp) throws IOException {
+        Path trainingDir = Files.createDirectories(tmp.resolve("training"));
+        Files.writeString(trainingDir.resolve("config.json"), "{\"slot\":\"training\"}");
+        Files.writeString(tmp.resolve("config.json"), "{\"slot\":\"flat\"}");
+
+        var locator = new ModelArtifactLocator(tmp.toString(), "");
+        try (InputStream is = locator.openModel("training", "config.json")) {
+            assertThat(new String(is.readAllBytes())).contains("training");
+        }
+    }
+
+    @Test
+    void describeModelLocation_variantClasspath_returnsGenericPath() {
+        var locator = new ModelArtifactLocator("", "");
+        assertThat(locator.describeModelLocation("training", "feature_config.json"))
+                .startsWith("classpath:artifacts/model/training/feature_config.json");
+    }
+
     // ---- spark artifacts ----
 
     @Test

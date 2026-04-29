@@ -15,47 +15,39 @@ public class RecommendationService {
     private static final int RECALL_MULTIPLIER = 5;
     private static final int MAX_RECALL_SIZE = 500;
 
-    private final CandidateSelectionService candidateSelectionService;
-    private final FeatureEncoder featureEncoder;
-    private final UserTowerInferenceService inferenceService;
-    private final RetrievalService retrievalService;
-    private final RankingService rankingService;
-    private final ModelArtifactService artifactService;
+    private final ModelRuntimeProvider modelRuntimeProvider;
     private final ABTestService abTestService;
 
     public RecommendationService(
-            CandidateSelectionService candidateSelectionService,
-            FeatureEncoder featureEncoder,
-            UserTowerInferenceService inferenceService,
-            RetrievalService retrievalService,
-            RankingService rankingService,
-            ModelArtifactService artifactService,
+            ModelRuntimeProvider modelRuntimeProvider,
             ABTestService abTestService
     ) {
-        this.candidateSelectionService = candidateSelectionService;
-        this.featureEncoder = featureEncoder;
-        this.inferenceService = inferenceService;
-        this.retrievalService = retrievalService;
-        this.rankingService = rankingService;
-        this.artifactService = artifactService;
+        this.modelRuntimeProvider = modelRuntimeProvider;
         this.abTestService = abTestService;
     }
 
     public RecommendResponse recommend(RecommendRequest request) {
         validate(request);
 
-        FeatureEncoder.EncodedFeatures encoded = featureEncoder.encode(request);
-        float[] userEmbedding = inferenceService.inferUserEmbedding(encoded);
+        ABTestService.Assignment assignment = abTestService.getAssignmentForUser(request.getUserId());
+        ModelRuntime runtime = modelRuntimeProvider.getRuntime(assignment.variant());
+
+        FeatureEncoder.EncodedFeatures encoded = runtime.featureEncoder().encode(request);
+        float[] userEmbedding = runtime.inferenceService().inferUserEmbedding(encoded);
 
         Set<String> excluded = new HashSet<>(request.getExcludeItemIds());
         Integer numericUserId = parseUserId(request.getUserId());
-        Set<String> candidates = candidateSelectionService.selectCandidates(numericUserId, excluded);
+        Set<String> candidates = runtime.candidateSelectionService().selectCandidates(numericUserId, excluded);
         int recallSize = Math.min(MAX_RECALL_SIZE, request.getK() * RECALL_MULTIPLIER);
-        List<ScoredItem> recalled = retrievalService.recall(userEmbedding, numericUserId, candidates, recallSize);
-        List<ScoredItem> items = rankingService.rank(userEmbedding, recalled, request.getK());
-        String variant = abTestService.getVariantForUser(request.getUserId());
+        List<ScoredItem> recalled = runtime.retrievalService().recall(userEmbedding, numericUserId, candidates, recallSize);
+        List<ScoredItem> items = runtime.rankingService().rank(userEmbedding, recalled, request.getK());
 
-        return new RecommendResponse(request.getUserId(), artifactService.getModelVersion(), variant, items);
+        return new RecommendResponse(
+                request.getUserId(),
+                runtime.artifactService().getModelVersion(),
+                assignment.variant(),
+                items
+        );
     }
 
     private static Integer parseUserId(String userId) {

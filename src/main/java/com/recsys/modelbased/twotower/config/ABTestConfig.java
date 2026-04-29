@@ -15,13 +15,13 @@ public class ABTestConfig {
     private int trafficSplitNumber = 5;
 
     @NotBlank
-    private String bucketAVariant = "twotower-v2";
+    private String bucketAVariant = "test";
 
     @NotBlank
-    private String bucketBVariant = "twotower-v1";
+    private String bucketBVariant = "training";
 
     @NotBlank
-    private String defaultVariant = "twotower";
+    private String defaultVariant = "training";
 
     @NotBlank
     private String layerName = "default";

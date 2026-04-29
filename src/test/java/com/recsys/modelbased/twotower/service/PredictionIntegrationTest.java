@@ -20,29 +20,20 @@ import static org.assertj.core.api.Assertions.assertThatThrownBy;
 class PredictionIntegrationTest {
 
     private RecommendationService service;
-    private UserTowerInferenceService inferenceService;
+    private ModelRuntimeProvider runtimeProvider;
 
     @BeforeAll
     void setUp() throws Exception {
         var locator = new ModelArtifactLocator("", "");
-        var artifactService = new ModelArtifactService(locator);
-        artifactService.loadArtifacts();
-
-        inferenceService = new UserTowerInferenceService(locator);
-        inferenceService.init();
-
-        var encoder = new FeatureEncoder(artifactService);
-        var candidateSvc = new CandidateSelectionService(artifactService);
-        var retrievalSvc = new RetrievalService(artifactService);
-        var rankingSvc = new RankingService(artifactService);
+        runtimeProvider = new ModelRuntimeProvider(locator);
         service = new RecommendationService(
-                candidateSvc, encoder, inferenceService, retrievalSvc, rankingSvc, artifactService,
+                runtimeProvider,
                 new ABTestService(new com.recsys.modelbased.twotower.config.ABTestConfig()));
     }
 
     @AfterAll
     void tearDown() throws Exception {
-        if (inferenceService != null) inferenceService.close();
+        if (runtimeProvider != null) runtimeProvider.close();
     }
 
     @Test

@@ -23,8 +23,10 @@ class RecommendationServiceTest {
     private RetrievalService retrievalService;
     private RankingService rankingService;
     private ModelArtifactService artifactService;
+    private ModelRuntimeProvider modelRuntimeProvider;
     private ABTestService abTestService;
     private RecommendationService service;
+    private ModelRuntime runtime;
 
     @BeforeEach
     void setUp() {
@@ -34,11 +36,22 @@ class RecommendationServiceTest {
         retrievalService = mock(RetrievalService.class);
         rankingService = mock(RankingService.class);
         artifactService = mock(ModelArtifactService.class);
+        modelRuntimeProvider = mock(ModelRuntimeProvider.class);
         abTestService = mock(ABTestService.class);
-        when(abTestService.getVariantForUser(any())).thenReturn("twotower");
-        service = new RecommendationService(
-                candidateSelectionService, featureEncoder, inferenceService,
-                retrievalService, rankingService, artifactService, abTestService);
+        when(abTestService.getAssignmentForUser(any())).thenReturn(
+                new ABTestService.Assignment("training", -1, "default", false)
+        );
+        runtime = new ModelRuntime(
+                "training",
+                artifactService,
+                candidateSelectionService,
+                featureEncoder,
+                inferenceService,
+                retrievalService,
+                rankingService
+        );
+        when(modelRuntimeProvider.getRuntime(any())).thenReturn(runtime);
+        service = new RecommendationService(modelRuntimeProvider, abTestService);
     }
 
     // ---- validation ----

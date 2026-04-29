@@ -13,7 +13,7 @@ import java.nio.file.Path;
  * Unified locator for all model pipeline artifacts.
  *
  * Artifact types and their defaults:
- *   model  — classpath:artifacts/twotower/  (feature configs, pre-computed embeddings, ONNX models)
+ *   model  — classpath:artifacts/model/<variant>/  (feature configs, pre-computed embeddings, ONNX models)
  *   spark  — classpath:artifacts/pyspark/   (PySpark model directories and metadata)
  *
  * Each type has its own override env var so deployments can point to external
@@ -22,7 +22,8 @@ import java.nio.file.Path;
 @Service
 public class ModelArtifactLocator {
 
-    private static final String MODEL_CLASSPATH_DIR = "artifacts/twotower";
+    private static final String MODEL_CLASSPATH_DIR = "artifacts/model";
+    private static final String LEGACY_MODEL_CLASSPATH_DIR = "artifacts/twotower";
     private static final String SPARK_CLASSPATH_DIR = "artifacts/pyspark";
 
     private final String modelDir;
@@ -38,7 +39,12 @@ public class ModelArtifactLocator {
     // ---- model artifacts (feature configs, embeddings, ONNX models) ----
 
     public InputStream openModel(String fileName) throws IOException {
-        return openStream(MODEL_CLASSPATH_DIR, modelDir, fileName);
+        return openModel("", fileName);
+    }
+
+    public InputStream openModel(String variant, String fileName) throws IOException {
+        String normalizedVariant = normalizeVariant(variant);
+        return openModelStream(normalizedVariant, fileName);
     }
 
     public byte[] readModelBytes(String fileName) throws IOException {
@@ -47,8 +53,30 @@ public class ModelArtifactLocator {
         }
     }
 
+    public byte[] readModelBytes(String variant, String fileName) throws IOException {
+        try (InputStream is = openModel(variant, fileName)) {
+            return is.readAllBytes();
+        }
+    }
+
     public String describeModelLocation(String fileName) {
-        return describe(MODEL_CLASSPATH_DIR, modelDir, fileName);
+        return describeModelLocation("", fileName);
+    }
+
+    public String describeModelLocation(String variant, String fileName) {
+        String normalizedVariant = normalizeVariant(variant);
+        if (!modelDir.isBlank()) {
+            if (!normalizedVariant.isBlank()) {
+                return Path.of(modelDir).resolve(normalizedVariant).resolve(fileName).normalize().toAbsolutePath()
+                        + " (fallback " + Path.of(modelDir).resolve(fileName).normalize().toAbsolutePath() + ")";
+            }
+            return Path.of(modelDir).resolve(fileName).normalize().toAbsolutePath().toString();
+        }
+        if (!normalizedVariant.isBlank()) {
+            return "classpath:" + MODEL_CLASSPATH_DIR + "/" + normalizedVariant + "/" + fileName
+                    + " (fallback classpath:" + LEGACY_MODEL_CLASSPATH_DIR + "/" + fileName + ")";
+        }
+        return "classpath:" + LEGACY_MODEL_CLASSPATH_DIR + "/" + fileName;
     }
 
     // ---- spark artifacts (PySpark model files and directories) ----
@@ -87,6 +115,37 @@ public class ModelArtifactLocator {
 
     // ---- private helpers ----
 
+    private InputStream openModelStream(String variant, String fileName) throws IOException {
+        if (!modelDir.isBlank()) {
+            if (!variant.isBlank()) {
+                Path variantPath = Path.of(modelDir).resolve(variant).resolve(fileName).normalize();
+                if (Files.exists(variantPath)) {
+                    return Files.newInputStream(variantPath);
+                }
+            }
+            Path flatPath = Path.of(modelDir).resolve(fileName).normalize();
+            if (Files.exists(flatPath)) {
+                return Files.newInputStream(flatPath);
+            }
+            throw new IllegalStateException("artifact not found: " + describeModelLocation(variant, fileName));
+        }
+
+        if (!variant.isBlank()) {
+            ClassPathResource variantResource = new ClassPathResource(MODEL_CLASSPATH_DIR + "/" + variant + "/" + fileName);
+            if (variantResource.exists()) {
+                return variantResource.getInputStream();
+            }
+        }
+
+        ClassPathResource legacyResource = new ClassPathResource(LEGACY_MODEL_CLASSPATH_DIR + "/" + fileName);
+        if (legacyResource.exists()) {
+            return legacyResource.getInputStream();
+        }
+
+        throw new IllegalStateException(describeModelLocation(variant, fileName) + " not found. "
+                + "Run the training pipeline or set recsys.model.artifacts-dir to an external model directory.");
+    }
+
     private InputStream openStream(String classpathBase, String externalDir, String path) throws IOException {
         if (!externalDir.isBlank()) {
             Path p = Path.of(externalDir).resolve(path).normalize();
@@ -112,5 +171,9 @@ public class ModelArtifactLocator {
 
     private static String trim(String val) {
         return val == null ? "" : val.trim();
+    }
+
+    private static String normalizeVariant(String variant) {
+        return variant == null ? "" : variant.trim();
     }
 }

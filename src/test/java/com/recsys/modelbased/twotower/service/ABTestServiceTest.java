@@ -23,9 +23,9 @@ class ABTestServiceTest {
         config.setEnabled(true);
         config.setLayerName("default");
         config.setTrafficSplitNumber(5);
-        config.setBucketAVariant("twotower-v2");
-        config.setBucketBVariant("twotower-v1");
-        config.setDefaultVariant("twotower");
+        config.setBucketAVariant("test");
+        config.setBucketBVariant("training");
+        config.setDefaultVariant("training");
         service = new ABTestService(config);
     }
 
@@ -34,18 +34,18 @@ class ABTestServiceTest {
     @Test
     void disabled_alwaysReturnsDefault() {
         config.setEnabled(false);
-        assertThat(service.getVariantForUser("123")).isEqualTo("twotower");
-        assertThat(service.getVariantForUser("456")).isEqualTo("twotower");
+        assertThat(service.getVariantForUser("123")).isEqualTo("training");
+        assertThat(service.getVariantForUser("456")).isEqualTo("training");
     }
 
     @Test
     void nullUserId_returnsDefault() {
-        assertThat(service.getVariantForUser(null)).isEqualTo("twotower");
+        assertThat(service.getVariantForUser(null)).isEqualTo("training");
     }
 
     @Test
     void blankUserId_returnsDefault() {
-        assertThat(service.getVariantForUser("  ")).isEqualTo("twotower");
+        assertThat(service.getVariantForUser("  ")).isEqualTo("training");
     }
 
     @Test
@@ -54,7 +54,7 @@ class ABTestServiceTest {
 
         ABTestService.Assignment assignment = service.getAssignmentForUser(userId, LAYER_A);
 
-        assertThat(assignment.variant()).isEqualTo("twotower-v2");
+        assertThat(assignment.variant()).isEqualTo("test");
         assertThat(assignment.bucket()).isEqualTo(0);
         assertThat(assignment.layerName()).isEqualTo(LAYER_A);
         assertThat(assignment.inExperiment()).isTrue();
@@ -63,13 +63,13 @@ class ABTestServiceTest {
     @Test
     void bucketZero_returnsVariantA() {
         String userId = findUserInBucket(0, LAYER_A);
-        assertThat(service.getVariantForUser(userId, LAYER_A)).isEqualTo("twotower-v2");
+        assertThat(service.getVariantForUser(userId, LAYER_A)).isEqualTo("test");
     }
 
     @Test
     void bucketOne_returnsVariantB() {
         String userId = findUserInBucket(1, LAYER_A);
-        assertThat(service.getVariantForUser(userId, LAYER_A)).isEqualTo("twotower-v1");
+        assertThat(service.getVariantForUser(userId, LAYER_A)).isEqualTo("training");
     }
 
     @Test
@@ -78,7 +78,7 @@ class ABTestServiceTest {
             String userId = findUserInBucket(target, LAYER_A);
             assertThat(service.getVariantForUser(userId, LAYER_A))
                     .as("bucket %d should be default", target)
-                    .isEqualTo("twotower");
+                    .isEqualTo("training");
         }
     }
 
@@ -105,7 +105,7 @@ class ABTestServiceTest {
 
         ABTestService.Assignment assignment = service.getAssignmentForUser("123", LAYER_A);
 
-        assertThat(assignment.variant()).isEqualTo("twotower");
+        assertThat(assignment.variant()).isEqualTo("training");
         assertThat(assignment.bucket()).isEqualTo(-1);
         assertThat(assignment.inExperiment()).isFalse();
     }
@@ -131,7 +131,7 @@ class ABTestServiceTest {
         for (int i = 0; i < 500; i++) {
             String userId = String.valueOf(i);
             String variant = service.getVariantForUser(userId, LAYER_A);
-            assertThat(variant).isIn("twotower-v2", "twotower-v1", "twotower");
+            assertThat(variant).isIn("test", "training");
 
             // The same call must never yield a different result (mutual exclusion within a layer).
             assertThat(service.getVariantForUser(userId, LAYER_A))
@@ -155,8 +155,8 @@ class ABTestServiceTest {
             if (bucketInLayerA == 0 && bucketInLayerB == 0) {
                 found = true;
                 // Confirm the service returns variant A for this user in both layers.
-                assertThat(service.getVariantForUser(userId, LAYER_A)).isEqualTo("twotower-v2");
-                assertThat(service.getVariantForUser(userId, LAYER_B)).isEqualTo("twotower-v2");
+                assertThat(service.getVariantForUser(userId, LAYER_A)).isEqualTo("test");
+                assertThat(service.getVariantForUser(userId, LAYER_B)).isEqualTo("test");
                 break;
             }
         }
