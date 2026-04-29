@@ -31,7 +31,7 @@ class ModelRuntimeProviderTest {
         writeVariantArtifacts(tmp, "training", "demo-training-v1");
         writeVariantArtifacts(tmp, "test", "demo-test-v2");
 
-        ModelRuntimeProvider provider = new ModelRuntimeProvider(new ModelArtifactLocator(tmp.toString(), ""));
+        ModelRuntimeProvider provider = new ModelRuntimeProvider(new ModelArtifactLocator(tmp.toString(), ""), new com.recsys.modelbased.model.config.ABTestConfig());
         try {
             ModelRuntime training = provider.getRuntime("training");
             ModelRuntime test = provider.getRuntime("test");

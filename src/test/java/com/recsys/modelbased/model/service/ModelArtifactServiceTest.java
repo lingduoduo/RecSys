@@ -6,7 +6,6 @@ import org.junit.jupiter.api.Test;
 import java.io.IOException;
 
 import static org.assertj.core.api.Assertions.assertThat;
-import static org.assertj.core.api.Assertions.assertThatThrownBy;
 
 class ModelArtifactServiceTest {
 
@@ -16,7 +15,7 @@ class ModelArtifactServiceTest {
     @BeforeEach
     void setUp() throws IOException {
         locator = new ModelArtifactLocator("", "");
-        service = new ModelArtifactService(locator);
+        service = new ModelArtifactService(locator, "");
         service.loadArtifacts();
     }
 

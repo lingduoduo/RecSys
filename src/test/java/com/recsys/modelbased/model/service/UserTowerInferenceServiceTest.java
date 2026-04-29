@@ -14,7 +14,7 @@ class UserTowerInferenceServiceTest {
 
     @BeforeEach
     void setUp() throws Exception {
-        service = new UserTowerInferenceService(new ModelArtifactLocator("", ""));
+        service = new UserTowerInferenceService(new ModelArtifactLocator("", ""), "");
         service.init();
     }
 
