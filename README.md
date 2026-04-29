@@ -21,6 +21,7 @@ RecSys is a compact Maven workspace for experimenting with recommendation-system
 - [Project Layout](#project-layout)
 - [API Reference](#api-reference)
 - [Two-Tower Model Demo](#two-tower-model-demo)
+- [A/B Testing](#ab-testing)
 - [Testing](#testing)
 - [Redis Test Data](#redis-test-data)
 - [Kafka / Flink](#kafkaflink)
@@ -131,6 +132,19 @@ On startup the server seeds Redis with bundled movie and user embeddings if the 
 
 All `recsys.health.*` values are validated at startup — misconfiguration fails fast. Override via `application.yml` or environment variables (e.g. `RECSYS_HEALTH_MAX_FAILURE_RATE=0.3`).
 
+### A/B test configuration (Two-tower service)
+
+| Property | Default | Purpose |
+|---|---:|---|
+| `recsys.ab-test.enabled` | `false` | Enable or disable bucketing; when `false` every user gets `default-variant` |
+| `recsys.ab-test.layer-name` | `default` | Experiment name mixed into the hash key — change this to run an independent parallel experiment |
+| `recsys.ab-test.traffic-split-number` | `5` | Modulus for the hash bucket; 20 % of users land in A, 20 % in B, 60 % in control |
+| `recsys.ab-test.bucket-a-variant` | `twotower-v2` | Variant served to users in bucket 0 |
+| `recsys.ab-test.bucket-b-variant` | `twotower-v1` | Variant served to users in bucket 1 |
+| `recsys.ab-test.default-variant` | `twotower` | Variant served to all other users (control group) |
+
+All `recsys.ab-test.*` values are validated at startup. Override via `application.yml` or environment variables (e.g. `RECSYS_AB_TEST_ENABLED=true`).
+
 ---
 
 ## Project Layout
@@ -145,9 +159,9 @@ src/main/java/com/recsys/
 │   └── modelbased/
 │       └── twotower/       Spring Boot ONNX serving for the two-tower demo
 │           ├── TwoTowerApplication.java
-│           ├── config/     Model artifact configuration
+│           ├── config/     Model artifact + A/B test configuration
 │           ├── controller/ Recommendation API
-│           └── service/    Candidate selection, recall, ranking, ONNX inference
+│           └── service/    Candidate selection, recall, ranking, ONNX inference, A/B bucketing
 │                           ModelArtifactLocator — unified locator for model + spark artifact groups
 └── data/                   Bundled sample data and seed embeddings
     ├── movies.txt
@@ -359,12 +373,15 @@ curl -X POST http://localhost:8080/api/v1/recommend \
 {
   "userId": "123",
   "modelVersion": "demo-two-tower-ratings-v1",
+  "abTestVariant": "twotower",
   "recommendations": [
     {"itemId": "1", "score": 0.9997},
     {"itemId": "3", "score": 0.7100}
   ]
 }
 ```
+
+`abTestVariant` is the name of the experiment variant the user was assigned to. Log this field alongside impressions and conversions to compare variants offline.
 
 #### Request fields
 
@@ -470,6 +487,63 @@ Notes:
 
 ---
 
+## A/B Testing
+
+`ABTestService` assigns each user to a variant deterministically by hashing `userId:layerName` modulo `trafficSplitNumber`. The result is returned in the `abTestVariant` response field so downstream logging can attribute impressions and conversions to the correct bucket.
+
+### Bucketing logic
+
+```
+bucket = (userId + ":" + layerName).hashCode() & Integer.MAX_VALUE
+         % trafficSplitNumber
+
+bucket == 0  →  bucketAVariant  (treatment A)
+bucket == 1  →  bucketBVariant  (treatment B)
+otherwise    →  defaultVariant  (control)
+```
+
+With the default `trafficSplitNumber = 5`, 20 % of users land in A, 20 % in B, and 60 % in control.
+
+### Layer isolation
+
+The `layerName` salt is the key property for running multiple independent experiments simultaneously:
+
+**Within the same layer — users are mutually exclusive across buckets.** A user assigned to variant A is never also assigned to variant B in the same layer. The A-population and B-population are always disjoint.
+
+**Across different layers — bucket indices are independent.** A user can be in bucket 0 of `model-arch-test` *and* bucket 0 of `recall-strategy-test` at the same time. The two layers do not interfere.
+
+```
+Layer "model-arch-test":      user-7 → bucket 0 (twotower-v2)
+Layer "recall-strategy-test": user-7 → bucket 0 (twotower-v2)   ← same bucket, independent layer
+Layer "model-arch-test":      user-7 → bucket 0 (twotower-v2)
+Layer "recall-strategy-test": user-9 → bucket 2 (twotower)      ← different bucket, different layer
+```
+
+To run a second experiment in parallel, deploy a second instance with a different `recsys.ab-test.layer-name`; the user assignments will be orthogonal to the first experiment.
+
+### Enable A/B testing
+
+```yaml
+recsys:
+  ab-test:
+    enabled: true
+    layer-name: model-arch-test-2024q2
+    traffic-split-number: 5
+    bucket-a-variant: twotower-v2
+    bucket-b-variant: twotower-v1
+    default-variant: twotower
+```
+
+Or via environment variables:
+
+```bash
+RECSYS_AB_TEST_ENABLED=true \
+RECSYS_AB_TEST_LAYER_NAME=model-arch-test-2024q2 \
+  mvn spring-boot:run
+```
+
+---
+
 ## Testing
 
 ```bash
@@ -487,7 +561,8 @@ mvn test -DexcludedGroups="" -Dgroups=load
 | `FeatureEncoderTest` | Known user IDs map to their vocab indices; unknown IDs fall back to `__UNK__` (index 0) |
 | `RankingServiceTest` | Items re-ordered by inner-product score descending; k-truncation, duplicate deduplication, and missing-embedding skip |
 | `RetrievalServiceTest` | Embedding recall returns highest inner-product candidates up to recall size; null embedding, empty candidates, and unknown items |
-| `RecommendationServiceTest` | Validates `userId` and `k`; wires mocked sub-services and asserts the full response shape |
+| `ABTestServiceTest` | Disabled flag, null/blank userId, per-bucket variant assignment, determinism; **same-layer** bucket-A and bucket-B populations are disjoint; **cross-layer** same bucket index is reachable and different layers diverge |
+| `RecommendationServiceTest` | Validates `userId` and `k`; wires mocked sub-services and asserts the full response shape including `abTestVariant` |
 | `RecommendationControllerTest` | Bean-validation rejections (blank userId, k out of range), malformed JSON, wrong content-type, and `IllegalArgumentException` → stable `ApiError` shape |
 | `PredictionIntegrationTest` | End-to-end service pipeline against bundled classpath artifacts: ranked results, score ordering, excludeItemIds, unknown users |
 | `RecommendationEndToEndTest` | Full HTTP chain (`@SpringBootTest`): controller → inference → metrics tracking; verifies `InferenceMetricsService` counters, `/health/ready`, and `/health/metrics` reflect real state |
@@ -700,6 +775,8 @@ movie_embeddings.txt / user_embeddings.txt (classpath)
 - `RetrievalService` — multi-route recall combining embedding and metadata recall.
 - `RankingService` — inner-product similarity sort for the final top-K response.
 - `InferenceMetricsService` — rolling-window metrics (failure rate, avg latency, throughput) backed by lock-free `AtomicLong` counters for all-time stats and a synchronized deque for the recency window.
+- `ABTestConfig` — `@ConfigurationProperties(prefix = "recsys.ab-test")` with `@Validated` startup checks; holds `layerName`, `trafficSplitNumber`, variant names, and the `enabled` flag.
+- `ABTestService` — hashes `userId:layerName` to a bucket index; exposes both a no-arg `getVariantForUser(userId)` (uses the configured layer) and an explicit `getVariantForUser(userId, layerName)` for programmatic multi-layer use. Same layer → mutually exclusive buckets; different layers → independent assignments.
 - `HealthProperties` — `@ConfigurationProperties(prefix = "recsys.health")` with `@Validated` startup checks; all probe thresholds in one place, overridable via env vars.
 - `HealthController` — `/health/live` (liveness), `/health/ready` (readiness gated on model state and rolling metrics), `/health/metrics` (snapshot).
 - `GlobalExceptionHandler` — maps bean-validation failures, malformed JSON, wrong content-type, and unexpected errors to a consistent `ApiError` shape.

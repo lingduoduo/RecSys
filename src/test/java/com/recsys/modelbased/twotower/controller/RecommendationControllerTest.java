@@ -35,7 +35,7 @@ class RecommendationControllerTest {
 
     @Test
     void recommend_validRequest_returns200WithRecommendations() throws Exception {
-        var response = new RecommendResponse("123", "v1", List.of(
+        var response = new RecommendResponse("123", "v1", "twotower", List.of(
                 new ScoredItem("1", 0.95),
                 new ScoredItem("3", 0.72)
         ));

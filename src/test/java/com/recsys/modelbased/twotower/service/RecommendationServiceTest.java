@@ -23,6 +23,7 @@ class RecommendationServiceTest {
     private RetrievalService retrievalService;
     private RankingService rankingService;
     private ModelArtifactService artifactService;
+    private ABTestService abTestService;
     private RecommendationService service;
 
     @BeforeEach
@@ -33,9 +34,11 @@ class RecommendationServiceTest {
         retrievalService = mock(RetrievalService.class);
         rankingService = mock(RankingService.class);
         artifactService = mock(ModelArtifactService.class);
+        abTestService = mock(ABTestService.class);
+        when(abTestService.getVariantForUser(any())).thenReturn("twotower");
         service = new RecommendationService(
                 candidateSelectionService, featureEncoder, inferenceService,
-                retrievalService, rankingService, artifactService);
+                retrievalService, rankingService, artifactService, abTestService);
     }
 
     // ---- validation ----

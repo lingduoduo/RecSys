@@ -9,6 +9,13 @@ logging:
     org.springframework: INFO
 
 recsys:
+  ab-test:
+    enabled: false
+    layer-name: default
+    traffic-split-number: 5
+    bucket-a-variant: twotower-v2
+    bucket-b-variant: twotower-v1
+    default-variant: twotower
   model:
     # Two-tower serving artifacts: feature configs, pre-computed embeddings, ONNX model (classpath:artifacts/twotower/)
     artifacts-dir: ${RECSYS_MODEL_ARTIFACTS_DIR:}

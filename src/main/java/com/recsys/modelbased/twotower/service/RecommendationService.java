@@ -21,6 +21,7 @@ public class RecommendationService {
     private final RetrievalService retrievalService;
     private final RankingService rankingService;
     private final ModelArtifactService artifactService;
+    private final ABTestService abTestService;
 
     public RecommendationService(
             CandidateSelectionService candidateSelectionService,
@@ -28,7 +29,8 @@ public class RecommendationService {
             UserTowerInferenceService inferenceService,
             RetrievalService retrievalService,
             RankingService rankingService,
-            ModelArtifactService artifactService
+            ModelArtifactService artifactService,
+            ABTestService abTestService
     ) {
         this.candidateSelectionService = candidateSelectionService;
         this.featureEncoder = featureEncoder;
@@ -36,6 +38,7 @@ public class RecommendationService {
         this.retrievalService = retrievalService;
         this.rankingService = rankingService;
         this.artifactService = artifactService;
+        this.abTestService = abTestService;
     }
 
     public RecommendResponse recommend(RecommendRequest request) {
@@ -50,8 +53,9 @@ public class RecommendationService {
         int recallSize = Math.min(MAX_RECALL_SIZE, request.getK() * RECALL_MULTIPLIER);
         List<ScoredItem> recalled = retrievalService.recall(userEmbedding, numericUserId, candidates, recallSize);
         List<ScoredItem> items = rankingService.rank(userEmbedding, recalled, request.getK());
+        String variant = abTestService.getVariantForUser(request.getUserId());
 
-        return new RecommendResponse(request.getUserId(), artifactService.getModelVersion(), items);
+        return new RecommendResponse(request.getUserId(), artifactService.getModelVersion(), variant, items);
     }
 
     private static Integer parseUserId(String userId) {
