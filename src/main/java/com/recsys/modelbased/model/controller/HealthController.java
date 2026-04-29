@@ -1,8 +1,9 @@
 package com.recsys.modelbased.model.controller;
 
 import com.recsys.modelbased.model.config.HealthProperties;
+import com.recsys.modelbased.model.config.ABTestConfig;
 import com.recsys.modelbased.model.service.InferenceMetricsService;
-import com.recsys.modelbased.model.service.UserTowerInferenceService;
+import com.recsys.modelbased.model.service.ModelRuntimeProvider;
 import org.springframework.http.HttpStatus;
 import org.springframework.http.ResponseEntity;
 import org.springframework.web.bind.annotation.GetMapping;
@@ -15,16 +16,19 @@ import java.util.Map;
 @RequestMapping("/health")
 public class HealthController {
 
-    private final UserTowerInferenceService inferenceService;
+    private final ModelRuntimeProvider modelRuntimeProvider;
     private final InferenceMetricsService metricsService;
     private final HealthProperties props;
+    private final ABTestConfig abTestConfig;
 
-    public HealthController(UserTowerInferenceService inferenceService,
+    public HealthController(ModelRuntimeProvider modelRuntimeProvider,
                             InferenceMetricsService metricsService,
-                            HealthProperties props) {
-        this.inferenceService = inferenceService;
+                            HealthProperties props,
+                            ABTestConfig abTestConfig) {
+        this.modelRuntimeProvider = modelRuntimeProvider;
         this.metricsService = metricsService;
         this.props = props;
+        this.abTestConfig = abTestConfig;
     }
 
     // Liveness: is the JVM/process alive? Restart container if this fails.
@@ -38,11 +42,16 @@ public class HealthController {
         return metricsService.snapshot();
     }
 
+    @GetMapping("/ab-tests")
+    public InferenceMetricsService.ABTestSnapshot abTestMetrics() {
+        return metricsService.abTestSnapshot(abTestConfig.getDefaultVariant());
+    }
+
     // Readiness: is this instance healthy enough to receive load-balancer traffic?
     // Returns 503 to pull the instance from rotation without restarting it.
     @GetMapping("/ready")
     public ResponseEntity<Map<String, Object>> readiness() {
-        if (!inferenceService.isReady()) {
+        if (!modelRuntimeProvider.areVariantsReady()) {
             return ResponseEntity.status(HttpStatus.SERVICE_UNAVAILABLE)
                     .body(Map.of("status", "DOWN", "reason", "model not loaded"));
         }

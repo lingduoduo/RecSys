@@ -25,7 +25,7 @@ class PredictionIntegrationTest {
     @BeforeAll
     void setUp() throws Exception {
         var locator = new ModelArtifactLocator("", "");
-        runtimeProvider = new ModelRuntimeProvider(locator);
+        runtimeProvider = new ModelRuntimeProvider(locator, new com.recsys.modelbased.model.config.ABTestConfig());
         service = new RecommendationService(
                 runtimeProvider,
                 new ABTestService(new com.recsys.modelbased.model.config.ABTestConfig()));
@@ -41,7 +41,7 @@ class PredictionIntegrationTest {
         RecommendResponse response = recommend("123", 5);
 
         assertThat(response.userId()).isEqualTo("123");
-        assertThat(response.modelVersion()).isEqualTo("demo-two-tower-ratings-v1");
+        assertThat(response.modelVersion()).isEqualTo("demo-model-ratings-v1");
         assertThat(response.recommendations()).isNotEmpty();
     }
 

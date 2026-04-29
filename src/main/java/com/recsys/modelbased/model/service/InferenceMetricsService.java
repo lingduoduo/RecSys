@@ -6,6 +6,9 @@ import org.springframework.stereotype.Service;
 import java.time.Instant;
 import java.util.ArrayDeque;
 import java.util.Deque;
+import java.util.LinkedHashMap;
+import java.util.Map;
+import java.util.TreeMap;
 import java.util.concurrent.atomic.AtomicLong;
 
 /**
@@ -28,6 +31,7 @@ public class InferenceMetricsService {
 
     // Rolling window — needed for recency-sensitive readiness checks
     private final Deque<RequestRecord> window = new ArrayDeque<>();
+    private final Map<String, VariantMetrics> variantMetrics = new TreeMap<>();
     private final Object lock = new Object();
 
     public InferenceMetricsService(HealthProperties props) {
@@ -38,8 +42,18 @@ public class InferenceMetricsService {
         record(latencyMs, false);
     }
 
+    public void recordSuccess(long latencyMs, String variant, String modelVersion) {
+        record(latencyMs, false);
+        recordVariant(latencyMs, false, variant, modelVersion);
+    }
+
     public void recordFailure(long latencyMs) {
         record(latencyMs, true);
+    }
+
+    public void recordFailure(long latencyMs, String variant) {
+        record(latencyMs, true);
+        recordVariant(latencyMs, true, variant, null);
     }
 
     private void record(long latencyMs, boolean failed) {
@@ -86,11 +100,60 @@ public class InferenceMetricsService {
         );
     }
 
+    public ABTestSnapshot abTestSnapshot(String controlVariant) {
+        synchronized (lock) {
+            VariantMetrics control = variantMetrics.get(controlVariant);
+            double controlSuccessRate = control == null ? 0.0 : control.successRate();
+            double controlAvgLatencyMs = control == null ? 0.0 : control.avgLatencyMs();
+
+            Map<String, VariantSnapshot> variants = new LinkedHashMap<>();
+            for (Map.Entry<String, VariantMetrics> entry : variantMetrics.entrySet()) {
+                VariantMetrics metrics = entry.getValue();
+                variants.put(entry.getKey(), new VariantSnapshot(
+                        entry.getKey(),
+                        metrics.modelVersion,
+                        metrics.totalRequests,
+                        metrics.successCount,
+                        metrics.failureCount,
+                        metrics.successRate(),
+                        metrics.avgLatencyMs(),
+                        control == null ? null : metrics.successRate() - controlSuccessRate,
+                        control == null ? null : metrics.avgLatencyMs() - controlAvgLatencyMs
+                ));
+            }
+            return new ABTestSnapshot(controlVariant, variants);
+        }
+    }
+
     private void evict(long nowSeconds) {
         long cutoff = nowSeconds - windowSeconds;
         while (!window.isEmpty() && window.peekFirst().timestampSeconds < cutoff) {
             window.pollFirst();
         }
+    }
+
+    private void recordVariant(long latencyMs, boolean failed, String variant, String modelVersion) {
+        String key = normalizeVariant(variant);
+        synchronized (lock) {
+            VariantMetrics metrics = variantMetrics.computeIfAbsent(key, ignored -> new VariantMetrics());
+            metrics.totalRequests++;
+            if (failed) {
+                metrics.failureCount++;
+            } else {
+                metrics.successCount++;
+            }
+            metrics.totalLatencyMs += latencyMs;
+            if (modelVersion != null && !modelVersion.isBlank()) {
+                metrics.modelVersion = modelVersion;
+            }
+        }
+    }
+
+    private static String normalizeVariant(String variant) {
+        if (variant == null || variant.isBlank()) {
+            return "unknown";
+        }
+        return variant;
     }
 
     public record Snapshot(
@@ -105,5 +168,38 @@ public class InferenceMetricsService {
             double throughputPerSecond
     ) {}
 
+    public record ABTestSnapshot(
+            String controlVariant,
+            Map<String, VariantSnapshot> variants
+    ) {}
+
+    public record VariantSnapshot(
+            String variant,
+            String modelVersion,
+            long totalRequests,
+            long successCount,
+            long failureCount,
+            double successRate,
+            double avgLatencyMs,
+            Double successRateDeltaVsControl,
+            Double avgLatencyDeltaVsControlMs
+    ) {}
+
     private record RequestRecord(long timestampSeconds, long latencyMs, boolean failed) {}
+
+    private static final class VariantMetrics {
+        private String modelVersion;
+        private long totalRequests;
+        private long successCount;
+        private long failureCount;
+        private long totalLatencyMs;
+
+        private double successRate() {
+            return totalRequests > 0 ? (double) successCount / totalRequests : 0.0;
+        }
+
+        private double avgLatencyMs() {
+            return totalRequests > 0 ? (double) totalLatencyMs / totalRequests : 0.0;
+        }
+    }
 }

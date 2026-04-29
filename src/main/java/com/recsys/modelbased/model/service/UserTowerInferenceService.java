@@ -1,15 +1,10 @@
 package com.recsys.modelbased.model.service;
 
 import ai.onnxruntime.*;
-import jakarta.annotation.PostConstruct;
-import jakarta.annotation.PreDestroy;
-import org.springframework.beans.factory.annotation.Autowired;
-import org.springframework.stereotype.Service;
 
 import java.nio.LongBuffer;
 import java.util.Map;
 
-@Service
 public class UserTowerInferenceService {
 
     private final ModelArtifactLocator artifactLocator;
@@ -18,17 +13,11 @@ public class UserTowerInferenceService {
     private OrtSession session;
     private volatile boolean ready = false;
 
-    @Autowired
-    public UserTowerInferenceService(ModelArtifactLocator artifactLocator) {
-        this(artifactLocator, "");
-    }
-
     public UserTowerInferenceService(ModelArtifactLocator artifactLocator, String variant) {
         this.artifactLocator = artifactLocator;
         this.variant = variant == null ? "" : variant.trim();
     }
 
-    @PostConstruct
     public void init() throws OrtException, Exception {
         environment = OrtEnvironment.getEnvironment();
         try {
@@ -63,7 +52,6 @@ public class UserTowerInferenceService {
         }
     }
 
-    @PreDestroy
     public void close() throws OrtException {
         try {
             if (session != null) session.close();

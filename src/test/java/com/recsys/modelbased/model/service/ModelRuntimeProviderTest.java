@@ -13,6 +13,20 @@ import static org.assertj.core.api.Assertions.assertThat;
 class ModelRuntimeProviderTest {
 
     @Test
+    void getRuntime_classpathLoadsBundledTrainingAndTestVariants() {
+        ModelRuntimeProvider provider = new ModelRuntimeProvider(new ModelArtifactLocator("", ""), new com.recsys.modelbased.model.config.ABTestConfig());
+        try {
+            ModelRuntime training = provider.getRuntime("training");
+            ModelRuntime test = provider.getRuntime("test");
+
+            assertThat(training.artifactService().getModelVersion()).isEqualTo("demo-model-ratings-v1");
+            assertThat(test.artifactService().getModelVersion()).isEqualTo("demo-model-ratings-test-v1");
+        } finally {
+            provider.close();
+        }
+    }
+
+    @Test
     void getRuntime_loadsIndependentTrainingAndTestVariants(@TempDir Path tmp) throws Exception {
         writeVariantArtifacts(tmp, "training", "demo-training-v1");
         writeVariantArtifacts(tmp, "test", "demo-test-v2");
@@ -38,7 +52,7 @@ class ModelRuntimeProviderTest {
         copyBundledArtifact(bundled, "item_embeddings.json", variantDir.resolve("item_embeddings.json"));
 
         try (InputStream is = bundled.openModel("feature_config.json")) {
-            String config = new String(is.readAllBytes()).replace("demo-two-tower-ratings-v1", modelVersion);
+            String config = new String(is.readAllBytes()).replace("demo-model-ratings-v1", modelVersion);
             Files.writeString(variantDir.resolve("feature_config.json"), config);
         }
     }

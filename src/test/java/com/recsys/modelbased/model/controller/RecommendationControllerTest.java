@@ -5,6 +5,7 @@ import com.recsys.modelbased.model.config.GlobalExceptionHandler;
 import com.recsys.modelbased.model.dto.RecommendRequest;
 import com.recsys.modelbased.model.dto.RecommendResponse;
 import com.recsys.modelbased.model.dto.ScoredItem;
+import com.recsys.modelbased.model.service.ABTestService;
 import com.recsys.modelbased.model.service.InferenceMetricsService;
 import com.recsys.modelbased.model.service.RecommendationService;
 import org.junit.jupiter.api.Test;
@@ -30,6 +31,7 @@ class RecommendationControllerTest {
     @Autowired ObjectMapper objectMapper;
     @MockBean RecommendationService recommendationService;
     @MockBean InferenceMetricsService metricsService;
+    @MockBean ABTestService abTestService;
 
     // --- happy path ---
 

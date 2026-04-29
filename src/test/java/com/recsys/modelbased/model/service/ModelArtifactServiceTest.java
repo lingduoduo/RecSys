@@ -11,17 +11,27 @@ import static org.assertj.core.api.Assertions.assertThatThrownBy;
 class ModelArtifactServiceTest {
 
     private ModelArtifactService service;
+    private ModelArtifactLocator locator;
 
     @BeforeEach
     void setUp() throws IOException {
-        var locator = new ModelArtifactLocator("", "");
+        locator = new ModelArtifactLocator("", "");
         service = new ModelArtifactService(locator);
         service.loadArtifacts();
     }
 
     @Test
     void modelVersion_matchesBundledConfig() {
-        assertThat(service.getModelVersion()).isEqualTo("demo-two-tower-ratings-v1");
+        assertThat(service.getModelVersion()).isEqualTo("demo-model-ratings-v1");
+    }
+
+    @Test
+    void namedVariant_readsDistinctClasspathBundle() throws IOException {
+        ModelArtifactService testVariant = new ModelArtifactService(locator, "test");
+        testVariant.loadArtifacts();
+
+        assertThat(testVariant.getModelVersion()).isEqualTo("demo-model-ratings-test-v1");
+        assertThat(testVariant.getItemEmbeddings()).containsKey("1");
     }
 
     @Test

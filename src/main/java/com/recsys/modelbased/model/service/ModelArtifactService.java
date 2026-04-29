@@ -2,15 +2,11 @@ package com.recsys.modelbased.model.service;
 
 import com.fasterxml.jackson.core.type.TypeReference;
 import com.fasterxml.jackson.databind.ObjectMapper;
-import jakarta.annotation.PostConstruct;
-import org.springframework.beans.factory.annotation.Autowired;
-import org.springframework.stereotype.Service;
 
 import java.io.IOException;
 import java.io.InputStream;
 import java.util.*;
 
-@Service
 public class ModelArtifactService {
 
     private final ObjectMapper objectMapper = new ObjectMapper();
@@ -22,17 +18,11 @@ public class ModelArtifactService {
     private int embeddingDim;
     private Map<String, float[]> itemEmbeddings = Map.of();
 
-    @Autowired
-    public ModelArtifactService(ModelArtifactLocator artifactLocator) {
-        this(artifactLocator, "");
-    }
-
     public ModelArtifactService(ModelArtifactLocator artifactLocator, String variant) {
         this.artifactLocator = artifactLocator;
         this.variant = variant == null ? "" : variant.trim();
     }
 
-    @PostConstruct
     public void loadArtifacts() throws IOException {
         loadFeatureConfig();
         loadItemEmbeddings();

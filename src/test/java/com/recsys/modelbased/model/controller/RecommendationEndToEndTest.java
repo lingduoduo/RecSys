@@ -158,6 +158,32 @@ class RecommendationEndToEndTest {
         assertThat(body).containsKey("allTimeAvgLatencyMs").containsKey("throughputPerSecond");
     }
 
+    @Test
+    void abTestMetrics_afterRequest_exposesVariantComparison() throws Exception {
+        mockMvc.perform(post("/api/v1/recommend")
+                        .contentType(MediaType.APPLICATION_JSON)
+                        .content(objectMapper.writeValueAsBytes(request("123", 5))))
+                .andReturn();
+
+        var resp = mockMvc.perform(get("/health/ab-tests"))
+                .andReturn()
+                .getResponse();
+
+        assertThat(resp.getStatus()).isEqualTo(HttpStatus.OK.value());
+        var body = readMap(resp.getContentAsByteArray());
+        assertThat(body).containsEntry("controlVariant", "training");
+        assertThat(body).containsKey("variants");
+
+        @SuppressWarnings("unchecked")
+        Map<String, Object> variants = (Map<String, Object>) body.get("variants");
+        assertThat(variants).containsKey("training");
+
+        @SuppressWarnings("unchecked")
+        Map<String, Object> training = (Map<String, Object>) variants.get("training");
+        assertThat(training).containsEntry("modelVersion", "demo-model-ratings-v1");
+        assertThat(((Number) training.get("totalRequests")).longValue()).isGreaterThan(0L);
+    }
+
     // ── helper ────────────────────────────────────────────────────────────────
 
     private static RecommendRequest request(String userId, int k) {

@@ -326,11 +326,13 @@ A separate Spring Boot service on port `8080` that serves model-based retrieval 
 - ONNX user-tower inference in Java
 - Precomputed item embeddings
 - Model-based retrieval with inner-product similarity
-- Readiness / liveness probes for auto-restart and load-balancer routing
+- A/B variant-aware runtime pre-warming at startup — all configured model variants are loaded before the first request so no user pays cold-start cost
+- Per-variant latency and success-rate metrics via `GET /health/ab-tests`, with deltas vs the control
+- Readiness / liveness probes that check every pre-warmed variant, not just the default
 - Rolling-window inference metrics (latency, failure rate, throughput)
 - Config-driven probe thresholds with startup validation
 
-At request time, `POST /api/v1/recommend` uses `ABTestService` to choose a model variant, resolves the corresponding runtime, runs `FeatureEncoder` to map `userId` into that variant's vocab, runs ONNX inference for the user embedding, recalls candidates via `CandidateSelectionService` + `RetrievalService`, and reranks via `RankingService`. Every request is timed with a monotonic clock and recorded in `InferenceMetricsService`.
+At request time, `POST /api/v1/recommend` calls `ABTestService` to deterministically assign the user to a variant, fetches the pre-warmed `ModelRuntime` from `ModelRuntimeProvider`, runs `FeatureEncoder` → ONNX inference → `RetrievalService` → `RankingService`, and records per-variant metrics in `InferenceMetricsService`. `ModelRuntimeProvider` owns the full lifecycle of every `ModelArtifactService` and `UserTowerInferenceService` instance — they are plain Java objects, not Spring beans.
 
 `ModelArtifactLocator` resolves artifacts into two groups: **model** (`classpath:artifacts/model/<variant>/...`, overridden by `RECSYS_MODEL_ARTIFACTS_DIR`) and **spark** (`classpath:artifacts/pyspark/`, overridden by `RECSYS_SPARK_ARTIFACTS_DIR`). When no variant is specified the locator defaults to the `training` variant.
 
@@ -377,7 +379,7 @@ curl -X POST http://localhost:8080/api/v1/recommend \
 ```json
 {
   "userId": "123",
-  "modelVersion": "demo-two-tower-ratings-v1",
+  "modelVersion": "demo-model-ratings-v1",
   "abTestVariant": "training",
   "recommendations": [
     {"itemId": "1", "score": 0.9997},
@@ -387,6 +389,48 @@ curl -X POST http://localhost:8080/api/v1/recommend \
 ```
 
 `abTestVariant` is the name of the experiment variant the user was assigned to. Log this field alongside impressions and conversions to compare variants offline.
+
+### A/B comparison metrics
+
+Once requests have flowed through the service, compare variants directly:
+
+```bash
+curl http://localhost:8080/health/ab-tests
+```
+
+Example response:
+
+```json
+{
+  "controlVariant": "training",
+  "variants": {
+    "training": {
+      "variant": "training",
+      "modelVersion": "demo-model-ratings-v1",
+      "totalRequests": 120,
+      "successCount": 118,
+      "failureCount": 2,
+      "successRate": 0.9833,
+      "avgLatencyMs": 11.4,
+      "successRateDeltaVsControl": 0.0,
+      "avgLatencyDeltaVsControlMs": 0.0
+    },
+    "test": {
+      "variant": "test",
+      "modelVersion": "demo-model-ratings-test-v1",
+      "totalRequests": 113,
+      "successCount": 111,
+      "failureCount": 2,
+      "successRate": 0.9823,
+      "avgLatencyMs": 12.1,
+      "successRateDeltaVsControl": -0.001,
+      "avgLatencyDeltaVsControlMs": 0.7
+    }
+  }
+}
+```
+
+This endpoint gives you online operational comparison by variant: request volume, failure rate, average latency, and deltas versus the configured control. Pair it with offline business metrics such as CTR, watch time, or conversion for full experiment evaluation.
 
 #### Request fields
 
@@ -432,7 +476,7 @@ curl http://localhost:8080/health/live
 
 Returns `200` when the instance is fit to receive load-balancer traffic; `503` otherwise. The instance is pulled from rotation (without restart) when:
 
-- The ONNX model session has not loaded yet.
+- Any pre-warmed model variant does not have a live ONNX session (checked via `ModelRuntimeProvider.areVariantsReady()`).
 - The recent failure rate exceeds `recsys.health.max-failure-rate` (default 50 %).
 - The average inference latency exceeds `recsys.health.max-avg-latency-ms` (default 2000 ms).
 
@@ -563,6 +607,7 @@ mvn test -DexcludedGroups="" -Dgroups=load
 |---|---|
 | `ModelArtifactLocatorTest` | Classpath and external-dir resolution for model and spark artifact groups; whitespace-only override falls back to classpath |
 | `ModelArtifactServiceTest` | Loads bundled `feature_config.json` and `item_embeddings.json`; asserts model version, vocab contents, embedding dimension, and immutability |
+| `ModelRuntimeProviderTest` | Loads independent `training` and `test` runtimes from a temp directory; asserts each has a distinct model version and `ModelRuntime` instance |
 | `FeatureEncoderTest` | Known user IDs map to their vocab indices; unknown IDs fall back to `__UNK__` (index 0) |
 | `RankingServiceTest` | Items re-ordered by inner-product score descending; k-truncation, duplicate deduplication, and missing-embedding skip |
 | `RetrievalServiceTest` | Embedding recall returns highest inner-product candidates up to recall size; null embedding, empty candidates, and unknown items |
@@ -716,11 +761,13 @@ Your modeling pipeline exports `item_embeddings.json` (and optionally `user_towe
 
 ```
 Modeling pipeline (any framework)
-  └─ artifact export ──► item_embeddings.json  (+ optional ONNX / FAISS files)
+  └─ artifact export ──► artifacts/model/<variant>/   (feature_config.json, item_embeddings.json, user_tower.onnx)
                                       │
-                             ModelArtifactService (@PostConstruct) → ConcurrentHashMap
+                         ModelRuntimeProvider (@PostConstruct warmUp)
+                           └─ per variant: ModelArtifactService → ConcurrentHashMap
+                                           UserTowerInferenceService → OrtSession
                                       │
-                             CandidateSelectionService → RetrievalService → RankingService → top-k
+                         CandidateSelectionService → RetrievalService → RankingService → top-k
 ```
 
 TTL: none — reloads on service restart.
@@ -741,7 +788,7 @@ movie_embeddings.txt / user_embeddings.txt (classpath)
 |---|---|---|---|
 | Written by | Spark job → Jedis pipeline | External modeling pipeline | Bundled text resources |
 | Stored in | Redis (`i2vEmb:{id}`) | Classpath + JVM heap | Classpath + JVM heap |
-| Loaded by | `RedisEmbeddingStore.getEmbeddings` | `ModelArtifactService @PostConstruct` | `CandidateGenerator` constructor |
+| Loaded by | `RedisEmbeddingStore.getEmbeddings` | `ModelRuntimeProvider.warmUp()` per variant | `CandidateGenerator` constructor |
 | User vector | Not produced | Live via ONNX at request time | Preloaded from `user_embeddings.txt` |
 | Retrieval backend | Metadata candidates → Redis MGET → exact inner-product | Candidate set → embedding + metadata recall → inner-product; optional FAISS | `VectorIndex`: `lsh` or `exact` |
 | TTL | 86400 s default | N/A — reloads on restart | N/A — reloads on restart |
@@ -773,17 +820,18 @@ movie_embeddings.txt / user_embeddings.txt (classpath)
 - `BaseApiServlet` centralizes JSON headers, Jackson serialization, error responses, and request parameter parsing.
 - `SimilarMovieService` demonstrates candidate recall + embedding ranking: build metadata candidates, fetch vectors via Redis `MGET`, rank by inner product.
 
-**Two-tower serving:**
+**Model serving:**
 
-- `ModelArtifactLocator` — single artifact resolver exposing **model** and **spark** groups.
-- `CandidateSelectionService` — eligible item IDs from user-history genres plus global pools.
-- `RetrievalService` — multi-route recall combining embedding and metadata recall.
-- `RankingService` — inner-product similarity sort for the final top-K response.
-- `InferenceMetricsService` — rolling-window metrics (failure rate, avg latency, throughput) backed by lock-free `AtomicLong` counters for all-time stats and a synchronized deque for the recency window.
+- `ModelArtifactLocator` — single artifact resolver exposing **model** (`classpath:artifacts/model/<variant>/`, overridden by `RECSYS_MODEL_ARTIFACTS_DIR`) and **spark** groups. Blank variant defaults to `training`.
+- `ModelRuntimeProvider` — Spring `@Service` that owns the full lifecycle of every per-variant runtime. `@PostConstruct warmUp()` pre-loads the default variant and, when A/B testing is enabled, the A and B variants. `areVariantsReady()` checks whether all loaded runtimes have live ONNX sessions.
+- `ModelArtifactService` — plain Java class (not a Spring bean); loads `feature_config.json` and `item_embeddings.json` for one variant into a `ConcurrentHashMap`. Created and called by `ModelRuntimeProvider`.
+- `UserTowerInferenceService` — plain Java class (not a Spring bean); manages a single `OrtSession` for one variant. Created and initialized by `ModelRuntimeProvider`; closed on `@PreDestroy`.
+- `CandidateSelectionService`, `RetrievalService`, `RankingService` — plain Java classes created per variant inside `ModelRuntimeProvider`. Not Spring beans.
 - `ABTestConfig` — `@ConfigurationProperties(prefix = "recsys.ab-test")` with `@Validated` startup checks; holds `layerName`, `trafficSplitNumber`, variant names, and the `enabled` flag.
-- `ABTestService` — hashes `userId:layerName` to a bucket index; exposes both a no-arg `getVariantForUser(userId)` (uses the configured layer) and an explicit `getVariantForUser(userId, layerName)` for programmatic multi-layer use. Same layer → mutually exclusive buckets; different layers → independent assignments.
+- `ABTestService` — hashes `userId:layerName` to a bucket index; returns a typed `Assignment` record (variant, bucket, layerName, inExperiment). Same layer → mutually exclusive buckets; different layers → independent assignments.
+- `InferenceMetricsService` — global rolling-window metrics plus per-variant counters. `abTestSnapshot(controlVariant)` computes success-rate and latency deltas vs control, exposed at `GET /health/ab-tests`.
 - `HealthProperties` — `@ConfigurationProperties(prefix = "recsys.health")` with `@Validated` startup checks; all probe thresholds in one place, overridable via env vars.
-- `HealthController` — `/health/live` (liveness), `/health/ready` (readiness gated on model state and rolling metrics), `/health/metrics` (snapshot).
+- `HealthController` — `/health/live` (liveness), `/health/ready` (readiness gated on `ModelRuntimeProvider.areVariantsReady()` and rolling metrics), `/health/metrics` (global snapshot), `/health/ab-tests` (per-variant comparison snapshot).
 - `GlobalExceptionHandler` — maps bean-validation failures, malformed JSON, wrong content-type, and unexpected errors to a consistent `ApiError` shape.
 
 ---

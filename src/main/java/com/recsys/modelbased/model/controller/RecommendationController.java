@@ -2,6 +2,7 @@ package com.recsys.modelbased.model.controller;
 
 import com.recsys.modelbased.model.dto.RecommendRequest;
 import com.recsys.modelbased.model.dto.RecommendResponse;
+import com.recsys.modelbased.model.service.ABTestService;
 import com.recsys.modelbased.model.service.InferenceMetricsService;
 import com.recsys.modelbased.model.service.RecommendationService;
 import jakarta.validation.Valid;
@@ -14,11 +15,14 @@ public class RecommendationController {
 
     private final RecommendationService recommendationService;
     private final InferenceMetricsService metricsService;
+    private final ABTestService abTestService;
 
     public RecommendationController(RecommendationService recommendationService,
-                                    InferenceMetricsService metricsService) {
+                                    InferenceMetricsService metricsService,
+                                    ABTestService abTestService) {
         this.recommendationService = recommendationService;
         this.metricsService = metricsService;
+        this.abTestService = abTestService;
     }
 
     @PostMapping(
@@ -30,13 +34,13 @@ public class RecommendationController {
         long startNs = System.nanoTime();
         try {
             RecommendResponse response = recommendationService.recommend(request);
-            metricsService.recordSuccess(elapsedMs(startNs));
+            metricsService.recordSuccess(elapsedMs(startNs), response.abTestVariant(), response.modelVersion());
             return response;
         } catch (IllegalArgumentException e) {
             // service-level guard — not an inference failure
             throw e;
         } catch (RuntimeException e) {
-            metricsService.recordFailure(elapsedMs(startNs));
+            metricsService.recordFailure(elapsedMs(startNs), abTestService.getVariantForUser(request.getUserId()));
             throw e;
         }
     }
