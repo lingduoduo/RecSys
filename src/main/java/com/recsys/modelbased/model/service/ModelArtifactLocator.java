@@ -23,7 +23,7 @@ import java.nio.file.Path;
 public class ModelArtifactLocator {
 
     private static final String MODEL_CLASSPATH_DIR = "artifacts/model";
-    private static final String DEFAULT_VARIANT = "training";
+    public static final String DEFAULT_VARIANT = "training";
     private static final String SPARK_CLASSPATH_DIR = "artifacts/pyspark";
 
     private final String modelDir;
@@ -114,13 +114,20 @@ public class ModelArtifactLocator {
 
     private InputStream openModelStream(String variant, String fileName) throws IOException {
         if (!modelDir.isBlank()) {
+            Path baseDir = Path.of(modelDir).toAbsolutePath().normalize();
             if (!variant.isBlank()) {
                 Path variantPath = Path.of(modelDir).resolve(variant).resolve(fileName).normalize();
+                if (!variantPath.toAbsolutePath().startsWith(baseDir)) {
+                    throw new IllegalStateException("Illegal path traversal attempt: " + variantPath);
+                }
                 if (Files.exists(variantPath)) {
                     return Files.newInputStream(variantPath);
                 }
             }
             Path flatPath = Path.of(modelDir).resolve(fileName).normalize();
+            if (!flatPath.toAbsolutePath().startsWith(baseDir)) {
+                throw new IllegalStateException("Illegal path traversal attempt: " + flatPath);
+            }
             if (Files.exists(flatPath)) {
                 return Files.newInputStream(flatPath);
             }
@@ -139,7 +146,11 @@ public class ModelArtifactLocator {
 
     private InputStream openStream(String classpathBase, String externalDir, String path) throws IOException {
         if (!externalDir.isBlank()) {
+            Path baseDir = Path.of(externalDir).toAbsolutePath().normalize();
             Path p = Path.of(externalDir).resolve(path).normalize();
+            if (!p.toAbsolutePath().startsWith(baseDir)) {
+                throw new IllegalStateException("Illegal path traversal attempt: " + p);
+            }
             if (!Files.exists(p)) {
                 throw new IllegalStateException("artifact not found: " + p.toAbsolutePath());
             }

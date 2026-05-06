@@ -18,7 +18,7 @@ public class UserTowerInferenceService {
         this.variant = variant == null ? "" : variant.trim();
     }
 
-    public void init() throws OrtException, Exception {
+    public void init() throws Exception {
         environment = OrtEnvironment.getEnvironment();
         try {
             session = environment.createSession(
@@ -38,6 +38,9 @@ public class UserTowerInferenceService {
     }
 
     public float[] inferUserEmbedding(FeatureEncoder.EncodedFeatures features) {
+        if (!ready || session == null) {
+            throw new IllegalStateException("ONNX session is not initialized or has been closed");
+        }
         try {
             long[] userArr = new long[]{features.getUserId()};
             try (OnnxTensor userTensor = OnnxTensor.createTensor(environment, LongBuffer.wrap(userArr), new long[]{1})) {

@@ -4,6 +4,7 @@ import com.recsys.modelbased.model.dto.ApiError;
 import com.recsys.modelbased.model.dto.RecommendRequest;
 import com.recsys.modelbased.model.dto.RecommendResponse;
 import com.recsys.modelbased.model.service.InferenceMetricsService;
+import com.recsys.modelbased.model.service.ModelRuntimeProvider;
 import org.junit.jupiter.api.Test;
 import org.springframework.beans.factory.annotation.Autowired;
 import org.springframework.boot.test.autoconfigure.web.servlet.AutoConfigureMockMvc;
@@ -35,6 +36,7 @@ class RecommendationEndToEndTest {
     @Autowired MockMvc mockMvc;
     @Autowired com.fasterxml.jackson.databind.ObjectMapper objectMapper;
     @Autowired InferenceMetricsService metricsService;
+    @Autowired ModelRuntimeProvider modelRuntimeProvider;
 
     // ── 1. Full chain: valid request produces ranked recommendations ──────────
 
@@ -180,7 +182,7 @@ class RecommendationEndToEndTest {
 
         @SuppressWarnings("unchecked")
         Map<String, Object> training = (Map<String, Object>) variants.get("training");
-        assertThat(training).containsEntry("modelVersion", "demo-model-ratings-v1");
+        assertThat(training).containsEntry("modelVersion", modelRuntimeProvider.getModelVersion("training"));
         assertThat(((Number) training.get("totalRequests")).longValue()).isGreaterThan(0L);
     }
 

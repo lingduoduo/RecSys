@@ -9,7 +9,7 @@ import java.util.*;
 
 public class ModelArtifactService {
 
-    private final ObjectMapper objectMapper = new ObjectMapper();
+    private static final ObjectMapper objectMapper = new ObjectMapper();
     private final ModelArtifactLocator artifactLocator;
     private final String variant;
 
