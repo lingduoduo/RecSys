@@ -28,6 +28,7 @@ recsys:
     # Minimum requests in the window before the readiness probe applies thresholds
     min-sample-size: 5
     # Fraction of requests that may fail before the instance is pulled from rotation
+    # DEMO ONLY: lower to 0.05 for production deployments
     max-failure-rate: 0.5
     # Average inference latency (ms) above which the instance is pulled from rotation
     max-avg-latency-ms: 2000

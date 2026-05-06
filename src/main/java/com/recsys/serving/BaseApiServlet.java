@@ -5,6 +5,8 @@ import com.fasterxml.jackson.databind.exc.MismatchedInputException;
 import jakarta.servlet.http.HttpServlet;
 import jakarta.servlet.http.HttpServletRequest;
 import jakarta.servlet.http.HttpServletResponse;
+import org.slf4j.Logger;
+import org.slf4j.LoggerFactory;
 
 import java.io.IOException;
 import java.util.Map;
@@ -12,11 +14,18 @@ import java.util.Map;
 abstract class BaseApiServlet extends HttpServlet {
 
     protected static final ObjectMapper MAPPER = new ObjectMapper();
+    protected static final Logger log = LoggerFactory.getLogger(BaseApiServlet.class);
+
+    // Restrict cross-origin access: only add the header when CORS_ALLOWED_ORIGIN is explicitly set.
+    // Use "*" only for local development; restrict to a specific origin in production.
+    private static final String CORS_ORIGIN = System.getenv("CORS_ALLOWED_ORIGIN");
 
     protected static void prepareJson(HttpServletResponse response) {
         response.setContentType("application/json");
         response.setCharacterEncoding("UTF-8");
-        response.setHeader("Access-Control-Allow-Origin", "*");
+        if (CORS_ORIGIN != null && !CORS_ORIGIN.isBlank()) {
+            response.setHeader("Access-Control-Allow-Origin", CORS_ORIGIN);
+        }
     }
 
     protected static void writeJson(HttpServletResponse response, int status, Object payload) throws IOException {

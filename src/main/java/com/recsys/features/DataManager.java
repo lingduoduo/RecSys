@@ -11,7 +11,15 @@ import java.util.stream.Collectors;
 
 public class DataManager {
 
-    private static final DataManager INSTANCE = new DataManager();
+    private static final DataManager INSTANCE;
+    static {
+        try {
+            INSTANCE = new DataManager();
+        } catch (RuntimeException e) {
+            throw new ExceptionInInitializerError(
+                    new RuntimeException("DataManager failed to initialize: " + e.getMessage(), e));
+        }
+    }
 
     private final Map<Integer, Movie> movies;
     private final Map<Integer, User> users;

@@ -32,7 +32,7 @@ public class UserService extends BaseApiServlet {
         } catch (BadRequestException e) {
             writeError(response, HttpServletResponse.SC_BAD_REQUEST, e.getMessage());
         } catch (Exception e) {
-            e.printStackTrace();
+            log.error("Unexpected error in UserService", e);
             writeError(response, HttpServletResponse.SC_INTERNAL_SERVER_ERROR, "internal server error");
         }
     }

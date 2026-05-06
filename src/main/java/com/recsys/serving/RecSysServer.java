@@ -9,12 +9,15 @@ import com.recsys.features.RedisTopKStore;
 import org.eclipse.jetty.server.Server;
 import org.eclipse.jetty.servlet.ServletContextHandler;
 import org.eclipse.jetty.servlet.ServletHolder;
+import org.slf4j.Logger;
+import org.slf4j.LoggerFactory;
 import redis.clients.jedis.JedisPool;
 
 import java.net.InetSocketAddress;
 
 public class RecSysServer {
 
+    private static final Logger log = LoggerFactory.getLogger(RecSysServer.class);
     private static final int DEFAULT_PORT = 6010;
     private static final String DEFAULT_HOST = "0.0.0.0";
     private static final String ROUTE_MOVIE = "/getmovie";
@@ -84,11 +87,11 @@ public class RecSysServer {
                                        RedisEmbeddingStore userEmbStore) {
         if (embStore.scanIds(1).isEmpty()) {
             embStore.setEmbeddings(DataLoader.loadMovieEmbeddings(), 0);
-            System.out.println("[RecSysServer] seeded movie embeddings from movie_embeddings.txt");
+            log.info("Seeded movie embeddings from movie_embeddings.txt");
         }
         if (userEmbStore.scanIds(1).isEmpty()) {
             userEmbStore.setEmbeddings(DataLoader.loadUserEmbeddings(), 0);
-            System.out.println("[RecSysServer] seeded user embeddings from user_embeddings.txt");
+            log.info("Seeded user embeddings from user_embeddings.txt");
         }
     }
 

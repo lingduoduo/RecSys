@@ -1,6 +1,8 @@
 package com.recsys.modelbased.model.service;
 
 import com.recsys.modelbased.model.config.HealthProperties;
+import org.slf4j.Logger;
+import org.slf4j.LoggerFactory;
 import org.springframework.stereotype.Service;
 
 import java.time.Instant;
@@ -20,6 +22,9 @@ import java.util.concurrent.atomic.AtomicLong;
  */
 @Service
 public class InferenceMetricsService {
+
+    private static final Logger log = LoggerFactory.getLogger(InferenceMetricsService.class);
+    private static final int MAX_VARIANTS = 50;
 
     private final int windowSeconds;
 
@@ -135,6 +140,10 @@ public class InferenceMetricsService {
     private void recordVariant(long latencyMs, boolean failed, String variant, String modelVersion) {
         String key = normalizeVariant(variant);
         synchronized (lock) {
+            if (!variantMetrics.containsKey(key) && variantMetrics.size() >= MAX_VARIANTS) {
+                log.warn("Variant metrics map has {} entries; ignoring unknown variant '{}'", MAX_VARIANTS, key);
+                return;
+            }
             VariantMetrics metrics = variantMetrics.computeIfAbsent(key, ignored -> new VariantMetrics());
             metrics.totalRequests++;
             if (failed) {

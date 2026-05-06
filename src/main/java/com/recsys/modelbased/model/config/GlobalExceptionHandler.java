@@ -1,6 +1,9 @@
 package com.recsys.modelbased.model.config;
 
 import com.recsys.modelbased.model.dto.ApiError;
+import jakarta.servlet.http.HttpServletRequest;
+import org.slf4j.Logger;
+import org.slf4j.LoggerFactory;
 import org.springframework.http.HttpStatus;
 import org.springframework.http.converter.HttpMessageNotReadableException;
 import org.springframework.web.HttpMediaTypeNotSupportedException;
@@ -13,6 +16,8 @@ import java.util.List;
 
 @RestControllerAdvice
 public class GlobalExceptionHandler {
+
+    private static final Logger log = LoggerFactory.getLogger(GlobalExceptionHandler.class);
 
     // Bean Validation failures from @Valid — returns per-field violation list
     @ExceptionHandler(MethodArgumentNotValidException.class)
@@ -48,7 +53,8 @@ public class GlobalExceptionHandler {
     // Catch-all: unexpected inference or runtime errors
     @ExceptionHandler(Exception.class)
     @ResponseStatus(HttpStatus.INTERNAL_SERVER_ERROR)
-    public ApiError handleUnexpected(Exception ex) {
+    public ApiError handleUnexpected(Exception ex, HttpServletRequest request) {
+        log.error("Unexpected error handling request {}", request.getRequestURI(), ex);
         return new ApiError("internal server error", List.of());
     }
 }

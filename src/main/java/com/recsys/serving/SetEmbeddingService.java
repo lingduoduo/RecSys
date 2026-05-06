@@ -52,7 +52,7 @@ public class SetEmbeddingService extends BaseApiServlet {
         } catch (NumberFormatException e) {
             writeError(response, HttpServletResponse.SC_BAD_REQUEST, "invalid vector format: could not parse float");
         } catch (Exception e) {
-            e.printStackTrace();
+            log.error("Unexpected error in SetEmbeddingService", e);
             writeError(response, HttpServletResponse.SC_INTERNAL_SERVER_ERROR, "internal server error");
         }
     }

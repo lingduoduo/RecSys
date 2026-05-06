@@ -27,8 +27,6 @@ public class RecommendationService {
     }
 
     public RecommendResponse recommend(RecommendRequest request) {
-        validate(request);
-
         ABTestService.Assignment assignment = abTestService.getAssignmentForUser(request.getUserId());
         ModelRuntime runtime = modelRuntimeProvider.getRuntime(assignment.variant());
 
@@ -59,15 +57,4 @@ public class RecommendationService {
         }
     }
 
-    private void validate(RecommendRequest request) {
-        if (request.getUserId() == null || request.getUserId().isBlank()) {
-            throw new IllegalArgumentException("userId is required");
-        }
-        if (request.getK() <= 0) {
-            throw new IllegalArgumentException("k must be positive");
-        }
-        if (request.getK() > 100) {
-            throw new IllegalArgumentException("k must be less than or equal to 100");
-        }
-    }
 }

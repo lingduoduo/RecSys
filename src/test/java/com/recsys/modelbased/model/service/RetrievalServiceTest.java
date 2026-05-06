@@ -36,9 +36,8 @@ class RetrievalServiceTest {
 
         List<ScoredItem> recalled = retrievalService.recall(userEmb, null, candidates, 2);
 
-        assertThat(recalled).hasSizeLessThanOrEqualTo(2);
-        List<String> ids = recalled.stream().map(ScoredItem::itemId).toList();
-        assertThat(ids).contains("1");
+        assertThat(recalled).hasSize(2);
+        assertThat(recalled).extracting(ScoredItem::itemId).containsExactly("1", "4");
     }
 
     @Test

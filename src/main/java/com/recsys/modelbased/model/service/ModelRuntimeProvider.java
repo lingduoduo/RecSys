@@ -18,7 +18,7 @@ import java.util.concurrent.ConcurrentHashMap;
 public class ModelRuntimeProvider {
 
     private static final Logger log = LoggerFactory.getLogger(ModelRuntimeProvider.class);
-    private static final String DEFAULT_VARIANT = "training";
+    private static final String DEFAULT_VARIANT = ModelArtifactLocator.DEFAULT_VARIANT;
 
     private final ModelArtifactLocator artifactLocator;
     private final ABTestConfig abTestConfig;
@@ -51,7 +51,17 @@ public class ModelRuntimeProvider {
 
     public ModelRuntime getRuntime(String variant) {
         String normalizedVariant = normalizeVariant(variant);
-        return runtimes.computeIfAbsent(normalizedVariant, this::buildRuntime);
+        ModelRuntime existing = runtimes.get(normalizedVariant);
+        if (existing != null) return existing;
+        // Build outside the map lock to avoid holding the CHM segment lock during I/O.
+        // A duplicate build in a rare race is safe: runtimes are immutable once constructed.
+        ModelRuntime built = buildRuntime(normalizedVariant);
+        ModelRuntime winner = runtimes.putIfAbsent(normalizedVariant, built);
+        return winner != null ? winner : built;
+    }
+
+    public String getModelVersion(String variant) {
+        return getRuntime(variant).artifactService().getModelVersion();
     }
 
     /** Returns true when every pre-warmed runtime has a live ONNX session. */

@@ -7,6 +7,9 @@ import redis.clients.jedis.params.ScanParams;
 import redis.clients.jedis.params.SetParams;
 import redis.clients.jedis.resps.ScanResult;
 
+import org.slf4j.Logger;
+import org.slf4j.LoggerFactory;
+
 import java.util.ArrayList;
 import java.util.Collection;
 import java.util.HashMap;
@@ -16,6 +19,7 @@ import java.util.Map;
 import java.util.Set;
 
 public class RedisEmbeddingStore {
+    private static final Logger log = LoggerFactory.getLogger(RedisEmbeddingStore.class);
     private final JedisPool pool;
     private final String keyPrefix;
 
@@ -55,8 +59,8 @@ public class RedisEmbeddingStore {
     public void setEmbeddings(Map<Integer, float[]> vectors, long ttlSeconds) {
         if (vectors == null || vectors.isEmpty()) return;
         SetParams params = ttlSeconds > 0 ? SetParams.setParams().ex(ttlSeconds) : null;
-        try (Jedis jedis = pool.getResource()) {
-            Pipeline pipeline = jedis.pipelined();
+        try (Jedis jedis = pool.getResource();
+             Pipeline pipeline = jedis.pipelined()) {
             for (Map.Entry<Integer, float[]> entry : vectors.entrySet()) {
                 String key = keyPrefix + ":" + entry.getKey();
                 String value = toVectorString(entry.getValue());
@@ -132,7 +136,7 @@ public class RedisEmbeddingStore {
         Map<Integer, float[]> all = loadAll();
         int scannedCount = all.size();
         all.keySet().retainAll(knownMovieIds);
-        System.out.printf("[RedisEmbeddingStore] loaded %d valid embeddings (scanned %d keys in Redis, %d known movies)%n",
+        log.info("Loaded {} valid embeddings (scanned {} keys in Redis, {} known movies)",
                 all.size(), scannedCount, knownMovieIds.size());
         return all;
     }

@@ -3,6 +3,9 @@ package com.recsys.features;
 import com.recsys.models.Movie;
 import com.recsys.models.Rating;
 
+import org.slf4j.Logger;
+import org.slf4j.LoggerFactory;
+
 import java.util.HashSet;
 import java.util.LinkedHashMap;
 import java.util.List;
@@ -11,6 +14,8 @@ import java.util.Set;
 import java.util.stream.Collectors;
 
 public class CandidateGenerator {
+
+    private static final Logger log = LoggerFactory.getLogger(CandidateGenerator.class);
 
     private final DataManager dataManager;
     private final Map<Integer, float[]> movieEmbeddings;
@@ -22,8 +27,7 @@ public class CandidateGenerator {
         this.movieEmbeddings = DataLoader.loadMovieEmbeddings();
         this.userEmbeddings = DataLoader.loadUserEmbeddings();
         this.embeddingIndex = createEmbeddingIndex(movieEmbeddings);
-        System.out.printf("[CandidateGenerator] embedding backend=%s, movies=%d, users=%d%n",
-                embeddingIndex.name(), movieEmbeddings.size(), userEmbeddings.size());
+        log.info("Embedding backend={}, movies={}, users={}", embeddingIndex.name(), movieEmbeddings.size(), userEmbeddings.size());
     }
 
     // Genre-based: for each genre on the seed movie, pull top-rated candidates,
@@ -91,7 +95,7 @@ public class CandidateGenerator {
             case "exact", "flat" -> new ExactVectorIndex(embeddings);
             case "lsh", "ann" -> new LshVectorIndex(embeddings);
             case "faiss" -> {
-                System.err.println("[CandidateGenerator] FAISS backend requested, but native Java FAISS is not enabled in the portable build. Falling back to LSH.");
+                log.warn("FAISS backend requested but not enabled in the portable build; falling back to LSH.");
                 yield new LshVectorIndex(embeddings);
             }
             default -> throw new IllegalArgumentException("Unknown vector backend: " + backend);
