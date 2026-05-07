@@ -1,11 +1,13 @@
 package com.recsys.features;
 
+import com.recsys.streaming.TrendingStore;
+
 import redis.clients.jedis.Jedis;
 import redis.clients.jedis.JedisPool;
 
 import java.util.List;
 
-public final class RedisTopKStore {
+public final class RedisTopKStore implements TrendingStore {
     private final JedisPool pool;
     private final String keyPrefix;
 
