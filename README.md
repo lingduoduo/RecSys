@@ -159,7 +159,13 @@ All `recsys.ab-test.*` values are validated at startup. Override via `applicatio
 src/main/java/com/recsys/
 ├── models/                 Immutable API/domain records
 ├── features/               Data loading, indexed access, retrieval, vector math, Redis stores
-├── serving/                Jetty server and servlet endpoints
+├── serving/                Jetty server and servlet endpoints (port 6010)
+├── streaming/              Online serving layer (port 7010)
+│   ├── flink/              Flink streaming job — writes online features to Redis
+│   ├── OnlineRecommendationService.java   Blends behavioral + embedding signals
+│   ├── OnlineRecommendationEngine.java    Real-time scoring: recent history + trending
+│   ├── OnlinePredictionServer.java        Jetty entry point
+│   └── ...                (request/result records, feature stores, servlets)
 ├── training/
 │   ├── rulebased/          Spark Word2Vec offline item embeddings
 │   └── modelbased/
@@ -632,6 +638,8 @@ mvn test -DexcludedGroups="" -Dgroups=load
 | `PredictionIntegrationTest` | End-to-end service pipeline against bundled classpath artifacts: ranked results, score ordering, excludeItemIds, unknown users |
 | `RecommendationEndToEndTest` | Full HTTP chain (`@SpringBootTest`): controller → inference → metrics tracking; verifies `InferenceMetricsService` counters, `/health/ready`, and `/health/metrics` reflect real state |
 | `InferenceLoadTest` _(tag: load)_ | 100 concurrent requests across 10 threads; reports avg latency, P95 latency, throughput (req/s), and success rate; asserts P95 ≤ 2000 ms and success rate ≥ 99 % |
+| `OnlineRecommendationEngineTest` | Blends recent-history similarity with trending and excludes recently-watched movies; rejects unknown window values |
+| `OnlineRecommendationServiceTest` | Blended scoring (movie in both lists ranks first), online-only fallback when no embedding, recently-watched exclusion, unknown user 404, bad window propagation |
 
 ---
 
@@ -832,6 +840,13 @@ movie_embeddings.txt / user_embeddings.txt (classpath)
 
 - `BaseApiServlet` centralizes JSON headers, Jackson serialization, error responses, and request parameter parsing.
 - `SimilarMovieService` demonstrates candidate recall + embedding ranking: build metadata candidates, fetch vectors via Redis `MGET`, rank by inner product.
+
+**Online serving (`com.recsys.streaming`):**
+
+- `OnlineRecommendationEngine` — scores candidates from per-user recent-watch history (Redis) and trending Top-K (Redis sorted set). Accepts `window` (`last_hour`, `last_day`, `last_month`).
+- `OnlineRecommendationService` — orchestrates `OnlineRecommendationEngine` + `CandidateGenerator.byEmbedding`. Blends normalized rank scores (`ONLINE_WEIGHT=1.0`, `MODEL_WEIGHT=0.5`), excludes recently-watched movies, and falls back to online-only for cold-start users. Returns a `strategy` field in the result.
+- `OnlineFeatureStreamingJob` (profile `streaming-flink`) — Flink 1.18 job that reads `MovieEvent` records from Kafka or a local file, then writes per-user recent-movie lists, per-movie engagement metrics, and global top-K to Redis.
+- `OnlinePredictionServer` — Jetty entry point on port `7010`; wires `OnlineRecommendationService` and exposes `/health`, `/online/features`, and `/online/recommendation`.
 
 **Model serving:**
 
