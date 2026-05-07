@@ -1,0 +1,128 @@
+package com.recsys.streaming;
+
+import com.recsys.features.CandidateGenerator;
+import com.recsys.features.DataManager;
+import com.recsys.models.Movie;
+import com.recsys.models.User;
+
+import java.util.Comparator;
+import java.util.HashMap;
+import java.util.List;
+import java.util.Map;
+import java.util.Objects;
+import java.util.Set;
+import java.util.stream.Collectors;
+
+public final class OnlineRecommendationService {
+
+    // Online behavioral signals are the primary rank signal; embedding adds a secondary boost.
+    private static final double ONLINE_WEIGHT = 1.0;
+    private static final double MODEL_WEIGHT  = 0.5;
+
+    private final DataManager dataManager;
+    private final OnlineRecommendationEngine onlineEngine;
+    private final CandidateGenerator candidateGenerator;
+
+    public OnlineRecommendationService(DataManager dataManager,
+                                       OnlineRecommendationEngine onlineEngine,
+                                       CandidateGenerator candidateGenerator) {
+        this.dataManager = dataManager;
+        this.onlineEngine = onlineEngine;
+        this.candidateGenerator = candidateGenerator;
+    }
+
+    public OnlineRecommendationResult recommend(OnlineRecommendationRequest request) {
+        User user = requireUser(request.userId());
+
+        // Online path: recent history + trending signals, fetched with headroom for blending.
+        OnlineRecommendationEngine.OnlineRecommendationResult online =
+                onlineEngine.recommend(request.userId(), request.window(), request.k() * 4);
+
+        // Model path: embedding-based ANN recall.
+        List<Movie> modelCandidates = candidateGenerator.byEmbedding(request.userId(), request.k() * 4);
+
+        List<Movie> recommendations;
+        String strategy;
+
+        if (modelCandidates.isEmpty()) {
+            // No user embedding available: fall back to online signals only.
+            List<Movie> onlineRecs = online.recommendations();
+            recommendations = onlineRecs.subList(0, Math.min(request.k(), onlineRecs.size()));
+            strategy = "online";
+        } else {
+            recommendations = blend(online.recommendations(), modelCandidates,
+                    online.recentMovies(), request.k());
+            strategy = "online+model";
+        }
+
+        return new OnlineRecommendationResult(
+                user,
+                online.window(),
+                strategy,
+                online.recentMovies(),
+                online.trendingMovies(),
+                recommendations
+        );
+    }
+
+    /**
+     * Merges two ranked candidate lists using normalized reciprocal-rank scores so
+     * movies that rank well in both paths float to the top.
+     *
+     * online score for rank i of n  = ONLINE_WEIGHT * (n - i) / n
+     * model score  for rank i of m  = MODEL_WEIGHT  * (m - i) / m
+     *
+     * Recently-watched movies are excluded from the final output.
+     */
+    private static List<Movie> blend(List<Movie> onlineRecs,
+                                     List<Movie> modelCandidates,
+                                     List<Movie> recentMovies,
+                                     int k) {
+        Map<Integer, Movie> movieById = new HashMap<>();
+        Map<Integer, Double> scores   = new HashMap<>();
+
+        int nOnline = onlineRecs.size();
+        for (int i = 0; i < nOnline; i++) {
+            Movie m = onlineRecs.get(i);
+            movieById.put(m.id(), m);
+            scores.put(m.id(), ONLINE_WEIGHT * (nOnline - i) / (double) nOnline);
+        }
+
+        int nModel = modelCandidates.size();
+        for (int i = 0; i < nModel; i++) {
+            Movie m = modelCandidates.get(i);
+            movieById.put(m.id(), m);
+            scores.merge(m.id(), MODEL_WEIGHT * (nModel - i) / (double) nModel, Double::sum);
+        }
+
+        Set<Integer> recentIds = recentMovies.stream()
+                .map(Movie::id)
+                .collect(Collectors.toSet());
+        scores.keySet().removeIf(recentIds::contains);
+
+        return scores.entrySet().stream()
+                .sorted(Map.Entry.<Integer, Double>comparingByValue(Comparator.reverseOrder())
+                        .thenComparing(Map.Entry::getKey))
+                .map(e -> movieById.get(e.getKey()))
+                .filter(Objects::nonNull)
+                .limit(k)
+                .toList();
+    }
+
+    private User requireUser(int userId) {
+        User user = dataManager.getUserById(userId);
+        if (user == null) throw new UnknownUserException(userId);
+        return user;
+    }
+
+    public static final class UnknownUserException extends RuntimeException {
+        private final int userId;
+
+        public UnknownUserException(int userId) {
+            super("user not found");
+            this.userId = userId;
+        }
+
+        public int userId() { return userId; }
+    }
+}

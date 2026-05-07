@@ -4,22 +4,27 @@ This streaming path is intentionally separate from the main Jetty movie API and 
 It shows an online or near-real-time recommendation path where:
 
 ```text
-Kafka -> Flink -> Redis -> online prediction server
+Kafka -> Flink -> Redis ─┐
+                         ├─> OnlineRecommendationService -> online prediction server
+user embeddings (ANN) ───┘
 ```
 
 The streaming path uses:
 
 - Kafka as the event ingress layer
-- Flink containers as the stream-processing runtime placeholder
-- Redis as the online feature and Top-K store
-- `com.recsys.streaming.OnlinePredictionServer` as the serving layer
+- Flink (`OnlineFeatureStreamingJob`) to write per-user history and Top-K trending into Redis
+- Redis as the online feature store
+- `OnlineRecommendationEngine` for real-time behavioral scoring
+- `CandidateGenerator.byEmbedding` for embedding-based ANN recall
+- `OnlineRecommendationService` to blend both signals before serving
+- `OnlinePredictionServer` (Jetty, port `7010`) as the HTTP layer
 
 Today the repo includes both:
 
 - a real Java Flink job in `com.recsys.streaming.flink`
 - replay scripts for loading the same Redis shape without running Flink
 
-That keeps the streaming path runnable without coupling it to the current model-artifact flow.
+That keeps the streaming path runnable without coupling it to the model-artifact service.
 
 ## Files
 
@@ -120,31 +125,51 @@ ONLINE_DEMO_PORT=7010 REDIS_HOST=localhost REDIS_PORT=6379 \
   mvn exec:java -Dexec.mainClass="com.recsys.streaming.OnlinePredictionServer"
 ```
 
+## Recommendation Strategy
+
+`OnlineRecommendationService` blends two recall sources on every request:
+
+| Source | Signal | Weight |
+|---|---|---|
+| `OnlineRecommendationEngine` | Real-time: recent-history similarity + trending rank | 1.0 |
+| `CandidateGenerator.byEmbedding` | Offline: ANN search on user-tower embeddings | 0.5 |
+
+Each source contributes a normalized rank score `weight × (n − rank) / n`. Movies that appear in both lists accumulate scores from both and surface at the top. Recently-watched movies are excluded from the final output.
+
+When no embedding exists for the user (cold-start), the service falls back to the online path only. The response includes a `strategy` field (`"online+model"` or `"online"`) so callers can observe which signals fired.
+
 ## Try It
 
-Inspect the online feature view:
+Inspect the online feature snapshot:
 
 ```bash
 curl "http://localhost:7010/online/features?userId=123&window=last_hour&k=5"
 ```
 
-Request near-real-time recommendations:
+Request blended recommendations:
 
 ```bash
 curl "http://localhost:7010/online/recommendation?userId=123&window=last_hour&k=5"
 ```
 
-The serving logic blends:
+Example response shape:
 
-- recent per-user movies from Redis
-- trending movie IDs from Redis Top-K
-- offline similarity from `DataManager`
+```json
+{
+  "user": { "userId": 123, "name": "Alice" },
+  "window": "last_hour",
+  "strategy": "online+model",
+  "recentMovies": [...],
+  "trendingMovies": [...],
+  "recommendations": [...]
+}
+```
 
-This is meant to model a common production split:
+This models the production split where:
 
-- offline jobs build durable similarity or embedding assets
-- online stream processing updates short-lived behavioral features
-- serving combines both at request time
+- offline jobs build durable embedding assets (user tower, item embeddings)
+- Flink keeps short-lived behavioral features fresh in Redis
+- `OnlineRecommendationService` fuses both at request time
 
 ## Stop Infra
 

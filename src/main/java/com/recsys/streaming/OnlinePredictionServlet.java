@@ -1,6 +1,5 @@
 package com.recsys.streaming;
 
-import com.recsys.features.DataManager;
 import com.recsys.models.Movie;
 import com.recsys.models.User;
 import jakarta.servlet.http.HttpServletRequest;
@@ -10,12 +9,10 @@ import java.io.IOException;
 import java.util.List;
 
 public final class OnlinePredictionServlet extends ApiServlet {
-    private final DataManager dataManager;
-    private final OnlineRecommendationEngine engine;
+    private final OnlineRecommendationService recommendationService;
 
-    public OnlinePredictionServlet(DataManager dataManager, OnlineRecommendationEngine engine) {
-        this.dataManager = dataManager;
-        this.engine = engine;
+    public OnlinePredictionServlet(OnlineRecommendationService recommendationService) {
+        this.recommendationService = recommendationService;
     }
 
     @Override
@@ -26,22 +23,20 @@ public final class OnlinePredictionServlet extends ApiServlet {
             int k = optionalIntParam(request, "k", 5, 1, 20);
             String window = request.getParameter("window");
 
-            User user = dataManager.getUserById(userId);
-            if (user == null) {
-                writeError(response, HttpServletResponse.SC_NOT_FOUND, "user not found");
-                return;
-            }
-
-            OnlineRecommendationEngine.OnlineRecommendationResult result = engine.recommend(userId, window, k);
+            OnlineRecommendationResult result = recommendationService.recommend(
+                    new OnlineRecommendationRequest(userId, window, k));
             writeJson(response, HttpServletResponse.SC_OK, new OnlinePredictionResponse(
-                    user,
+                    result.user(),
                     result.window(),
+                    result.strategy(),
                     result.recentMovies(),
                     result.trendingMovies().stream().limit(k).toList(),
                     result.recommendations()
             ));
         } catch (BadRequestException | IllegalArgumentException e) {
             writeError(response, HttpServletResponse.SC_BAD_REQUEST, e.getMessage());
+        } catch (OnlineRecommendationService.UnknownUserException e) {
+            writeError(response, HttpServletResponse.SC_NOT_FOUND, e.getMessage());
         } catch (Exception e) {
             log.error("Unexpected error in OnlinePredictionServlet", e);
             writeError(response, HttpServletResponse.SC_INTERNAL_SERVER_ERROR, "internal server error");
@@ -50,6 +45,7 @@ public final class OnlinePredictionServlet extends ApiServlet {
 
     private record OnlinePredictionResponse(User user,
                                             String window,
+                                            String strategy,
                                             List<Movie> recentMovies,
                                             List<Movie> trendingMovies,
                                             List<Movie> recommendations) {}

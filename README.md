@@ -34,19 +34,25 @@ RecSys is a compact Maven workspace for experimenting with recommendation-system
 
 ## Recommendation Flow
 
-The movie API models a common recommendation-serving pipeline: recall narrows the catalog to a candidate set, then ranking scores and orders those candidates.
+The project demonstrates two recommendation paths that can be run independently or together:
 
-Recall examples:
+**Offline / batch path (Movie API, port 6010)**
 
-- **Single-strategy:** `CandidateGenerator.byGenre` expands from the genres of a seed movie.
-- **Multi-way:** `CandidateGenerator.byUserHistory` merges candidates from user-history genres, global top-rated movies, and latest releases.
-- **Embedding:** `CandidateGenerator.byEmbedding` retrieves items by comparing user and item embeddings with the configured vector index.
+Recall narrows the catalog to a candidate set; ranking scores and orders those candidates.
 
-Ranking example:
+- **Single-strategy recall:** `CandidateGenerator.byGenre` expands from the genres of a seed movie.
+- **Multi-way recall:** `CandidateGenerator.byUserHistory` merges candidates from user-history genres, global top-rated movies, and latest releases.
+- **Embedding recall:** `CandidateGenerator.byEmbedding` retrieves items by ANN search on user and item embeddings.
+- **Ranking:** `SimilarMovieService` scores each candidate with inner-product similarity and returns the top-K results.
 
-- **Embedding-similarity:** `SimilarMovieService` builds a candidate set, scores each candidate with inner-product similarity, and returns the top-K results.
+**Online / real-time path (Online Prediction Server, port 7010)**
 
-Future ranking demos can replace embedding similarity with model-based rankers such as LR, GBDT, DNN, Wide & Deep, or DIN.
+`OnlineRecommendationService` blends two live signals on every request:
+
+- **Behavioral signals** (`OnlineRecommendationEngine`): recent per-user watch history + windowed trending Top-K, both written by the Flink job into Redis.
+- **Embedding recall** (`CandidateGenerator.byEmbedding`): ANN search on offline-trained user-tower embeddings.
+
+A normalized rank score fuses the two lists. Cold-start users with no embedding fall back to behavioral signals only. The response `strategy` field (`"online+model"` or `"online"`) shows which signals fired.
 
 ---
 
@@ -651,24 +657,32 @@ docker exec -it redis-dev redis-cli GET i2vEmb:1
 
 ## Online Serving
 
-The Kafka/Flink/Redis streaming path now lives separately from the main Jetty movie API and the Spring Boot model-artifact service.
+The Kafka/Flink/Redis streaming path lives separately from the main Jetty movie API and the Spring Boot model-artifact service. At request time `OnlineRecommendationService` fuses real-time behavioral signals from Redis with offline embedding-based recall, returning a `strategy` field that shows which sources contributed.
 
-See [streaming/online-serving/README.md](streaming/online-serving/README.md) for:
+See [streaming/online-serving/README.md](streaming/online-serving/README.md) for full setup instructions. Quick reference:
 
-- isolated Docker Compose infra
-- a Java Flink job that writes online features into Redis
-- Kafka event production
-- Redis online-feature replay
-- a dedicated online prediction server on port `7010`
+| Component | What it does |
+|---|---|
+| `OnlineFeatureStreamingJob` | Flink job: consumes Kafka events, writes `user:<id>:recent_movies`, `movie:<id>:views_1h`, `topk:<window>` to Redis |
+| `OnlineRecommendationEngine` | Scores candidates using per-user recent history + trending rank |
+| `CandidateGenerator.byEmbedding` | ANN recall on offline user-tower embeddings |
+| `OnlineRecommendationService` | Blends the two sources, excludes recently watched, falls back gracefully for cold-start users |
+| `OnlinePredictionServer` | Jetty HTTP server on port `7010` wiring all of the above |
 
 Recommended entrypoint:
 
-- use `streaming/online-serving/docker-compose.yml` for Kafka, Flink, and Redis
-- use `streaming/online-serving/README.md` for topic setup, Flink job execution, and Redis feature loading
+```bash
+# 1. Start infra
+docker compose -f streaming/online-serving/docker-compose.yml up -d
+# 2. Load sample features into Redis (no Flink required)
+sh streaming/online-serving/scripts/load_online_features.sh
+# 3. Start the server
+mvn exec:java -Dexec.mainClass="com.recsys.streaming.OnlinePredictionServer"
+# 4. Try it
+curl "http://localhost:7010/online/recommendation?userId=123&window=last_hour&k=5"
+```
 
-Legacy note:
-
-- `docker-compose.streaming.yml` is still available for the older root-level local setup, but `streaming/online-serving` is the maintained path
+Legacy note: `docker-compose.streaming.yml` is still available for the older root-level setup, but `streaming/online-serving` is the maintained path.
 
 ---
 
@@ -677,10 +691,12 @@ Legacy note:
 **Online prediction path:**
 
 ```text
-Kafka → Flink → online feature/event store → retrieval/prediction service
+Kafka → Flink → Redis (behavioral features) ─┐
+                                              ├─> OnlineRecommendationService
+user embeddings (ANN recall) ─────────────────┘
 ```
 
-The bundled `events.txt` rows model the Kafka payloads. The `online_features.txt` rows model the low-latency aggregates a Flink job would write into Redis, such as `user:<id>:recent_movies`, `movie:<id>:views_1h`, and `topk:last_hour`.
+The bundled `events.txt` rows model the Kafka payloads. The `online_features.txt` rows model the low-latency aggregates the Flink job writes into Redis (`user:<id>:recent_movies`, `movie:<id>:views_1h`, `topk:last_hour`). `OnlineRecommendationService` blends these real-time signals with offline embedding-based recall at request time.
 
 **Offline embedding path:**
 
