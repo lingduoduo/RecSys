@@ -85,7 +85,7 @@ mvn -Pstreaming-flink exec:java \
 
 What the job writes to Redis:
 
-- `user:<id>:last_3_movies`
+- `user:<id>:recent_movies`
 - `movie:<id>:views_1h`
 - `movie:<id>:likes_1h`
 - `topk:last_hour`
@@ -101,7 +101,7 @@ Use it as a fallback when you want the serving side without running the Flink jo
 
 Redis keys written by the script:
 
-- `user:<id>:last_3_movies`
+- `user:<id>:recent_movies`
 - `movie:<id>:views_1h`
 - `movie:<id>:likes_1h`
 - `topk:last_hour`

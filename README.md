@@ -266,7 +266,7 @@ curl "http://localhost:6010/getrecommendation?userId=123&mode=topk&window=last_h
 
 Reads pre-scored movie IDs from a Redis sorted set. Supported windows: `last_hour`, `last_day`, `last_month`.
 
-For a separate online or near-real-time serving path backed by Kafka, Flink, and Redis, see [streaming/online-serving/README.md](/Users/linghuang/Git/Recsys-Backend-Service/streaming/online-serving/README.md).
+For a separate online or near-real-time serving path backed by Kafka, Flink, and Redis, see [streaming/online-serving/README.md](streaming/online-serving/README.md).
 
 ### Similar Movies
 
@@ -654,7 +654,7 @@ docker exec -it redis-dev redis-cli GET i2vEmb:1
 
 The Kafka/Flink/Redis streaming path now lives separately from the main Java movie API and the Spring Boot model-artifact service.
 
-See [streaming/online-serving/README.md](/Users/linghuang/Git/Recsys-Backend-Service/streaming/online-serving/README.md) for:
+See [streaming/online-serving/README.md](streaming/online-serving/README.md) for:
 
 - isolated Docker Compose infra
 - a Java Flink job that writes online features into Redis
@@ -668,7 +668,7 @@ See [streaming/online-serving/README.md](/Users/linghuang/Git/Recsys-Backend-Ser
 
 The legacy root compose file starts Kafka and Flink for streaming Top-K experiments.
 
-The recommended path is now the separate streaming path under [streaming/online-serving/README.md](/Users/linghuang/Git/Recsys-Backend-Service/streaming/online-serving/README.md), which keeps the online-serving flow isolated from the current model-artifact service.
+The recommended path is now the separate streaming path under [streaming/online-serving/README.md](streaming/online-serving/README.md), which keeps the online-serving flow isolated from the current model-artifact service.
 
 Flink UI: `http://localhost:8081`
 
