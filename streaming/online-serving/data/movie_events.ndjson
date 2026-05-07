@@ -1,0 +1,15 @@
+{"eventId":"evt-001","userId":123,"movieId":1,"eventType":"view","watchMs":720000,"eventTimeMillis":1713503000000,"source":"web"}
+{"eventId":"evt-002","userId":123,"movieId":2,"eventType":"view","watchMs":680000,"eventTimeMillis":1713503060000,"source":"web"}
+{"eventId":"evt-003","userId":124,"movieId":5,"eventType":"view","watchMs":540000,"eventTimeMillis":1713503120000,"source":"mobile"}
+{"eventId":"evt-004","userId":124,"movieId":6,"eventType":"like","rating":5,"eventTimeMillis":1713503180000,"source":"mobile"}
+{"eventId":"evt-005","userId":125,"movieId":7,"eventType":"view","watchMs":760000,"eventTimeMillis":1713503240000,"source":"tv"}
+{"eventId":"evt-006","userId":125,"movieId":8,"eventType":"view","watchMs":700000,"eventTimeMillis":1713503300000,"source":"tv"}
+{"eventId":"evt-007","userId":126,"movieId":9,"eventType":"view","watchMs":600000,"eventTimeMillis":1713503360000,"source":"mobile"}
+{"eventId":"evt-008","userId":126,"movieId":10,"eventType":"like","rating":5,"eventTimeMillis":1713503420000,"source":"mobile"}
+{"eventId":"evt-009","userId":127,"movieId":11,"eventType":"view","watchMs":620000,"eventTimeMillis":1713503480000,"source":"web"}
+{"eventId":"evt-010","userId":127,"movieId":12,"eventType":"view","watchMs":590000,"eventTimeMillis":1713503540000,"source":"web"}
+{"eventId":"evt-011","userId":123,"movieId":4,"eventType":"view","watchMs":480000,"eventTimeMillis":1713503600000,"source":"web"}
+{"eventId":"evt-012","userId":124,"movieId":3,"eventType":"view","watchMs":450000,"eventTimeMillis":1713503660000,"source":"mobile"}
+{"eventId":"evt-013","userId":127,"movieId":2,"eventType":"like","rating":4,"eventTimeMillis":1713503720000,"source":"web"}
+{"eventId":"evt-014","userId":126,"movieId":11,"eventType":"view","watchMs":420000,"eventTimeMillis":1713503780000,"source":"mobile"}
+{"eventId":"evt-015","userId":125,"movieId":12,"eventType":"like","rating":4,"eventTimeMillis":1713503840000,"source":"tv"}

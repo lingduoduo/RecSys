@@ -24,6 +24,7 @@ RecSys is a compact Maven workspace for experimenting with recommendation-system
 - [A/B Testing](#ab-testing)
 - [Testing](#testing)
 - [Redis Test Data](#redis-test-data)
+- [Online Serving](#online-serving)
 - [Kafka / Flink](#kafkaflink)
 - [Offline Item Embeddings](#offline-item-embeddings)
 - [Embedding Storage Paths](#embedding-storage-paths)
@@ -185,7 +186,14 @@ src/main/resources/artifacts/model/training/   Bundled sample artifacts for the 
 ├── metadata.json
 └── user_tower.onnx
 
-docker-compose.streaming.yml  Redis, Kafka, Zookeeper, Flink
+docker-compose.streaming.yml              Legacy root compose for Redis, Kafka, Zookeeper, Flink
+streaming/online-serving/                 Separate Kafka + Flink + Redis online-serving path
+├── README.md
+├── docker-compose.yml
+├── data/movie_events.ndjson
+└── scripts/
+    ├── load_online_features.sh
+    └── produce_movie_events.sh
 ```
 
 ---
@@ -257,6 +265,8 @@ curl "http://localhost:6010/getrecommendation?userId=123&mode=topk&window=last_h
 ```
 
 Reads pre-scored movie IDs from a Redis sorted set. Supported windows: `last_hour`, `last_day`, `last_month`.
+
+For a separate online or near-real-time serving path backed by Kafka, Flink, and Redis, see [streaming/online-serving/README.md](streaming/online-serving/README.md).
 
 ### Similar Movies
 
@@ -640,9 +650,25 @@ docker exec -it redis-dev redis-cli GET i2vEmb:1
 
 ---
 
+## Online Serving
+
+The Kafka/Flink/Redis streaming path now lives separately from the main Java movie API and the Spring Boot model-artifact service.
+
+See [streaming/online-serving/README.md](streaming/online-serving/README.md) for:
+
+- isolated Docker Compose infra
+- a Java Flink job that writes online features into Redis
+- Kafka event production
+- Redis online-feature replay
+- a dedicated online prediction server on port `7010`
+
+---
+
 ## Kafka / Flink
 
-The compose file starts Kafka and Flink for streaming Top-K experiments.
+The legacy root compose file starts Kafka and Flink for streaming Top-K experiments.
+
+The recommended path is now the separate streaming path under [streaming/online-serving/README.md](streaming/online-serving/README.md), which keeps the online-serving flow isolated from the current model-artifact service.
 
 Flink UI: `http://localhost:8081`
 
