@@ -7,7 +7,7 @@ It shows an online or near-real-time recommendation path where:
 Kafka -> Flink -> Redis -> online prediction server
 ```
 
-The demo uses:
+The streaming path uses:
 
 - Kafka as the event ingress layer
 - Flink containers as the stream-processing runtime placeholder

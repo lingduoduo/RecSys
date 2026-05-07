@@ -25,7 +25,6 @@ RecSys is a compact Maven workspace for experimenting with recommendation-system
 - [Testing](#testing)
 - [Redis Test Data](#redis-test-data)
 - [Online Serving](#online-serving)
-- [Kafka / Flink](#kafkaflink)
 - [Offline Item Embeddings](#offline-item-embeddings)
 - [Embedding Storage Paths](#embedding-storage-paths)
 - [Developer Notes](#developer-notes)
@@ -186,8 +185,8 @@ src/main/resources/artifacts/model/training/   Bundled sample artifacts for the 
 ├── metadata.json
 └── user_tower.onnx
 
-docker-compose.streaming.yml              Legacy root compose for Redis, Kafka, Zookeeper, Flink
-streaming/online-serving/                 Separate Kafka + Flink + Redis online-serving path
+docker-compose.streaming.yml              Legacy root compose for local Redis/Kafka/Flink experiments
+streaming/online-serving/                 Canonical Kafka + Flink + Redis online-serving path
 ├── README.md
 ├── docker-compose.yml
 ├── data/movie_events.ndjson
@@ -652,7 +651,7 @@ docker exec -it redis-dev redis-cli GET i2vEmb:1
 
 ## Online Serving
 
-The Kafka/Flink/Redis streaming path now lives separately from the main Java movie API and the Spring Boot model-artifact service.
+The Kafka/Flink/Redis streaming path now lives separately from the main Jetty movie API and the Spring Boot model-artifact service.
 
 See [streaming/online-serving/README.md](streaming/online-serving/README.md) for:
 
@@ -662,42 +661,14 @@ See [streaming/online-serving/README.md](streaming/online-serving/README.md) for
 - Redis online-feature replay
 - a dedicated online prediction server on port `7010`
 
----
+Recommended entrypoint:
 
-## Kafka / Flink
+- use `streaming/online-serving/docker-compose.yml` for Kafka, Flink, and Redis
+- use `streaming/online-serving/README.md` for topic setup, Flink job execution, and Redis feature loading
 
-The legacy root compose file starts Kafka and Flink for streaming Top-K experiments.
+Legacy note:
 
-The recommended path is now the separate streaming path under [streaming/online-serving/README.md](streaming/online-serving/README.md), which keeps the online-serving flow isolated from the current model-artifact service.
-
-Flink UI: `http://localhost:8081`
-
-Create and populate the sample topic:
-
-```bash
-docker exec -it recsys-kafka-1 \
-  kafka-topics --bootstrap-server localhost:9092 \
-  --create --topic movie_events --partitions 1 --replication-factor 1
-
-docker exec -it recsys-kafka-1 \
-  kafka-console-producer --bootstrap-server kafka:9092 --topic movie_events
-```
-
-Sample events (matching `src/main/java/com/recsys/data/events.txt`):
-
-```json
-{"eventId":"evt-001","userId":123,"movieId":1,"eventType":"view","watchMs":720000,"eventTimeMillis":1713503000000,"source":"web"}
-{"eventId":"evt-002","userId":123,"movieId":2,"eventType":"view","watchMs":680000,"eventTimeMillis":1713503060000,"source":"web"}
-{"eventId":"evt-003","userId":124,"movieId":5,"eventType":"view","watchMs":540000,"eventTimeMillis":1713503120000,"source":"mobile"}
-{"eventId":"evt-004","userId":124,"movieId":6,"eventType":"like","rating":5,"eventTimeMillis":1713503180000,"source":"mobile"}
-```
-
-Delete the topic:
-
-```bash
-docker exec -it recsys-kafka-1 \
-  kafka-topics --bootstrap-server localhost:9092 --delete --topic movie_events
-```
+- `docker-compose.streaming.yml` is still available for the older root-level local setup, but `streaming/online-serving` is the maintained path
 
 ---
 
@@ -709,7 +680,7 @@ docker exec -it recsys-kafka-1 \
 Kafka → Flink → online feature/event store → retrieval/prediction service
 ```
 
-The bundled `events.txt` rows model the Kafka payloads. The `online_features.txt` rows model the low-latency aggregates a Flink job would write into Redis, such as `user:<id>:last_3_movies`, `movie:<id>:views_1h`, and `topk:last_hour`.
+The bundled `events.txt` rows model the Kafka payloads. The `online_features.txt` rows model the low-latency aggregates a Flink job would write into Redis, such as `user:<id>:recent_movies`, `movie:<id>:views_1h`, and `topk:last_hour`.
 
 **Offline embedding path:**
 
