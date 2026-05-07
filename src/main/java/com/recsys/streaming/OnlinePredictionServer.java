@@ -1,5 +1,6 @@
 package com.recsys.streaming;
 
+import com.recsys.features.CandidateGenerator;
 import com.recsys.features.DataManager;
 import com.recsys.features.RedisTopKStore;
 import org.eclipse.jetty.server.Server;
@@ -22,16 +23,19 @@ public final class OnlinePredictionServer {
 
         try (JedisPool jedisPool = new JedisPool(redisHost, redisPort)) {
             DataManager dataManager = DataManager.getInstance();
+            CandidateGenerator candidateGenerator = new CandidateGenerator(dataManager);
             RedisTopKStore topkStore = new RedisTopKStore(jedisPool, "topk:");
             OnlineFeatureStore onlineFeatureStore = new OnlineFeatureStore(jedisPool);
             OnlineRecommendationEngine engine = new OnlineRecommendationEngine(dataManager, topkStore, onlineFeatureStore);
+            OnlineRecommendationService recommendationService =
+                    new OnlineRecommendationService(dataManager, engine, candidateGenerator);
 
             Server server = new Server(new InetSocketAddress(DEFAULT_HOST, port));
             ServletContextHandler context = new ServletContextHandler();
             context.setContextPath("/");
             context.addServlet(new ServletHolder(new OnlineHealthServlet()), "/health");
-            context.addServlet(new ServletHolder(new OnlineFeaturesServlet(dataManager, engine)), "/online/features");
-            context.addServlet(new ServletHolder(new OnlinePredictionServlet(dataManager, engine)), "/online/recommendation");
+            context.addServlet(new ServletHolder(new OnlineFeaturesServlet(recommendationService)), "/online/features");
+            context.addServlet(new ServletHolder(new OnlinePredictionServlet(recommendationService)), "/online/recommendation");
             server.setHandler(context);
             server.setStopAtShutdown(true);
             server.start();

@@ -12,7 +12,7 @@ import java.util.Map;
 import java.util.Objects;
 import java.util.Set;
 
-public final class OnlineRecommendationEngine {
+public class OnlineRecommendationEngine {
     private static final Set<String> ALLOWED_WINDOWS = Set.of("last_hour", "last_day", "last_month");
 
     private final DataManager dataManager;
