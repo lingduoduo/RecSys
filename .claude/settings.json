@@ -1,0 +1,14 @@
+{
+  "permissions": {
+    "allow": [
+      "Bash(git -C /Users/linghuang/Git/Recsys-Backend-Service log --oneline -5)",
+      "Bash(grep -rE \"\\(api_key|secret|password|token\\)\\\\s*=\\\\s*['\\\\\"][^'\\\\\"]{8,}\" /Users/linghuang/Git/Recsys-Backend-Service/src/main/java/com/recsys/streaming/flink/ --include=\"*.java\")",
+      "Bash(git commit -m ' *)",
+      "Bash(python3 -c \"import json,sys; d=json.load\\(sys.stdin\\); print\\(d['state'], d['headRefName'], len\\(d['commits']\\), 'commits'\\)\")",
+      "Bash(git fetch *)",
+      "Bash(python3 -c \"import json,sys; d=json.load\\(sys.stdin\\); print\\(d['number'], d['state'], d['title']\\)\")",
+      "Bash(git pull *)",
+      "Bash(git merge feature/blended-recommendation-service --no-ff -m ' *)"
+    ]
+  }
+}
