@@ -27,6 +27,12 @@ public class RecommendationService {
     }
 
     public RecommendResponse recommend(RecommendRequest request) {
+        if (request.getUserId() == null || request.getUserId().isBlank()) {
+            throw new IllegalArgumentException("userId must not be blank");
+        }
+        if (request.getK() <= 0 || request.getK() > 100) {
+            throw new IllegalArgumentException("k must be between 1 and 100");
+        }
         ABTestService.Assignment assignment = abTestService.getAssignmentForUser(request.getUserId());
         ModelRuntime runtime = modelRuntimeProvider.getRuntime(assignment.variant());
 

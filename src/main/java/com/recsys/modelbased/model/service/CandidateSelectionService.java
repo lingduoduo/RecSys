@@ -40,26 +40,25 @@ public class CandidateSelectionService {
             for (String genre : genres) {
                 for (Movie movie : dataManager.getMoviesByGenre(genre, LIMIT_PER_GENRE)) {
                     if (!watched.contains(movie.id())) {
-                        addIfAvailable(candidates, availableItems, movie.id());
+                        addIfAvailable(candidates, availableItems, excluded, movie.id());
                     }
                 }
             }
         }
 
         for (Movie movie : dataManager.getTopRatedMovies(GLOBAL_POOL_SIZE)) {
-            addIfAvailable(candidates, availableItems, movie.id());
+            addIfAvailable(candidates, availableItems, excluded, movie.id());
         }
         for (Movie movie : dataManager.getLatestMovies(GLOBAL_POOL_SIZE)) {
-            addIfAvailable(candidates, availableItems, movie.id());
+            addIfAvailable(candidates, availableItems, excluded, movie.id());
         }
 
-        candidates.removeAll(excluded);
         return candidates;
     }
 
-    private static void addIfAvailable(Set<String> candidates, Set<String> availableItems, int movieId) {
+    private static void addIfAvailable(Set<String> candidates, Set<String> availableItems, Set<String> excluded, int movieId) {
         String itemId = String.valueOf(movieId);
-        if (availableItems.contains(itemId)) {
+        if (!excluded.contains(itemId) && availableItems.contains(itemId)) {
             candidates.add(itemId);
         }
     }
