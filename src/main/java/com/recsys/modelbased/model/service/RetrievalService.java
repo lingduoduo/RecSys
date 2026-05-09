@@ -58,7 +58,7 @@ public class RetrievalService {
             }
         }
 
-        return new ArrayList<>(best);
+        return sortedDescending(best);
     }
 
     private List<ScoredItem> retrievalCandidatesByMetadata(Integer userId, Set<String> candidateItemIds, int recallSize) {
@@ -82,19 +82,26 @@ public class RetrievalService {
         for (String genre : genres) {
             for (Movie movie : dataManager.getMoviesByGenre(genre, METADATA_LIMIT_PER_GENRE)) {
                 addMetadataCandidate(recalled, movie.id(), candidateItemIds, watched, GENRE_RECALL_SCORE);
+                if (recalled.size() >= recallSize) {
+                    return List.copyOf(recalled.values());
+                }
             }
         }
 
         for (Movie movie : dataManager.getTopRatedMovies(recallSize)) {
             addMetadataCandidate(recalled, movie.id(), candidateItemIds, watched, TOP_RATED_RECALL_SCORE);
+            if (recalled.size() >= recallSize) {
+                return List.copyOf(recalled.values());
+            }
         }
         for (Movie movie : dataManager.getLatestMovies(recallSize)) {
             addMetadataCandidate(recalled, movie.id(), candidateItemIds, watched, LATEST_RECALL_SCORE);
+            if (recalled.size() >= recallSize) {
+                return List.copyOf(recalled.values());
+            }
         }
 
-        return recalled.values().stream()
-                .limit(recallSize)
-                .toList();
+        return List.copyOf(recalled.values());
     }
 
     private static void mergeByBestScore(Map<String, ScoredItem> merged, List<ScoredItem> candidates) {
@@ -122,6 +129,12 @@ public class RetrievalService {
             recalled.merge(itemId, new ScoredItem(itemId, score),
                     (existing, incoming) -> incoming.score() > existing.score() ? incoming : existing);
         }
+    }
+
+    private static List<ScoredItem> sortedDescending(PriorityQueue<ScoredItem> best) {
+        List<ScoredItem> results = new ArrayList<>(best);
+        results.sort(Comparator.comparingDouble(ScoredItem::score).reversed());
+        return results;
     }
 
 }
