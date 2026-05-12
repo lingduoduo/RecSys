@@ -671,7 +671,10 @@ See [streaming/online-serving/README.md](streaming/online-serving/README.md) for
 
 | Component | What it does |
 |---|---|
-| `OnlineFeatureStreamingJob` | Flink job: consumes Kafka events, writes `user:<id>:recent_movies`, `movie:<id>:views_1h`, `topk:<window>` to Redis |
+| `LogCollector` | App/API boundary for exposure, click, view, like, and order logs; validates and emits Kafka-ready JSON lines |
+| `OnlineJoiner` | Joins behavior logs with user/item/context features and emits labeled samples for training streams |
+| `ExperienceCollector` | Groups joined point samples by request/list and emits ranked recommendation experiences for listwise training |
+| `OnlineFeatureStreamingJob` | Flink job: consumes Kafka events, writes `user:<id>:recent_movies`, engagement metrics, and `topk:<window>` to Redis |
 | `OnlineRecommendationEngine` | Scores candidates using per-user recent history + trending rank |
 | `CandidateGenerator.byEmbedding` | ANN recall on offline user-tower embeddings |
 | `OnlineRecommendationService` | Blends the two sources, excludes recently watched, falls back gracefully for cold-start users |
@@ -699,12 +702,21 @@ Legacy note: `docker-compose.streaming.yml` is still available for the older roo
 **Online prediction path:**
 
 ```text
-Kafka → Flink → Redis (behavioral features) ─┐
-                                              ├─> OnlineRecommendationService
-user embeddings (ANN recall) ─────────────────┘
+LogCollector → Kafka → OnlineJoiner → ExperienceCollector ──► training streams / HDFS
+                         │
+                         └─► Flink → Redis (behavioral features) ─┐
+                                                                  ├─> OnlineRecommendationService
+user embeddings (ANN recall) ─────────────────────────────────────┘
 ```
 
-The bundled `events.txt` rows model the Kafka payloads. The `online_features.txt` rows model the low-latency aggregates the Flink job writes into Redis (`user:<id>:recent_movies`, `movie:<id>:views_1h`, `topk:last_hour`). `OnlineRecommendationService` blends these real-time signals with offline embedding-based recall at request time.
+The bundled `events.txt` rows model the Kafka payloads produced by `LogCollector`. `OnlineJoiner` models the step that joins those logs with user, item, and context features to produce labeled samples. `ExperienceCollector` groups those point samples back into ranked recommendation-list experiences keyed by user and request/list ID, which is the shape used by listwise online and offline training. The `online_features.txt` rows model the low-latency aggregates the Flink job writes into Redis (`user:<id>:recent_movies`, engagement counters, `topk:last_hour`). `OnlineRecommendationService` blends these real-time signals with offline embedding-based recall at request time.
+
+**Data processing contracts:**
+
+- `EventSemantics` is the shared normalization and label policy for `LogCollector` and `OnlineJoiner`: impressions/exposures label `0`, clicks or meaningful views label `1`, likes/high ratings label `2`, and orders/purchases label `3`.
+- `LogCollector` sanitizes feature maps before emitting Kafka-ready JSON: blank keys and null values are dropped, keys/values are trimmed, and output order is deterministic.
+- `OnlineJoiner` namespaces features as `user.*`, `item.*`, `context.*`, and `event.*`, then produces immutable joined samples.
+- `ExperienceCollector` groups by `userId + event.requestId`, sorts by `event.rank`, and compacts duplicate movie feedback within the same request by keeping the strongest label.
 
 **Offline embedding path:**
 
@@ -843,6 +855,9 @@ movie_embeddings.txt / user_embeddings.txt (classpath)
 
 **Online serving (`com.recsys.streaming`):**
 
+- `LogCollector` — validates app behavior logs, sanitizes feature maps, and normalizes them into the JSON shape consumed by Kafka/Flink.
+- `OnlineJoiner` — joins behavior logs with user/item/context features, applies shared label semantics, and produces immutable labeled samples for online/offline model updates.
+- `ExperienceCollector` — groups joined samples by `userId + event.requestId`, orders items by displayed rank, compacts duplicate item feedback, and emits list-shaped recommendation experiences.
 - `OnlineRecommendationEngine` — scores candidates from per-user recent-watch history (Redis) and trending Top-K (Redis sorted set). Accepts `window` (`last_hour`, `last_day`, `last_month`).
 - `OnlineRecommendationService` — orchestrates `OnlineRecommendationEngine` + `CandidateGenerator.byEmbedding`. Blends normalized rank scores (`ONLINE_WEIGHT=1.0`, `MODEL_WEIGHT=0.5`), excludes recently-watched movies, and falls back to online-only for cold-start users. Returns a `strategy` field in the result.
 - `OnlineFeatureStreamingJob` (profile `streaming-flink`) — Flink 1.18 job that reads `MovieEvent` records from Kafka or a local file, then writes per-user recent-movie lists, per-movie engagement metrics, and global top-K to Redis.

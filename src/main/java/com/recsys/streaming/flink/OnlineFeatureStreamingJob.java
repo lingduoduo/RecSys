@@ -65,6 +65,7 @@ public final class OnlineFeatureStreamingJob {
                                 .withTimestampAssigner((event, timestamp) -> event.eventTimeMillis));
 
         events
+                .filter(MovieEvent::updatesRecentHistory)
                 .keyBy(event -> event.userId)
                 .process(new RecentMoviesFunction(recentMovieLimit, userHistoryTtlSeconds))
                 .name("recent-movies")
@@ -72,7 +73,7 @@ public final class OnlineFeatureStreamingJob {
                 .name("redis-user-history-sink");
 
         events
-                .filter(event -> event.isView() || event.isLike())
+                .filter(event -> metricKind(event) != null)
                 .keyBy(event -> event.movieId + "|" + metricKind(event))
                 .window(TumblingProcessingTimeWindows.of(Time.seconds(windowSeconds)))
                 .aggregate(new CountAggregate(), new MovieMetricWindowFunction(windowLabel, metricTtlSeconds))
@@ -135,7 +136,22 @@ public final class OnlineFeatureStreamingJob {
     }
 
     private static String metricKind(MovieEvent event) {
-        return event.isLike() ? "likes_1h" : "views_1h";
+        if (event.isImpression()) {
+            return "impressions_1h";
+        }
+        if (event.isOrder()) {
+            return "orders_1h";
+        }
+        if (event.isLike()) {
+            return "likes_1h";
+        }
+        if (event.isClick()) {
+            return "clicks_1h";
+        }
+        if (event.isView()) {
+            return "views_1h";
+        }
+        return null;
     }
 
     static final class RecentMoviesFunction extends KeyedProcessFunction<Integer, MovieEvent, UserRecentMoviesUpdate> {

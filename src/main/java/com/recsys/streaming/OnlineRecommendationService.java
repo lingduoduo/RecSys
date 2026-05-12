@@ -33,13 +33,15 @@ public final class OnlineRecommendationService {
 
     public OnlineRecommendationResult recommend(OnlineRecommendationRequest request) {
         User user = requireUser(request.userId());
+        int k = Math.max(1, request.k());
+        int recallLimit = Math.max(k * 4, 12);
 
         // Online path: recent history + trending signals, fetched with headroom for blending.
         OnlineRecommendationEngine.OnlineRecommendationResult online =
-                onlineEngine.recommend(request.userId(), request.window(), request.k() * 4);
+                onlineEngine.recommend(request.userId(), request.window(), recallLimit);
 
         // Model path: embedding-based ANN recall.
-        List<Movie> modelCandidates = candidateGenerator.byEmbedding(request.userId(), request.k() * 4);
+        List<Movie> modelCandidates = candidateGenerator.byEmbedding(request.userId(), recallLimit);
 
         List<Movie> recommendations;
         String strategy;
@@ -47,11 +49,11 @@ public final class OnlineRecommendationService {
         if (modelCandidates.isEmpty()) {
             // No user embedding available: fall back to online signals only.
             List<Movie> onlineRecs = online.recommendations();
-            recommendations = onlineRecs.subList(0, Math.min(request.k(), onlineRecs.size()));
+            recommendations = onlineRecs.subList(0, Math.min(k, onlineRecs.size()));
             strategy = "online";
         } else {
             recommendations = blend(online.recommendations(), modelCandidates,
-                    online.recentMovies(), request.k());
+                    online.recentMovies(), k);
             strategy = "online+model";
         }
 
