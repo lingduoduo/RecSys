@@ -4,14 +4,19 @@ This streaming path is intentionally separate from the main Jetty movie API and 
 It shows an online or near-real-time recommendation path where:
 
 ```text
-Kafka -> Flink -> Redis ─┐
-                         ├─> OnlineRecommendationService -> online prediction server
-user embeddings (ANN) ───┘
+LogCollector -> Kafka -> OnlineJoiner -> ExperienceCollector -> training streams / HDFS
+                         |
+                         +-> Flink -> Redis ─┐
+                                             ├─> OnlineRecommendationService -> online prediction server
+user embeddings (ANN) ───────────────────────┘
 ```
 
 The streaming path uses:
 
+- `LogCollector` as the app/API boundary that validates behavior logs and emits Kafka-ready JSON lines
 - Kafka as the event ingress layer
+- `OnlineJoiner` as the sample builder that joins logs with user, item, and context features
+- `ExperienceCollector` as the list builder that groups joined samples into ranked recommendation experiences
 - Flink (`OnlineFeatureStreamingJob`) to write per-user history and Top-K trending into Redis
 - Redis as the online feature store
 - `OnlineRecommendationEngine` for real-time behavioral scoring
@@ -32,6 +37,9 @@ That keeps the streaming path runnable without coupling it to the model-artifact
 - `streaming/online-serving/data/movie_events.ndjson`
 - `streaming/online-serving/scripts/load_online_features.sh`
 - `streaming/online-serving/scripts/produce_movie_events.sh`
+- `src/main/java/com/recsys/streaming/LogCollector.java`
+- `src/main/java/com/recsys/streaming/OnlineJoiner.java`
+- `src/main/java/com/recsys/streaming/ExperienceCollector.java`
 - `src/main/java/com/recsys/streaming/*`
 - `src/main/java/com/recsys/streaming/flink/*`
 
@@ -54,6 +62,19 @@ sh streaming/online-serving/scripts/produce_movie_events.sh
 ```
 
 That publishes the bundled event stream from `movie_events.ndjson` into Kafka topic `movie_events`.
+In a real app, `LogCollector` is the counterpart to this replay script: product surfaces call it with
+impression, click, view, like, or order logs, then its JSON output is written to Kafka.
+`OnlineJoiner` is the next step: it combines those behavior records with user, item, and request context
+features and assigns labels for online and offline training streams.
+`ExperienceCollector` then groups joined point samples by `event.requestId`, restores item order from
+`event.rank`, and emits one list-shaped training record per recommendation request.
+
+Processing guarantees:
+
+- event types and training labels are centralized in `EventSemantics`
+- feature maps are trimmed, null-safe, and deterministic before they are joined
+- joined sample features are namespaced as `user.*`, `item.*`, `context.*`, and `event.*`
+- recommendation experiences are grouped by `userId + event.requestId` and duplicate movie feedback keeps the strongest label
 
 ## Run The Flink Job
 
@@ -91,9 +112,16 @@ mvn -Pstreaming-flink exec:java \
 What the job writes to Redis:
 
 - `user:<id>:recent_movies`
+- `movie:<id>:impressions_1h`
 - `movie:<id>:views_1h`
+- `movie:<id>:clicks_1h`
 - `movie:<id>:likes_1h`
+- `movie:<id>:orders_1h`
 - `topk:last_hour`
+
+The Flink job treats exposure/impression records as metric and label input, but it does not let them update
+`user:<id>:recent_movies`. Recent history is reserved for stronger feedback such as click, like, order, or a
+view with meaningful watch time, matching the Online Joiner split between raw logs and labeled samples.
 
 ## Load Online Features Into Redis
 

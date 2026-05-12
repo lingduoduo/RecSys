@@ -17,6 +17,7 @@ import static org.mockito.ArgumentMatchers.anyInt;
 import static org.mockito.ArgumentMatchers.anyString;
 import static org.mockito.ArgumentMatchers.eq;
 import static org.mockito.Mockito.mock;
+import static org.mockito.Mockito.verify;
 import static org.mockito.Mockito.when;
 
 class OnlineRecommendationServiceTest {
@@ -72,6 +73,18 @@ class OnlineRecommendationServiceTest {
 
         assertEquals("online", result.strategy());
         assertEquals(2, result.recommendations().size());
+    }
+
+    @Test
+    void fetchesRecallHeadroomForSmallRecommendationRequests() {
+        stubEngine(List.of(), List.of(M3), List.of(M3, M4, M5));
+        when(candidateGenerator.byEmbedding(eq(USER.userId()), anyInt()))
+                .thenReturn(List.of());
+
+        service.recommend(new OnlineRecommendationRequest(USER.userId(), "last_hour", 1));
+
+        verify(engine).recommend(USER.userId(), "last_hour", 12);
+        verify(candidateGenerator).byEmbedding(USER.userId(), 12);
     }
 
     @Test
