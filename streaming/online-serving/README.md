@@ -4,7 +4,9 @@ This streaming path is intentionally separate from the main Jetty movie API and 
 It shows an online or near-real-time recommendation path where:
 
 ```text
-LogCollector -> Kafka -> OnlineJoiner -> ExperienceCollector -> training streams / HDFS
+LogCollector -> Kafka -> OnlineJoiner -> ExperienceCollector -> OnlineLearner -> serving parameters
+                                        |
+                                        +-> training streams / HDFS
                          |
                          +-> Flink -> Redis ─┐
                                              ├─> OnlineRecommendationService -> online prediction server
@@ -17,6 +19,7 @@ The streaming path uses:
 - Kafka as the event ingress layer
 - `OnlineJoiner` as the sample builder that joins logs with user, item, and context features
 - `ExperienceCollector` as the list builder that groups joined samples into ranked recommendation experiences
+- `OnlineLearner` as the online-training loop that updates lightweight serving parameters from experiences
 - Flink (`OnlineFeatureStreamingJob`) to write per-user history and Top-K trending into Redis
 - Redis as the online feature store
 - `OnlineRecommendationEngine` for real-time behavioral scoring
@@ -40,6 +43,7 @@ That keeps the streaming path runnable without coupling it to the model-artifact
 - `src/main/java/com/recsys/streaming/LogCollector.java`
 - `src/main/java/com/recsys/streaming/OnlineJoiner.java`
 - `src/main/java/com/recsys/streaming/ExperienceCollector.java`
+- `src/main/java/com/recsys/streaming/OnlineLearner.java`
 - `src/main/java/com/recsys/streaming/*`
 - `src/main/java/com/recsys/streaming/flink/*`
 
@@ -68,6 +72,8 @@ impression, click, view, like, or order logs, then its JSON output is written to
 features and assigns labels for online and offline training streams.
 `ExperienceCollector` then groups joined point samples by `event.requestId`, restores item order from
 `event.rank`, and emits one list-shaped training record per recommendation request.
+`OnlineLearner` consumes those experiences and updates bounded in-memory item-bias parameters used during
+serving-time ranking. This is online learning over stream samples, not PyTorch/ONNX retraining.
 
 Processing guarantees:
 
@@ -75,6 +81,7 @@ Processing guarantees:
 - feature maps are trimmed, null-safe, and deterministic before they are joined
 - joined sample features are namespaced as `user.*`, `item.*`, `context.*`, and `event.*`
 - recommendation experiences are grouped by `userId + event.requestId` and duplicate movie feedback keeps the strongest label
+- online learning updates small serving parameters continuously, while offline embedding/model artifacts remain on the batch training path
 
 ## Run The Flink Job
 
@@ -161,8 +168,9 @@ ONLINE_DEMO_PORT=7010 REDIS_HOST=localhost REDIS_PORT=6379 \
 |---|---|---|
 | `OnlineRecommendationEngine` | Real-time: recent-history similarity + trending rank | 1.0 |
 | `CandidateGenerator.byEmbedding` | Offline: ANN search on user-tower embeddings | 0.5 |
+| `OnlineLearner` | Online: learned item-bias adjustment from recent experiences | dynamic |
 
-Each source contributes a normalized rank score `weight × (n − rank) / n`. Movies that appear in both lists accumulate scores from both and surface at the top. Recently-watched movies are excluded from the final output.
+Each recall source contributes a normalized rank score `weight × (n − rank) / n`; learned online item-bias parameters are then added as small score adjustments. Movies that appear in multiple paths accumulate scores and surface at the top. Recently-watched movies are excluded from the final output.
 
 When no embedding exists for the user (cold-start), the service falls back to the online path only. The response includes a `strategy` field (`"online+model"` or `"online"`) so callers can observe which signals fired.
 

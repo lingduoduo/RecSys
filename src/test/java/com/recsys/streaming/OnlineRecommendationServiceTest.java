@@ -8,6 +8,7 @@ import org.junit.jupiter.api.BeforeEach;
 import org.junit.jupiter.api.Test;
 
 import java.util.List;
+import java.util.Map;
 
 import static org.junit.jupiter.api.Assertions.assertEquals;
 import static org.junit.jupiter.api.Assertions.assertFalse;
@@ -34,13 +35,15 @@ class OnlineRecommendationServiceTest {
     private OnlineRecommendationEngine engine;
     private CandidateGenerator candidateGenerator;
     private OnlineRecommendationService service;
+    private OnlineLearner onlineLearner;
 
     @BeforeEach
     void setUp() {
         dataManager      = mock(DataManager.class);
         engine           = mock(OnlineRecommendationEngine.class);
         candidateGenerator = mock(CandidateGenerator.class);
-        service          = new OnlineRecommendationService(dataManager, engine, candidateGenerator);
+        onlineLearner = new OnlineLearner();
+        service          = new OnlineRecommendationService(dataManager, engine, candidateGenerator, onlineLearner);
 
         when(dataManager.getUserById(USER.userId())).thenReturn(USER);
         when(dataManager.getUserById(999)).thenReturn(null);
@@ -98,6 +101,26 @@ class OnlineRecommendationServiceTest {
 
         assertFalse(result.recommendations().stream().anyMatch(m -> m.id() == M3.id()),
                 "recently-watched movie must be excluded");
+    }
+
+    @Test
+    void learnedOnlineParametersCanInfluenceBlendedRanking() {
+        onlineLearner = new OnlineLearner(2.0, 0.0, 2.0);
+        service = new OnlineRecommendationService(dataManager, engine, candidateGenerator, onlineLearner);
+        stubEngine(List.of(), List.of(), List.of(M4, M3));
+        when(candidateGenerator.byEmbedding(eq(USER.userId()), anyInt()))
+                .thenReturn(List.of(M4, M3));
+        onlineLearner.learn(new ExperienceCollector.RecommendationExperience(
+                "req-1",
+                USER.userId(),
+                100L,
+                3,
+                List.of(new ExperienceCollector.ItemFeedback(M3.id(), 1, 3, "order", Map.of()))
+        ));
+
+        OnlineRecommendationResult result = service.recommend(new OnlineRecommendationRequest(USER.userId(), "last_hour", 2));
+
+        assertEquals(M3.id(), result.recommendations().get(0).id());
     }
 
     @Test
