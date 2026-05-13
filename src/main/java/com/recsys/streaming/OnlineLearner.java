@@ -9,7 +9,9 @@ import redis.clients.jedis.resps.ScanResult;
 import java.util.Collections;
 import java.util.Comparator;
 import java.util.HashMap;
+import java.util.List;
 import java.util.Map;
+import java.util.PriorityQueue;
 import java.util.concurrent.ConcurrentHashMap;
 
 public final class OnlineLearner {
@@ -119,15 +121,20 @@ public final class OnlineLearner {
             String cursor = "0";
             do {
                 ScanResult<String> res = jedis.scan(cursor, scanParams);
-                for (String key : res.getResult()) {
-                    String val = jedis.get(key);
-                    if (val == null || val.isBlank()) continue;
-                    int sep = key.lastIndexOf(':');
-                    if (sep < 0 || sep + 1 >= key.length()) continue;
-                    try {
-                        int movieId = Integer.parseInt(key.substring(sep + 1));
-                        itemBias.put(movieId, Double.parseDouble(val));
-                    } catch (NumberFormatException ignore) {}
+                List<String> keys = res.getResult();
+                if (!keys.isEmpty()) {
+                    List<String> vals = jedis.mget(keys.toArray(new String[0]));
+                    for (int i = 0; i < keys.size(); i++) {
+                        String val = vals.get(i);
+                        if (val == null || val.isBlank()) continue;
+                        String key = keys.get(i);
+                        int sep = key.lastIndexOf(':');
+                        if (sep < 0 || sep + 1 >= key.length()) continue;
+                        try {
+                            int movieId = Integer.parseInt(key.substring(sep + 1));
+                            itemBias.put(movieId, Double.parseDouble(val));
+                        } catch (NumberFormatException ignore) {}
+                    }
                 }
                 cursor = res.getCursor();
             } while (!"0".equals(cursor));
@@ -137,13 +144,18 @@ public final class OnlineLearner {
     private void evictIfNeeded() {
         int size = itemBias.size();
         if (size <= maxItemCount) return;
-        // Evict the 10% of entries with the smallest |bias| — they contribute least to scoring.
+        // Evict down to 90% of maxItemCount to build headroom and reduce eviction frequency.
         int toEvict = size - maxItemCount + maxItemCount / 10;
-        itemBias.entrySet().stream()
-                .sorted(Comparator.comparingDouble(e -> Math.abs(e.getValue())))
-                .limit(toEvict)
-                .map(Map.Entry::getKey)
-                .forEach(itemBias::remove);
+        PriorityQueue<Map.Entry<Integer, Double>> heap = new PriorityQueue<>(
+                toEvict + 1,
+                Comparator.comparingDouble((Map.Entry<Integer, Double> e) -> Math.abs(e.getValue())).reversed());
+        for (Map.Entry<Integer, Double> e : itemBias.entrySet()) {
+            heap.offer(e);
+            if (heap.size() > toEvict) {
+                heap.poll();
+            }
+        }
+        heap.forEach(e -> itemBias.remove(e.getKey()));
     }
 
     private double updateItemBias(int movieId, double target) {
