@@ -67,7 +67,6 @@ public final class LogCollector {
         if (features == null || features.isEmpty()) {
             return Map.of();
         }
-        // TreeMap provides sorted order; wrapping it avoids a second LinkedHashMap copy.
         Map<String, String> sorted = new TreeMap<>();
         features.forEach((key, value) -> {
             if (key == null || key.isBlank() || value == null) {
