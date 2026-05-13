@@ -5,8 +5,6 @@ import com.recsys.features.VectorMath;
 import com.recsys.models.Movie;
 import com.recsys.models.Rating;
 import com.recsys.modelbased.model.dto.ScoredItem;
-import java.util.ArrayList;
-import java.util.Comparator;
 import java.util.HashSet;
 import java.util.LinkedHashMap;
 import java.util.LinkedHashSet;
@@ -41,7 +39,7 @@ public class RetrievalService {
     }
 
     private List<ScoredItem> retrievalCandidatesByEmbedding(float[] userEmbedding, Set<String> candidateItemIds, int recallSize) {
-        PriorityQueue<ScoredItem> best = new PriorityQueue<>(Comparator.comparingDouble(ScoredItem::score));
+        PriorityQueue<ScoredItem> best = ScoredItems.minHeap();
 
         Map<String, float[]> itemEmbeddings = artifactService.getItemEmbeddings();
         for (String itemId : candidateItemIds) {
@@ -50,15 +48,10 @@ public class RetrievalService {
 
             double score = VectorMath.innerProduct(userEmbedding, itemEmbedding);
             if (score == Double.NEGATIVE_INFINITY) continue;
-            if (best.size() < recallSize) {
-                best.offer(new ScoredItem(itemId, score));
-            } else if (score > best.peek().score()) {
-                best.poll();
-                best.offer(new ScoredItem(itemId, score));
-            }
+            ScoredItems.keepTopK(best, new ScoredItem(itemId, score), recallSize);
         }
 
-        return sortedDescending(best);
+        return ScoredItems.descending(best);
     }
 
     private List<ScoredItem> retrievalCandidatesByMetadata(Integer userId, Set<String> candidateItemIds, int recallSize) {
@@ -129,12 +122,6 @@ public class RetrievalService {
             recalled.merge(itemId, new ScoredItem(itemId, score),
                     (existing, incoming) -> incoming.score() > existing.score() ? incoming : existing);
         }
-    }
-
-    private static List<ScoredItem> sortedDescending(PriorityQueue<ScoredItem> best) {
-        List<ScoredItem> results = new ArrayList<>(best);
-        results.sort(Comparator.comparingDouble(ScoredItem::score).reversed());
-        return results;
     }
 
 }

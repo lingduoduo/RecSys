@@ -3,8 +3,6 @@ package com.recsys.modelbased.model.service;
 import ai.onnxruntime.*;
 
 import java.nio.LongBuffer;
-import java.util.ArrayList;
-import java.util.Comparator;
 import java.util.HashSet;
 import java.util.List;
 import java.util.Map;
@@ -83,25 +81,17 @@ public class UserTowerInferenceService {
         }
 
         Set<String> seen = new HashSet<>();
-        PriorityQueue<ScoredItem> best = new PriorityQueue<>(Comparator.comparingDouble(ScoredItem::score));
+        PriorityQueue<ScoredItem> best = ScoredItems.minHeap();
         for (String itemId : candidateItemIds) {
             if (!seen.add(itemId)) continue;
             Long encodedItemId = featureEncoder.encodeItemId(itemId);
             if (encodedItemId == null) continue;
 
             double score = score(features, encodedItemId);
-            ScoredItem scored = new ScoredItem(itemId, score);
-            if (best.size() < k) {
-                best.offer(scored);
-            } else if (score > best.peek().score()) {
-                best.poll();
-                best.offer(scored);
-            }
+            ScoredItems.keepTopK(best, new ScoredItem(itemId, score), k);
         }
 
-        List<ScoredItem> result = new ArrayList<>(best);
-        result.sort(Comparator.comparingDouble(ScoredItem::score).reversed());
-        return result;
+        return ScoredItems.descending(best);
     }
 
     public void close() throws OrtException {
