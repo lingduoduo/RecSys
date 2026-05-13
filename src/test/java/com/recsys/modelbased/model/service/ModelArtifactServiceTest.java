@@ -21,7 +21,7 @@ class ModelArtifactServiceTest {
 
     @Test
     void modelVersion_matchesBundledConfig() {
-        assertThat(service.getModelVersion()).isEqualTo("demo-model-ratings-v1");
+        assertThat(service.getModelVersion()).isEqualTo("dssm-demo-v1");
     }
 
     @Test
@@ -29,8 +29,8 @@ class ModelArtifactServiceTest {
         ModelArtifactService testVariant = new ModelArtifactService(locator, "test");
         testVariant.loadArtifacts();
 
-        assertThat(testVariant.getModelVersion()).isEqualTo("demo-model-ratings-test-v1");
-        assertThat(testVariant.getItemEmbeddings()).containsKey("1");
+        assertThat(testVariant.getModelVersion()).isEqualTo("dssm-demo-test-v1");
+        assertThat(testVariant.getItemVocab()).containsKey("1");
     }
 
     @Test
@@ -44,15 +44,12 @@ class ModelArtifactServiceTest {
 
     @Test
     void itemEmbeddings_loadedWithCorrectDimension() {
-        var embeddings = service.getItemEmbeddings();
-        assertThat(embeddings).isNotEmpty();
-        embeddings.values().forEach(vec ->
-                assertThat(vec).hasSize(16));
+        assertThat(service.getItemEmbeddings()).isEmpty();
     }
 
     @Test
-    void itemEmbeddings_containsKnownItems() {
-        assertThat(service.getItemEmbeddings()).containsKey("1");
+    void itemVocab_containsKnownItems() {
+        assertThat(service.getItemVocab()).containsKey("1");
     }
 
     @Test

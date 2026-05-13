@@ -54,7 +54,8 @@ class ModelArtifactServiceRedisTest {
                 {
                   "model_version": "demo-model-ratings-v1",
                   "embedding_dim": 16,
-                  "user_vocab": { "__UNK__": 0, "123": 1 }
+                  "user_vocab": { "__UNK__": 0, "123": 1 },
+                  "item_vocab": { "1": 0, "2": 1 }
                 }
                 """);
     }

@@ -162,7 +162,7 @@ public class InferenceMetricsService {
         if (variant == null || variant.isBlank()) {
             return "unknown";
         }
-        return variant;
+        return variant.trim();
     }
 
     public record Snapshot(

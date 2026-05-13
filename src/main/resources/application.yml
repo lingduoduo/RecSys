@@ -19,6 +19,8 @@ recsys:
   model:
     # Variant-aware model artifacts: classpath:artifacts/model/<variant>/... (default variant: training)
     artifacts-dir: ${RECSYS_MODEL_ARTIFACTS_DIR:}
+    # ONNX model file resolved from the variant artifacts directory, then classpath root.
+    file: ${RECSYS_MODEL_FILE:dssm_model.onnx}
     # Item embeddings can stay in artifact JSON for local demos, or be stripped
     # from the model package and loaded from Redis in production.
     item-embeddings-source: ${RECSYS_MODEL_ITEM_EMBEDDINGS_SOURCE:classpath}

@@ -21,7 +21,7 @@ public class ABTestConfig {
     private String bucketBVariant = "training";
 
     @NotBlank
-    private String defaultVariant = "training";
+    private volatile String defaultVariant = "training";
 
     @NotBlank
     private String layerName = "default";

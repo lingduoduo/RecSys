@@ -12,6 +12,7 @@ import static org.assertj.core.api.Assertions.assertThat;
 import static org.assertj.core.api.Assertions.assertThatThrownBy;
 import static org.mockito.ArgumentMatchers.any;
 import static org.mockito.ArgumentMatchers.anyInt;
+import static org.mockito.ArgumentMatchers.eq;
 import static org.mockito.Mockito.mock;
 import static org.mockito.Mockito.when;
 
@@ -20,8 +21,6 @@ class RecommendationServiceTest {
     private CandidateSelectionService candidateSelectionService;
     private FeatureEncoder featureEncoder;
     private UserTowerInferenceService inferenceService;
-    private RetrievalService retrievalService;
-    private RankingService rankingService;
     private ModelArtifactService artifactService;
     private ModelRuntimeProvider modelRuntimeProvider;
     private ABTestService abTestService;
@@ -33,8 +32,6 @@ class RecommendationServiceTest {
         candidateSelectionService = mock(CandidateSelectionService.class);
         featureEncoder = mock(FeatureEncoder.class);
         inferenceService = mock(UserTowerInferenceService.class);
-        retrievalService = mock(RetrievalService.class);
-        rankingService = mock(RankingService.class);
         artifactService = mock(ModelArtifactService.class);
         modelRuntimeProvider = mock(ModelRuntimeProvider.class);
         abTestService = mock(ABTestService.class);
@@ -46,9 +43,7 @@ class RecommendationServiceTest {
                 artifactService,
                 candidateSelectionService,
                 featureEncoder,
-                inferenceService,
-                retrievalService,
-                rankingService
+                inferenceService
         );
         when(modelRuntimeProvider.getRuntime(any())).thenReturn(runtime);
         service = new RecommendationService(modelRuntimeProvider, abTestService);
@@ -89,14 +84,11 @@ class RecommendationServiceTest {
     @Test
     void recommend_validRequest_returnsRankedItems() {
         var encoded = new FeatureEncoder.EncodedFeatures(1L);
-        float[] userEmb = {1.0f, 0.0f};
         var ranked = List.of(new ScoredItem("1", 0.95), new ScoredItem("3", 0.72));
 
         when(featureEncoder.encode(any())).thenReturn(encoded);
-        when(inferenceService.inferUserEmbedding(encoded)).thenReturn(userEmb);
         when(candidateSelectionService.selectCandidates(any(), any())).thenReturn(Set.of("1", "2", "3"));
-        when(retrievalService.recall(any(), any(), any(), anyInt())).thenReturn(ranked);
-        when(rankingService.rank(any(), any(), anyInt())).thenReturn(ranked);
+        when(inferenceService.scoreCandidates(eq(encoded), eq(featureEncoder), any(), anyInt())).thenReturn(ranked);
         when(artifactService.getModelVersion()).thenReturn("v1");
 
         var response = service.recommend(request("123", 2));
@@ -111,10 +103,8 @@ class RecommendationServiceTest {
     void recommend_excludeItemIds_passedToCandidateSelection() {
         var encoded = new FeatureEncoder.EncodedFeatures(1L);
         when(featureEncoder.encode(any())).thenReturn(encoded);
-        when(inferenceService.inferUserEmbedding(any())).thenReturn(new float[]{1.0f});
         when(candidateSelectionService.selectCandidates(any(), any())).thenReturn(Set.of());
-        when(retrievalService.recall(any(), any(), any(), anyInt())).thenReturn(List.of());
-        when(rankingService.rank(any(), any(), anyInt())).thenReturn(List.of());
+        when(inferenceService.scoreCandidates(eq(encoded), eq(featureEncoder), any(), anyInt())).thenReturn(List.of());
         when(artifactService.getModelVersion()).thenReturn("v1");
 
         var req = request("123", 5);
@@ -129,10 +119,8 @@ class RecommendationServiceTest {
     void recommend_nonNumericUserId_treatedAsUnknown() {
         var encoded = new FeatureEncoder.EncodedFeatures(0L);
         when(featureEncoder.encode(any())).thenReturn(encoded);
-        when(inferenceService.inferUserEmbedding(any())).thenReturn(new float[]{0.0f});
         when(candidateSelectionService.selectCandidates(any(), any())).thenReturn(Set.of());
-        when(retrievalService.recall(any(), any(), any(), anyInt())).thenReturn(List.of());
-        when(rankingService.rank(any(), any(), anyInt())).thenReturn(List.of());
+        when(inferenceService.scoreCandidates(eq(encoded), eq(featureEncoder), any(), anyInt())).thenReturn(List.of());
         when(artifactService.getModelVersion()).thenReturn("v1");
 
         // non-numeric userId should not throw — null numericUserId is passed to candidate selection

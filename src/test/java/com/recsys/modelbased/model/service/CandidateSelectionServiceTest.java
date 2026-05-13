@@ -3,7 +3,6 @@ package com.recsys.modelbased.model.service;
 import org.junit.jupiter.api.BeforeEach;
 import org.junit.jupiter.api.Test;
 
-import java.util.Map;
 import java.util.Set;
 
 import static org.assertj.core.api.Assertions.assertThat;
@@ -18,13 +17,7 @@ class CandidateSelectionServiceTest {
     @BeforeEach
     void setUp() {
         var artifactService = mock(ModelArtifactService.class);
-        when(artifactService.getItemEmbeddings()).thenReturn(Map.of(
-                "1", new float[]{1.0f},
-                "2", new float[]{1.0f},
-                "3", new float[]{1.0f},
-                "4", new float[]{1.0f},
-                "5", new float[]{1.0f}
-        ));
+        when(artifactService.getAvailableItemIds()).thenReturn(Set.of("1", "2", "3", "4", "5"));
         service = new CandidateSelectionService(artifactService);
     }
 

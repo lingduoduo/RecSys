@@ -8,8 +8,6 @@ import static org.assertj.core.api.Assertions.assertThat;
 
 class UserTowerInferenceServiceTest {
 
-    private static final int EMBEDDING_DIM = 16;
-
     private UserTowerInferenceService service;
 
     @BeforeEach
@@ -29,28 +27,28 @@ class UserTowerInferenceServiceTest {
     }
 
     @Test
-    void infer_knownUserIndex_returnsEmbeddingOfCorrectDimension() {
-        float[] embedding = service.inferUserEmbedding(new FeatureEncoder.EncodedFeatures(1L));
-        assertThat(embedding).hasSize(EMBEDDING_DIM);
+    void score_knownUserAndItem_returnsFiniteScore() {
+        double score = service.score(new FeatureEncoder.EncodedFeatures(1L), 1L);
+        assertThat(score).isFinite();
     }
 
     @Test
-    void infer_unknownUserIndex_returnsEmbeddingOfCorrectDimension() {
-        float[] embedding = service.inferUserEmbedding(new FeatureEncoder.EncodedFeatures(0L));
-        assertThat(embedding).hasSize(EMBEDDING_DIM);
+    void score_unknownUserIndex_returnsFiniteScore() {
+        double score = service.score(new FeatureEncoder.EncodedFeatures(0L), 1L);
+        assertThat(score).isFinite();
     }
 
     @Test
-    void infer_distinctUserIndices_produceDifferentEmbeddings() {
-        float[] emb1 = service.inferUserEmbedding(new FeatureEncoder.EncodedFeatures(1L));
-        float[] emb2 = service.inferUserEmbedding(new FeatureEncoder.EncodedFeatures(2L));
-        assertThat(emb1).isNotEqualTo(emb2);
+    void score_distinctItems_produceDifferentScores() {
+        double score1 = service.score(new FeatureEncoder.EncodedFeatures(1L), 1L);
+        double score2 = service.score(new FeatureEncoder.EncodedFeatures(1L), 2L);
+        assertThat(score1).isNotEqualTo(score2);
     }
 
     @Test
-    void infer_sameUserIndex_producesSameEmbedding() {
-        float[] emb1 = service.inferUserEmbedding(new FeatureEncoder.EncodedFeatures(1L));
-        float[] emb2 = service.inferUserEmbedding(new FeatureEncoder.EncodedFeatures(1L));
-        assertThat(emb1).isEqualTo(emb2);
+    void score_samePair_producesSameScore() {
+        double score1 = service.score(new FeatureEncoder.EncodedFeatures(1L), 1L);
+        double score2 = service.score(new FeatureEncoder.EncodedFeatures(1L), 1L);
+        assertThat(score1).isEqualTo(score2);
     }
 }

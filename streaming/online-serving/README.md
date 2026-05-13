@@ -203,9 +203,11 @@ Example response shape:
 
 This models the production split where:
 
-- offline jobs build durable embedding assets (user tower, item embeddings)
+- offline jobs build durable model assets such as PyTorch-exported compact ONNX, vocab/config metadata, and pretrained item embeddings
+- pretrained item embeddings are stored in Redis as key-value records, which keeps the online model artifact smaller and easier to deploy
 - Flink keeps short-lived behavioral features fresh in Redis
-- `OnlineRecommendationService` fuses both at request time
+- online learning updates fast-changing function parameters from streaming samples, such as blending weights, recency decay, trending boosts, exploration rates, and thresholds
+- `OnlineRecommendationService` fuses offline artifacts, online features, and learned serving parameters at request time
 
 ## Stop Infra
 

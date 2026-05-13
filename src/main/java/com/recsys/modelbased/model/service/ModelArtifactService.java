@@ -17,6 +17,7 @@ public class ModelArtifactService {
 
     private String modelVersion;
     private Map<String, Integer> userVocab = new HashMap<>();
+    private Map<String, Integer> itemVocab = new HashMap<>();
     private int embeddingDim;
     private Map<String, float[]> itemEmbeddings = Map.of();
 
@@ -28,7 +29,7 @@ public class ModelArtifactService {
                                 String variant,
                                 RedisEmbeddingStore redisItemEmbeddingStore) {
         this.artifactLocator = artifactLocator;
-        this.variant = variant == null ? "" : variant.trim();
+        this.variant = ModelVariants.trimOrEmpty(variant);
         this.redisItemEmbeddingStore = redisItemEmbeddingStore;
     }
 
@@ -47,6 +48,7 @@ public class ModelArtifactService {
             this.modelVersion = String.valueOf(config.getOrDefault("model_version", "unknown"));
             this.embeddingDim = readPositiveInt(config.get("embedding_dim"), "embedding_dim");
             this.userVocab = convertToIntMap(config.get("user_vocab"));
+            this.itemVocab = convertToIntMap(config.get("item_vocab"));
         } catch (IllegalStateException e) {
             throw new IllegalStateException("feature_config.json not found at "
                     + artifactLocator.describeModelLocation(variant, "feature_config.json")
@@ -72,9 +74,12 @@ public class ModelArtifactService {
             }
             this.itemEmbeddings = Collections.unmodifiableMap(map);
         } catch (IllegalStateException e) {
-            throw new IllegalStateException("item_embeddings.json not found at "
-                    + artifactLocator.describeModelLocation(variant, "item_embeddings.json")
-                    + ". Place model artifacts under src/main/resources/artifacts/model/<variant>/ or set recsys.model.artifacts-dir to an external model directory.", e);
+            if (itemVocab.isEmpty()) {
+                throw new IllegalStateException("item_embeddings.json not found at "
+                        + artifactLocator.describeModelLocation(variant, "item_embeddings.json")
+                        + ". Place model artifacts under src/main/resources/artifacts/model/<variant>/ or set recsys.model.artifacts-dir to an external model directory.", e);
+            }
+            this.itemEmbeddings = Map.of();
         }
     }
 
@@ -128,6 +133,17 @@ public class ModelArtifactService {
 
     public Map<String, Integer> getUserVocab() {
         return userVocab;
+    }
+
+    public Map<String, Integer> getItemVocab() {
+        return itemVocab;
+    }
+
+    public Set<String> getAvailableItemIds() {
+        if (!itemVocab.isEmpty()) {
+            return itemVocab.keySet();
+        }
+        return itemEmbeddings.keySet();
     }
 
     public Map<String, float[]> getItemEmbeddings() {

@@ -19,8 +19,8 @@ class ModelRuntimeProviderTest {
             ModelRuntime training = provider.getRuntime("training");
             ModelRuntime test = provider.getRuntime("test");
 
-            assertThat(training.artifactService().getModelVersion()).isEqualTo("demo-model-ratings-v1");
-            assertThat(test.artifactService().getModelVersion()).isEqualTo("demo-model-ratings-test-v1");
+            assertThat(training.artifactService().getModelVersion()).isEqualTo("dssm-demo-v1");
+            assertThat(test.artifactService().getModelVersion()).isEqualTo("dssm-demo-test-v1");
         } finally {
             provider.close();
         }
@@ -44,15 +44,40 @@ class ModelRuntimeProviderTest {
         }
     }
 
+    @Test
+    void getRuntime_usesConfiguredModelFile(@TempDir Path tmp) throws Exception {
+        writeVariantArtifacts(tmp, "training", "demo-training-v1", "configured_model.onnx");
+
+        ModelRuntimeProvider provider = new ModelRuntimeProvider(
+                new ModelArtifactLocator(tmp.toString(), ""),
+                new com.recsys.modelbased.model.config.ABTestConfig(),
+                "configured_model.onnx",
+                "classpath",
+                "localhost",
+                6379,
+                "i2vEmb");
+        try {
+            ModelRuntime training = provider.getRuntime("training");
+
+            assertThat(training.artifactService().getModelVersion()).isEqualTo("demo-training-v1");
+            assertThat(training.inferenceService().isReady()).isTrue();
+        } finally {
+            provider.close();
+        }
+    }
+
     private static void writeVariantArtifacts(Path root, String variant, String modelVersion) throws IOException {
+        writeVariantArtifacts(root, variant, modelVersion, "dssm_model.onnx");
+    }
+
+    private static void writeVariantArtifacts(Path root, String variant, String modelVersion, String modelFile) throws IOException {
         Path variantDir = Files.createDirectories(root.resolve(variant));
         ModelArtifactLocator bundled = new ModelArtifactLocator("", "");
 
-        copyBundledArtifact(bundled, "user_tower.onnx", variantDir.resolve("user_tower.onnx"));
-        copyBundledArtifact(bundled, "item_embeddings.json", variantDir.resolve("item_embeddings.json"));
+        copyBundledArtifact(bundled, "dssm_model.onnx", variantDir.resolve(modelFile));
 
         try (InputStream is = bundled.openModel("feature_config.json")) {
-            String config = new String(is.readAllBytes()).replace("demo-model-ratings-v1", modelVersion);
+            String config = new String(is.readAllBytes()).replace("dssm-demo-v1", modelVersion);
             Files.writeString(variantDir.resolve("feature_config.json"), config);
         }
     }

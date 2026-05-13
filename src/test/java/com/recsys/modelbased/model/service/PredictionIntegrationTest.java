@@ -14,7 +14,7 @@ import static org.assertj.core.api.Assertions.assertThatThrownBy;
 
 /**
  * End-to-end smoke test against the bundled classpath artifacts.
- * Exercises the full pipeline: ONNX inference → retrieval → ranking.
+ * Exercises the full pipeline: candidate selection → DSSM ONNX scoring.
  */
 @TestInstance(TestInstance.Lifecycle.PER_CLASS)
 class PredictionIntegrationTest {
@@ -41,7 +41,7 @@ class PredictionIntegrationTest {
         RecommendResponse response = recommend("123", 5);
 
         assertThat(response.userId()).isEqualTo("123");
-        assertThat(response.modelVersion()).isEqualTo("demo-model-ratings-v1");
+        assertThat(response.modelVersion()).isEqualTo("dssm-demo-v1");
         assertThat(response.recommendations()).isNotEmpty();
     }
 
