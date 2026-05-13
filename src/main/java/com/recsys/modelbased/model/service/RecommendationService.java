@@ -37,18 +37,19 @@ public class RecommendationService {
         ModelRuntime runtime = modelRuntimeProvider.getRuntime(assignment.variant());
 
         FeatureEncoder.EncodedFeatures encoded = runtime.featureEncoder().encode(request);
-        float[] userEmbedding = runtime.inferenceService().inferUserEmbedding(encoded);
-
         Set<String> excluded = new HashSet<>(request.getExcludeItemIds());
         Integer numericUserId = parseUserId(request.getUserId());
         Set<String> candidates = runtime.candidateSelectionService().selectCandidates(numericUserId, excluded);
-        int recallSize = Math.min(MAX_RECALL_SIZE, request.getK() * RECALL_MULTIPLIER);
-        List<ScoredItem> recalled = runtime.retrievalService().recall(userEmbedding, numericUserId, candidates, recallSize);
-        List<ScoredItem> items = runtime.rankingService().rank(userEmbedding, recalled, request.getK());
+        int scoringSize = Math.min(MAX_RECALL_SIZE, Math.max(request.getK(), request.getK() * RECALL_MULTIPLIER));
+        List<ScoredItem> items = runtime.inferenceService()
+                .scoreCandidates(encoded, runtime.featureEncoder(), candidates, scoringSize)
+                .stream()
+                .limit(request.getK())
+                .toList();
 
         return new RecommendResponse(
                 request.getUserId(),
-                runtime.artifactService().getModelVersion(),
+                runtime.modelVersion(),
                 assignment.variant(),
                 items
         );

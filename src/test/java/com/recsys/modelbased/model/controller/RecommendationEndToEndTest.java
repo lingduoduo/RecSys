@@ -186,6 +186,48 @@ class RecommendationEndToEndTest {
         assertThat(((Number) training.get("totalRequests")).longValue()).isGreaterThan(0L);
     }
 
+    @Test
+    void versionController_preloadActivateAndRollback_managesActiveModelVariant() throws Exception {
+        var preloadResp = mockMvc.perform(post("/api/v1/model/versions/preload")
+                        .contentType(MediaType.APPLICATION_JSON)
+                        .content("{\"variant\":\"test\"}"))
+                .andReturn()
+                .getResponse();
+
+        assertThat(preloadResp.getStatus()).isEqualTo(HttpStatus.OK.value());
+        var preloaded = readMap(preloadResp.getContentAsByteArray());
+        assertThat(preloaded).containsEntry("activeVariant", "training");
+
+        var activateResp = mockMvc.perform(post("/api/v1/model/versions/activate")
+                        .contentType(MediaType.APPLICATION_JSON)
+                        .content("{\"variant\":\"test\"}"))
+                .andReturn()
+                .getResponse();
+
+        assertThat(activateResp.getStatus()).isEqualTo(HttpStatus.OK.value());
+        var activated = readMap(activateResp.getContentAsByteArray());
+        assertThat(activated).containsEntry("activeVariant", "test");
+        assertThat(activated).containsEntry("previousActiveVariant", "training");
+
+        var recommendResp = mockMvc.perform(post("/api/v1/recommend")
+                        .contentType(MediaType.APPLICATION_JSON)
+                        .content(objectMapper.writeValueAsBytes(request("123", 3))))
+                .andReturn()
+                .getResponse();
+        var recommendBody = readBody(recommendResp.getContentAsByteArray(), RecommendResponse.class);
+        assertThat(recommendBody.abTestVariant()).isEqualTo("test");
+        assertThat(recommendBody.modelVersion()).isEqualTo(modelRuntimeProvider.getModelVersion("test"));
+
+        var rollbackResp = mockMvc.perform(post("/api/v1/model/versions/rollback"))
+                .andReturn()
+                .getResponse();
+
+        assertThat(rollbackResp.getStatus()).isEqualTo(HttpStatus.OK.value());
+        assertThat(readMap(rollbackResp.getContentAsByteArray()))
+                .containsEntry("activeVariant", "training")
+                .containsEntry("previousActiveVariant", "test");
+    }
+
     // ── helper ────────────────────────────────────────────────────────────────
 
     private static RecommendRequest request(String userId, int k) {

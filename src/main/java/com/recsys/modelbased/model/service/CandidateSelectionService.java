@@ -21,7 +21,7 @@ public class CandidateSelectionService {
     }
 
     public Set<String> selectCandidates(Integer numericUserId, Set<String> excludedItemIds) {
-        Set<String> availableItems = artifactService.getItemEmbeddings().keySet();
+        Set<String> availableItems = artifactService.getAvailableItemIds();
         Set<String> excluded = excludedItemIds == null ? Set.of() : excludedItemIds;
         Set<String> candidates = new LinkedHashSet<>();
 

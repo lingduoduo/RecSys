@@ -5,6 +5,7 @@ import com.recsys.features.RedisEmbeddingStore;
 import com.recsys.modelbased.model.config.ABTestConfig;
 import jakarta.annotation.PostConstruct;
 import jakarta.annotation.PreDestroy;
+import org.springframework.beans.factory.annotation.Autowired;
 import org.springframework.beans.factory.annotation.Value;
 import org.slf4j.Logger;
 import org.slf4j.LoggerFactory;
@@ -16,15 +17,16 @@ import java.util.LinkedHashSet;
 import java.util.Map;
 import java.util.Set;
 import java.util.concurrent.ConcurrentHashMap;
+import java.util.stream.Collectors;
 
 @Service
 public class ModelRuntimeProvider {
 
     private static final Logger log = LoggerFactory.getLogger(ModelRuntimeProvider.class);
-    private static final String DEFAULT_VARIANT = ModelArtifactLocator.DEFAULT_VARIANT;
 
     private final ModelArtifactLocator artifactLocator;
     private final ABTestConfig abTestConfig;
+    private final String modelFile;
     private final String itemEmbeddingsSource;
     private final String redisHost;
     private final int redisPort;
@@ -33,17 +35,20 @@ public class ModelRuntimeProvider {
     private JedisPool redisItemEmbeddingPool;
 
     public ModelRuntimeProvider(ModelArtifactLocator artifactLocator, ABTestConfig abTestConfig) {
-        this(artifactLocator, abTestConfig, "classpath", "localhost", 6379, "i2vEmb");
+        this(artifactLocator, abTestConfig, "dssm_model.onnx", "classpath", "localhost", 6379, "i2vEmb");
     }
 
+    @Autowired
     public ModelRuntimeProvider(ModelArtifactLocator artifactLocator,
                                 ABTestConfig abTestConfig,
+                                @Value("${recsys.model.file:dssm_model.onnx}") String modelFile,
                                 @Value("${recsys.model.item-embeddings-source:classpath}") String itemEmbeddingsSource,
                                 @Value("${recsys.model.redis.host:localhost}") String redisHost,
                                 @Value("${recsys.model.redis.port:6379}") int redisPort,
                                 @Value("${recsys.model.redis.item-embedding-prefix:i2vEmb}") String redisItemEmbeddingPrefix) {
         this.artifactLocator = artifactLocator;
         this.abTestConfig = abTestConfig;
+        this.modelFile = modelFile == null || modelFile.isBlank() ? "dssm_model.onnx" : modelFile.trim();
         this.itemEmbeddingsSource = itemEmbeddingsSource == null ? "classpath" : itemEmbeddingsSource.trim();
         this.redisHost = redisHost == null || redisHost.isBlank() ? "localhost" : redisHost.trim();
         this.redisPort = redisPort;
@@ -61,10 +66,10 @@ public class ModelRuntimeProvider {
     @PostConstruct
     public void warmUp() {
         Set<String> variants = new LinkedHashSet<>();
-        variants.add(normalizeVariant(abTestConfig.getDefaultVariant()));
+        variants.add(ModelVariants.normalizeOrDefault(abTestConfig.getDefaultVariant()));
         if (abTestConfig.isEnabled()) {
-            variants.add(normalizeVariant(abTestConfig.getBucketAVariant()));
-            variants.add(normalizeVariant(abTestConfig.getBucketBVariant()));
+            variants.add(ModelVariants.normalizeOrDefault(abTestConfig.getBucketAVariant()));
+            variants.add(ModelVariants.normalizeOrDefault(abTestConfig.getBucketBVariant()));
         }
         for (String variant : variants) {
             log.info("Pre-warming model runtime for variant '{}'", variant);
@@ -73,18 +78,21 @@ public class ModelRuntimeProvider {
     }
 
     public ModelRuntime getRuntime(String variant) {
-        String normalizedVariant = normalizeVariant(variant);
-        ModelRuntime existing = runtimes.get(normalizedVariant);
-        if (existing != null) return existing;
-        // Build outside the map lock to avoid holding the CHM segment lock during I/O.
-        // A duplicate build in a rare race is safe: runtimes are immutable once constructed.
-        ModelRuntime built = buildRuntime(normalizedVariant);
-        ModelRuntime winner = runtimes.putIfAbsent(normalizedVariant, built);
-        return winner != null ? winner : built;
+        String normalizedVariant = ModelVariants.normalizeOrDefault(variant);
+        return runtimes.computeIfAbsent(normalizedVariant, this::buildRuntime);
     }
 
     public String getModelVersion(String variant) {
-        return getRuntime(variant).artifactService().getModelVersion();
+        return getRuntime(variant).modelVersion();
+    }
+
+    public Set<LoadedVariant> loadedVariants() {
+        return runtimes.values().stream()
+                .map(runtime -> new LoadedVariant(
+                        runtime.variant(),
+                        runtime.modelVersion(),
+                        runtime.isReady()))
+                .collect(Collectors.toUnmodifiableSet());
     }
 
     /** Returns true when every pre-warmed runtime has a live ONNX session. */
@@ -101,7 +109,7 @@ public class ModelRuntimeProvider {
                     redisItemEmbeddingStoreIfEnabled());
             artifactService.loadArtifacts();
 
-            UserTowerInferenceService inferenceService = new UserTowerInferenceService(artifactLocator, variant);
+            UserTowerInferenceService inferenceService = new UserTowerInferenceService(artifactLocator, variant, modelFile);
             inferenceService.init();
 
             return new ModelRuntime(
@@ -109,9 +117,7 @@ public class ModelRuntimeProvider {
                     artifactService,
                     new CandidateSelectionService(artifactService),
                     new FeatureEncoder(artifactService),
-                    inferenceService,
-                    new RetrievalService(artifactService),
-                    new RankingService(artifactService)
+                    inferenceService
             );
         } catch (IOException e) {
             throw new IllegalStateException("Failed to load model artifacts for variant '" + variant + "'", e);
@@ -138,7 +144,7 @@ public class ModelRuntimeProvider {
         }
     }
 
-    private RedisEmbeddingStore redisItemEmbeddingStoreIfEnabled() {
+    private synchronized RedisEmbeddingStore redisItemEmbeddingStoreIfEnabled() {
         if (!"redis".equalsIgnoreCase(itemEmbeddingsSource)) {
             return null;
         }
@@ -148,10 +154,6 @@ public class ModelRuntimeProvider {
         return new RedisEmbeddingStore(redisItemEmbeddingPool, redisItemEmbeddingPrefix);
     }
 
-    private String normalizeVariant(String variant) {
-        if (variant == null || variant.isBlank()) {
-            return DEFAULT_VARIANT;
-        }
-        return variant.trim();
+    public record LoadedVariant(String variant, String modelVersion, boolean ready) {
     }
 }

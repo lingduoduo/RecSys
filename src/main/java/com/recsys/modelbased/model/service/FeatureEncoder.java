@@ -19,6 +19,11 @@ public class FeatureEncoder {
         return new EncodedFeatures(userId);
     }
 
+    public Long encodeItemId(String itemId) {
+        Integer itemIndex = artifactService.getItemVocab().get(itemId);
+        return itemIndex == null ? null : itemIndex.longValue();
+    }
+
     public static class EncodedFeatures {
         private final long userId;
 

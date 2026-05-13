@@ -43,7 +43,7 @@ public class ModelArtifactLocator {
     }
 
     public InputStream openModel(String variant, String fileName) throws IOException {
-        String normalizedVariant = normalizeVariant(variant);
+        String normalizedVariant = ModelVariants.trimOrEmpty(variant);
         return openModelStream(normalizedVariant, fileName);
     }
 
@@ -64,7 +64,7 @@ public class ModelArtifactLocator {
     }
 
     public String describeModelLocation(String variant, String fileName) {
-        String normalizedVariant = normalizeVariant(variant);
+        String normalizedVariant = ModelVariants.trimOrEmpty(variant);
         if (!modelDir.isBlank()) {
             if (!normalizedVariant.isBlank()) {
                 return Path.of(modelDir).resolve(normalizedVariant).resolve(fileName).normalize().toAbsolutePath()
@@ -140,6 +140,11 @@ public class ModelArtifactLocator {
             return variantResource.getInputStream();
         }
 
+        ClassPathResource rootResource = new ClassPathResource(fileName);
+        if (rootResource.exists()) {
+            return rootResource.getInputStream();
+        }
+
         throw new IllegalStateException(describeModelLocation(variant, fileName) + " not found. "
                 + "Run the training pipeline or set recsys.model.artifacts-dir to an external model directory.");
     }
@@ -173,9 +178,5 @@ public class ModelArtifactLocator {
 
     private static String trim(String val) {
         return val == null ? "" : val.trim();
-    }
-
-    private static String normalizeVariant(String variant) {
-        return variant == null ? "" : variant.trim();
     }
 }

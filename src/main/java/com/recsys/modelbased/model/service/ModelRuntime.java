@@ -5,8 +5,13 @@ record ModelRuntime(
         ModelArtifactService artifactService,
         CandidateSelectionService candidateSelectionService,
         FeatureEncoder featureEncoder,
-        UserTowerInferenceService inferenceService,
-        RetrievalService retrievalService,
-        RankingService rankingService
+        UserTowerInferenceService inferenceService
 ) {
+    String modelVersion() {
+        return artifactService.getModelVersion();
+    }
+
+    boolean isReady() {
+        return inferenceService.isReady();
+    }
 }
