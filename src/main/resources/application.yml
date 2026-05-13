@@ -19,6 +19,13 @@ recsys:
   model:
     # Variant-aware model artifacts: classpath:artifacts/model/<variant>/... (default variant: training)
     artifacts-dir: ${RECSYS_MODEL_ARTIFACTS_DIR:}
+    # Item embeddings can stay in artifact JSON for local demos, or be stripped
+    # from the model package and loaded from Redis in production.
+    item-embeddings-source: ${RECSYS_MODEL_ITEM_EMBEDDINGS_SOURCE:classpath}
+    redis:
+      host: ${REDIS_HOST:localhost}
+      port: ${REDIS_PORT:6379}
+      item-embedding-prefix: ${RECSYS_MODEL_REDIS_ITEM_EMBEDDING_PREFIX:i2vEmb}
   spark:
     # PySpark model artifacts output by the training pipeline (classpath:artifacts/pyspark/)
     artifacts-dir: ${RECSYS_SPARK_ARTIFACTS_DIR:}

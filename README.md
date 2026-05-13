@@ -130,6 +130,8 @@ On startup the server seeds Redis with bundled movie and user embeddings if the 
 | Env var / property | Default | Purpose |
 |---|---:|---|
 | `RECSYS_MODEL_ARTIFACTS_DIR` | _(empty)_ | Model artifact directory; resolves `artifacts/model/<variant>/...`; defaults to the bundled `classpath:artifacts/model/training/` |
+| `RECSYS_MODEL_ITEM_EMBEDDINGS_SOURCE` | `classpath` | Model-serving item embedding source: `classpath` for `item_embeddings.json`, or `redis` for preloaded Redis embeddings |
+| `RECSYS_MODEL_REDIS_ITEM_EMBEDDING_PREFIX` | `i2vEmb` | Redis key prefix used when model-serving item embeddings are loaded from Redis |
 | `RECSYS_SPARK_ARTIFACTS_DIR` | _(empty)_ | PySpark artifact directory; overrides `classpath:artifacts/pyspark/` |
 | `recsys.health.window-seconds` | `60` | Rolling window width (s) for recent failure rate, latency, and throughput metrics |
 | `recsys.health.min-sample-size` | `5` | Minimum requests in the window before readiness thresholds are enforced |
@@ -371,6 +373,33 @@ user_tower.onnx            Exported user tower for runtime inference
 ```
 
 Point the service at your pipeline's output directory via `RECSYS_MODEL_ARTIFACTS_DIR` (see [Configuration](#configuration)). Organize variants as `<artifacts-dir>/<variant>/feature_config.json`, `<artifacts-dir>/<variant>/item_embeddings.json`, and `<artifacts-dir>/<variant>/user_tower.onnx`. When unset, the bundled sample artifacts under `classpath:artifacts/model/training/` are used.
+
+This repo does not currently include a command that generates the full model-serving artifact set, especially `user_tower.onnx`. Those files are expected to come from an external PyTorch/ONNX training export pipeline and are intentionally not committed under `src/main/resources/artifacts/`.
+
+The repo can generate sample offline item embeddings with Spark Word2Vec:
+
+```bash
+mvn -Poffline-embedding exec:java \
+  -Dexec.mainClass="com.recsys.training.rulebased.ItemEmbeddingJob" \
+  -Dexec.args="--output=output/item_embeddings"
+```
+
+To preload those item embeddings into Redis for stripped-embedding model serving:
+
+```bash
+mvn -Poffline-embedding exec:java \
+  -Dexec.mainClass="com.recsys.training.rulebased.ItemEmbeddingJob" \
+  -Dexec.args="--output=output/item_embeddings --save-to-redis=true --redis-host=localhost --redis-port=6379"
+```
+
+Then run the Spring Boot model service with Redis-backed item embeddings:
+
+```bash
+RECSYS_MODEL_ITEM_EMBEDDINGS_SOURCE=redis \
+RECSYS_MODEL_REDIS_ITEM_EMBEDDING_PREFIX=i2vEmb \
+RECSYS_MODEL_ARTIFACTS_DIR=/path/to/model/artifacts \
+mvn spring-boot:run
+```
 
 ### Feature Contract
 
@@ -788,22 +817,35 @@ Spark Word2Vec
 
 Key: `{prefix}:{id}` (e.g. `i2vEmb:1`) · Value: space-separated floats · TTL: 86400 s (configurable)
 
-### Model-based → classpath
+### Model-based → classpath or Redis
 
-Your modeling pipeline exports `item_embeddings.json` (and optionally `user_tower.onnx`, `feature_config.json`, `metadata.json`). Point `RECSYS_MODEL_ARTIFACTS_DIR` at a directory organised as `<dir>/training/` and `<dir>/test/` for variant-aware serving, or leave it unset to use the bundled classpath artifacts under `artifacts/model/training/`. At startup, `ModelArtifactService` loads item embeddings into a `ConcurrentHashMap` in the JVM heap. Redis is not involved.
+The model-serving path intentionally keeps item embeddings outside the online user-tower model. This strips the item embedding layer out of the deployable ONNX/user-tower artifact, keeps the model smaller, and lets item vectors be produced offline by Spark or another training pipeline.
+
+For local demos, your modeling pipeline can still export `item_embeddings.json` beside `user_tower.onnx`, `feature_config.json`, and `metadata.json`. Point `RECSYS_MODEL_ARTIFACTS_DIR` at a directory organised as `<dir>/training/` and `<dir>/test/` for variant-aware serving, or leave it unset to use the bundled classpath artifacts under `artifacts/model/training/`.
+
+For Redis-backed serving, preload item vectors as Redis key-values and start the service with:
+
+```bash
+RECSYS_MODEL_ITEM_EMBEDDINGS_SOURCE=redis \
+RECSYS_MODEL_REDIS_ITEM_EMBEDDING_PREFIX=i2vEmb \
+mvn spring-boot:run
+```
+
+`ModelArtifactService` still loads `feature_config.json` from the artifact bundle so it can validate embedding dimension and vocab metadata, but item vectors come from `RedisEmbeddingStore.loadAll()`.
 
 ```
 Modeling pipeline (any framework)
-  └─ artifact export ──► artifacts/model/<variant>/   (feature_config.json, item_embeddings.json, user_tower.onnx)
+  ├─ artifact export ──► artifacts/model/<variant>/   (feature_config.json, user_tower.onnx)
+  └─ item embedding export ──► Redis i2vEmb:{movieId} → "0.169 0.296 -0.130 ..."
                                       │
                          ModelRuntimeProvider (@PostConstruct warmUp)
-                           └─ per variant: ModelArtifactService → ConcurrentHashMap
+                           └─ per variant: ModelArtifactService → item embeddings from classpath or Redis
                                            UserTowerInferenceService → OrtSession
                                       │
                          CandidateSelectionService → RetrievalService → RankingService → top-k
 ```
 
-TTL: none — reloads on service restart.
+TTL: Redis-configurable for key-value embeddings; classpath artifacts reload on service restart.
 
 ### Movie API → classpath
 
@@ -819,12 +861,12 @@ movie_embeddings.txt / user_embeddings.txt (classpath)
 
 | | Rule-based (Redis) | Model-based (ONNX service) | Movie API (classpath) |
 |---|---|---|---|
-| Written by | Spark job → Jedis pipeline | External modeling pipeline | Bundled text resources |
-| Stored in | Redis (`i2vEmb:{id}`) | Classpath + JVM heap | Classpath + JVM heap |
-| Loaded by | `RedisEmbeddingStore.getEmbeddings` | `ModelRuntimeProvider.warmUp()` per variant | `CandidateGenerator` constructor |
+| Written by | Spark job → Jedis pipeline | External modeling pipeline; optional Redis preload for item embeddings | Bundled text resources |
+| Stored in | Redis (`i2vEmb:{id}`) | `user_tower.onnx` + config in artifacts; item embeddings in classpath JSON or Redis | Classpath + JVM heap |
+| Loaded by | `RedisEmbeddingStore.getEmbeddings` | `ModelRuntimeProvider.warmUp()` per variant; `ModelArtifactService` loads item vectors from classpath or Redis | `CandidateGenerator` constructor |
 | User vector | Not produced | Live via ONNX at request time | Preloaded from `user_embeddings.txt` |
 | Retrieval backend | Metadata candidates → Redis MGET → exact inner-product | Candidate set → embedding + metadata recall → inner-product; optional FAISS | `VectorIndex`: `lsh` or `exact` |
-| TTL | 86400 s default | N/A — reloads on restart | N/A — reloads on restart |
+| TTL | 86400 s default | Redis-configurable for key-value item embeddings; classpath artifacts reload on restart | N/A — reloads on restart |
 
 ---
 

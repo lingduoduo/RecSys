@@ -1,12 +1,15 @@
 package com.recsys.modelbased.model.service;
 
 import ai.onnxruntime.OrtException;
+import com.recsys.features.RedisEmbeddingStore;
 import com.recsys.modelbased.model.config.ABTestConfig;
 import jakarta.annotation.PostConstruct;
 import jakarta.annotation.PreDestroy;
+import org.springframework.beans.factory.annotation.Value;
 import org.slf4j.Logger;
 import org.slf4j.LoggerFactory;
 import org.springframework.stereotype.Service;
+import redis.clients.jedis.JedisPool;
 
 import java.io.IOException;
 import java.util.LinkedHashSet;
@@ -22,11 +25,31 @@ public class ModelRuntimeProvider {
 
     private final ModelArtifactLocator artifactLocator;
     private final ABTestConfig abTestConfig;
+    private final String itemEmbeddingsSource;
+    private final String redisHost;
+    private final int redisPort;
+    private final String redisItemEmbeddingPrefix;
     private final Map<String, ModelRuntime> runtimes = new ConcurrentHashMap<>();
+    private JedisPool redisItemEmbeddingPool;
 
     public ModelRuntimeProvider(ModelArtifactLocator artifactLocator, ABTestConfig abTestConfig) {
+        this(artifactLocator, abTestConfig, "classpath", "localhost", 6379, "i2vEmb");
+    }
+
+    public ModelRuntimeProvider(ModelArtifactLocator artifactLocator,
+                                ABTestConfig abTestConfig,
+                                @Value("${recsys.model.item-embeddings-source:classpath}") String itemEmbeddingsSource,
+                                @Value("${recsys.model.redis.host:localhost}") String redisHost,
+                                @Value("${recsys.model.redis.port:6379}") int redisPort,
+                                @Value("${recsys.model.redis.item-embedding-prefix:i2vEmb}") String redisItemEmbeddingPrefix) {
         this.artifactLocator = artifactLocator;
         this.abTestConfig = abTestConfig;
+        this.itemEmbeddingsSource = itemEmbeddingsSource == null ? "classpath" : itemEmbeddingsSource.trim();
+        this.redisHost = redisHost == null || redisHost.isBlank() ? "localhost" : redisHost.trim();
+        this.redisPort = redisPort;
+        this.redisItemEmbeddingPrefix = redisItemEmbeddingPrefix == null || redisItemEmbeddingPrefix.isBlank()
+                ? "i2vEmb"
+                : redisItemEmbeddingPrefix.trim();
     }
 
     /**
@@ -72,7 +95,10 @@ public class ModelRuntimeProvider {
 
     private ModelRuntime buildRuntime(String variant) {
         try {
-            ModelArtifactService artifactService = new ModelArtifactService(artifactLocator, variant);
+            ModelArtifactService artifactService = new ModelArtifactService(
+                    artifactLocator,
+                    variant,
+                    redisItemEmbeddingStoreIfEnabled());
             artifactService.loadArtifacts();
 
             UserTowerInferenceService inferenceService = new UserTowerInferenceService(artifactLocator, variant);
@@ -106,6 +132,20 @@ public class ModelRuntimeProvider {
             }
         }
         runtimes.clear();
+        if (redisItemEmbeddingPool != null) {
+            redisItemEmbeddingPool.close();
+            redisItemEmbeddingPool = null;
+        }
+    }
+
+    private RedisEmbeddingStore redisItemEmbeddingStoreIfEnabled() {
+        if (!"redis".equalsIgnoreCase(itemEmbeddingsSource)) {
+            return null;
+        }
+        if (redisItemEmbeddingPool == null) {
+            redisItemEmbeddingPool = new JedisPool(redisHost, redisPort);
+        }
+        return new RedisEmbeddingStore(redisItemEmbeddingPool, redisItemEmbeddingPrefix);
     }
 
     private String normalizeVariant(String variant) {
