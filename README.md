@@ -277,8 +277,6 @@ curl "http://localhost:6010/getrecommendation?userId=123&mode=topk&window=last_h
 
 Reads pre-scored movie IDs from a Redis sorted set. Supported windows: `last_hour`, `last_day`, `last_month`.
 
-For a separate online or near-real-time serving path backed by Kafka, Flink, and Redis, see [streaming/online-serving/README.md](streaming/online-serving/README.md).
-
 ### Similar Movies
 
 Computes inner-product similarity against Redis item embeddings:
