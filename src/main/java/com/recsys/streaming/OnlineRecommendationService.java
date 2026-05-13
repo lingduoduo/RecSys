@@ -22,13 +22,22 @@ public final class OnlineRecommendationService {
     private final DataManager dataManager;
     private final OnlineRecommendationEngine onlineEngine;
     private final CandidateGenerator candidateGenerator;
+    private final OnlineLearner onlineLearner;
 
     public OnlineRecommendationService(DataManager dataManager,
                                        OnlineRecommendationEngine onlineEngine,
                                        CandidateGenerator candidateGenerator) {
+        this(dataManager, onlineEngine, candidateGenerator, new OnlineLearner());
+    }
+
+    public OnlineRecommendationService(DataManager dataManager,
+                                       OnlineRecommendationEngine onlineEngine,
+                                       CandidateGenerator candidateGenerator,
+                                       OnlineLearner onlineLearner) {
         this.dataManager = dataManager;
         this.onlineEngine = onlineEngine;
         this.candidateGenerator = candidateGenerator;
+        this.onlineLearner = onlineLearner == null ? new OnlineLearner() : onlineLearner;
     }
 
     public OnlineRecommendationResult recommend(OnlineRecommendationRequest request) {
@@ -76,10 +85,10 @@ public final class OnlineRecommendationService {
      *
      * Recently-watched movies are excluded from the final output.
      */
-    private static List<Movie> blend(List<Movie> onlineRecs,
-                                     List<Movie> modelCandidates,
-                                     List<Movie> recentMovies,
-                                     int k) {
+    private List<Movie> blend(List<Movie> onlineRecs,
+                              List<Movie> modelCandidates,
+                              List<Movie> recentMovies,
+                              int k) {
         Map<Integer, Movie> movieById = new HashMap<>();
         Map<Integer, Double> scores   = new HashMap<>();
 
@@ -101,6 +110,7 @@ public final class OnlineRecommendationService {
                 .map(Movie::id)
                 .collect(Collectors.toSet());
         scores.keySet().removeIf(recentIds::contains);
+        scores.replaceAll((movieId, score) -> score + onlineLearner.scoreAdjustment(movieId));
 
         return scores.entrySet().stream()
                 .sorted(Map.Entry.<Integer, Double>comparingByValue(Comparator.reverseOrder())
