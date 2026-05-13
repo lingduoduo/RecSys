@@ -3,8 +3,6 @@ package com.recsys.modelbased.model.service;
 import com.recsys.features.VectorMath;
 import com.recsys.modelbased.model.dto.ScoredItem;
 
-import java.util.ArrayList;
-import java.util.Comparator;
 import java.util.HashSet;
 import java.util.List;
 import java.util.Map;
@@ -26,7 +24,7 @@ public class RankingService {
 
         Map<String, float[]> itemEmbeddings = artifactService.getItemEmbeddings();
         Set<String> seen = new HashSet<>();
-        PriorityQueue<ScoredItem> best = new PriorityQueue<>(Comparator.comparingDouble(ScoredItem::score));
+        PriorityQueue<ScoredItem> best = ScoredItems.minHeap();
 
         for (ScoredItem recalled : recalledItems) {
             if (!seen.add(recalled.itemId())) continue;
@@ -36,18 +34,10 @@ public class RankingService {
 
             double score = VectorMath.innerProduct(userEmbedding, itemEmbedding);
             if (score != Double.NEGATIVE_INFINITY) {
-                ScoredItem rescored = new ScoredItem(recalled.itemId(), score);
-                if (best.size() < k) {
-                    best.offer(rescored);
-                } else if (score > best.peek().score()) {
-                    best.poll();
-                    best.offer(rescored);
-                }
+                ScoredItems.keepTopK(best, new ScoredItem(recalled.itemId(), score), k);
             }
         }
 
-        List<ScoredItem> result = new ArrayList<>(best);
-        result.sort(Comparator.comparingDouble(ScoredItem::score).reversed());
-        return result;
+        return ScoredItems.descending(best);
     }
 }

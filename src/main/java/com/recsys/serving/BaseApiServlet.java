@@ -11,7 +11,7 @@ import org.slf4j.LoggerFactory;
 import java.io.IOException;
 import java.util.Map;
 
-abstract class BaseApiServlet extends HttpServlet {
+public abstract class BaseApiServlet extends HttpServlet {
 
     protected static final ObjectMapper MAPPER = new ObjectMapper();
     protected static final Logger log = LoggerFactory.getLogger(BaseApiServlet.class);
