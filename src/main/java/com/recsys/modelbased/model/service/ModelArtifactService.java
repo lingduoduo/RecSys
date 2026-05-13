@@ -2,6 +2,7 @@ package com.recsys.modelbased.model.service;
 
 import com.fasterxml.jackson.core.type.TypeReference;
 import com.fasterxml.jackson.databind.ObjectMapper;
+import com.recsys.features.RedisEmbeddingStore;
 
 import java.io.IOException;
 import java.io.InputStream;
@@ -12,6 +13,7 @@ public class ModelArtifactService {
     private static final ObjectMapper objectMapper = new ObjectMapper();
     private final ModelArtifactLocator artifactLocator;
     private final String variant;
+    private final RedisEmbeddingStore redisItemEmbeddingStore;
 
     private String modelVersion;
     private Map<String, Integer> userVocab = new HashMap<>();
@@ -19,13 +21,24 @@ public class ModelArtifactService {
     private Map<String, float[]> itemEmbeddings = Map.of();
 
     public ModelArtifactService(ModelArtifactLocator artifactLocator, String variant) {
+        this(artifactLocator, variant, null);
+    }
+
+    public ModelArtifactService(ModelArtifactLocator artifactLocator,
+                                String variant,
+                                RedisEmbeddingStore redisItemEmbeddingStore) {
         this.artifactLocator = artifactLocator;
         this.variant = variant == null ? "" : variant.trim();
+        this.redisItemEmbeddingStore = redisItemEmbeddingStore;
     }
 
     public void loadArtifacts() throws IOException {
         loadFeatureConfig();
-        loadItemEmbeddings();
+        if (redisItemEmbeddingStore == null) {
+            loadItemEmbeddings();
+        } else {
+            loadItemEmbeddingsFromRedis();
+        }
     }
 
     private void loadFeatureConfig() throws IOException {
@@ -63,6 +76,24 @@ public class ModelArtifactService {
                     + artifactLocator.describeModelLocation(variant, "item_embeddings.json")
                     + ". Place model artifacts under src/main/resources/artifacts/model/<variant>/ or set recsys.model.artifacts-dir to an external model directory.", e);
         }
+    }
+
+    private void loadItemEmbeddingsFromRedis() {
+        Map<Integer, float[]> raw = redisItemEmbeddingStore.loadAll();
+        if (raw.isEmpty()) {
+            throw new IllegalStateException("no item embeddings found in Redis for variant '" + getVariant() + "'");
+        }
+
+        Map<String, float[]> map = new HashMap<>(raw.size() * 2);
+        for (Map.Entry<Integer, float[]> entry : raw.entrySet()) {
+            float[] vec = entry.getValue();
+            if (vec.length != embeddingDim) {
+                throw new IllegalStateException("item embedding dimension mismatch for item "
+                        + entry.getKey() + ": expected " + embeddingDim + ", got " + vec.length);
+            }
+            map.put(Integer.toString(entry.getKey()), Arrays.copyOf(vec, vec.length));
+        }
+        this.itemEmbeddings = Collections.unmodifiableMap(map);
     }
 
     @SuppressWarnings("unchecked")
