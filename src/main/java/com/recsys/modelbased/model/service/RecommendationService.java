@@ -40,7 +40,7 @@ public class RecommendationService {
         Set<String> excluded = new HashSet<>(request.getExcludeItemIds());
         Integer numericUserId = parseUserId(request.getUserId());
         Set<String> candidates = runtime.candidateSelectionService().selectCandidates(numericUserId, excluded);
-        int scoringSize = Math.min(MAX_RECALL_SIZE, Math.max(request.getK(), request.getK() * RECALL_MULTIPLIER));
+        int scoringSize = Math.min(MAX_RECALL_SIZE, request.getK() * RECALL_MULTIPLIER);
         List<ScoredItem> items = runtime.inferenceService()
                 .scoreCandidates(encoded, runtime.featureEncoder(), candidates, scoringSize)
                 .stream()

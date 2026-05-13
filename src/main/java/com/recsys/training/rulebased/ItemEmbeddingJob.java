@@ -18,7 +18,6 @@ import redis.clients.jedis.params.SetParams;
 
 import java.net.URL;
 import java.util.Arrays;
-import java.util.List;
 import java.util.Locale;
 import java.util.stream.Collectors;
 
@@ -151,29 +150,29 @@ public class ItemEmbeddingJob {
                 .csv(outputPath);
     }
 
-    // Collects model vectors to the driver and writes them to Redis in a single
-    // pipelined round-trip. Key format matches RedisEmbeddingStore: {prefix}:{id}.
-    // Value format matches VectorMath.parseVector: space-separated floats.
+    // Writes model vectors from each Spark partition directly to Redis without
+    // collecting to the driver, so memory use is O(partition-size) not O(corpus-size).
     private static void saveToRedis(Dataset<Row> itemEmbeddings, JobConfig config) {
-        List<Row> rows = itemEmbeddings.collectAsList();
+        final String host = config.redisHost();
+        final int port = config.redisPort();
+        final String prefix = config.redisKeyPrefix();
+        final long ttl = config.redisTtl();
 
-        SetParams params = config.redisTtl() > 0
-                ? SetParams.setParams().ex(config.redisTtl())
-                : SetParams.setParams();
-
-        try (Jedis jedis = new Jedis(config.redisHost(), config.redisPort())) {
-            Pipeline pipeline = jedis.pipelined();
-            for (Row row : rows) {
-                String key = config.redisKeyPrefix() + ":" + row.getString(0);
-                String value = vectorToString((Vector) row.get(1));
-                pipeline.set(key, value, params);
+        itemEmbeddings.foreachPartition(rows -> {
+            SetParams params = ttl > 0 ? SetParams.setParams().ex(ttl) : SetParams.setParams();
+            try (Jedis jedis = new Jedis(host, port)) {
+                Pipeline pipeline = jedis.pipelined();
+                rows.forEachRemaining(row -> {
+                    String key = prefix + ":" + row.getString(0);
+                    String value = vectorToString((Vector) row.get(1));
+                    pipeline.set(key, value, params);
+                });
+                pipeline.sync();
             }
-            pipeline.sync();
-        }
+        });
 
-        System.out.printf("Saved %d item embeddings to Redis %s:%d (prefix='%s', ttl=%ds)%n",
-                rows.size(), config.redisHost(), config.redisPort(),
-                config.redisKeyPrefix(), config.redisTtl());
+        System.out.printf("Saved item embeddings to Redis %s:%d (prefix='%s', ttl=%ds)%n",
+                host, port, prefix, ttl);
     }
 
     private static String vectorToString(Vector vector) {

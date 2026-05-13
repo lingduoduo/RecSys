@@ -29,6 +29,7 @@ RecSys is a compact Maven workspace for experimenting with recommendation-system
 - [Offline Item Embeddings](#offline-item-embeddings)
 - [Embedding Storage Paths](#embedding-storage-paths)
 - [Developer Notes](#developer-notes)
+- [Pipeline Optimizations](#pipeline-optimizations)
 - [LLM Integration Ideas](#llm-integration-ideas)
 
 ---
@@ -275,8 +276,6 @@ curl "http://localhost:6010/getrecommendation?userId=123&mode=topk&window=last_h
 ```
 
 Reads pre-scored movie IDs from a Redis sorted set. Supported windows: `last_hour`, `last_day`, `last_month`.
-
-For a separate online or near-real-time serving path backed by Kafka, Flink, and Redis, see [streaming/online-serving/README.md](streaming/online-serving/README.md).
 
 ### Similar Movies
 
@@ -937,7 +936,7 @@ movie_embeddings.txt / user_embeddings.txt (classpath)
 - `LogCollector` — validates app behavior logs, sanitizes feature maps, and normalizes them into the JSON shape consumed by Kafka/Flink.
 - `OnlineJoiner` — joins behavior logs with user/item/context features, applies shared label semantics, and produces immutable labeled samples for online/offline model updates.
 - `ExperienceCollector` — groups joined samples by `userId + event.requestId`, orders items by displayed rank, compacts duplicate item feedback, and emits list-shaped recommendation experiences.
-- `OnlineLearner` — consumes recommendation experiences and updates bounded in-memory item-bias parameters used by `OnlineRecommendationService`.
+- `OnlineLearner` — consumes recommendation experiences and updates per-item bias parameters used by `OnlineRecommendationService`. Biases are bounded by `maxItemCount` (default 10,000) with LRU-style eviction of the lowest-magnitude entries. `flushToRedis` / `loadFromRedis` persist the learned state across restarts.
 - `OnlineRecommendationEngine` — scores candidates from per-user recent-watch history (Redis) and trending Top-K (Redis sorted set). Accepts `window` (`last_hour`, `last_day`, `last_month`).
 - `OnlineRecommendationService` — orchestrates `OnlineRecommendationEngine` + `CandidateGenerator.byEmbedding`. Blends normalized rank scores (`ONLINE_WEIGHT=1.0`, `MODEL_WEIGHT=0.5`), excludes recently-watched movies, and falls back to online-only for cold-start users. Returns a `strategy` field in the result.
 - `OnlineFeatureStreamingJob` (profile `streaming-flink`) — Flink 1.18 job that reads `MovieEvent` records from Kafka or a local file, then writes per-user recent-movie lists, per-movie engagement metrics, and global top-K to Redis.

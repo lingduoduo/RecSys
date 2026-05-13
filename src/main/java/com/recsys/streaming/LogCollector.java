@@ -5,7 +5,6 @@ import com.fasterxml.jackson.databind.ObjectMapper;
 
 import java.time.Clock;
 import java.util.Collections;
-import java.util.LinkedHashMap;
 import java.util.Map;
 import java.util.TreeMap;
 import java.util.UUID;
@@ -68,6 +67,7 @@ public final class LogCollector {
         if (features == null || features.isEmpty()) {
             return Map.of();
         }
+        // TreeMap provides sorted order; wrapping it avoids a second LinkedHashMap copy.
         Map<String, String> sorted = new TreeMap<>();
         features.forEach((key, value) -> {
             if (key == null || key.isBlank() || value == null) {
@@ -75,7 +75,7 @@ public final class LogCollector {
             }
             sorted.put(key.trim(), value.trim());
         });
-        return Collections.unmodifiableMap(new LinkedHashMap<>(sorted));
+        return Collections.unmodifiableMap(sorted);
     }
 
     public record UserBehaviorLog(String eventId,
