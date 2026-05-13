@@ -3,6 +3,8 @@ package com.recsys.streaming.flink;
 import com.fasterxml.jackson.databind.DeserializationFeature;
 import com.fasterxml.jackson.databind.ObjectMapper;
 import org.apache.flink.api.common.eventtime.WatermarkStrategy;
+import org.slf4j.Logger;
+import org.slf4j.LoggerFactory;
 import org.apache.flink.api.common.functions.AggregateFunction;
 import org.apache.flink.api.common.serialization.SimpleStringSchema;
 import org.apache.flink.api.common.state.ListState;
@@ -39,6 +41,7 @@ import java.util.Properties;
 import java.util.stream.Collectors;
 
 public final class OnlineFeatureStreamingJob {
+    private static final Logger LOG = LoggerFactory.getLogger(OnlineFeatureStreamingJob.class);
     private static final ObjectMapper MAPPER = new ObjectMapper()
             .configure(DeserializationFeature.FAIL_ON_UNKNOWN_PROPERTIES, false);
 
@@ -60,6 +63,7 @@ public final class OnlineFeatureStreamingJob {
         env.enableCheckpointing(Math.max(5_000L, windowSeconds * 1_000L));
 
         DataStream<MovieEvent> events = buildEventStream(env, params)
+                .filter(e -> e != null)
                 .assignTimestampsAndWatermarks(
                         WatermarkStrategy.<MovieEvent>forBoundedOutOfOrderness(Duration.ofSeconds(5))
                                 .withTimestampAssigner((event, timestamp) -> event.eventTimeMillis));
@@ -131,7 +135,8 @@ public final class OnlineFeatureStreamingJob {
         try {
             return MAPPER.readValue(json, MovieEvent.class);
         } catch (IOException e) {
-            throw new IllegalArgumentException("Unable to parse movie event JSON: " + json, e);
+            LOG.warn("Skipping malformed movie event JSON: {}", json, e);
+            return null;
         }
     }
 

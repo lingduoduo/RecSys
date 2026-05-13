@@ -89,8 +89,9 @@ public final class OnlineRecommendationService {
                               List<Movie> modelCandidates,
                               List<Movie> recentMovies,
                               int k) {
-        Map<Integer, Movie> movieById = new HashMap<>();
-        Map<Integer, Double> scores   = new HashMap<>();
+        int capacity = (int) ((onlineRecs.size() + modelCandidates.size()) / 0.75f) + 2;
+        Map<Integer, Movie> movieById = new HashMap<>(capacity);
+        Map<Integer, Double> scores   = new HashMap<>(capacity);
 
         int nOnline = onlineRecs.size();
         for (int i = 0; i < nOnline; i++) {

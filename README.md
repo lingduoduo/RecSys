@@ -963,6 +963,21 @@ movie_embeddings.txt / user_embeddings.txt (classpath)
 
 ---
 
+## Pipeline Optimizations
+
+The table below documents targeted improvements made across all five stages of the modeling pipeline — from how raw events are captured to how recommendations are served.
+
+| Stage | File | Change | Why |
+|---|---|---|---|
+| 数据流的产生 — Data flow generation | `LogCollector` | `sanitizeFeatures` returned a sorted copy via `TreeMap` then immediately copied it into a `LinkedHashMap` — two allocations for sorted order that `TreeMap` already provides. Removed the second copy; return `Collections.unmodifiableMap(sorted)` directly. | Eliminates one allocation and one O(n) copy on every behavior log call. |
+| 近线的数据处理 — Near-line stream processing | `OnlineFeatureStreamingJob` | `parseEvent` previously threw an unchecked exception on malformed JSON, crashing the Flink operator and halting the stream. Now returns `null` and logs a warning; a `.filter(e -> e != null)` guard discards the bad record so the job continues. | A single corrupted event should not bring down the entire stream. Fault tolerance is a correctness requirement, not a polish item. |
+| 离线的模型训练 — Offline model training | `ItemEmbeddingJob` | `saveToRedis` called `collectAsList()`, pulling every embedding vector to the Spark driver before writing to Redis. Replaced with `foreachPartition`, which creates a pipelined Redis connection per partition in the executor that already owns the data. | Driver-side collection is an OOM risk proportional to corpus size. `foreachPartition` bounds driver memory to O(1) regardless of how large the item catalog grows. |
+| 在线的模型学习更新 — Online model learning | `OnlineLearner` | Added `flushToRedis(JedisPool, String)` (pipelined write) and `loadFromRedis(JedisPool, String)` (SCAN-based read) for bias persistence across restarts. Added a `maxItemCount` cap (default 10,000) with `evictIfNeeded()`, which evicts the 10 % of entries with the smallest absolute bias after each `learn()` call. | Without persistence every process restart resets all learned item biases — the online learner had no memory across deployments. Without eviction the bias map grows without bound, leaking memory proportional to the number of distinct items ever seen. |
+| 模型服务 — Model serving | `RecommendationService` | `Math.max(k, k * RECALL_MULTIPLIER)` with `RECALL_MULTIPLIER = 5` is always `k * 5`. The outer `Math.max` was dead code. Removed. | Dead-code removal; the expression never evaluated to `k`. |
+| 模型服务 — Model serving | `OnlineRecommendationService` | `blend()` pre-sizes `movieById` and `scores` maps based on the combined candidate count (`onlineRecs.size() + modelCandidates.size()`). Previously both maps were constructed at the default capacity of 16 slots. | At the default recall limit of ~48 candidates the maps rehash on first insertion, allocating a new backing array mid-fill. Pre-sizing avoids the rehash at negligible call-site cost. |
+
+---
+
 ## LLM Integration Ideas
 
 - Use text embeddings as item/user features for retrieval.
