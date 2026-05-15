@@ -139,6 +139,8 @@ On startup the server seeds Redis with bundled movie and user embeddings if the 
 | `recsys.health.min-sample-size` | `5` | Minimum requests in the window before readiness thresholds are enforced |
 | `recsys.health.max-failure-rate` | `0.5` | Failure rate `[0.0, 1.0]` above which `/health/ready` returns 503 |
 | `recsys.health.max-avg-latency-ms` | `2000` | Average latency (ms) above which `/health/ready` returns 503 |
+| `recsys.health.max-concurrent-requests` | `64` | Per-instance in-flight recommendation cap; excess requests fail fast with `503` |
+| `recsys.health.max-in-flight-utilization` | `0.95` | In-flight utilization above which `/health/ready` returns `503` so load balancers drain the node |
 
 All `recsys.health.*` values are validated at startup — misconfiguration fails fast. Override via `application.yml` or environment variables (e.g. `RECSYS_HEALTH_MAX_FAILURE_RATE=0.3`).
 
@@ -549,6 +551,7 @@ curl http://localhost:8080/health/live
 Returns `200` when the instance is fit to receive load-balancer traffic; `503` otherwise. The instance is pulled from rotation (without restart) when:
 
 - Any pre-warmed model variant does not have a live ONNX session (checked via `ModelRuntimeProvider.areVariantsReady()`).
+- In-flight recommendation utilization exceeds `recsys.health.max-in-flight-utilization`.
 - The recent failure rate exceeds `recsys.health.max-failure-rate` (default 50 %).
 - The average inference latency exceeds `recsys.health.max-avg-latency-ms` (default 2000 ms).
 
@@ -556,9 +559,33 @@ Threshold checks are skipped until `recsys.health.min-sample-size` requests are 
 
 ```bash
 curl http://localhost:8080/health/ready
-# 200: {"status":"UP","recentRequests":42,"recentFailureRate":0.02,"recentAvgLatencyMs":38.5,"throughputPerSecond":0.7}
+# 200: {"status":"UP","recentRequests":42,"recentFailureRate":0.02,"recentAvgLatencyMs":38.5,"throughputPerSecond":0.7,"inFlightRequests":7,"maxConcurrentRequests":64,"utilization":0.109,"suggestedWeight":89}
 # 503: {"status":"DOWN","reason":"high failure rate","recentFailureRate":0.6,"threshold":0.5}
 ```
+
+#### Load signal — `GET /health/load`
+
+Returns the node-local concurrency snapshot used by readiness. External balancers that support dynamic weights can use `suggestedWeight` as a simple capacity signal; orchestrators that only understand healthy/unhealthy should keep using `/health/ready`.
+
+```bash
+curl http://localhost:8080/health/load
+```
+
+```json
+{
+  "inFlightRequests": 7,
+  "maxConcurrentRequests": 64,
+  "utilization": 0.109375,
+  "maxReadinessUtilization": 0.95,
+  "acceptedRequests": 1042,
+  "rejectedRequests": 3,
+  "suggestedWeight": 89
+}
+```
+
+#### Overload protection
+
+`POST /api/v1/recommend` is guarded by a per-instance concurrency limiter before model inference runs. When all request slots are occupied, the service returns `503 Service Unavailable` with `Retry-After: 1` instead of queueing indefinitely. This protects tail latency and lets upstream load balancers retry another healthy replica.
 
 #### Metrics — `GET /health/metrics`
 
@@ -599,6 +626,8 @@ readinessProbe:
   initialDelaySeconds: 15
   periodSeconds: 5
 ```
+
+For Nginx, Envoy, ALB, or Kubernetes Service routing, deploy multiple identical model-serving pods and point the balancer at `/api/v1/recommend`; use `/health/ready` as the upstream health check. Liveness should only restart dead processes, while readiness and overload shedding handle normal traffic spikes without killing warm model runtimes.
 
 Notes:
 
@@ -956,8 +985,9 @@ movie_embeddings.txt / user_embeddings.txt (classpath)
 - `ABTestConfig` — `@ConfigurationProperties(prefix = "recsys.ab-test")` with `@Validated` startup checks; holds `layerName`, `trafficSplitNumber`, variant names, and the `enabled` flag.
 - `ABTestService` — hashes `userId:layerName` to a bucket index; returns a typed `Assignment` record (variant, bucket, layerName, inExperiment). Same layer → mutually exclusive buckets; different layers → independent assignments.
 - `InferenceMetricsService` — global rolling-window metrics plus per-variant counters. `abTestSnapshot(controlVariant)` computes success-rate and latency deltas vs control, exposed at `GET /health/ab-tests`.
+- `LoadShedder` — per-instance concurrency limiter and load snapshot used for overload protection and load-balancer readiness decisions.
 - `HealthProperties` — `@ConfigurationProperties(prefix = "recsys.health")` with `@Validated` startup checks; all probe thresholds in one place, overridable via env vars.
-- `HealthController` — `/health/live` (liveness), `/health/ready` (readiness gated on `ModelRuntimeProvider.areVariantsReady()` and rolling metrics), `/health/metrics` (global snapshot), `/health/ab-tests` (per-variant comparison snapshot).
+- `HealthController` — `/health/live` (liveness), `/health/ready` (readiness gated on `ModelRuntimeProvider.areVariantsReady()`, load, and rolling metrics), `/health/load` (node-local concurrency snapshot), `/health/metrics` (global snapshot), `/health/ab-tests` (per-variant comparison snapshot).
 - `GlobalExceptionHandler` — maps bean-validation failures, malformed JSON, wrong content-type, and unexpected errors to a consistent `ApiError` shape.
 
 ---

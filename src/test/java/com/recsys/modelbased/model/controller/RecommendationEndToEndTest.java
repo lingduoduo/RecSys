@@ -139,7 +139,11 @@ class RecommendationEndToEndTest {
                 .getResponse();
 
         assertThat(resp.getStatus()).isEqualTo(HttpStatus.OK.value());
-        assertThat(readMap(resp.getContentAsByteArray())).containsEntry("status", "UP");
+        assertThat(readMap(resp.getContentAsByteArray()))
+                .containsEntry("status", "UP")
+                .containsKey("inFlightRequests")
+                .containsKey("maxConcurrentRequests")
+                .containsKey("suggestedWeight");
     }
 
     @Test
