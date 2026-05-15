@@ -7,7 +7,9 @@ import com.recsys.modelbased.model.dto.RecommendResponse;
 import com.recsys.modelbased.model.dto.ScoredItem;
 import com.recsys.modelbased.model.service.ABTestService;
 import com.recsys.modelbased.model.service.InferenceMetricsService;
+import com.recsys.modelbased.model.service.LoadShedder;
 import com.recsys.modelbased.model.service.RecommendationService;
+import org.junit.jupiter.api.BeforeEach;
 import org.junit.jupiter.api.Test;
 import org.springframework.beans.factory.annotation.Autowired;
 import org.springframework.boot.test.autoconfigure.web.servlet.WebMvcTest;
@@ -19,6 +21,7 @@ import org.springframework.test.web.servlet.MockMvc;
 import java.util.List;
 
 import static org.mockito.ArgumentMatchers.any;
+import static org.mockito.Mockito.verify;
 import static org.mockito.Mockito.when;
 import static org.springframework.test.web.servlet.request.MockMvcRequestBuilders.post;
 import static org.springframework.test.web.servlet.result.MockMvcResultMatchers.*;
@@ -32,6 +35,16 @@ class RecommendationControllerTest {
     @MockBean RecommendationService recommendationService;
     @MockBean InferenceMetricsService metricsService;
     @MockBean ABTestService abTestService;
+    @MockBean LoadShedder loadShedder;
+
+    @BeforeEach
+    void allowRequest() {
+        when(loadShedder.tryAcquire()).thenReturn(true);
+        when(abTestService.getVariantForUser(any())).thenReturn("training");
+        // Default snapshot used by the controller for the X-Capacity-Weight header.
+        when(loadShedder.snapshot()).thenReturn(
+                new LoadShedder.Snapshot(0, 64, 0.0, 0.95, 0L, 0L, 100, false));
+    }
 
     // --- happy path ---
 
@@ -136,5 +149,23 @@ class RecommendationControllerTest {
                 .andExpect(status().isBadRequest())
                 .andExpect(jsonPath("$.error").value("custom service rule violated"))
                 .andExpect(jsonPath("$.violations").isArray());
+    }
+
+    @Test
+    void recommend_overloaded_returns503WithRetryAfter() throws Exception {
+        when(loadShedder.tryAcquire()).thenReturn(false);
+
+        var req = new RecommendRequest();
+        req.setUserId("123");
+        req.setK(5);
+
+        mockMvc.perform(post("/api/v1/recommend")
+                        .contentType(MediaType.APPLICATION_JSON)
+                        .content(objectMapper.writeValueAsString(req)))
+                .andExpect(status().isServiceUnavailable())
+                .andExpect(header().string("Retry-After", "1"))
+                .andExpect(jsonPath("$.error").value("recommendation service is overloaded"));
+
+        verify(metricsService).recordFailure(0L, "training");
     }
 }
