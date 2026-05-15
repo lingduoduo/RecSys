@@ -1,5 +1,13 @@
 server:
   port: 8080
+  # Keeps Tomcat alive after SIGTERM until in-flight requests finish or the timeout elapses.
+  # GracefulShutdownSupport flips /health/ready to 503 first so load balancers drain traffic.
+  shutdown: graceful
+
+spring:
+  lifecycle:
+    # Maximum time to wait for in-flight requests to complete before forcing shutdown.
+    timeout-per-shutdown-phase: ${RECSYS_SHUTDOWN_TIMEOUT:30s}
 
 debug: false
 
@@ -41,6 +49,10 @@ recsys:
     max-failure-rate: 0.5
     # Average inference latency (ms) above which the instance is pulled from rotation
     max-avg-latency-ms: 2000
+    # Per-instance overload protection. Excess requests fail fast with 503 + Retry-After.
+    max-concurrent-requests: ${RECSYS_HEALTH_MAX_CONCURRENT_REQUESTS:64}
+    # Above this in-flight utilization, /health/ready returns 503 so balancers drain this node.
+    max-in-flight-utilization: ${RECSYS_HEALTH_MAX_IN_FLIGHT_UTILIZATION:0.95}
   recommendation-cache:
     # Caches full recommendation responses for repeated equivalent requests.
     enabled: ${RECSYS_RECOMMENDATION_CACHE_ENABLED:true}

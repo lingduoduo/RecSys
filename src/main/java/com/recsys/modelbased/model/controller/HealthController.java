@@ -3,6 +3,7 @@ package com.recsys.modelbased.model.controller;
 import com.recsys.modelbased.model.config.HealthProperties;
 import com.recsys.modelbased.model.config.ABTestConfig;
 import com.recsys.modelbased.model.service.InferenceMetricsService;
+import com.recsys.modelbased.model.service.LoadShedder;
 import com.recsys.modelbased.model.service.ModelRuntimeProvider;
 import org.springframework.http.HttpStatus;
 import org.springframework.http.ResponseEntity;
@@ -18,15 +19,18 @@ public class HealthController {
 
     private final ModelRuntimeProvider modelRuntimeProvider;
     private final InferenceMetricsService metricsService;
+    private final LoadShedder loadShedder;
     private final HealthProperties props;
     private final ABTestConfig abTestConfig;
 
     public HealthController(ModelRuntimeProvider modelRuntimeProvider,
                             InferenceMetricsService metricsService,
+                            LoadShedder loadShedder,
                             HealthProperties props,
                             ABTestConfig abTestConfig) {
         this.modelRuntimeProvider = modelRuntimeProvider;
         this.metricsService = metricsService;
+        this.loadShedder = loadShedder;
         this.props = props;
         this.abTestConfig = abTestConfig;
     }
@@ -40,6 +44,11 @@ public class HealthController {
     @GetMapping("/metrics")
     public InferenceMetricsService.Snapshot metrics() {
         return metricsService.snapshot();
+    }
+
+    @GetMapping("/load")
+    public LoadShedder.Snapshot load() {
+        return loadShedder.snapshot();
     }
 
     @GetMapping("/ab-tests")
@@ -57,6 +66,31 @@ public class HealthController {
         }
 
         InferenceMetricsService.Snapshot snap = metricsService.snapshot();
+        LoadShedder.Snapshot load = loadShedder.snapshot();
+
+        // Explicit shutdown check: return 503 immediately on SIGTERM so load balancers
+        // drain this instance before Spring closes Tomcat and interrupts in-flight requests.
+        if (load.shuttingDown()) {
+            return ResponseEntity.status(HttpStatus.SERVICE_UNAVAILABLE)
+                    .body(Map.of(
+                            "status", "DOWN",
+                            "reason", "shutting down",
+                            "inFlightRequests", load.inFlightRequests()
+                    ));
+        }
+
+        if (load.utilization() >= props.getMaxInFlightUtilization()) {
+            return ResponseEntity.status(HttpStatus.SERVICE_UNAVAILABLE)
+                    .body(Map.of(
+                            "status", "DOWN",
+                            "reason", "overloaded",
+                            "inFlightRequests", load.inFlightRequests(),
+                            "maxConcurrentRequests", load.maxConcurrentRequests(),
+                            "utilization", load.utilization(),
+                            "threshold", props.getMaxInFlightUtilization(),
+                            "suggestedWeight", 0
+                    ));
+        }
 
         if (snap.recentRequests() >= props.getMinSampleSize()) {
             if (snap.recentFailureRate() > props.getMaxFailureRate()) {
@@ -84,7 +118,11 @@ public class HealthController {
                 "recentRequests", snap.recentRequests(),
                 "recentFailureRate", snap.recentFailureRate(),
                 "recentAvgLatencyMs", snap.recentAvgLatencyMs(),
-                "throughputPerSecond", snap.throughputPerSecond()
+                "throughputPerSecond", snap.throughputPerSecond(),
+                "inFlightRequests", load.inFlightRequests(),
+                "maxConcurrentRequests", load.maxConcurrentRequests(),
+                "utilization", load.utilization(),
+                "suggestedWeight", load.suggestedWeight()
         ));
     }
 }
