@@ -1,10 +1,13 @@
 package com.recsys.modelbased.model.config;
 
 import com.recsys.modelbased.model.dto.ApiError;
+import com.recsys.modelbased.model.service.ServiceOverloadedException;
 import jakarta.servlet.http.HttpServletRequest;
 import org.slf4j.Logger;
 import org.slf4j.LoggerFactory;
+import org.springframework.http.HttpHeaders;
 import org.springframework.http.HttpStatus;
+import org.springframework.http.ResponseEntity;
 import org.springframework.http.converter.HttpMessageNotReadableException;
 import org.springframework.web.HttpMediaTypeNotSupportedException;
 import org.springframework.web.bind.MethodArgumentNotValidException;
@@ -48,6 +51,13 @@ public class GlobalExceptionHandler {
     @ResponseStatus(HttpStatus.BAD_REQUEST)
     public ApiError handleIllegalArgument(IllegalArgumentException ex) {
         return new ApiError(ex.getMessage(), List.of());
+    }
+
+    @ExceptionHandler(ServiceOverloadedException.class)
+    public ResponseEntity<ApiError> handleOverloaded(ServiceOverloadedException ex) {
+        return ResponseEntity.status(HttpStatus.SERVICE_UNAVAILABLE)
+                .header(HttpHeaders.RETRY_AFTER, Integer.toString(ex.getRetryAfterSeconds()))
+                .body(new ApiError(ex.getMessage(), List.of()));
     }
 
     // Catch-all: unexpected inference or runtime errors
