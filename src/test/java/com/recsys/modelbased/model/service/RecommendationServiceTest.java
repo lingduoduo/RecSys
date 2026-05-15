@@ -6,6 +6,7 @@ import org.junit.jupiter.api.BeforeEach;
 import org.junit.jupiter.api.Test;
 
 import java.util.List;
+import java.util.Map;
 import java.util.Set;
 
 import static org.assertj.core.api.Assertions.assertThat;
@@ -14,6 +15,8 @@ import static org.mockito.ArgumentMatchers.any;
 import static org.mockito.ArgumentMatchers.anyInt;
 import static org.mockito.ArgumentMatchers.eq;
 import static org.mockito.Mockito.mock;
+import static org.mockito.Mockito.times;
+import static org.mockito.Mockito.verify;
 import static org.mockito.Mockito.when;
 
 class RecommendationServiceTest {
@@ -100,8 +103,49 @@ class RecommendationServiceTest {
     }
 
     @Test
+    void recommend_sameRequest_returnsCachedItemsWithoutRescoring() {
+        var encoded = new FeatureEncoder.EncodedFeatures(1L);
+        var ranked = List.of(new ScoredItem("1", 0.95), new ScoredItem("3", 0.72));
+
+        when(artifactService.getUserVocab()).thenReturn(Map.of("123", 1));
+        when(featureEncoder.encode(any())).thenReturn(encoded);
+        when(candidateSelectionService.selectCandidates(any(), any())).thenReturn(Set.of("1", "2", "3"));
+        when(inferenceService.scoreCandidates(eq(encoded), eq(featureEncoder), any(), anyInt())).thenReturn(ranked);
+        when(artifactService.getModelVersion()).thenReturn("v1");
+
+        var first = service.recommend(request("123", 2));
+        var second = service.recommend(request("123", 2));
+
+        assertThat(second.recommendations()).isEqualTo(first.recommendations());
+        verify(inferenceService, times(1)).scoreCandidates(eq(encoded), eq(featureEncoder), any(), anyInt());
+        verify(candidateSelectionService, times(1)).selectCandidates(123, Set.of());
+    }
+
+    @Test
+    void recommend_unknownUsers_shareColdStartCache() {
+        var encoded = new FeatureEncoder.EncodedFeatures(0L);
+        var ranked = List.of(new ScoredItem("1", 0.91), new ScoredItem("2", 0.80), new ScoredItem("3", 0.70));
+
+        when(artifactService.getUserVocab()).thenReturn(Map.of("__UNK__", 0));
+        when(featureEncoder.encode(any())).thenReturn(encoded);
+        when(candidateSelectionService.selectCandidates(any(), any())).thenReturn(Set.of("1", "2", "3"));
+        when(inferenceService.scoreCandidates(eq(encoded), eq(featureEncoder), any(), anyInt())).thenReturn(ranked);
+        when(artifactService.getModelVersion()).thenReturn("v1");
+
+        var first = service.recommend(request("new-user-a", 2));
+        var second = service.recommend(request("new-user-b", 2));
+
+        assertThat(first.recommendations()).containsExactlyElementsOf(ranked.subList(0, 2));
+        assertThat(second.userId()).isEqualTo("new-user-b");
+        assertThat(second.recommendations()).containsExactlyElementsOf(ranked.subList(0, 2));
+        verify(inferenceService, times(1)).scoreCandidates(eq(encoded), eq(featureEncoder), any(), anyInt());
+        verify(candidateSelectionService, times(1)).selectCandidates(null, Set.of());
+    }
+
+    @Test
     void recommend_excludeItemIds_passedToCandidateSelection() {
         var encoded = new FeatureEncoder.EncodedFeatures(1L);
+        when(artifactService.getUserVocab()).thenReturn(Map.of("123", 1));
         when(featureEncoder.encode(any())).thenReturn(encoded);
         when(candidateSelectionService.selectCandidates(any(), any())).thenReturn(Set.of());
         when(inferenceService.scoreCandidates(eq(encoded), eq(featureEncoder), any(), anyInt())).thenReturn(List.of());

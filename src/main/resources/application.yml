@@ -41,3 +41,14 @@ recsys:
     max-failure-rate: 0.5
     # Average inference latency (ms) above which the instance is pulled from rotation
     max-avg-latency-ms: 2000
+  recommendation-cache:
+    # Caches full recommendation responses for repeated equivalent requests.
+    enabled: ${RECSYS_RECOMMENDATION_CACHE_ENABLED:true}
+    ttl-seconds: ${RECSYS_RECOMMENDATION_CACHE_TTL_SECONDS:300}
+    max-entries: ${RECSYS_RECOMMENDATION_CACHE_MAX_ENTRIES:10000}
+    # Unknown users all encode to the model's __UNK__ bucket, so their default
+    # list can be precomputed once per model variant/version and reused.
+    cold-start-enabled: ${RECSYS_RECOMMENDATION_CACHE_COLD_START_ENABLED:true}
+    # Cold-start pool changes only on model deploy, so it can live much longer than per-user entries.
+    cold-start-ttl-seconds: ${RECSYS_RECOMMENDATION_CACHE_COLD_START_TTL_SECONDS:3600}
+    cold-start-max-k: ${RECSYS_RECOMMENDATION_CACHE_COLD_START_MAX_K:100}
