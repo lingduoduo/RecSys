@@ -78,7 +78,10 @@ public class LoadShedder {
 
     /** True when the instance should be drained from load-balancer rotation. */
     public boolean shouldDrain() {
-        return shuttingDown || snapshot().utilization() >= maxReadinessUtilization;
+        if (shuttingDown) return true;
+        // Inline the utilization check to avoid allocating a full Snapshot record.
+        return maxConcurrentRequests > 0
+                && (double) inFlightRequests.get() / maxConcurrentRequests >= maxReadinessUtilization;
     }
 
     public record Snapshot(

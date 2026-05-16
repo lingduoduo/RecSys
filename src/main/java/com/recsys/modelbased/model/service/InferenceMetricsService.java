@@ -34,10 +34,18 @@ public class InferenceMetricsService {
     private final AtomicLong failureCount   = new AtomicLong();
     private final AtomicLong totalLatencyMs = new AtomicLong();
 
-    // Rolling window — needed for recency-sensitive readiness checks
+    // Rolling window — needed for recency-sensitive readiness checks.
+    // Running totals (windowTotal, windowFailures, windowLatencyMs) mirror the deque so that
+    // snapshot() reads are O(1) instead of O(window-size). They are decremented in evict().
     private final Deque<RequestRecord> window = new ArrayDeque<>();
-    private final Map<String, VariantMetrics> variantMetrics = new TreeMap<>();
+    private long windowTotal     = 0;
+    private long windowFailures  = 0;
+    private long windowLatencyMs = 0;
     private final Object lock = new Object();
+
+    // Variant metrics use a separate lock so recording a variant doesn't block window eviction.
+    private final Map<String, VariantMetrics> variantMetrics = new TreeMap<>();
+    private final Object variantLock = new Object();
 
     public InferenceMetricsService(HealthProperties props) {
         this.windowSeconds = props.getWindowSeconds();
@@ -68,11 +76,14 @@ public class InferenceMetricsService {
         else         successCount.incrementAndGet();
         totalLatencyMs.addAndGet(latencyMs);
 
-        // Rolling window requires a lock: evict (read head) + add (write tail) must be atomic
+        // Rolling window requires a lock: evict + add + running-total updates must be atomic
         long now = Instant.now().getEpochSecond();
         synchronized (lock) {
             evict(now);
             window.addLast(new RequestRecord(now, latencyMs, failed));
+            windowTotal++;
+            if (failed) windowFailures++;
+            windowLatencyMs += latencyMs;
         }
     }
 
@@ -83,16 +94,16 @@ public class InferenceMetricsService {
         long failures = failureCount.get();
         double allTimeAvgLatencyMs = total > 0 ? (double) totalLatencyMs.get() / total : 0.0;
 
-        // Read rolling window under lock for consistency
+        // Read rolling window under lock for consistency — O(1) via running totals
         long now = Instant.now().getEpochSecond();
         long recentTotal;
         long recentFailures;
         double recentAvgLatencyMs;
         synchronized (lock) {
             evict(now);
-            recentTotal    = window.size();
-            recentFailures = window.stream().filter(r -> r.failed).count();
-            recentAvgLatencyMs = window.stream().mapToLong(r -> r.latencyMs).average().orElse(0.0);
+            recentTotal        = windowTotal;
+            recentFailures     = windowFailures;
+            recentAvgLatencyMs = windowTotal > 0 ? (double) windowLatencyMs / windowTotal : 0.0;
         }
 
         double recentFailureRate    = recentTotal > 0 ? (double) recentFailures / recentTotal : 0.0;
@@ -106,7 +117,7 @@ public class InferenceMetricsService {
     }
 
     public ABTestSnapshot abTestSnapshot(String controlVariant) {
-        synchronized (lock) {
+        synchronized (variantLock) {
             VariantMetrics control = variantMetrics.get(controlVariant);
             double controlSuccessRate = control == null ? 0.0 : control.successRate();
             double controlAvgLatencyMs = control == null ? 0.0 : control.avgLatencyMs();
@@ -133,13 +144,16 @@ public class InferenceMetricsService {
     private void evict(long nowSeconds) {
         long cutoff = nowSeconds - windowSeconds;
         while (!window.isEmpty() && window.peekFirst().timestampSeconds < cutoff) {
-            window.pollFirst();
+            RequestRecord r = window.pollFirst();
+            windowTotal--;
+            if (r.failed) windowFailures--;
+            windowLatencyMs -= r.latencyMs;
         }
     }
 
     private void recordVariant(long latencyMs, boolean failed, String variant, String modelVersion) {
         String key = normalizeVariant(variant);
-        synchronized (lock) {
+        synchronized (variantLock) {
             if (!variantMetrics.containsKey(key) && variantMetrics.size() >= MAX_VARIANTS) {
                 log.warn("Variant metrics map has {} entries; ignoring unknown variant '{}'", MAX_VARIANTS, key);
                 return;

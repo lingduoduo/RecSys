@@ -21,11 +21,19 @@ public final class VectorMath {
 
     public static double innerProduct(float[] a, float[] b) {
         if (a == null || b == null || a.length != b.length) return Double.NEGATIVE_INFINITY;
-
-        double dot = 0.0;
-        for (int i = 0; i < a.length; i++) {
-            dot += (double) a[i] * b[i];
+        int len = a.length;
+        // 4-way unrolled accumulation reduces loop overhead and lets the JIT pipeline
+        // four multiply-add operations per iteration across independent accumulators.
+        double s0 = 0, s1 = 0, s2 = 0, s3 = 0;
+        int i = 0;
+        for (; i <= len - 4; i += 4) {
+            s0 += (double) a[i]     * b[i];
+            s1 += (double) a[i + 1] * b[i + 1];
+            s2 += (double) a[i + 2] * b[i + 2];
+            s3 += (double) a[i + 3] * b[i + 3];
         }
+        double dot = s0 + s1 + s2 + s3;
+        for (; i < len; i++) dot += (double) a[i] * b[i];
         return dot;
     }
 
