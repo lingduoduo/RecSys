@@ -20,11 +20,19 @@ public class LshVectorIndex extends ExactVectorIndex {
     @Override
     public List<SearchResult> search(float[] query, int k, Set<Integer> excludeIds) {
         Set<Integer> excluded = Objects.requireNonNullElse(excludeIds, Set.of());
-        Set<Integer> candidates = new HashSet<>(lsh.candidates(query));
+        Set<Integer> lshCandidates = lsh.candidates(query);
+
+        // Skip the HashSet copy + removeAll if raw LSH output is already too small to fill k
+        // results even before exclusion — we'll need a full scan regardless.
+        if (lshCandidates.size() < k) {
+            return topK(query, k, excluded, allIds);
+        }
+
+        Set<Integer> candidates = new HashSet<>(lshCandidates);
         candidates.removeAll(excluded);
 
         if (candidates.size() < k) {
-            candidates = allIds;
+            return topK(query, k, excluded, allIds);
         }
 
         return topK(query, k, excluded, candidates);
