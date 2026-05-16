@@ -19,15 +19,28 @@ public class CandidateGenerator {
 
     private final DataManager dataManager;
     private final Map<Integer, float[]> movieEmbeddings;
-    private final Map<Integer, float[]> userEmbeddings;
+    private final EmbeddingStore userEmbeddingStore;
     private final VectorIndex embeddingIndex;
 
+    /** Classpath-only constructor — user embeddings are loaded once from the file system. */
     public CandidateGenerator(DataManager dataManager) {
+        this(dataManager, null);
+    }
+
+    /**
+     * Three-tier constructor.
+     *
+     * {@code userEmbeddingStore} is a Tier-3 cache backed by Redis (Tier 2) seeded from the
+     * file system (Tier 1). Passing {@code null} falls back to classpath-only behaviour.
+     */
+    public CandidateGenerator(DataManager dataManager, EmbeddingStore userEmbeddingStore) {
         this.dataManager = dataManager;
         this.movieEmbeddings = DataLoader.loadMovieEmbeddings();
-        this.userEmbeddings = DataLoader.loadUserEmbeddings();
+        this.userEmbeddingStore = userEmbeddingStore;
         this.embeddingIndex = createEmbeddingIndex(movieEmbeddings);
-        log.info("Embedding backend={}, movies={}, users={}", embeddingIndex.name(), movieEmbeddings.size(), userEmbeddings.size());
+        log.info("Embedding backend={}, movies={}, userStore={}",
+                embeddingIndex.name(), movieEmbeddings.size(),
+                userEmbeddingStore != null ? "cache+redis" : "classpath");
     }
 
     // Genre-based: for each genre on the seed movie, pull top-rated candidates,
@@ -71,7 +84,10 @@ public class CandidateGenerator {
     // Backends are configured with RECSYS_VECTOR_BACKEND or -Drecsys.vector.backend:
     // lsh (default) or exact. FAISS belongs behind this interface for Linux/JNI deployments.
     public List<Movie> byEmbedding(int userId, int k) {
-        float[] userVec = userEmbeddings.get(userId);
+        // Check the three-tier cache first (heap → Redis); fall back to classpath map.
+        float[] userVec = userEmbeddingStore != null
+                ? userEmbeddingStore.getEmbedding(userId)
+                : null;
         if (userVec == null) return List.of();
 
         Set<Integer> watched = dataManager.getRatingsByUser(userId).stream()

@@ -41,7 +41,6 @@ public class RecSysServer {
 
         try (JedisPool jedisPool = new JedisPool(redisHost, redisPort)) {
             DataManager dataManager = DataManager.getInstance();
-            CandidateGenerator candidateGenerator = new CandidateGenerator(dataManager);
             PairPredictionService pairPredictionService = new PairPredictionService();
             RedisEmbeddingStore embStore     = new RedisEmbeddingStore(jedisPool, "i2vEmb");
             RedisEmbeddingStore userEmbStore = new RedisEmbeddingStore(jedisPool, "u2vEmb");
@@ -49,12 +48,18 @@ public class RecSysServer {
 
             seedEmbeddings(embStore, userEmbStore);
 
-            // Tier 3: JVM heap cache in front of Redis for item embeddings.
-            // preload from classpath (Tier 1) so warm-up requires no Redis round-trips;
-            // warmUp then fills any gaps from Redis (e.g. embeddings written by Flink).
+            // Tier 3: JVM heap caches in front of Redis for both item and user embeddings.
+            // preload() from classpath (Tier 1) avoids Redis round-trips at startup;
+            // warmUp() then adds any entries written by Flink that aren't in the classpath.
             LocalEmbeddingCache embCache = new LocalEmbeddingCache(embStore);
             embCache.preload(DataLoader.loadMovieEmbeddings());
             embCache.warmUp();
+
+            LocalEmbeddingCache userEmbCache = new LocalEmbeddingCache(userEmbStore);
+            userEmbCache.preload(DataLoader.loadUserEmbeddings());
+            userEmbCache.warmUp();
+
+            CandidateGenerator candidateGenerator = new CandidateGenerator(dataManager, userEmbCache);
 
             InetSocketAddress inetAddress = new InetSocketAddress(DEFAULT_HOST, port);
             Server server = new Server(inetAddress);
