@@ -3,6 +3,8 @@ package com.recsys.serving;
 import com.recsys.features.CandidateGenerator;
 import com.recsys.features.DataLoader;
 import com.recsys.features.DataManager;
+import com.recsys.features.EmbeddingStore;
+import com.recsys.features.LocalEmbeddingCache;
 import com.recsys.features.PairPredictionService;
 import com.recsys.features.RedisEmbeddingStore;
 import com.recsys.features.RedisTopKStore;
@@ -47,11 +49,18 @@ public class RecSysServer {
 
             seedEmbeddings(embStore, userEmbStore);
 
+            // Tier 3: JVM heap cache in front of Redis for item embeddings.
+            // preload from classpath (Tier 1) so warm-up requires no Redis round-trips;
+            // warmUp then fills any gaps from Redis (e.g. embeddings written by Flink).
+            LocalEmbeddingCache embCache = new LocalEmbeddingCache(embStore);
+            embCache.preload(DataLoader.loadMovieEmbeddings());
+            embCache.warmUp();
+
             InetSocketAddress inetAddress = new InetSocketAddress(DEFAULT_HOST, port);
             Server server = new Server(inetAddress);
 
             ServletContextHandler context = createContext();
-            registerRoutes(context, dataManager, candidateGenerator, embStore, topkStore, pairPredictionService);
+            registerRoutes(context, dataManager, candidateGenerator, embCache, topkStore, pairPredictionService);
 
             server.setHandler(context);
             server.setStopAtShutdown(true);
@@ -70,7 +79,7 @@ public class RecSysServer {
     private static void registerRoutes(ServletContextHandler context,
                                        DataManager dataManager,
                                        CandidateGenerator candidateGenerator,
-                                       RedisEmbeddingStore embStore,
+                                       EmbeddingStore embStore,
                                        RedisTopKStore topkStore,
                                        PairPredictionService pairPredictionService) {
         context.addServlet(new ServletHolder(new MovieService(dataManager)), ROUTE_ITEM);

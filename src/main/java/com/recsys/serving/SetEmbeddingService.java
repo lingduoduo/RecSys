@@ -1,6 +1,6 @@
 package com.recsys.serving;
 
-import com.recsys.features.RedisEmbeddingStore;
+import com.recsys.features.EmbeddingStore;
 import com.recsys.features.VectorMath;
 import jakarta.servlet.http.HttpServletRequest;
 import jakarta.servlet.http.HttpServletResponse;
@@ -11,9 +11,9 @@ import java.util.stream.Collectors;
 
 public class SetEmbeddingService extends BaseApiServlet {
 
-    private final RedisEmbeddingStore store;
+    private final EmbeddingStore store;
 
-    public SetEmbeddingService(RedisEmbeddingStore store) {
+    public SetEmbeddingService(EmbeddingStore store) {
         this.store = store;
     }
 
