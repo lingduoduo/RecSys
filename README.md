@@ -4,7 +4,7 @@ RecSys is a compact Maven workspace for experimenting with recommendation-system
 
 | Area | What it shows |
 |---|---|
-| Movie API | Jetty, Redis, local movie data, multi-strategy retrieval, and runtime embedding updates |
+| Recommendation Serving API | Jetty, Redis, local item data, multi-strategy retrieval, and runtime embedding updates |
 | Model serving demo | Spring Boot ONNX scoring with variant-aware model artifact loading |
 | Rule-based offline embeddings | Spark Word2Vec item embeddings trained from user interaction sequences |
 | Model-based offline training | PyTorch-exported ONNX models plus vocab/config artifacts generated offline |
@@ -17,7 +17,7 @@ RecSys is a compact Maven workspace for experimenting with recommendation-system
 ## Contents
 
 - [Recommendation Flow](#recommendation-flow)
-- [Movie API](#movie-api)
+- [Recommendation Serving API](#recommendation-serving-api)
 - [Configuration](#configuration)
 - [Project Layout](#project-layout)
 - [API Reference](#api-reference)
@@ -38,7 +38,7 @@ RecSys is a compact Maven workspace for experimenting with recommendation-system
 
 The project demonstrates two recommendation paths that can be run independently or together:
 
-**Offline / batch path (Movie API, port 6010)**
+**Offline / batch path (Recommendation Serving API, port 6010)**
 
 Recall narrows the catalog to a candidate set; ranking scores and orders those candidates.
 
@@ -58,16 +58,16 @@ A normalized rank score fuses the two lists. Cold-start users with no embedding 
 
 ---
 
-## Movie API
+## Recommendation Serving API
 
-Runs the Jetty movie API on port `6010` with Redis-backed embeddings and Top-K state.
+Runs the Jetty recommendation serving API on port `6010` with Redis-backed embeddings and Top-K state.
 
 **Requirements:** Java 17, Maven, Docker with Docker Compose.
 
 Start infrastructure:
 
 ```bash
-colima start  # if you use Colima
+colima start  
 docker compose -f docker-compose.streaming.yml up -d
 ```
 
@@ -82,8 +82,8 @@ Smoke test:
 
 ```bash
 curl "http://localhost:6010/health"
-curl "http://localhost:6010/getmovie?id=1"
-curl "http://localhost:6010/getsimilarmovie?movieId=1&k=5"
+curl "http://localhost:6010/item?id=1"
+curl "http://localhost:6010/similar?movieId=1&k=5"
 curl "http://localhost:6010/getrecommendation?userId=123&mode=embedding&k=5"
 curl -X POST "http://localhost:6010/v1/models/recmodel:predict" \
   -H "Content-Type: application/json" \
@@ -109,7 +109,7 @@ docker compose -f docker-compose.streaming.yml down
 
 ## Configuration
 
-### Movie API (Jetty, port 6010)
+### Recommendation Serving API (Jetty, port 6010)
 
 | Env var | Default | Purpose |
 |---|---:|---|
@@ -222,10 +222,10 @@ curl "http://localhost:6010/health"
 # {"ok":true}
 ```
 
-### Movie Lookup
+### Item Lookup
 
 ```bash
-curl "http://localhost:6010/getmovie?id=1"
+curl "http://localhost:6010/item?id=1"
 # {"id":1,"title":"Inception","year":2010,"genres":["Sci-Fi","Thriller"]}
 ```
 
@@ -279,12 +279,12 @@ curl "http://localhost:6010/getrecommendation?userId=123&mode=topk&window=last_h
 
 Reads pre-scored movie IDs from a Redis sorted set. Supported windows: `last_hour`, `last_day`, `last_month`.
 
-### Similar Movies
+### Similar Items
 
 Computes inner-product similarity against Redis item embeddings:
 
 ```bash
-curl "http://localhost:6010/getsimilarmovie?movieId=1&k=5"
+curl "http://localhost:6010/similar?movieId=1&k=5"
 # {"movieId":1,"similar":[{"movieId":4,"score":0.99}, ...]}
 ```
 
@@ -912,7 +912,7 @@ Modeling pipeline (any framework)
 
 TTL: Redis-configurable for key-value embeddings; classpath artifacts reload on service restart.
 
-### Movie API → classpath
+### Recommendation Serving API → classpath
 
 `CandidateGenerator` loads `movie_embeddings.txt` and `user_embeddings.txt` from the classpath at startup for the `mode=embedding` path. This is the same bundled seed data seeded into Redis on first start, used here for direct heap-based scoring without a Redis round-trip.
 
@@ -924,7 +924,7 @@ movie_embeddings.txt / user_embeddings.txt (classpath)
 
 ### Comparison
 
-| | Rule-based (Redis) | Model-based (ONNX service) | Movie API (classpath) |
+| | Rule-based (Redis) | Model-based (ONNX service) | Serving API (classpath) |
 |---|---|---|---|
 | Written by | Spark job → Jedis pipeline | External PyTorch/ONNX pipeline; pretrained item embeddings preloaded to Redis | Bundled text resources |
 | Stored in | Redis (`i2vEmb:{id}`) | Compact ONNX + config/vocab artifacts; item embeddings in Redis key-value records | Classpath + JVM heap |
@@ -942,7 +942,7 @@ movie_embeddings.txt / user_embeddings.txt (classpath)
 - `DataLoader` loads bundled text resources from `com/recsys/data`.
 - `DataManager` is a read-only singleton owning immutable maps, precomputed sorted lists (`topRatedMovies`, `latestMovies`), genre indexes (`moviesByGenre`), and fast lookup helpers. Retrieval logic stays outside this class.
 
-**Movie API retrieval:**
+**Serving API retrieval:**
 
 - `CandidateGenerator` owns Jetty recall strategies and classpath embeddings. Created once in `RecSysServer` and injected into `RecommendationService`.
 - `byGenre` — seed-movie genre recall.

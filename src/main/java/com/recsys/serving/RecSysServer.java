@@ -20,9 +20,9 @@ public class RecSysServer {
     private static final Logger log = LoggerFactory.getLogger(RecSysServer.class);
     private static final int DEFAULT_PORT = 6010;
     private static final String DEFAULT_HOST = "0.0.0.0";
-    private static final String ROUTE_MOVIE = "/getmovie";
+    private static final String ROUTE_ITEM = "/item";
     private static final String ROUTE_USER = "/getuser";
-    private static final String ROUTE_SIMILAR_MOVIE = "/getsimilarmovie";
+    private static final String ROUTE_SIMILAR = "/similar";
     private static final String ROUTE_RECOMMENDATION = "/getrecommendation";
     private static final String ROUTE_SET_EMBEDDING = "/setembedding";
     private static final String ROUTE_HEALTH = "/health";
@@ -73,9 +73,9 @@ public class RecSysServer {
                                        RedisEmbeddingStore embStore,
                                        RedisTopKStore topkStore,
                                        PairPredictionService pairPredictionService) {
-        context.addServlet(new ServletHolder(new MovieService(dataManager)), ROUTE_MOVIE);
+        context.addServlet(new ServletHolder(new MovieService(dataManager)), ROUTE_ITEM);
         context.addServlet(new ServletHolder(new UserService(dataManager)), ROUTE_USER);
-        context.addServlet(new ServletHolder(new SimilarMovieService(embStore)), ROUTE_SIMILAR_MOVIE);
+        context.addServlet(new ServletHolder(new SimilarMovieService(embStore)), ROUTE_SIMILAR);
         context.addServlet(new ServletHolder(new RecommendationService(dataManager, candidateGenerator, topkStore)), ROUTE_RECOMMENDATION);
         context.addServlet(new ServletHolder(new SetEmbeddingService(embStore)), ROUTE_SET_EMBEDDING);
         context.addServlet(new ServletHolder(new HealthService()), ROUTE_HEALTH);
