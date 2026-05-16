@@ -18,7 +18,7 @@ import java.util.List;
 import java.util.Map;
 import java.util.Set;
 
-public class RedisEmbeddingStore {
+public class RedisEmbeddingStore implements EmbeddingStore {
     private static final Logger log = LoggerFactory.getLogger(RedisEmbeddingStore.class);
     private final JedisPool pool;
     private final String keyPrefix;
@@ -28,6 +28,7 @@ public class RedisEmbeddingStore {
         this.keyPrefix = keyPrefix;
     }
 
+    @Override
     public float[] getEmbedding(int movieId) {
         try (Jedis jedis = pool.getResource()) {
             String v = jedis.get(keyPrefix + ":" + movieId);
@@ -36,16 +37,17 @@ public class RedisEmbeddingStore {
         }
     }
 
-    public void setEmbedding(int movieId, float[] vector) {
+    public void setEmbeddingNoTtl(int movieId, float[] vector) {
         try (Jedis jedis = pool.getResource()) {
             jedis.set(keyPrefix + ":" + movieId, toVectorString(vector));
         }
     }
 
     // ttlSeconds <= 0 means no expiry
+    @Override
     public void setEmbedding(int movieId, float[] vector, long ttlSeconds) {
         if (ttlSeconds <= 0) {
-            setEmbedding(movieId, vector);
+            setEmbeddingNoTtl(movieId, vector);
             return;
         }
         SetParams params = SetParams.setParams().ex(ttlSeconds);
@@ -56,6 +58,7 @@ public class RedisEmbeddingStore {
 
     // Bulk write — mirrors the Spark/Scala pattern of iterating model vectors after training.
     // Uses a pipeline to send all SETs in one round-trip instead of N.
+    @Override
     public void setEmbeddings(Map<Integer, float[]> vectors, long ttlSeconds) {
         if (vectors == null || vectors.isEmpty()) return;
         SetParams params = ttlSeconds > 0 ? SetParams.setParams().ex(ttlSeconds) : null;
@@ -74,6 +77,7 @@ public class RedisEmbeddingStore {
         }
     }
 
+    @Override
     public Map<Integer, float[]> getEmbeddings(Collection<Integer> movieIds) {
         Map<Integer, float[]> embeddings = new HashMap<>();
         if (movieIds == null || movieIds.isEmpty()) return embeddings;
@@ -141,6 +145,7 @@ public class RedisEmbeddingStore {
         return all;
     }
 
+    @Override
     public Set<Integer> scanIds(int maxKeys) {
         Set<Integer> ids = new HashSet<>();
 

@@ -3,6 +3,8 @@ package com.recsys.serving;
 import com.recsys.features.CandidateGenerator;
 import com.recsys.features.DataLoader;
 import com.recsys.features.DataManager;
+import com.recsys.features.EmbeddingStore;
+import com.recsys.features.LocalEmbeddingCache;
 import com.recsys.features.PairPredictionService;
 import com.recsys.features.RedisEmbeddingStore;
 import com.recsys.features.RedisTopKStore;
@@ -39,7 +41,6 @@ public class RecSysServer {
 
         try (JedisPool jedisPool = new JedisPool(redisHost, redisPort)) {
             DataManager dataManager = DataManager.getInstance();
-            CandidateGenerator candidateGenerator = new CandidateGenerator(dataManager);
             PairPredictionService pairPredictionService = new PairPredictionService();
             RedisEmbeddingStore embStore     = new RedisEmbeddingStore(jedisPool, "i2vEmb");
             RedisEmbeddingStore userEmbStore = new RedisEmbeddingStore(jedisPool, "u2vEmb");
@@ -47,11 +48,24 @@ public class RecSysServer {
 
             seedEmbeddings(embStore, userEmbStore);
 
+            // Tier 3: JVM heap caches in front of Redis for both item and user embeddings.
+            // preload() from classpath (Tier 1) avoids Redis round-trips at startup;
+            // warmUp() then adds any entries written by Flink that aren't in the classpath.
+            LocalEmbeddingCache embCache = new LocalEmbeddingCache(embStore);
+            embCache.preload(DataLoader.loadMovieEmbeddings());
+            embCache.warmUp();
+
+            LocalEmbeddingCache userEmbCache = new LocalEmbeddingCache(userEmbStore);
+            userEmbCache.preload(DataLoader.loadUserEmbeddings());
+            userEmbCache.warmUp();
+
+            CandidateGenerator candidateGenerator = new CandidateGenerator(dataManager, userEmbCache);
+
             InetSocketAddress inetAddress = new InetSocketAddress(DEFAULT_HOST, port);
             Server server = new Server(inetAddress);
 
             ServletContextHandler context = createContext();
-            registerRoutes(context, dataManager, candidateGenerator, embStore, topkStore, pairPredictionService);
+            registerRoutes(context, dataManager, candidateGenerator, embCache, topkStore, pairPredictionService);
 
             server.setHandler(context);
             server.setStopAtShutdown(true);
@@ -70,7 +84,7 @@ public class RecSysServer {
     private static void registerRoutes(ServletContextHandler context,
                                        DataManager dataManager,
                                        CandidateGenerator candidateGenerator,
-                                       RedisEmbeddingStore embStore,
+                                       EmbeddingStore embStore,
                                        RedisTopKStore topkStore,
                                        PairPredictionService pairPredictionService) {
         context.addServlet(new ServletHolder(new MovieService(dataManager)), ROUTE_ITEM);

@@ -2,7 +2,7 @@ package com.recsys.serving;
 
 import com.recsys.features.ExactVectorIndex;
 import com.recsys.features.DataManager;
-import com.recsys.features.RedisEmbeddingStore;
+import com.recsys.features.EmbeddingStore;
 import com.recsys.features.SearchResult;
 import com.recsys.models.Movie;
 import jakarta.servlet.http.HttpServletRequest;
@@ -19,10 +19,10 @@ public class SimilarMovieService extends BaseApiServlet {
     private static final int LIMIT_PER_GENRE = 50;
     private static final int RECALL_MULTIPLIER = 5;
 
-    private final RedisEmbeddingStore store;
+    private final EmbeddingStore store;
     private final DataManager dataManager = DataManager.getInstance();
 
-    public SimilarMovieService(RedisEmbeddingStore store) {
+    public SimilarMovieService(EmbeddingStore store) {
         this.store = store;
     }
 
