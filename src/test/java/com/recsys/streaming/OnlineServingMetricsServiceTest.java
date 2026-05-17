@@ -52,4 +52,26 @@ class OnlineServingMetricsServiceTest {
         assertThat(snapshot.recentFailureRate()).isCloseTo(0.5, within(1e-9));
         assertThat(snapshot.recentRejectedRate()).isCloseTo(0.5, within(1e-9));
     }
+
+    @Test
+    void strategySnapshot_exposesShareAndFailureRate() {
+        var service = new OnlineServingMetricsService(10);
+
+        service.recordSuccess(10L, "online");
+        service.recordSuccess(20L, "online+model");
+        service.recordFailure(5L, "online+model");
+
+        var snapshot = service.snapshot();
+        var onlineModel = snapshot.strategies().get("online+model");
+
+        assertThat(onlineModel.requests()).isEqualTo(2);
+        assertThat(onlineModel.failureCount()).isEqualTo(1);
+        assertThat(onlineModel.failureRate()).isCloseTo(0.5, within(1e-9));
+        // 2 out of 3 total requests
+        assertThat(onlineModel.share()).isCloseTo(2.0 / 3.0, within(1e-9));
+
+        var online = snapshot.strategies().get("online");
+        assertThat(online.share()).isCloseTo(1.0 / 3.0, within(1e-9));
+        assertThat(online.failureRate()).isZero();
+    }
 }

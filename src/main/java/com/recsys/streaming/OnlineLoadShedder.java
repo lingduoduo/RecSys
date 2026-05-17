@@ -54,8 +54,14 @@ public final class OnlineLoadShedder {
         return utilization() >= drainUtilization;
     }
 
+    /** Suggested Retry-After value in seconds; 1 when draining, 0 otherwise. */
+    public int retryAfterSeconds() {
+        return shouldDrain() ? 1 : 0;
+    }
+
     public Snapshot snapshot() {
         double utilization = utilization();
+        int retryAfterSeconds = utilization >= drainUtilization ? 1 : 0;
         return new Snapshot(
                 inFlightRequests.get(),
                 maxConcurrentRequests,
@@ -63,7 +69,8 @@ public final class OnlineLoadShedder {
                 drainUtilization,
                 acceptedRequests.get(),
                 rejectedRequests.get(),
-                Math.max(0, (int) Math.round((1.0 - utilization) * 100.0))
+                Math.max(0, (int) Math.round((1.0 - utilization) * 100.0)),
+                retryAfterSeconds
         );
     }
 
@@ -98,6 +105,7 @@ public final class OnlineLoadShedder {
             double drainUtilization,
             long acceptedRequests,
             long rejectedRequests,
-            int suggestedWeight
+            int suggestedWeight,
+            int retryAfterSeconds
     ) {}
 }

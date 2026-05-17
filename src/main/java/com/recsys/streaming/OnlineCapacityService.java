@@ -30,12 +30,17 @@ public final class OnlineCapacityService {
                              OnlineLoadShedder.Snapshot load) {
         double observedQps = metrics == null ? 0.0 : metrics.qps();
         double qpsUtilization = observedQps / peakQps;
+        double headroomQps = Math.max(0.0, peakQps - observedQps);
+        boolean overloaded = qpsUtilization >= 1.0
+                || (load != null && load.utilization() >= load.drainUtilization());
         return new Snapshot(
                 targetDau,
                 peakQps,
                 peakTps,
                 observedQps,
                 qpsUtilization,
+                headroomQps,
+                overloaded,
                 load,
                 "Redis + MQ/Kafka peak shaving: Kafka absorbs bursty TPS; Flink writes compact Redis aggregates; stateless API instances serve peak QPS."
         );
@@ -57,6 +62,8 @@ public final class OnlineCapacityService {
             long peakTps,
             double observedQps,
             double qpsUtilization,
+            double headroomQps,
+            boolean overloaded,
             OnlineLoadShedder.Snapshot load,
             String peakShaving
     ) {}

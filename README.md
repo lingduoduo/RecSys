@@ -75,11 +75,11 @@ For `200w+` DAU and `8k` peak QPS, the serving API should avoid synchronous heav
 
 The online-serving code includes runtime support for these assumptions:
 
-- `OnlineServingMetricsService` tracks rolling QPS, failures, rejected requests, latency, and recommendation strategy mix.
-- `OnlineLoadShedder` limits concurrent online requests and returns `429` when the instance is overloaded.
-- `OnlineCapacityService` exposes the configured DAU/QPS/TPS targets alongside observed traffic.
+- `OnlineServingMetricsService` tracks rolling QPS, latency, failures, rejected requests, and per-strategy failure rate and traffic mix (`share`).
+- `OnlineLoadShedder` limits concurrent online requests; returns `429` with a `Retry-After` header when the instance is draining.
+- `OnlineCapacityService` exposes DAU/QPS/TPS targets, remaining QPS `headroomQps`, and an `overloaded` flag alongside observed traffic.
 - `/health` reports readiness, current QPS, in-flight requests, and suggested load-balancer weight.
-- `/online/ops` returns metrics, load-shedder state, and capacity targets in one JSON payload.
+- `/online/ops` returns metrics, load-shedder state, and capacity targets in one JSON payload with a `servedAt` ISO-8601 timestamp; also sets `Retry-After` when the shedder is draining.
 
 Related production concerns:
 
@@ -794,9 +794,10 @@ See [streaming/online-serving/README.md](streaming/online-serving/README.md) for
 | `OnlineRecommendationEngine` | Scores candidates using per-user recent history + trending rank |
 | `CandidateGenerator.byEmbedding` | ANN recall on offline user-tower embeddings |
 | `OnlineRecommendationService` | Blends the two sources, excludes recently watched, falls back gracefully for cold-start users |
-| `OnlineServingMetricsService` | Tracks rolling QPS, latency, failures, rejected requests, and strategy mix |
-| `OnlineLoadShedder` | Caps per-instance in-flight requests and sheds overload with HTTP `429` |
-| `OnlineCapacityService` | Exposes DAU/QPS/TPS sizing assumptions with observed traffic |
+| `OnlineServingMetricsService` | Tracks rolling QPS, latency, failures, rejected requests, and per-strategy failure rate and traffic mix (`share`) |
+| `OnlineLoadShedder` | Caps per-instance in-flight requests; sheds overload with HTTP `429` + `Retry-After` header |
+| `OnlineCapacityService` | Exposes DAU/QPS/TPS sizing assumptions, remaining QPS headroom (`headroomQps`), and an `overloaded` flag alongside observed traffic |
+| `OnlineOpsServlet` | Returns combined metrics/load/capacity snapshot at `GET /online/ops` with a `servedAt` timestamp; sets `Retry-After` when draining |
 | `OnlinePredictionServer` | Jetty HTTP server on port `7010` exposing `/health`, `/online/features`, `/online/recommendation`, and `/online/ops` |
 
 Recommended entrypoint:
@@ -1018,10 +1019,10 @@ movie_embeddings.txt / user_embeddings.txt (classpath)
 - `OnlineRecommendationEngine` — scores candidates from per-user recent-watch history (Redis) and trending Top-K (Redis sorted set). Accepts `window` (`last_hour`, `last_day`, `last_month`).
 - `OnlineRecommendationService` — orchestrates `OnlineRecommendationEngine` + `CandidateGenerator.byEmbedding`. Blends normalized rank scores (`ONLINE_WEIGHT=1.0`, `MODEL_WEIGHT=0.5`), excludes recently-watched movies, and falls back to online-only for cold-start users. Returns a `strategy` field in the result.
 - `OnlineFeatureStreamingJob` (profile `streaming-flink`) — Flink 1.18 job that reads `MovieEvent` records from Kafka or a local file, then writes per-user recent-movie lists, per-movie engagement metrics, and global top-K to Redis.
-- `OnlineServingMetricsService` — node-local rolling-window metrics for online serving: QPS, average latency, failures, rejected requests, and strategy mix.
-- `OnlineLoadShedder` — node-local concurrency limiter for online requests. Excess traffic returns HTTP `429` rather than queueing behind Redis/model work.
-- `OnlineCapacityService` — exposes runtime sizing assumptions (`ONLINE_TARGET_DAU`, `ONLINE_PEAK_QPS`, `ONLINE_PEAK_TPS`) next to observed QPS.
-- `OnlineOpsServlet` — returns the combined metrics/load/capacity snapshot at `GET /online/ops`.
+- `OnlineServingMetricsService` — node-local rolling-window metrics for online serving: QPS, average latency, failures, rejected requests, and per-strategy `failureRate` and `share` (traffic mix). The strategy map is capped at 50 entries.
+- `OnlineLoadShedder` — node-local concurrency limiter for online requests. Excess traffic returns HTTP `429`; when draining, `retryAfterSeconds()` returns `1` and callers can set a `Retry-After` header.
+- `OnlineCapacityService` — exposes runtime sizing assumptions (`ONLINE_TARGET_DAU`, `ONLINE_PEAK_QPS`, `ONLINE_PEAK_TPS`) alongside observed QPS, remaining `headroomQps`, and an `overloaded` flag.
+- `OnlineOpsServlet` — returns the combined metrics/load/capacity snapshot at `GET /online/ops` with a `servedAt` ISO-8601 timestamp; sets `Retry-After` on the response when the shedder is draining.
 - `OnlinePredictionServer` — Jetty entry point on port `7010`; wires `OnlineRecommendationService` and exposes `/health`, `/online/features`, `/online/recommendation`, and `/online/ops`.
 
 **Model serving:**

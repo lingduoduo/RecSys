@@ -43,4 +43,20 @@ class OnlineLoadShedderTest {
 
         assertThat(shedder.snapshot().suggestedWeight()).isEqualTo(75);
     }
+
+    @Test
+    void retryAfterSeconds_isOneWhenDraining_zeroOtherwise() {
+        var shedder = new OnlineLoadShedder(2, 0.75);
+
+        // below drain threshold — no retry-after
+        assertThat(shedder.snapshot().retryAfterSeconds()).isEqualTo(0);
+        assertThat(shedder.retryAfterSeconds()).isEqualTo(0);
+
+        shedder.tryAcquire();
+        shedder.tryAcquire(); // 100% utilization >= 0.75 drain threshold
+
+        assertThat(shedder.shouldDrain()).isTrue();
+        assertThat(shedder.snapshot().retryAfterSeconds()).isEqualTo(1);
+        assertThat(shedder.retryAfterSeconds()).isEqualTo(1);
+    }
 }
