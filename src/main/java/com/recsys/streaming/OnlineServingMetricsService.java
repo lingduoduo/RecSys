@@ -1,5 +1,8 @@
 package com.recsys.streaming;
 
+import org.slf4j.Logger;
+import org.slf4j.LoggerFactory;
+
 import java.time.Instant;
 import java.util.ArrayDeque;
 import java.util.Deque;
@@ -12,7 +15,9 @@ import java.util.concurrent.atomic.AtomicLong;
  * Lightweight request metrics for the Jetty online-serving path.
  */
 public final class OnlineServingMetricsService {
+    private static final Logger log = LoggerFactory.getLogger(OnlineServingMetricsService.class);
     private static final int DEFAULT_WINDOW_SECONDS = 60;
+    private static final int MAX_STRATEGIES = 50;
 
     private final int windowSeconds;
     private final AtomicLong totalRequests = new AtomicLong();
@@ -41,11 +46,16 @@ public final class OnlineServingMetricsService {
 
     public void recordSuccess(long latencyMs, String strategy) {
         record(latencyMs, false, false);
-        recordStrategy(latencyMs, strategy);
+        recordStrategy(latencyMs, false, strategy);
     }
 
     public void recordFailure(long latencyMs) {
         record(latencyMs, true, false);
+    }
+
+    public void recordFailure(long latencyMs, String strategy) {
+        record(latencyMs, true, false);
+        recordStrategy(latencyMs, true, strategy);
     }
 
     public void recordRejected() {
@@ -69,7 +79,7 @@ public final class OnlineServingMetricsService {
             recentAvgLatencyMs = windowTotal > 0 ? (double) windowLatencyMs / windowTotal : 0.0;
         }
 
-        Map<String, StrategySnapshot> strategies = strategySnapshot();
+        Map<String, StrategySnapshot> strategies = strategySnapshot(total);
         double recentFailureRate = recentTotal > 0 ? (double) recentFailures / recentTotal : 0.0;
         double recentRejectedRate = recentTotal > 0 ? (double) recentRejected / recentTotal : 0.0;
         double qps = (double) recentTotal / windowSeconds;
@@ -117,32 +127,37 @@ public final class OnlineServingMetricsService {
     private void evict(long nowSeconds) {
         long cutoff = nowSeconds - windowSeconds;
         while (!window.isEmpty() && window.peekFirst().timestampSeconds < cutoff) {
-            RequestRecord record = window.pollFirst();
+            RequestRecord r = window.pollFirst();
             windowTotal--;
-            if (record.failed) windowFailures--;
-            if (record.rejected) windowRejected--;
-            windowLatencyMs -= record.latencyMs;
+            if (r.failed) windowFailures--;
+            if (r.rejected) windowRejected--;
+            windowLatencyMs -= r.latencyMs;
         }
     }
 
-    private void recordStrategy(long latencyMs, String strategy) {
+    private void recordStrategy(long latencyMs, boolean failed, String strategy) {
         String key = strategy == null || strategy.isBlank() ? "unknown" : strategy.trim();
         synchronized (strategyLock) {
+            if (!strategyMetrics.containsKey(key) && strategyMetrics.size() >= MAX_STRATEGIES) {
+                log.warn("Strategy metrics map has {} entries; ignoring unknown strategy '{}'", MAX_STRATEGIES, key);
+                return;
+            }
             StrategyMetrics metrics = strategyMetrics.computeIfAbsent(key, ignored -> new StrategyMetrics());
             metrics.requests++;
+            if (failed) metrics.failureCount++;
             metrics.totalLatencyMs += latencyMs;
         }
     }
 
-    private Map<String, StrategySnapshot> strategySnapshot() {
+    private Map<String, StrategySnapshot> strategySnapshot(long total) {
         synchronized (strategyLock) {
             Map<String, StrategySnapshot> copy = new LinkedHashMap<>();
             for (Map.Entry<String, StrategyMetrics> entry : strategyMetrics.entrySet()) {
-                StrategyMetrics metrics = entry.getValue();
-                double avgLatencyMs = metrics.requests > 0
-                        ? (double) metrics.totalLatencyMs / metrics.requests
-                        : 0.0;
-                copy.put(entry.getKey(), new StrategySnapshot(metrics.requests, avgLatencyMs));
+                StrategyMetrics m = entry.getValue();
+                double avgLatencyMs = m.requests > 0 ? (double) m.totalLatencyMs / m.requests : 0.0;
+                double failureRate = m.requests > 0 ? (double) m.failureCount / m.requests : 0.0;
+                double share = total > 0 ? (double) m.requests / total : 0.0;
+                copy.put(entry.getKey(), new StrategySnapshot(m.requests, m.failureCount, avgLatencyMs, failureRate, share));
             }
             return copy;
         }
@@ -174,12 +189,19 @@ public final class OnlineServingMetricsService {
             Map<String, StrategySnapshot> strategies
     ) {}
 
-    public record StrategySnapshot(long requests, double avgLatencyMs) {}
+    public record StrategySnapshot(
+            long requests,
+            long failureCount,
+            double avgLatencyMs,
+            double failureRate,
+            double share
+    ) {}
 
     private record RequestRecord(long timestampSeconds, long latencyMs, boolean failed, boolean rejected) {}
 
     private static final class StrategyMetrics {
         private long requests;
+        private long failureCount;
         private long totalLatencyMs;
     }
 }
