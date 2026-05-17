@@ -17,17 +17,6 @@ public class MovieEvent {
 
     public MovieEvent() {}
 
-    public boolean hasEventIdentity() {
-        return eventId != null && !eventId.isBlank();
-    }
-
-    public String idempotencyKey() {
-        if (hasEventIdentity()) {
-            return eventId.trim();
-        }
-        return userId + ":" + movieId + ":" + eventType + ":" + eventTimeMillis;
-    }
-
     public boolean isImpression() {
         return matches("impression") || matches("exposure") || matches("show");
     }
