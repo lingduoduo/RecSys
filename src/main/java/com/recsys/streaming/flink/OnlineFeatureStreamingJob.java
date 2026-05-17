@@ -138,6 +138,9 @@ public final class OnlineFeatureStreamingJob {
 
     private static Properties kafkaProperties(ParameterTool params) {
         Properties properties = new Properties();
+        properties.setProperty("max.poll.records", params.get("mq.max-poll-records", "500"));
+        properties.setProperty("fetch.min.bytes", params.get("mq.fetch-min-bytes", "1"));
+        properties.setProperty("fetch.max.wait.ms", params.get("mq.fetch-max-wait-ms", "500"));
         for (Map.Entry<String, String> entry : params.toMap().entrySet()) {
             if (entry.getKey().startsWith("kafka.")) {
                 properties.setProperty(entry.getKey().substring("kafka.".length()), entry.getValue());

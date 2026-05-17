@@ -62,6 +62,22 @@ class OnlineFeatureStoreTest {
         assertThat(store.getRecentMovieIds(4, 10)).containsExactly(1, 3);
     }
 
+    @Test
+    void getRecentMovieIds_evictsWhenHotUserCacheExceedsLimit() {
+        var stub = new RedisPoolStub();
+        when(stub.pool.getResource()).thenReturn(stub.jedis);
+        when(stub.jedis.get("user:1:recent_movies")).thenReturn("1");
+        when(stub.jedis.get("user:2:recent_movies")).thenReturn("2");
+        when(stub.jedis.get("user:3:recent_movies")).thenReturn("3");
+        var store = new OnlineFeatureStore(stub.pool, 5_000L, 2);
+
+        store.getRecentMovieIds(1, 10);
+        store.getRecentMovieIds(2, 10);
+        store.getRecentMovieIds(3, 10);
+
+        assertThat(store.cacheSize()).isLessThanOrEqualTo(2);
+    }
+
     // ── minimal Jedis/JedisPool stub ──────────────────────────────────────
 
     private static final class RedisPoolStub {
