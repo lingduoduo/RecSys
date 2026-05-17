@@ -6,9 +6,16 @@ import redis.clients.jedis.Jedis;
 import redis.clients.jedis.JedisPool;
 
 import java.util.List;
+import java.util.concurrent.atomic.AtomicLong;
 
 /**
  * Redis-backed fixed-window rate limiter for cross-instance request protection.
+ *
+ * Local pre-check: the first {@code localPassThreshold} requests in each window are
+ * allowed without a Redis round-trip.  Only when the local count climbs above that
+ * threshold does the limiter consult Redis for accurate cross-instance accounting.
+ * This keeps the common case (well under limit) free of network latency while still
+ * enforcing the global limit for burst traffic.
  */
 public final class RedisRateLimiter {
     private static final Logger log = LoggerFactory.getLogger(RedisRateLimiter.class);
@@ -29,6 +36,11 @@ public final class RedisRateLimiter {
     private final long limit;
     private final int windowSeconds;
     private final boolean enabled;
+    private final long localPassThreshold;
+
+    // Local window state — benign race at boundary is acceptable for a soft pre-check.
+    private volatile long localWindowBucket = -1L;
+    private final AtomicLong localCount = new AtomicLong(0L);
 
     public RedisRateLimiter(JedisPool pool) {
         this(
@@ -40,21 +52,40 @@ public final class RedisRateLimiter {
     }
 
     RedisRateLimiter(JedisPool pool, String keyPrefix, long limit, int windowSeconds) {
+        this(pool, keyPrefix, limit, windowSeconds, 0.7);
+    }
+
+    RedisRateLimiter(JedisPool pool, String keyPrefix, long limit, int windowSeconds,
+                     double localPassFraction) {
         this.pool = pool;
         this.keyPrefix = keyPrefix;
         this.limit = Math.max(0L, limit);
         this.windowSeconds = Math.max(1, windowSeconds);
         this.enabled = pool != null && this.limit > 0L;
+        this.localPassThreshold = (long) (Math.max(0L, this.limit) * Math.max(0.0, Math.min(1.0, localPassFraction)));
     }
 
     public static RedisRateLimiter disabled() {
-        return new RedisRateLimiter(null, "rate:online:", 0L, 1);
+        return new RedisRateLimiter(null, "rate:online:", 0L, 1, 0.0);
     }
 
     public Decision tryAcquire(String bucket) {
         if (!enabled) {
             return Decision.allowed(limit, 0, false);
         }
+
+        // Local fast path: skip Redis when clearly under threshold for this window.
+        long nowBucket = System.currentTimeMillis() / (windowSeconds * 1_000L);
+        if (nowBucket != localWindowBucket) {
+            localWindowBucket = nowBucket;
+            localCount.set(0L);
+        }
+        long local = localCount.incrementAndGet();
+        if (local <= localPassThreshold) {
+            return Decision.allowed(limit - local, 0, false);
+        }
+
+        // Above local threshold — consult Redis for accurate cross-instance count.
         String key = keyPrefix + normalizeBucket(bucket);
         try (Jedis jedis = pool.getResource()) {
             Object raw = jedis.eval(
@@ -70,7 +101,7 @@ public final class RedisRateLimiter {
     }
 
     public Snapshot snapshot() {
-        return new Snapshot(enabled, limit, windowSeconds);
+        return new Snapshot(enabled, limit, windowSeconds, localPassThreshold);
     }
 
     public boolean isEnabled() {
@@ -83,6 +114,10 @@ public final class RedisRateLimiter {
 
     public int windowSeconds() {
         return windowSeconds;
+    }
+
+    public long localPassThreshold() {
+        return localPassThreshold;
     }
 
     private Decision parseDecision(Object raw) {
@@ -150,6 +185,7 @@ public final class RedisRateLimiter {
     public record Snapshot(
             boolean enabled,
             long limit,
-            int windowSeconds
+            int windowSeconds,
+            long localPassThreshold
     ) {}
 }

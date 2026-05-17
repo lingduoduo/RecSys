@@ -21,7 +21,9 @@ public final class OnlinePredictionServer {
         int redisPort = readIntEnv("REDIS_PORT", 6379);
         int port = readIntEnv("ONLINE_DEMO_PORT", DEFAULT_PORT);
 
-        try (JedisPool jedisPool = new JedisPool(redisHost, redisPort)) {
+        try (JedisPool jedisPool = new JedisPool(redisHost, redisPort);
+             AsyncEventPublisher asyncEventPublisher = new AsyncEventPublisher()) {
+
             DataManager dataManager = DataManager.getInstance();
             CandidateGenerator candidateGenerator = new CandidateGenerator(dataManager);
             RedisTopKStore topkStore = new RedisTopKStore(jedisPool, "topk:");
@@ -39,11 +41,14 @@ public final class OnlinePredictionServer {
             context.setContextPath("/");
             context.addServlet(new ServletHolder(new OnlineHealthServlet(metricsService, loadShedder)), "/health");
             context.addServlet(new ServletHolder(new OnlineFeaturesServlet(
-                    recommendationService, metricsService, loadShedder, redisRateLimiter)), "/online/features");
+                    recommendationService, metricsService, loadShedder, redisRateLimiter,
+                    asyncEventPublisher)), "/online/features");
             context.addServlet(new ServletHolder(new OnlinePredictionServlet(
-                    recommendationService, metricsService, loadShedder, redisRateLimiter)), "/online/recommendation");
+                    recommendationService, metricsService, loadShedder, redisRateLimiter,
+                    asyncEventPublisher)), "/online/recommendation");
             context.addServlet(new ServletHolder(new OnlineOpsServlet(
-                    metricsService, loadShedder, capacityService, redisRateLimiter)), "/online/ops");
+                    metricsService, loadShedder, capacityService, redisRateLimiter,
+                    asyncEventPublisher)), "/online/ops");
             server.setHandler(context);
             server.setStopAtShutdown(true);
             server.start();

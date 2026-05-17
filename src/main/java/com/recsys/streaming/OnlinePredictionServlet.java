@@ -7,6 +7,8 @@ import jakarta.servlet.http.HttpServletResponse;
 
 import java.io.IOException;
 import java.util.List;
+import java.util.Map;
+import java.util.UUID;
 
 public final class OnlinePredictionServlet extends ApiServlet {
     private static final int SC_TOO_MANY_REQUESTS = 429;
@@ -15,26 +17,36 @@ public final class OnlinePredictionServlet extends ApiServlet {
     private final OnlineServingMetricsService metricsService;
     private final OnlineLoadShedder loadShedder;
     private final RedisRateLimiter redisRateLimiter;
+    private final AsyncEventPublisher asyncEventPublisher;
 
     public OnlinePredictionServlet(OnlineRecommendationService recommendationService) {
         this(recommendationService, new OnlineServingMetricsService(),
-                new OnlineLoadShedder(), RedisRateLimiter.disabled());
+                new OnlineLoadShedder(), RedisRateLimiter.disabled(), null);
     }
 
     public OnlinePredictionServlet(OnlineRecommendationService recommendationService,
                                    OnlineServingMetricsService metricsService,
                                    OnlineLoadShedder loadShedder) {
-        this(recommendationService, metricsService, loadShedder, RedisRateLimiter.disabled());
+        this(recommendationService, metricsService, loadShedder, RedisRateLimiter.disabled(), null);
     }
 
     public OnlinePredictionServlet(OnlineRecommendationService recommendationService,
                                    OnlineServingMetricsService metricsService,
                                    OnlineLoadShedder loadShedder,
                                    RedisRateLimiter redisRateLimiter) {
+        this(recommendationService, metricsService, loadShedder, redisRateLimiter, null);
+    }
+
+    public OnlinePredictionServlet(OnlineRecommendationService recommendationService,
+                                   OnlineServingMetricsService metricsService,
+                                   OnlineLoadShedder loadShedder,
+                                   RedisRateLimiter redisRateLimiter,
+                                   AsyncEventPublisher asyncEventPublisher) {
         this.recommendationService = recommendationService;
         this.metricsService = metricsService;
         this.loadShedder = loadShedder;
         this.redisRateLimiter = redisRateLimiter;
+        this.asyncEventPublisher = asyncEventPublisher;
     }
 
     @Override
@@ -71,6 +83,11 @@ public final class OnlinePredictionServlet extends ApiServlet {
                     result.recommendations()
             ));
             metricsService.recordSuccess(elapsedMs(startedAtMs), result.strategy());
+
+            // Fire impression event asynchronously — non-blocking, decoupled from MQ availability.
+            if (asyncEventPublisher != null) {
+                asyncEventPublisher.publish(impressionEvent(userId, result));
+            }
         } catch (BadRequestException | IllegalArgumentException e) {
             metricsService.recordFailure(elapsedMs(startedAtMs));
             writeError(response, HttpServletResponse.SC_BAD_REQUEST, e.getMessage());
@@ -83,6 +100,23 @@ public final class OnlinePredictionServlet extends ApiServlet {
             writeError(response, HttpServletResponse.SC_INTERNAL_SERVER_ERROR, "internal server error");
         } finally {
             loadShedder.release();
+        }
+    }
+
+    private static String impressionEvent(int userId, OnlineRecommendationResult result) {
+        try {
+            return MAPPER.writeValueAsString(Map.of(
+                    "eventId",         UUID.randomUUID().toString(),
+                    "userId",          userId,
+                    "eventType",       "impression",
+                    "strategy",        result.strategy(),
+                    "window",          result.window(),
+                    "k",               result.recommendations().size(),
+                    "eventTimeMillis", System.currentTimeMillis(),
+                    "source",          "online-prediction"
+            ));
+        } catch (Exception e) {
+            return "{}";
         }
     }
 
