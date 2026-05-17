@@ -19,6 +19,7 @@ RecSys is a compact Maven workspace for experimenting with recommendation-system
 - [Recommendation Flow](#recommendation-flow)
 - [Recommendation Serving API](#recommendation-serving-api)
 - [Configuration](#configuration)
+- [Capacity Planning](#capacity-planning)
 - [Project Layout](#project-layout)
 - [API Reference](#api-reference)
 - [Model Serving Demo](#model-serving-demo)
@@ -55,6 +56,38 @@ Recall narrows the catalog to a candidate set; ranking scores and orders those c
 - **Embedding recall** (`CandidateGenerator.byEmbedding`): ANN search on offline-trained user-tower embeddings.
 
 A normalized rank score fuses the two lists. Cold-start users with no embedding fall back to behavioral signals only. The response `strategy` field (`"online+model"` or `"online"`) shows which signals fired.
+
+---
+
+## Capacity Planning
+
+This demo is sized for local development, but the production shape should be planned around the online serving path:
+
+| Dimension | Production target / assumption | Design implication |
+|---|---:|---|
+| DAU / system daily active users | `200w+` users | Keep per-user online state compact: recent history lists, counters, and small learned parameters rather than large mutable profiles |
+| Peak read QPS | `8k` recommendation requests/s | Serve hot features from local JVM cache first, Redis second; keep request-time ranking bounded by candidate count |
+| Event TPS | Higher than read QPS during traffic bursts | Write behavior logs to MQ/Kafka first, then let Flink consume and aggregate asynchronously |
+| Data scale | User history, item embeddings, engagement counters, Top-K windows | Store durable model artifacts offline; store online features in Redis with key prefixes, TTLs, and bounded Top-K/list sizes |
+| Machine scale | Horizontally scaled stateless API + partitioned stream workers + Redis cluster/sentinel | Add serving instances behind a load balancer; scale Flink/Kafka by partitions; shard or cluster Redis by feature family |
+
+For `200w+` DAU and `8k` peak QPS, the serving API should avoid synchronous heavy feature construction. Redis stores the latest online features (`user:<id>:recent_movies`, `movie:<id>:metrics`, `topk:<window>`) and model/vector side data that must be read with low latency. MQ/Kafka absorbs write spikes from exposure/click/view/order logs, and Flink smooths that bursty TPS into incremental Redis updates. This Redis + MQ peak-shaving pattern keeps recommendation reads predictable even when event traffic temporarily exceeds steady-state processing capacity.
+
+The online-serving code includes runtime support for these assumptions:
+
+- `OnlineServingMetricsService` tracks rolling QPS, failures, rejected requests, latency, and recommendation strategy mix.
+- `OnlineLoadShedder` limits concurrent online requests and returns `429` when the instance is overloaded.
+- `OnlineCapacityService` exposes the configured DAU/QPS/TPS targets alongside observed traffic.
+- `/health` reports readiness, current QPS, in-flight requests, and suggested load-balancer weight.
+- `/online/ops` returns metrics, load-shedder state, and capacity targets in one JSON payload.
+
+Related production concerns:
+
+- **Latency SLO:** track p50/p95/p99 end-to-end latency separately for recall, Redis reads, ranking, and response serialization.
+- **Cache hit rate:** watch JVM local-cache hit rate and Redis MGET latency; hot embeddings and Top-K windows should avoid repeated cold reads.
+- **Backpressure:** monitor Kafka consumer lag, Flink checkpoint duration, and Redis write latency so bursty TPS does not silently stale online features.
+- **Degradation:** when Redis or model inference is slow, fall back to cached Top-K/trending recommendations and cap candidate counts.
+- **Capacity triggers:** scale API replicas on QPS/CPU/p99 latency, Kafka/Flink on lag and processing time, and Redis on memory, ops/s, network, and hot-key pressure.
 
 ---
 
@@ -761,7 +794,10 @@ See [streaming/online-serving/README.md](streaming/online-serving/README.md) for
 | `OnlineRecommendationEngine` | Scores candidates using per-user recent history + trending rank |
 | `CandidateGenerator.byEmbedding` | ANN recall on offline user-tower embeddings |
 | `OnlineRecommendationService` | Blends the two sources, excludes recently watched, falls back gracefully for cold-start users |
-| `OnlinePredictionServer` | Jetty HTTP server on port `7010` wiring all of the above |
+| `OnlineServingMetricsService` | Tracks rolling QPS, latency, failures, rejected requests, and strategy mix |
+| `OnlineLoadShedder` | Caps per-instance in-flight requests and sheds overload with HTTP `429` |
+| `OnlineCapacityService` | Exposes DAU/QPS/TPS sizing assumptions with observed traffic |
+| `OnlinePredictionServer` | Jetty HTTP server on port `7010` exposing `/health`, `/online/features`, `/online/recommendation`, and `/online/ops` |
 
 Recommended entrypoint:
 
@@ -774,7 +810,20 @@ sh streaming/online-serving/scripts/load_online_features.sh
 mvn exec:java -Dexec.mainClass="com.recsys.streaming.OnlinePredictionServer"
 # 4. Try it
 curl "http://localhost:7010/online/recommendation?userId=123&window=last_hour&k=5"
+curl "http://localhost:7010/online/ops"
 ```
+
+Online-serving environment knobs:
+
+| Env var | Default | Purpose |
+|---|---:|---|
+| `ONLINE_DEMO_PORT` | `7010` | Online Jetty server port |
+| `ONLINE_MAX_CONCURRENT_REQUESTS` | `512` | Per-instance in-flight request cap before returning `429` |
+| `ONLINE_DRAIN_UTILIZATION` | `0.90` | Utilization threshold where `/health` returns `503` for load-balancer drain |
+| `ONLINE_METRICS_WINDOW_SECONDS` | `60` | Rolling metrics window for QPS, latency, failures, and rejected requests |
+| `ONLINE_TARGET_DAU` | `2000000` | Runtime capacity assumption for daily active users |
+| `ONLINE_PEAK_QPS` | `8000` | Runtime peak read-QPS target |
+| `ONLINE_PEAK_TPS` | `20000` | Runtime peak event-TPS target used for sizing notes |
 
 Legacy note: `docker-compose.streaming.yml` is still available for the older root-level setup, but `streaming/online-serving` is the maintained path.
 
@@ -969,7 +1018,11 @@ movie_embeddings.txt / user_embeddings.txt (classpath)
 - `OnlineRecommendationEngine` — scores candidates from per-user recent-watch history (Redis) and trending Top-K (Redis sorted set). Accepts `window` (`last_hour`, `last_day`, `last_month`).
 - `OnlineRecommendationService` — orchestrates `OnlineRecommendationEngine` + `CandidateGenerator.byEmbedding`. Blends normalized rank scores (`ONLINE_WEIGHT=1.0`, `MODEL_WEIGHT=0.5`), excludes recently-watched movies, and falls back to online-only for cold-start users. Returns a `strategy` field in the result.
 - `OnlineFeatureStreamingJob` (profile `streaming-flink`) — Flink 1.18 job that reads `MovieEvent` records from Kafka or a local file, then writes per-user recent-movie lists, per-movie engagement metrics, and global top-K to Redis.
-- `OnlinePredictionServer` — Jetty entry point on port `7010`; wires `OnlineRecommendationService` and exposes `/health`, `/online/features`, and `/online/recommendation`.
+- `OnlineServingMetricsService` — node-local rolling-window metrics for online serving: QPS, average latency, failures, rejected requests, and strategy mix.
+- `OnlineLoadShedder` — node-local concurrency limiter for online requests. Excess traffic returns HTTP `429` rather than queueing behind Redis/model work.
+- `OnlineCapacityService` — exposes runtime sizing assumptions (`ONLINE_TARGET_DAU`, `ONLINE_PEAK_QPS`, `ONLINE_PEAK_TPS`) next to observed QPS.
+- `OnlineOpsServlet` — returns the combined metrics/load/capacity snapshot at `GET /online/ops`.
+- `OnlinePredictionServer` — Jetty entry point on port `7010`; wires `OnlineRecommendationService` and exposes `/health`, `/online/features`, `/online/recommendation`, and `/online/ops`.
 
 **Model serving:**
 

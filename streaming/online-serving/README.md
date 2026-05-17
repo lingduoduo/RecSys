@@ -34,6 +34,36 @@ Today the repo includes both:
 
 That keeps the streaming path runnable without coupling it to the model-artifact service.
 
+## Production Sizing Notes
+
+Use these dimensions when translating the demo into a production online recommendation service:
+
+| Dimension | Target / assumption | Notes |
+|---|---:|---|
+| DAU | `200w+` system daily active users | Keep online user state bounded and expire inactive keys with TTLs |
+| Peak QPS | `8k` recommendation reads/s | Scale `OnlinePredictionServer` horizontally and keep Redis reads batched or cached |
+| Peak TPS | Bursty behavior-log writes | Send logs to Kafka/MQ first so ingestion does not block recommendation reads |
+| Data scale | Recent history, Top-K windows, engagement metrics, embeddings, learned serving parameters | Split durable offline artifacts from fast-changing Redis online features |
+| Machine scale | API replicas, Kafka partitions, Flink task slots, Redis shards/replicas | Scale each layer independently based on QPS, TPS, memory footprint, and latency SLOs |
+
+For the `200w+` DAU and `8k` peak-QPS case, Redis is the low-latency online feature store, not the primary shock absorber for raw events. MQ/Kafka handles traffic spikes first, Flink consumes at a controlled rate, and Redis receives compact aggregate updates. This Redis + MQ peak-shaving design protects the read path while preserving fresh behavioral features for serving.
+
+Runtime services:
+
+- `OnlineServingMetricsService` records rolling QPS, latency, failures, rejected requests, and strategy mix.
+- `OnlineLoadShedder` caps in-flight requests with `ONLINE_MAX_CONCURRENT_REQUESTS` and sheds excess traffic with HTTP `429`.
+- `OnlineCapacityService` exposes `ONLINE_TARGET_DAU`, `ONLINE_PEAK_QPS`, and `ONLINE_PEAK_TPS` assumptions at runtime.
+- `/online/ops` returns the combined metrics/load/capacity snapshot.
+- `/health` returns `503` when the instance crosses its drain utilization threshold.
+
+Related production concerns:
+
+- **Latency:** measure p50/p95/p99 for HTTP serving, Redis lookups, candidate generation, and ranking separately.
+- **Freshness:** alert on Kafka lag, Flink checkpoint failures, and stale Redis feature timestamps.
+- **Availability:** keep the API stateless, use Redis replicas or cluster mode, and keep a cached fallback path for trending results.
+- **Hot keys:** shard feature keys by user/item/window where needed, and cap list or sorted-set sizes to keep Redis operations bounded.
+- **Load shedding:** reject or downgrade expensive requests when p99 latency or queue depth crosses the service budget.
+
 ## Files
 
 - `streaming/online-serving/docker-compose.yml`
@@ -160,6 +190,20 @@ ONLINE_DEMO_PORT=7010 REDIS_HOST=localhost REDIS_PORT=6379 \
   mvn exec:java -Dexec.mainClass="com.recsys.streaming.OnlinePredictionServer"
 ```
 
+Online-serving env vars:
+
+| Env var | Default | Purpose |
+|---|---:|---|
+| `ONLINE_DEMO_PORT` | `7010` | Online Jetty server port |
+| `REDIS_HOST` | `localhost` | Redis host for online features and Top-K |
+| `REDIS_PORT` | `6379` | Redis port |
+| `ONLINE_MAX_CONCURRENT_REQUESTS` | `512` | Per-instance in-flight request cap before the service returns HTTP `429` |
+| `ONLINE_DRAIN_UTILIZATION` | `0.90` | In-flight utilization where `/health` returns `503` so load balancers can drain the node |
+| `ONLINE_METRICS_WINDOW_SECONDS` | `60` | Rolling metrics window for QPS, latency, failures, rejected requests, and strategy mix |
+| `ONLINE_TARGET_DAU` | `2000000` | Capacity target shown by `/online/ops` |
+| `ONLINE_PEAK_QPS` | `8000` | Peak recommendation read-QPS target shown by `/online/ops` |
+| `ONLINE_PEAK_TPS` | `20000` | Peak behavior-event TPS target shown by `/online/ops` |
+
 ## Recommendation Strategy
 
 `OnlineRecommendationService` blends two recall sources on every request:
@@ -188,6 +232,13 @@ Request blended recommendations:
 curl "http://localhost:7010/online/recommendation?userId=123&window=last_hour&k=5"
 ```
 
+Check readiness and capacity telemetry:
+
+```bash
+curl "http://localhost:7010/health"
+curl "http://localhost:7010/online/ops"
+```
+
 Example response shape:
 
 ```json
@@ -198,6 +249,37 @@ Example response shape:
   "recentMovies": [...],
   "trendingMovies": [...],
   "recommendations": [...]
+}
+```
+
+Example `/online/ops` response shape:
+
+```json
+{
+  "metrics": {
+    "totalRequests": 12,
+    "recentRequests": 12,
+    "qps": 0.2,
+    "recentAvgLatencyMs": 8.5,
+    "recentFailureRate": 0.0,
+    "recentRejectedRate": 0.0,
+    "strategies": {
+      "online+model": { "requests": 10, "avgLatencyMs": 9.0 }
+    }
+  },
+  "load": {
+    "inFlightRequests": 0,
+    "maxConcurrentRequests": 512,
+    "utilization": 0.0,
+    "suggestedWeight": 100
+  },
+  "capacity": {
+    "targetDau": 2000000,
+    "peakQps": 8000,
+    "peakTps": 20000,
+    "observedQps": 0.2,
+    "qpsUtilization": 0.000025
+  }
 }
 ```
 
