@@ -43,15 +43,20 @@ public final class OnlineFeatureStore implements RecentHistoryStore {
     @Override
     public List<Integer> getRecentMovieIds(int userId, int limit) {
         long now = System.currentTimeMillis();
+        // Fast path: serve from cache without locking.
         CachedHistory cached = historyCache.get(userId);
         if (cached != null && cached.expiresAtMs > now) {
             return applyLimit(cached.ids, limit);
         }
-
-        List<Integer> ids = fetchFromRedis(userId);
+        // Slow path: compute() serialises concurrent misses for the same userId so only
+        // one thread fetches from Redis (thundering-herd prevention).  Requests for
+        // different userIds are handled concurrently by ConcurrentHashMap's stripe locking.
         evictIfNeeded(now);
-        historyCache.put(userId, new CachedHistory(ids, now + cacheTtlMs));
-        return applyLimit(ids, limit);
+        CachedHistory fresh = historyCache.compute(userId, (id, existing) -> {
+            if (existing != null && existing.expiresAtMs > now) return existing;
+            return new CachedHistory(fetchFromRedis(id), now + cacheTtlMs);
+        });
+        return applyLimit(fresh.ids, limit);
     }
 
     private List<Integer> fetchFromRedis(int userId) {

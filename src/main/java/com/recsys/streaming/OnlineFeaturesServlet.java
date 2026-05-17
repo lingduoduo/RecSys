@@ -7,6 +7,8 @@ import jakarta.servlet.http.HttpServletResponse;
 
 import java.io.IOException;
 import java.util.List;
+import java.util.Map;
+import java.util.UUID;
 
 public final class OnlineFeaturesServlet extends ApiServlet {
     private static final int SC_TOO_MANY_REQUESTS = 429;
@@ -15,26 +17,36 @@ public final class OnlineFeaturesServlet extends ApiServlet {
     private final OnlineServingMetricsService metricsService;
     private final OnlineLoadShedder loadShedder;
     private final RedisRateLimiter redisRateLimiter;
+    private final AsyncEventPublisher asyncEventPublisher;
 
     public OnlineFeaturesServlet(OnlineRecommendationService recommendationService) {
         this(recommendationService, new OnlineServingMetricsService(),
-                new OnlineLoadShedder(), RedisRateLimiter.disabled());
+                new OnlineLoadShedder(), RedisRateLimiter.disabled(), null);
     }
 
     public OnlineFeaturesServlet(OnlineRecommendationService recommendationService,
                                  OnlineServingMetricsService metricsService,
                                  OnlineLoadShedder loadShedder) {
-        this(recommendationService, metricsService, loadShedder, RedisRateLimiter.disabled());
+        this(recommendationService, metricsService, loadShedder, RedisRateLimiter.disabled(), null);
     }
 
     public OnlineFeaturesServlet(OnlineRecommendationService recommendationService,
                                  OnlineServingMetricsService metricsService,
                                  OnlineLoadShedder loadShedder,
                                  RedisRateLimiter redisRateLimiter) {
+        this(recommendationService, metricsService, loadShedder, redisRateLimiter, null);
+    }
+
+    public OnlineFeaturesServlet(OnlineRecommendationService recommendationService,
+                                 OnlineServingMetricsService metricsService,
+                                 OnlineLoadShedder loadShedder,
+                                 RedisRateLimiter redisRateLimiter,
+                                 AsyncEventPublisher asyncEventPublisher) {
         this.recommendationService = recommendationService;
         this.metricsService = metricsService;
         this.loadShedder = loadShedder;
         this.redisRateLimiter = redisRateLimiter;
+        this.asyncEventPublisher = asyncEventPublisher;
     }
 
     @Override
@@ -69,6 +81,10 @@ public final class OnlineFeaturesServlet extends ApiServlet {
                     result.trendingMovies().stream().limit(k).toList()
             ));
             metricsService.recordSuccess(elapsedMs(startedAtMs), "features");
+
+            if (asyncEventPublisher != null) {
+                asyncEventPublisher.publish(featureViewEvent(userId, result));
+            }
         } catch (BadRequestException | IllegalArgumentException e) {
             metricsService.recordFailure(elapsedMs(startedAtMs));
             writeError(response, HttpServletResponse.SC_BAD_REQUEST, e.getMessage());
@@ -81,6 +97,21 @@ public final class OnlineFeaturesServlet extends ApiServlet {
             writeError(response, HttpServletResponse.SC_INTERNAL_SERVER_ERROR, "internal server error");
         } finally {
             loadShedder.release();
+        }
+    }
+
+    private static String featureViewEvent(int userId, OnlineRecommendationResult result) {
+        try {
+            return MAPPER.writeValueAsString(Map.of(
+                    "eventId",         UUID.randomUUID().toString(),
+                    "userId",          userId,
+                    "eventType",       "feature_view",
+                    "window",          result.window(),
+                    "eventTimeMillis", System.currentTimeMillis(),
+                    "source",          "online-features"
+            ));
+        } catch (Exception e) {
+            return "{}";
         }
     }
 
