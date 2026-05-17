@@ -822,6 +822,9 @@ Online-serving environment knobs:
 | `ONLINE_DEMO_PORT` | `7010` | Online Jetty server port |
 | `ONLINE_MAX_CONCURRENT_REQUESTS` | `512` | Per-instance in-flight request cap before returning `429` |
 | `ONLINE_DRAIN_UTILIZATION` | `0.90` | Utilization threshold where `/health` returns `503` for load-balancer drain |
+| `ONLINE_REDIS_RATE_LIMIT_QPS` | `0` | Optional Redis-backed cross-instance request limit; `0` disables distributed rate limiting |
+| `ONLINE_REDIS_RATE_LIMIT_WINDOW_SECONDS` | `1` | Redis rate-limit window size |
+| `ONLINE_FEATURE_CACHE_MAX_USERS` | `10000` | Max users kept in the short-TTL recent-history JVM cache |
 | `ONLINE_METRICS_WINDOW_SECONDS` | `60` | Rolling metrics window for QPS, latency, failures, and rejected requests |
 | `ONLINE_TARGET_DAU` | `2000000` | Runtime capacity assumption for daily active users |
 | `ONLINE_PEAK_QPS` | `8000` | Runtime peak read-QPS target |
@@ -1018,9 +1021,12 @@ movie_embeddings.txt / user_embeddings.txt (classpath)
 - `OnlineJoiner` — joins behavior logs with user/item/context features, applies shared label semantics, and produces immutable labeled samples for online/offline model updates.
 - `ExperienceCollector` — groups joined samples by `userId + event.requestId`, orders items by displayed rank, compacts duplicate item feedback, and emits list-shaped recommendation experiences.
 - `OnlineLearner` — consumes recommendation experiences and updates per-item bias parameters used by `OnlineRecommendationService`. Biases are bounded by `maxItemCount` (default 10,000) with LRU-style eviction of the lowest-magnitude entries. `flushToRedis` / `loadFromRedis` persist the learned state across restarts.
+- `OnlineFeatureStore` — reads per-user recent history from Redis and keeps a bounded short-TTL JVM cache for hot users (`ONLINE_FEATURE_CACHE_MAX_USERS`).
 - `OnlineRecommendationEngine` — scores candidates from per-user recent-watch history (Redis) and trending Top-K (Redis sorted set). Accepts `window` (`last_hour`, `last_day`, `last_month`).
 - `OnlineRecommendationService` — orchestrates `OnlineRecommendationEngine` + `CandidateGenerator.byEmbedding`. Blends normalized rank scores (`ONLINE_WEIGHT=1.0`, `MODEL_WEIGHT=0.5`), excludes recently-watched movies, and falls back to online-only for cold-start users. Returns a `strategy` field in the result.
 - `OnlineFeatureStreamingJob` (profile `streaming-flink`) — Flink 1.18 job that reads `MovieEvent` records from Kafka or a local file, deduplicates by `eventId`, then writes per-user recent-movie lists, per-movie engagement metrics, and global top-K to Redis. Redis writes use companion `:updated_at` keys to keep old retries from overwriting newer feature snapshots.
+- `RedisTopKStore` — reads trending sorted sets from Redis and keeps a short local cache for hot Top-K windows.
+- `RedisRateLimiter` — optional Redis-backed fixed-window limiter for cross-instance online request protection. It fails open if Redis is unavailable.
 - `OnlineServingMetricsService` — node-local rolling-window metrics for online serving: QPS, average latency, failures, rejected requests, and per-strategy `failureRate` and `share` (traffic mix). The strategy map is capped at 50 entries.
 - `OnlineLoadShedder` — node-local concurrency limiter for online requests. Excess traffic returns HTTP `429`; when draining, `retryAfterSeconds()` returns `1` and callers can set a `Retry-After` header.
 - `OnlineCapacityService` — exposes runtime sizing assumptions (`ONLINE_TARGET_DAU`, `ONLINE_PEAK_QPS`, `ONLINE_PEAK_TPS`) alongside observed QPS, remaining `headroomQps`, and an `overloaded` flag.

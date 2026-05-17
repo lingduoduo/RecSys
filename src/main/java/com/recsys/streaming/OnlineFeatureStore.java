@@ -19,18 +19,25 @@ import java.util.concurrent.ConcurrentHashMap;
 public final class OnlineFeatureStore implements RecentHistoryStore {
 
     private static final long DEFAULT_CACHE_TTL_MS = 5_000L;
+    private static final int DEFAULT_MAX_CACHE_USERS = 10_000;
 
     private final JedisPool pool;
     private final long cacheTtlMs;
+    private final int maxCacheUsers;
     private final ConcurrentHashMap<Integer, CachedHistory> historyCache = new ConcurrentHashMap<>();
 
     public OnlineFeatureStore(JedisPool pool) {
-        this(pool, DEFAULT_CACHE_TTL_MS);
+        this(pool, DEFAULT_CACHE_TTL_MS, readIntEnv("ONLINE_FEATURE_CACHE_MAX_USERS", DEFAULT_MAX_CACHE_USERS));
     }
 
     OnlineFeatureStore(JedisPool pool, long cacheTtlMs) {
+        this(pool, cacheTtlMs, DEFAULT_MAX_CACHE_USERS);
+    }
+
+    OnlineFeatureStore(JedisPool pool, long cacheTtlMs, int maxCacheUsers) {
         this.pool = pool;
         this.cacheTtlMs = cacheTtlMs;
+        this.maxCacheUsers = Math.max(1, maxCacheUsers);
     }
 
     @Override
@@ -42,6 +49,7 @@ public final class OnlineFeatureStore implements RecentHistoryStore {
         }
 
         List<Integer> ids = fetchFromRedis(userId);
+        evictIfNeeded(now);
         historyCache.put(userId, new CachedHistory(ids, now + cacheTtlMs));
         return applyLimit(ids, limit);
     }
@@ -68,6 +76,31 @@ public final class OnlineFeatureStore implements RecentHistoryStore {
     private static List<Integer> applyLimit(List<Integer> ids, int limit) {
         if (ids.size() <= limit) return ids;
         return ids.subList(ids.size() - limit, ids.size());
+    }
+
+    private void evictIfNeeded(long now) {
+        if (historyCache.size() < maxCacheUsers) {
+            return;
+        }
+        historyCache.entrySet().removeIf(entry -> entry.getValue().expiresAtMs <= now);
+        while (historyCache.size() >= maxCacheUsers) {
+            Integer victim = historyCache.keys().nextElement();
+            historyCache.remove(victim);
+        }
+    }
+
+    public int cacheSize() {
+        return historyCache.size();
+    }
+
+    private static int readIntEnv(String envName, int defaultValue) {
+        String raw = System.getenv(envName);
+        if (raw == null || raw.isBlank()) return defaultValue;
+        try {
+            return Integer.parseInt(raw.trim());
+        } catch (NumberFormatException e) {
+            return defaultValue;
+        }
     }
 
     private record CachedHistory(List<Integer> ids, long expiresAtMs) {}

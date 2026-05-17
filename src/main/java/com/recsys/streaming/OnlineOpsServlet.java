@@ -10,13 +10,22 @@ public final class OnlineOpsServlet extends ApiServlet {
     private final OnlineServingMetricsService metricsService;
     private final OnlineLoadShedder loadShedder;
     private final OnlineCapacityService capacityService;
+    private final RedisRateLimiter redisRateLimiter;
 
     public OnlineOpsServlet(OnlineServingMetricsService metricsService,
                             OnlineLoadShedder loadShedder,
                             OnlineCapacityService capacityService) {
+        this(metricsService, loadShedder, capacityService, RedisRateLimiter.disabled());
+    }
+
+    public OnlineOpsServlet(OnlineServingMetricsService metricsService,
+                            OnlineLoadShedder loadShedder,
+                            OnlineCapacityService capacityService,
+                            RedisRateLimiter redisRateLimiter) {
         this.metricsService = metricsService;
         this.loadShedder = loadShedder;
         this.capacityService = capacityService;
+        this.redisRateLimiter = redisRateLimiter;
     }
 
     @Override
@@ -34,6 +43,7 @@ public final class OnlineOpsServlet extends ApiServlet {
                 Instant.now().toString(),
                 metrics,
                 load,
+                redisRateLimiter.snapshot(),
                 capacity
         ));
     }
@@ -42,6 +52,7 @@ public final class OnlineOpsServlet extends ApiServlet {
             String servedAt,
             OnlineServingMetricsService.Snapshot metrics,
             OnlineLoadShedder.Snapshot load,
+            RedisRateLimiter.Snapshot rateLimit,
             OnlineCapacityService.Snapshot capacity
     ) {}
 }

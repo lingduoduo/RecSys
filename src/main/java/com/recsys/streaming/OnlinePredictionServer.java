@@ -32,17 +32,18 @@ public final class OnlinePredictionServer {
             OnlineServingMetricsService metricsService = new OnlineServingMetricsService();
             OnlineLoadShedder loadShedder = new OnlineLoadShedder();
             OnlineCapacityService capacityService = new OnlineCapacityService();
+            RedisRateLimiter redisRateLimiter = new RedisRateLimiter(jedisPool);
 
             Server server = new Server(new InetSocketAddress(DEFAULT_HOST, port));
             ServletContextHandler context = new ServletContextHandler();
             context.setContextPath("/");
             context.addServlet(new ServletHolder(new OnlineHealthServlet(metricsService, loadShedder)), "/health");
             context.addServlet(new ServletHolder(new OnlineFeaturesServlet(
-                    recommendationService, metricsService, loadShedder)), "/online/features");
+                    recommendationService, metricsService, loadShedder, redisRateLimiter)), "/online/features");
             context.addServlet(new ServletHolder(new OnlinePredictionServlet(
-                    recommendationService, metricsService, loadShedder)), "/online/recommendation");
+                    recommendationService, metricsService, loadShedder, redisRateLimiter)), "/online/recommendation");
             context.addServlet(new ServletHolder(new OnlineOpsServlet(
-                    metricsService, loadShedder, capacityService)), "/online/ops");
+                    metricsService, loadShedder, capacityService, redisRateLimiter)), "/online/ops");
             server.setHandler(context);
             server.setStopAtShutdown(true);
             server.start();

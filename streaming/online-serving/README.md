@@ -156,6 +156,9 @@ Flink consistency knobs:
 | `--idempotency-ttl-seconds` | `86400` | How long Flink state remembers processed `eventId` values for duplicate suppression |
 | `--user-history-ttl-seconds` | `86400` | TTL for `user:<id>:recent_movies` and its `:updated_at` guard key |
 | `--metric-ttl-seconds` | `3600` | TTL for movie metric, Top-K, and their `:updated_at` guard keys |
+| `--mq.max-poll-records` | `500` | Kafka consumer batch size for MQ peak shaving |
+| `--mq.fetch-min-bytes` | `1` | Minimum bytes fetched per Kafka request; increase to favor batching over latency |
+| `--mq.fetch-max-wait-ms` | `500` | Max broker wait for `fetch.min.bytes`, bounding async ingestion latency |
 
 This path intentionally does not use a distributed transaction spanning MQ, Flink state, and Redis. Kafka absorbs retries and bursts; Flink checkpointing plus event-id deduplication handles duplicate delivery; Redis receives compact feature snapshots that converge to the newest `updatedAtMillis` value.
 
@@ -218,6 +221,9 @@ Online-serving env vars:
 | `REDIS_PORT` | `6379` | Redis port |
 | `ONLINE_MAX_CONCURRENT_REQUESTS` | `512` | Per-instance in-flight request cap before the service returns HTTP `429` |
 | `ONLINE_DRAIN_UTILIZATION` | `0.90` | In-flight utilization where `/health` returns `503` so load balancers can drain the node |
+| `ONLINE_REDIS_RATE_LIMIT_QPS` | `0` | Optional Redis-backed cross-instance request limit; `0` disables distributed rate limiting |
+| `ONLINE_REDIS_RATE_LIMIT_WINDOW_SECONDS` | `1` | Redis rate-limit window size |
+| `ONLINE_FEATURE_CACHE_MAX_USERS` | `10000` | Max users kept in the short-TTL recent-history JVM cache |
 | `ONLINE_METRICS_WINDOW_SECONDS` | `60` | Rolling metrics window for QPS, latency, failures, rejected requests, and strategy mix |
 | `ONLINE_TARGET_DAU` | `2000000` | Capacity target shown by `/online/ops` |
 | `ONLINE_PEAK_QPS` | `8000` | Peak recommendation read-QPS target shown by `/online/ops` |
@@ -312,6 +318,11 @@ Example `/online/ops` response shape:
     "rejectedRequests": 0,
     "suggestedWeight": 100,
     "retryAfterSeconds": 0
+  },
+  "rateLimit": {
+    "enabled": false,
+    "limit": 0,
+    "windowSeconds": 1
   },
   "capacity": {
     "targetDau": 2000000,
