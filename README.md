@@ -88,6 +88,7 @@ Related production concerns:
 - **Backpressure:** monitor Kafka consumer lag, Flink checkpoint duration, and Redis write latency so bursty TPS does not silently stale online features.
 - **Degradation:** when Redis or model inference is slow, fall back to cached Top-K/trending recommendations and cap candidate counts.
 - **Capacity triggers:** scale API replicas on QPS/CPU/p99 latency, Kafka/Flink on lag and processing time, and Redis on memory, ops/s, network, and hot-key pressure.
+- **Consistency:** avoid cross-system distributed transactions across Kafka/Flink/Redis; use at-least-once MQ delivery, event-id idempotency, and Redis last-write-wins timestamps for eventual consistency.
 
 ---
 
@@ -790,7 +791,7 @@ See [streaming/online-serving/README.md](streaming/online-serving/README.md) for
 | `OnlineJoiner` | Joins behavior logs with user/item/context features and emits labeled samples for training streams |
 | `ExperienceCollector` | Groups joined point samples by request/list and emits ranked recommendation experiences for listwise training |
 | `OnlineLearner` | Consumes listwise experiences and updates lightweight serving parameters without retraining PyTorch/ONNX artifacts |
-| `OnlineFeatureStreamingJob` | Flink job: consumes Kafka events, writes `user:<id>:recent_movies`, engagement metrics, and `topk:<window>` to Redis |
+| `OnlineFeatureStreamingJob` | Flink job: consumes Kafka events, deduplicates by `eventId`, writes `user:<id>:recent_movies`, engagement metrics, and `topk:<window>` to Redis |
 | `OnlineRecommendationEngine` | Scores candidates using per-user recent history + trending rank |
 | `CandidateGenerator.byEmbedding` | ANN recall on offline user-tower embeddings |
 | `OnlineRecommendationService` | Blends the two sources, excludes recently watched, falls back gracefully for cold-start users |
@@ -853,6 +854,7 @@ The bundled `events.txt` rows model the Kafka payloads produced by `LogCollector
 - `OnlineJoiner` namespaces features as `user.*`, `item.*`, `context.*`, and `event.*`, then produces immutable joined samples.
 - `ExperienceCollector` groups by `userId + event.requestId`, sorts by `event.rank`, and compacts duplicate movie feedback within the same request by keeping the strongest label.
 - `OnlineLearner` performs bounded online updates over list experiences and exposes item-level score adjustments to serving.
+- `OnlineFeatureStreamingJob` treats Kafka/Flink/Redis as an eventually consistent pipeline rather than a distributed transaction. It deduplicates by `eventId` with Flink state TTL and writes Redis feature keys with `:updated_at` companion keys so stale window snapshots cannot overwrite newer state.
 
 **Offline embedding path:**
 
@@ -1018,7 +1020,7 @@ movie_embeddings.txt / user_embeddings.txt (classpath)
 - `OnlineLearner` — consumes recommendation experiences and updates per-item bias parameters used by `OnlineRecommendationService`. Biases are bounded by `maxItemCount` (default 10,000) with LRU-style eviction of the lowest-magnitude entries. `flushToRedis` / `loadFromRedis` persist the learned state across restarts.
 - `OnlineRecommendationEngine` — scores candidates from per-user recent-watch history (Redis) and trending Top-K (Redis sorted set). Accepts `window` (`last_hour`, `last_day`, `last_month`).
 - `OnlineRecommendationService` — orchestrates `OnlineRecommendationEngine` + `CandidateGenerator.byEmbedding`. Blends normalized rank scores (`ONLINE_WEIGHT=1.0`, `MODEL_WEIGHT=0.5`), excludes recently-watched movies, and falls back to online-only for cold-start users. Returns a `strategy` field in the result.
-- `OnlineFeatureStreamingJob` (profile `streaming-flink`) — Flink 1.18 job that reads `MovieEvent` records from Kafka or a local file, then writes per-user recent-movie lists, per-movie engagement metrics, and global top-K to Redis.
+- `OnlineFeatureStreamingJob` (profile `streaming-flink`) — Flink 1.18 job that reads `MovieEvent` records from Kafka or a local file, deduplicates by `eventId`, then writes per-user recent-movie lists, per-movie engagement metrics, and global top-K to Redis. Redis writes use companion `:updated_at` keys to keep old retries from overwriting newer feature snapshots.
 - `OnlineServingMetricsService` — node-local rolling-window metrics for online serving: QPS, average latency, failures, rejected requests, and per-strategy `failureRate` and `share` (traffic mix). The strategy map is capped at 50 entries.
 - `OnlineLoadShedder` — node-local concurrency limiter for online requests. Excess traffic returns HTTP `429`; when draining, `retryAfterSeconds()` returns `1` and callers can set a `Retry-After` header.
 - `OnlineCapacityService` — exposes runtime sizing assumptions (`ONLINE_TARGET_DAU`, `ONLINE_PEAK_QPS`, `ONLINE_PEAK_TPS`) alongside observed QPS, remaining `headroomQps`, and an `overloaded` flag.

@@ -7,8 +7,11 @@ import org.slf4j.Logger;
 import org.slf4j.LoggerFactory;
 import org.apache.flink.api.common.functions.AggregateFunction;
 import org.apache.flink.api.common.serialization.SimpleStringSchema;
+import org.apache.flink.api.common.state.StateTtlConfig;
 import org.apache.flink.api.common.state.ListState;
 import org.apache.flink.api.common.state.ListStateDescriptor;
+import org.apache.flink.api.common.state.ValueState;
+import org.apache.flink.api.common.state.ValueStateDescriptor;
 import org.apache.flink.api.common.typeinfo.Types;
 import org.apache.flink.api.java.utils.ParameterTool;
 import org.apache.flink.connector.kafka.source.KafkaSource;
@@ -58,12 +61,17 @@ public final class OnlineFeatureStreamingJob {
         String windowLabel = params.get("window-label", "last_hour");
         int userHistoryTtlSeconds = params.getInt("user-history-ttl-seconds", 86400);
         int metricTtlSeconds = params.getInt("metric-ttl-seconds", 3600);
+        long idempotencyTtlSeconds = params.getLong("idempotency-ttl-seconds", 86400L);
 
         StreamExecutionEnvironment env = StreamExecutionEnvironment.getExecutionEnvironment();
         env.enableCheckpointing(Math.max(5_000L, windowSeconds * 1_000L));
 
         DataStream<MovieEvent> events = buildEventStream(env, params)
                 .filter(e -> e != null)
+                .filter(OnlineFeatureStreamingJob::requiresEventIdentity)
+                .keyBy(MovieEvent::idempotencyKey)
+                .process(new DeduplicateEventsFunction(idempotencyTtlSeconds))
+                .name("event-idempotency")
                 .assignTimestampsAndWatermarks(
                         WatermarkStrategy.<MovieEvent>forBoundedOutOfOrderness(Duration.ofSeconds(5))
                                 .withTimestampAssigner((event, timestamp) -> event.eventTimeMillis));
@@ -94,6 +102,13 @@ public final class OnlineFeatureStreamingJob {
                 .name("redis-topk-sink");
 
         env.execute("recsys-online-feature-streaming");
+    }
+
+    private static boolean requiresEventIdentity(MovieEvent e) {
+        if (e.hasEventIdentity()) return true;
+        LOG.warn("Dropping event missing eventId — cannot deduplicate safely: userId={} movieId={} type={}",
+                e.userId, e.movieId, e.eventType);
+        return false;
     }
 
     private static DataStream<MovieEvent> buildEventStream(StreamExecutionEnvironment env,
@@ -204,6 +219,40 @@ public final class OnlineFeatureStreamingJob {
         }
     }
 
+    static final class DeduplicateEventsFunction extends KeyedProcessFunction<String, MovieEvent, MovieEvent> {
+        private final long ttlSeconds;
+        private transient ValueState<Boolean> seen;
+
+        DeduplicateEventsFunction(long ttlSeconds) {
+            this.ttlSeconds = ttlSeconds;
+        }
+
+        @Override
+        public void open(Configuration parameters) {
+            ValueStateDescriptor<Boolean> descriptor = new ValueStateDescriptor<>("seen-event-id", Types.BOOLEAN);
+            StateTtlConfig ttlConfig = StateTtlConfig
+                    .newBuilder(org.apache.flink.api.common.time.Time.seconds(Math.max(1L, ttlSeconds)))
+                    .setUpdateType(StateTtlConfig.UpdateType.OnCreateAndWrite)
+                    .setStateVisibility(StateTtlConfig.StateVisibility.NeverReturnExpired)
+                    .cleanupIncrementally(100, true)
+                    .build();
+            descriptor.enableTimeToLive(ttlConfig);
+            seen = getRuntimeContext().getState(descriptor);
+        }
+
+        @Override
+        public void processElement(MovieEvent event,
+                                   KeyedProcessFunction<String, MovieEvent, MovieEvent>.Context context,
+                                   Collector<MovieEvent> out) throws Exception {
+            if (Boolean.TRUE.equals(seen.value())) {
+                LOG.debug("Skipping duplicate movie event: {}", event.eventId);
+                return;
+            }
+            seen.update(true);
+            out.collect(event);
+        }
+    }
+
     static final class CountAggregate implements AggregateFunction<MovieEvent, Long, Long> {
         @Override
         public Long createAccumulator() {
@@ -286,6 +335,30 @@ public final class OnlineFeatureStreamingJob {
     }
 
     abstract static class AbstractRedisSink<T> extends RichSinkFunction<T> {
+        private static final String SET_IF_NEWER_SCRIPT = """
+                local current = redis.call('GET', KEYS[2])
+                if current and tonumber(current) > tonumber(ARGV[1]) then
+                  return 0
+                end
+                redis.call('SETEX', KEYS[1], tonumber(ARGV[2]), ARGV[3])
+                redis.call('SETEX', KEYS[2], tonumber(ARGV[2]), ARGV[1])
+                return 1
+                """;
+
+        private static final String ZSET_IF_NEWER_SCRIPT = """
+                local current = redis.call('GET', KEYS[2])
+                if current and tonumber(current) > tonumber(ARGV[1]) then
+                  return 0
+                end
+                redis.call('DEL', KEYS[1])
+                for i = 3, #ARGV, 2 do
+                  redis.call('ZADD', KEYS[1], tonumber(ARGV[i + 1]), ARGV[i])
+                end
+                redis.call('EXPIRE', KEYS[1], tonumber(ARGV[2]))
+                redis.call('SETEX', KEYS[2], tonumber(ARGV[2]), ARGV[1])
+                return 1
+                """;
+
         private final String host;
         private final int port;
         transient JedisPool pool;
@@ -304,6 +377,29 @@ public final class OnlineFeatureStreamingJob {
         public void close() {
             if (pool != null) pool.close();
         }
+
+        void setStringIfNewer(Jedis jedis, String redisKey, String value, long updatedAtMillis, int ttlSeconds) {
+            jedis.eval(
+                    SET_IF_NEWER_SCRIPT,
+                    List.of(redisKey, redisKey + ":updated_at"),
+                    List.of(Long.toString(updatedAtMillis), Integer.toString(ttlSeconds), value)
+            );
+        }
+
+        void setTopKIfNewer(Jedis jedis, TopKSnapshot value) {
+            List<String> args = new ArrayList<>(2 + value.movies.size() * 2);
+            args.add(Long.toString(value.updatedAtMillis));
+            args.add(Integer.toString(value.ttlSeconds));
+            for (ScoredMovie movie : value.movies) {
+                args.add(Integer.toString(movie.movieId));
+                args.add(Long.toString(movie.score));
+            }
+            jedis.eval(
+                    ZSET_IF_NEWER_SCRIPT,
+                    List.of(value.redisKey, value.redisKey + ":updated_at"),
+                    args
+            );
+        }
     }
 
     static final class RedisRecentMoviesSink extends AbstractRedisSink<UserRecentMoviesUpdate> {
@@ -312,7 +408,7 @@ public final class OnlineFeatureStreamingJob {
         @Override
         public void invoke(UserRecentMoviesUpdate value, Context context) {
             try (Jedis jedis = pool.getResource()) {
-                jedis.setex(value.redisKey, value.ttlSeconds, value.value);
+                setStringIfNewer(jedis, value.redisKey, value.value, value.updatedAtMillis, value.ttlSeconds);
             }
         }
     }
@@ -323,7 +419,8 @@ public final class OnlineFeatureStreamingJob {
         @Override
         public void invoke(MovieMetricUpdate value, Context context) {
             try (Jedis jedis = pool.getResource()) {
-                jedis.setex(value.redisKey, value.ttlSeconds, Long.toString(value.count));
+                setStringIfNewer(jedis, value.redisKey, Long.toString(value.count),
+                        value.updatedAtMillis, value.ttlSeconds);
             }
         }
     }
@@ -334,13 +431,7 @@ public final class OnlineFeatureStreamingJob {
         @Override
         public void invoke(TopKSnapshot value, Context context) {
             try (Jedis jedis = pool.getResource()) {
-                var pipe = jedis.pipelined();
-                pipe.del(value.redisKey);
-                for (ScoredMovie movie : value.movies) {
-                    pipe.zadd(value.redisKey, movie.score, Integer.toString(movie.movieId));
-                }
-                pipe.expire(value.redisKey, (long) value.ttlSeconds);
-                pipe.sync();
+                setTopKIfNewer(jedis, value);
             }
         }
     }
