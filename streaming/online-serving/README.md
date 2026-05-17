@@ -50,10 +50,10 @@ For the `200w+` DAU and `8k` peak-QPS case, Redis is the low-latency online feat
 
 Runtime services:
 
-- `OnlineServingMetricsService` records rolling QPS, latency, failures, rejected requests, and strategy mix.
-- `OnlineLoadShedder` caps in-flight requests with `ONLINE_MAX_CONCURRENT_REQUESTS` and sheds excess traffic with HTTP `429`.
-- `OnlineCapacityService` exposes `ONLINE_TARGET_DAU`, `ONLINE_PEAK_QPS`, and `ONLINE_PEAK_TPS` assumptions at runtime.
-- `/online/ops` returns the combined metrics/load/capacity snapshot.
+- `OnlineServingMetricsService` records rolling QPS, latency, failures, rejected requests, and per-strategy `failureRate` and `share` (traffic mix). The strategy map is capped at 50 entries.
+- `OnlineLoadShedder` caps in-flight requests with `ONLINE_MAX_CONCURRENT_REQUESTS` and sheds excess traffic with HTTP `429`; `retryAfterSeconds()` returns `1` when draining so callers can set a `Retry-After` header.
+- `OnlineCapacityService` exposes `ONLINE_TARGET_DAU`, `ONLINE_PEAK_QPS`, and `ONLINE_PEAK_TPS` alongside observed QPS, remaining `headroomQps`, and an `overloaded` flag.
+- `/online/ops` returns the combined metrics/load/capacity snapshot with a `servedAt` ISO-8601 timestamp; also sets `Retry-After` on the HTTP response when the shedder is draining.
 - `/health` returns `503` when the instance crosses its drain utilization threshold.
 
 Related production concerns:
@@ -256,29 +256,52 @@ Example `/online/ops` response shape:
 
 ```json
 {
+  "servedAt": "2026-05-17T10:00:00.123Z",
   "metrics": {
     "totalRequests": 12,
+    "successCount": 11,
+    "failureCount": 1,
+    "rejectedCount": 0,
     "recentRequests": 12,
     "qps": 0.2,
     "recentAvgLatencyMs": 8.5,
-    "recentFailureRate": 0.0,
+    "recentFailureRate": 0.083,
     "recentRejectedRate": 0.0,
     "strategies": {
-      "online+model": { "requests": 10, "avgLatencyMs": 9.0 }
+      "online+model": {
+        "requests": 10,
+        "failureCount": 1,
+        "avgLatencyMs": 9.0,
+        "failureRate": 0.1,
+        "share": 0.833
+      },
+      "online": {
+        "requests": 2,
+        "failureCount": 0,
+        "avgLatencyMs": 5.0,
+        "failureRate": 0.0,
+        "share": 0.167
+      }
     }
   },
   "load": {
     "inFlightRequests": 0,
     "maxConcurrentRequests": 512,
     "utilization": 0.0,
-    "suggestedWeight": 100
+    "drainUtilization": 0.9,
+    "acceptedRequests": 12,
+    "rejectedRequests": 0,
+    "suggestedWeight": 100,
+    "retryAfterSeconds": 0
   },
   "capacity": {
     "targetDau": 2000000,
     "peakQps": 8000,
     "peakTps": 20000,
     "observedQps": 0.2,
-    "qpsUtilization": 0.000025
+    "qpsUtilization": 0.000025,
+    "headroomQps": 7999.8,
+    "overloaded": false
   }
 }
 ```
