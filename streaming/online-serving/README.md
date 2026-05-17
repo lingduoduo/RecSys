@@ -63,6 +63,7 @@ Related production concerns:
 - **Availability:** keep the API stateless, use Redis replicas or cluster mode, and keep a cached fallback path for trending results.
 - **Hot keys:** shard feature keys by user/item/window where needed, and cap list or sorted-set sizes to keep Redis operations bounded.
 - **Load shedding:** reject or downgrade expensive requests when p99 latency or queue depth crosses the service budget.
+- **Consistency:** prefer MQ + idempotent consumers + eventual consistency over distributed transactions across Kafka, Flink, and Redis.
 
 ## Files
 
@@ -112,6 +113,8 @@ Processing guarantees:
 - joined sample features are namespaced as `user.*`, `item.*`, `context.*`, and `event.*`
 - recommendation experiences are grouped by `userId + event.requestId` and duplicate movie feedback keeps the strongest label
 - online learning updates small serving parameters continuously, while offline embedding/model artifacts remain on the batch training path
+- Kafka/Flink delivery is treated as at-least-once; the streaming job deduplicates events by `eventId` before updating online features
+- Redis feature writes are eventually consistent and guarded by `:updated_at` companion keys, so older retries or windows do not overwrite newer snapshots
 
 ## Run The Flink Job
 
@@ -135,7 +138,7 @@ Run from the bundled file:
 ```bash
 mvn -Pstreaming-flink exec:java \
   -Dexec.mainClass="com.recsys.streaming.flink.OnlineFeatureStreamingJob" \
-  -Dexec.args="--input-file streaming/online-serving/data/movie_events.ndjson --redis.host localhost --redis.port 6379 --window-seconds 10 --window-label last_hour --top-k 10"
+  -Dexec.args="--input-file streaming/online-serving/data/movie_events.ndjson --redis.host localhost --redis.port 6379 --window-seconds 10 --window-label last_hour --top-k 10 --idempotency-ttl-seconds 86400"
 ```
 
 Run from Kafka:
@@ -143,8 +146,18 @@ Run from Kafka:
 ```bash
 mvn -Pstreaming-flink exec:java \
   -Dexec.mainClass="com.recsys.streaming.flink.OnlineFeatureStreamingJob" \
-  -Dexec.args="--bootstrap.servers localhost:9092 --topic movie_events --redis.host localhost --redis.port 6379 --window-seconds 10 --window-label last_hour --top-k 10"
+  -Dexec.args="--bootstrap.servers localhost:9092 --topic movie_events --redis.host localhost --redis.port 6379 --window-seconds 10 --window-label last_hour --top-k 10 --idempotency-ttl-seconds 86400"
 ```
+
+Flink consistency knobs:
+
+| Argument | Default | Purpose |
+|---|---:|---|
+| `--idempotency-ttl-seconds` | `86400` | How long Flink state remembers processed `eventId` values for duplicate suppression |
+| `--user-history-ttl-seconds` | `86400` | TTL for `user:<id>:recent_movies` and its `:updated_at` guard key |
+| `--metric-ttl-seconds` | `3600` | TTL for movie metric, Top-K, and their `:updated_at` guard keys |
+
+This path intentionally does not use a distributed transaction spanning MQ, Flink state, and Redis. Kafka absorbs retries and bursts; Flink checkpointing plus event-id deduplication handles duplicate delivery; Redis receives compact feature snapshots that converge to the newest `updatedAtMillis` value.
 
 What the job writes to Redis:
 
@@ -155,6 +168,12 @@ What the job writes to Redis:
 - `movie:<id>:likes_1h`
 - `movie:<id>:orders_1h`
 - `topk:last_hour`
+
+Each Redis feature key also has a companion freshness key:
+
+- `user:<id>:recent_movies:updated_at`
+- `movie:<id>:<metric>:updated_at`
+- `topk:<window>:updated_at`
 
 The Flink job treats exposure/impression records as metric and label input, but it does not let them update
 `user:<id>:recent_movies`. Recent history is reserved for stronger feedback such as click, like, order, or a
