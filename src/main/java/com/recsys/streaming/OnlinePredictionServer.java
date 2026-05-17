@@ -29,13 +29,20 @@ public final class OnlinePredictionServer {
             OnlineRecommendationEngine engine = new OnlineRecommendationEngine(dataManager, topkStore, onlineFeatureStore);
             OnlineRecommendationService recommendationService =
                     new OnlineRecommendationService(dataManager, engine, candidateGenerator);
+            OnlineServingMetricsService metricsService = new OnlineServingMetricsService();
+            OnlineLoadShedder loadShedder = new OnlineLoadShedder();
+            OnlineCapacityService capacityService = new OnlineCapacityService();
 
             Server server = new Server(new InetSocketAddress(DEFAULT_HOST, port));
             ServletContextHandler context = new ServletContextHandler();
             context.setContextPath("/");
-            context.addServlet(new ServletHolder(new OnlineHealthServlet()), "/health");
-            context.addServlet(new ServletHolder(new OnlineFeaturesServlet(recommendationService)), "/online/features");
-            context.addServlet(new ServletHolder(new OnlinePredictionServlet(recommendationService)), "/online/recommendation");
+            context.addServlet(new ServletHolder(new OnlineHealthServlet(metricsService, loadShedder)), "/health");
+            context.addServlet(new ServletHolder(new OnlineFeaturesServlet(
+                    recommendationService, metricsService, loadShedder)), "/online/features");
+            context.addServlet(new ServletHolder(new OnlinePredictionServlet(
+                    recommendationService, metricsService, loadShedder)), "/online/recommendation");
+            context.addServlet(new ServletHolder(new OnlineOpsServlet(
+                    metricsService, loadShedder, capacityService)), "/online/ops");
             server.setHandler(context);
             server.setStopAtShutdown(true);
             server.start();
