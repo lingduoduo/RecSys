@@ -175,8 +175,14 @@ On startup the server seeds Redis with bundled movie and user embeddings if the 
 | `recsys.health.max-avg-latency-ms` | `2000` | Average latency (ms) above which `/health/ready` returns 503 |
 | `recsys.health.max-concurrent-requests` | `64` | Per-instance in-flight recommendation cap; excess requests fail fast with `503` |
 | `recsys.health.max-in-flight-utilization` | `0.95` | In-flight utilization above which `/health/ready` returns `503` so load balancers drain the node |
+| `MYSQL_ENABLED` | `false` | Optional MySQL access switch; disabled by default so normal serving paths do not open DB connections |
+| `MYSQL_URL` | `jdbc:mysql://localhost:3306/recsys?...` | JDBC URL used only by explicit `MySqlClient` callers |
+| `MYSQL_USER` | `recsys` | MySQL username |
+| `MYSQL_PASSWORD` | _(empty)_ | MySQL password |
 
 All `recsys.health.*` values are validated at startup — misconfiguration fails fast. Override via `application.yml` or environment variables (e.g. `RECSYS_HEALTH_MAX_FAILURE_RATE=0.3`).
+
+MySQL support is intentionally minimal: the repo includes the runtime JDBC driver plus `com.recsys.mysql.MySqlClient`, but no JPA, no connection pool, and no startup connection. Use it only in repository code that explicitly needs SQL-backed reads, such as the million-scale pagination plans in `com.recsys.pagination`.
 
 ### A/B test configuration (Model serving service)
 
