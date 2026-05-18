@@ -28,6 +28,10 @@ public class RecommendationCacheProperties {
     @Max(100)
     private int coldStartMaxK = 100;
 
+    @Positive
+    @Max(60_000)
+    private long computeWaitTimeoutMillis = 2_000;
+
     public boolean isEnabled() {
         return enabled;
     }
@@ -74,5 +78,13 @@ public class RecommendationCacheProperties {
 
     public void setColdStartMaxK(int coldStartMaxK) {
         this.coldStartMaxK = coldStartMaxK;
+    }
+
+    public long getComputeWaitTimeoutMillis() {
+        return computeWaitTimeoutMillis;
+    }
+
+    public void setComputeWaitTimeoutMillis(long computeWaitTimeoutMillis) {
+        this.computeWaitTimeoutMillis = computeWaitTimeoutMillis;
     }
 }

@@ -3,6 +3,7 @@ package com.recsys.modelbased.model.service;
 import com.recsys.modelbased.model.config.HealthProperties;
 import org.springframework.stereotype.Service;
 
+import java.util.concurrent.Semaphore;
 import java.util.concurrent.atomic.AtomicInteger;
 import java.util.concurrent.atomic.AtomicLong;
 
@@ -11,6 +12,7 @@ public class LoadShedder {
 
     private final int maxConcurrentRequests;
     private final double maxReadinessUtilization;
+    private final Semaphore requestSlots;
     private final AtomicInteger inFlightRequests = new AtomicInteger();
     private final AtomicLong acceptedRequests = new AtomicLong();
     private final AtomicLong rejectedRequests = new AtomicLong();
@@ -20,6 +22,7 @@ public class LoadShedder {
     public LoadShedder(HealthProperties props) {
         this.maxConcurrentRequests = props.getMaxConcurrentRequests();
         this.maxReadinessUtilization = props.getMaxInFlightUtilization();
+        this.requestSlots = new Semaphore(maxConcurrentRequests);
     }
 
     /**
@@ -39,17 +42,13 @@ public class LoadShedder {
             rejectedRequests.incrementAndGet();
             return false;
         }
-        while (true) {
-            int current = inFlightRequests.get();
-            if (current >= maxConcurrentRequests) {
-                rejectedRequests.incrementAndGet();
-                return false;
-            }
-            if (inFlightRequests.compareAndSet(current, current + 1)) {
-                acceptedRequests.incrementAndGet();
-                return true;
-            }
+        if (!requestSlots.tryAcquire()) {
+            rejectedRequests.incrementAndGet();
+            return false;
         }
+        inFlightRequests.incrementAndGet();
+        acceptedRequests.incrementAndGet();
+        return true;
     }
 
     public void release() {
@@ -58,6 +57,7 @@ public class LoadShedder {
             inFlightRequests.compareAndSet(value, 0);
             throw new IllegalStateException("in-flight request count went negative");
         }
+        requestSlots.release();
     }
 
     public Snapshot snapshot() {
