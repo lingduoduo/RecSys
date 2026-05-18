@@ -39,6 +39,12 @@ recsys:
   spark:
     # PySpark model artifacts output by the training pipeline (classpath:artifacts/pyspark/)
     artifacts-dir: ${RECSYS_SPARK_ARTIFACTS_DIR:}
+  mysql:
+    # Optional. The service does not connect to MySQL unless explicitly enabled by callers.
+    enabled: ${MYSQL_ENABLED:false}
+    url: ${MYSQL_URL:jdbc:mysql://localhost:3306/recsys?useSSL=false&serverTimezone=UTC&connectTimeout=1000&socketTimeout=2000}
+    username: ${MYSQL_USER:recsys}
+    password: ${MYSQL_PASSWORD:}
   health:
     # Rolling window for latency/failure-rate metrics used by the readiness probe
     window-seconds: 60
