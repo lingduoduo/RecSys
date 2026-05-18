@@ -13,6 +13,8 @@ import java.util.concurrent.ConcurrentHashMap;
 import java.util.concurrent.TimeUnit;
 import java.util.concurrent.TimeoutException;
 import java.util.concurrent.atomic.AtomicLong;
+import java.util.concurrent.locks.Lock;
+import java.util.concurrent.locks.ReentrantReadWriteLock;
 import java.util.function.Supplier;
 
 class RecommendationCache {
@@ -140,13 +142,20 @@ class RecommendationCache {
         private final AtomicLong hits = new AtomicLong();
         private final AtomicLong misses = new AtomicLong();
         private long computeWaitTimeoutMillis;
+        // Insertion-order LinkedHashMap: get() does NOT structurally modify the map,
+        // so concurrent reads can share a read lock instead of serialising on a write lock.
+        // This eliminates the synchronized-on-every-read bottleneck from access-order LRU.
+        private final ReentrantReadWriteLock rwLock = new ReentrantReadWriteLock();
+        private final Lock readLock  = rwLock.readLock();
+        private final Lock writeLock = rwLock.writeLock();
 
         private TtlLruCache(int maxEntries, int ttlSeconds, Clock clock, long computeWaitTimeoutMillis) {
             this.maxEntries = Math.max(1, maxEntries);
             this.ttlMillis = Math.max(1, ttlSeconds) * 1000L;
             this.clock = clock;
             this.computeWaitTimeoutMillis = Math.max(1L, computeWaitTimeoutMillis);
-            this.entries = new LinkedHashMap<>(16, 0.75f, true) {
+            // false = insertion-order: reads are non-structural, allowing shared read locks.
+            this.entries = new LinkedHashMap<>(16, 0.75f, false) {
                 @Override
                 protected boolean removeEldestEntry(Map.Entry<K, Entry<V>> eldest) {
                     return size() > TtlLruCache.this.maxEntries;
@@ -154,23 +163,43 @@ class RecommendationCache {
             };
         }
 
-        synchronized V get(K key) {
-            Entry<V> entry = entries.get(key);
-            if (entry == null) {
-                misses.incrementAndGet();
-                return null;
+        V get(K key) {
+            long now = clock.millis();
+            readLock.lock();
+            try {
+                Entry<V> entry = entries.get(key);
+                if (entry == null) {
+                    misses.incrementAndGet();
+                    return null;
+                }
+                if (entry.expiresAtMillis > now) {
+                    hits.incrementAndGet();
+                    return entry.value;
+                }
+            } finally {
+                readLock.unlock();
             }
-            if (entry.expiresAtMillis <= clock.millis()) {
-                entries.remove(key);
-                misses.incrementAndGet();
-                return null;
+            // Entry is expired: promote to write lock for removal (double-checked).
+            writeLock.lock();
+            try {
+                Entry<V> entry = entries.get(key);
+                if (entry != null && entry.expiresAtMillis <= now) {
+                    entries.remove(key);
+                }
+            } finally {
+                writeLock.unlock();
             }
-            hits.incrementAndGet();
-            return entry.value;
+            misses.incrementAndGet();
+            return null;
         }
 
-        synchronized void put(K key, V value) {
-            entries.put(key, new Entry<>(value, clock.millis() + ttlMillis));
+        void put(K key, V value) {
+            writeLock.lock();
+            try {
+                entries.put(key, new Entry<>(value, clock.millis() + ttlMillis));
+            } finally {
+                writeLock.unlock();
+            }
         }
 
         /**

@@ -25,6 +25,8 @@ public final class OnlineLearner {
     private final double maxAbsBias;
     private final int maxItemCount;
     private final ConcurrentHashMap<Integer, Double> itemBias = new ConcurrentHashMap<>();
+    private volatile long lastEvictMs = 0L;
+    private static final long EVICT_INTERVAL_MS = 5_000L;
 
     public OnlineLearner() {
         this(DEFAULT_LEARNING_RATE, DEFAULT_L2, DEFAULT_MAX_ABS_BIAS, DEFAULT_MAX_ITEM_COUNT);
@@ -142,6 +144,14 @@ public final class OnlineLearner {
     }
 
     private void evictIfNeeded() {
+        if (itemBias.size() <= maxItemCount) return;
+        // Rate-limit eviction: building a toEvict-sized heap over the full 10 K-entry map
+        // on every learn() call past the limit burns CPU and allocates GC-pressuring
+        // Map.Entry objects. Run at most once every 5 s instead.
+        long now = System.currentTimeMillis();
+        if (now - lastEvictMs < EVICT_INTERVAL_MS) return;
+        lastEvictMs = now;
+
         int size = itemBias.size();
         if (size <= maxItemCount) return;
         // Evict down to 90% of maxItemCount to build headroom and reduce eviction frequency.

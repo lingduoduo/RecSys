@@ -89,6 +89,10 @@ public class ModelArtifactService {
             throw new IllegalStateException("no item embeddings found in Redis for variant '" + getVariant() + "'");
         }
 
+        // Re-key from Integer to String directly, reusing the float[] references from loadAll().
+        // Arrays.copyOf() was removed: the vectors are read-only after load and not exposed for
+        // mutation, so a defensive copy doubles the live heap (and triggers a Full GC on large
+        // embedding stores) with no safety benefit.
         Map<String, float[]> map = new HashMap<>(raw.size() * 2);
         for (Map.Entry<Integer, float[]> entry : raw.entrySet()) {
             float[] vec = entry.getValue();
@@ -96,12 +100,11 @@ public class ModelArtifactService {
                 throw new IllegalStateException("item embedding dimension mismatch for item "
                         + entry.getKey() + ": expected " + embeddingDim + ", got " + vec.length);
             }
-            map.put(Integer.toString(entry.getKey()), Arrays.copyOf(vec, vec.length));
+            map.put(Integer.toString(entry.getKey()), vec);
         }
         this.itemEmbeddings = Collections.unmodifiableMap(map);
     }
 
-    @SuppressWarnings("unchecked")
     private Map<String, Integer> convertToIntMap(Object input) {
         if (!(input instanceof Map<?, ?> raw)) {
             throw new IllegalStateException("expected a JSON object for vocab, got: " + (input == null ? "null" : input.getClass()));

@@ -95,10 +95,9 @@ public class UserTowerInferenceService {
     }
 
     public void close() throws OrtException {
-        try {
-            if (session != null) session.close();
-        } finally {
-            if (environment != null) environment.close();
-        }
+        // OrtEnvironment is a JVM-wide singleton managed by the ONNX Runtime native layer.
+        // Closing it here would invalidate every other OrtSession in the process (e.g. other
+        // A/B-test variants loaded by ModelRuntimeProvider). Only close the session.
+        if (session != null) session.close();
     }
 }

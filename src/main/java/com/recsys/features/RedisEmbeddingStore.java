@@ -10,7 +10,6 @@ import redis.clients.jedis.resps.ScanResult;
 import org.slf4j.Logger;
 import org.slf4j.LoggerFactory;
 
-import java.util.ArrayList;
 import java.util.Collection;
 import java.util.HashMap;
 import java.util.HashSet;
@@ -103,37 +102,38 @@ public class RedisEmbeddingStore implements EmbeddingStore {
         return embeddings;
     }
 
-    // SCAN all keys matching the prefix then MGET all values in one connection.
-    // Avoids the two-connection overhead of scanIds() + getEmbeddings() and removes
-    // any arbitrary key cap.
+    // SCAN all keys matching the prefix and MGET each page immediately.
+    // Processing per scan page (≤500 keys at a time) caps peak heap use: the old approach
+    // accumulated every key name into a List<String> then issued one unbounded MGET,
+    // holding all keys + all serialised vectors simultaneously — an OOM / Full-GC risk
+    // for large embedding stores.
     public Map<Integer, float[]> loadAll() {
-        List<String> keys = new ArrayList<>();
+        Map<Integer, float[]> result = new HashMap<>();
         ScanParams scanParams = new ScanParams().match(keyPrefix + ":*").count(500);
 
         try (Jedis jedis = pool.getResource()) {
             String cursor = "0";
             do {
                 ScanResult<String> res = jedis.scan(cursor, scanParams);
-                keys.addAll(res.getResult());
+                List<String> pageKeys = res.getResult();
+                if (!pageKeys.isEmpty()) {
+                    List<String> values = jedis.mget(pageKeys.toArray(new String[0]));
+                    for (int i = 0; i < pageKeys.size(); i++) {
+                        String val = values.get(i);
+                        if (val == null || val.isBlank()) continue;
+                        int sep = pageKeys.get(i).lastIndexOf(':');
+                        if (sep < 0) continue;
+                        try {
+                            int id = Integer.parseInt(pageKeys.get(i).substring(sep + 1));
+                            result.put(id, VectorMath.parseVector(val));
+                        } catch (NumberFormatException ignore) {}
+                    }
+                }
                 cursor = res.getCursor();
             } while (!"0".equals(cursor));
-
-            if (keys.isEmpty()) return new HashMap<>();
-
-            List<String> values = jedis.mget(keys.toArray(new String[0]));
-            Map<Integer, float[]> result = new HashMap<>();
-            for (int i = 0; i < keys.size(); i++) {
-                String val = values.get(i);
-                if (val == null || val.isBlank()) continue;
-                int sep = keys.get(i).lastIndexOf(':');
-                if (sep < 0) continue;
-                try {
-                    int id = Integer.parseInt(keys.get(i).substring(sep + 1));
-                    result.put(id, VectorMath.parseVector(val));
-                } catch (NumberFormatException ignore) {}
-            }
-            return result;
         }
+
+        return result;
     }
 
     public Map<Integer, float[]> loadValidEmbeddings(Set<Integer> knownMovieIds) {
