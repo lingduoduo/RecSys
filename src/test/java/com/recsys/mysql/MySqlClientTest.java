@@ -19,6 +19,20 @@ import static org.mockito.Mockito.when;
 
 class MySqlClientTest {
 
+    // Shared mock wiring for tests that exercise the query/queryPage path.
+    // Override resultSet.next() stubs in each test to control the returned rows.
+    private record Mocks(Connection connection, PreparedStatement statement, ResultSet resultSet) {}
+
+    private static Mocks mockQuery() throws Exception {
+        Connection connection = mock(Connection.class);
+        PreparedStatement statement = mock(PreparedStatement.class);
+        ResultSet resultSet = mock(ResultSet.class);
+        when(connection.prepareStatement(anyString())).thenReturn(statement);
+        when(statement.executeQuery()).thenReturn(resultSet);
+        when(resultSet.next()).thenReturn(false);
+        return new Mocks(connection, statement, resultSet);
+    }
+
     @Test
     void disabledClient_doesNotOpenConnections() {
         MySqlClient client = new MySqlClient(MySqlConnectionSettings.disabled());
@@ -62,58 +76,37 @@ class MySqlClientTest {
 
     @Test
     void query_setsTimeoutWhenPositive() throws Exception {
-        Connection connection = mock(Connection.class);
-        PreparedStatement statement = mock(PreparedStatement.class);
-        ResultSet resultSet = mock(ResultSet.class);
-        when(connection.prepareStatement(anyString())).thenReturn(statement);
-        when(statement.executeQuery()).thenReturn(resultSet);
-        when(resultSet.next()).thenReturn(false);
-
-        MySqlClient client = new MySqlClient(MySqlConnectionSettings.disabled());
-        var plan = new MillionScalePaginationSql.SqlPlan("SELECT 1", List.of());
-
-        client.query(connection, plan, rs -> rs.getInt(1), 5);
-
-        verify(statement).setQueryTimeout(5);
+        var m = mockQuery();
+        new MySqlClient(MySqlConnectionSettings.disabled())
+                .query(m.connection(), new MillionScalePaginationSql.SqlPlan("SELECT 1", List.of()),
+                        rs -> rs.getInt(1), 5);
+        verify(m.statement()).setQueryTimeout(5);
     }
 
     @Test
     void query_doesNotSetTimeoutWhenZero() throws Exception {
-        Connection connection = mock(Connection.class);
-        PreparedStatement statement = mock(PreparedStatement.class);
-        ResultSet resultSet = mock(ResultSet.class);
-        when(connection.prepareStatement(anyString())).thenReturn(statement);
-        when(statement.executeQuery()).thenReturn(resultSet);
-        when(resultSet.next()).thenReturn(false);
-
-        MySqlClient client = new MySqlClient(MySqlConnectionSettings.disabled());
-        var plan = new MillionScalePaginationSql.SqlPlan("SELECT 1", List.of());
-
-        client.query(connection, plan, rs -> rs.getInt(1), 0);
-
-        verify(statement, never()).setQueryTimeout(0);
+        var m = mockQuery();
+        new MySqlClient(MySqlConnectionSettings.disabled())
+                .query(m.connection(), new MillionScalePaginationSql.SqlPlan("SELECT 1", List.of()),
+                        rs -> rs.getInt(1), 0);
+        verify(m.statement(), never()).setQueryTimeout(0);
     }
 
     @Test
     void queryPage_returnsNextCursorWhenRowsEqualPageSize() throws Exception {
-        Connection connection = mock(Connection.class);
-        PreparedStatement statement = mock(PreparedStatement.class);
-        ResultSet resultSet = mock(ResultSet.class);
-        when(connection.prepareStatement(anyString())).thenReturn(statement);
-        when(statement.executeQuery()).thenReturn(resultSet);
-        when(resultSet.next()).thenReturn(true, true, false);
-        when(resultSet.getInt("id")).thenReturn(10, 20);
-        when(resultSet.getString("created_at")).thenReturn("2026-01-01", "2026-01-02");
+        var m = mockQuery();
+        when(m.resultSet().next()).thenReturn(true, true, false);
+        when(m.resultSet().getInt("id")).thenReturn(10, 20);
+        when(m.resultSet().getString("created_at")).thenReturn("2026-01-01", "2026-01-02");
 
         record Row(int id, String createdAt) {}
-        MySqlClient client = new MySqlClient(MySqlConnectionSettings.disabled());
         var plan = new MillionScalePaginationSql.SqlPlan(
                 "SELECT id, created_at FROM movies LIMIT ?", List.of(2));
 
-        MySqlClient.PageResult<Row> result = client.queryPage(
-                connection, plan, 2,
-                row -> new MillionScalePaginationSql.SeekCursor(row.createdAt(), row.id()),
-                rs -> new Row(rs.getInt("id"), rs.getString("created_at")));
+        MySqlClient.PageResult<Row> result = new MySqlClient(MySqlConnectionSettings.disabled())
+                .queryPage(m.connection(), plan, 2,
+                        row -> new MillionScalePaginationSql.SeekCursor(row.createdAt(), row.id()),
+                        rs -> new Row(rs.getInt("id"), rs.getString("created_at")));
 
         assertThat(result.rows()).hasSize(2);
         assertThat(result.hasMore()).isTrue();
@@ -125,24 +118,19 @@ class MySqlClientTest {
 
     @Test
     void queryPage_returnsNullNextCursorOnLastPage() throws Exception {
-        Connection connection = mock(Connection.class);
-        PreparedStatement statement = mock(PreparedStatement.class);
-        ResultSet resultSet = mock(ResultSet.class);
-        when(connection.prepareStatement(anyString())).thenReturn(statement);
-        when(statement.executeQuery()).thenReturn(resultSet);
-        when(resultSet.next()).thenReturn(true, false);
-        when(resultSet.getInt("id")).thenReturn(10);
-        when(resultSet.getString("created_at")).thenReturn("2026-01-01");
+        var m = mockQuery();
+        when(m.resultSet().next()).thenReturn(true, false);
+        when(m.resultSet().getInt("id")).thenReturn(10);
+        when(m.resultSet().getString("created_at")).thenReturn("2026-01-01");
 
         record Row(int id, String createdAt) {}
-        MySqlClient client = new MySqlClient(MySqlConnectionSettings.disabled());
         var plan = new MillionScalePaginationSql.SqlPlan(
                 "SELECT id, created_at FROM movies LIMIT ?", List.of(10));
 
-        MySqlClient.PageResult<Row> result = client.queryPage(
-                connection, plan, 10,
-                row -> new MillionScalePaginationSql.SeekCursor(row.createdAt(), row.id()),
-                rs -> new Row(rs.getInt("id"), rs.getString("created_at")));
+        MySqlClient.PageResult<Row> result = new MySqlClient(MySqlConnectionSettings.disabled())
+                .queryPage(m.connection(), plan, 10,
+                        row -> new MillionScalePaginationSql.SeekCursor(row.createdAt(), row.id()),
+                        rs -> new Row(rs.getInt("id"), rs.getString("created_at")));
 
         assertThat(result.rows()).hasSize(1);
         assertThat(result.hasMore()).isFalse();
