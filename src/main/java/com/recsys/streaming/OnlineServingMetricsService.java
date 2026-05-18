@@ -3,7 +3,6 @@ package com.recsys.streaming;
 import org.slf4j.Logger;
 import org.slf4j.LoggerFactory;
 
-import java.time.Instant;
 import java.util.ArrayDeque;
 import java.util.Deque;
 import java.util.LinkedHashMap;
@@ -66,7 +65,7 @@ public final class OnlineServingMetricsService {
         long total = totalRequests.get();
         double allTimeAvgLatencyMs = total > 0 ? (double) totalLatencyMs.get() / total : 0.0;
 
-        long now = Instant.now().getEpochSecond();
+        long now = System.currentTimeMillis() / 1000L;
         long recentTotal;
         long recentFailures;
         long recentRejected;
@@ -113,7 +112,7 @@ public final class OnlineServingMetricsService {
         }
         totalLatencyMs.addAndGet(latencyMs);
 
-        long now = Instant.now().getEpochSecond();
+        long now = System.currentTimeMillis() / 1000L;
         synchronized (lock) {
             evict(now);
             window.addLast(new RequestRecord(now, latencyMs, failed, rejected));
