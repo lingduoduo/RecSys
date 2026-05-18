@@ -9,6 +9,7 @@ import java.sql.ResultSet;
 import java.sql.SQLException;
 import java.sql.SQLTimeoutException;
 import java.util.ArrayList;
+import java.util.Collections;
 import java.util.List;
 import java.util.Objects;
 import java.util.Properties;
@@ -74,22 +75,11 @@ public class MySqlClient {
         Objects.requireNonNull(plan, "plan");
         Objects.requireNonNull(mapper, "mapper");
         try (Connection connection = openConnection()) {
-            return query(connection, plan, mapper);
+            return query(connection, plan, mapper, 0);
         }
     }
 
-    public <T> List<T> query(
-            Connection connection,
-            MillionScalePaginationSql.SqlPlan plan,
-            RowMapper<T> mapper
-    ) throws SQLException {
-        return query(connection, plan, mapper, 0);
-    }
-
     /**
-     * Like {@link #query(Connection, SqlPlan, RowMapper)} but with an explicit statement
-     * timeout. Use this on serving paths where a slow full-table scan must be bounded.
-     *
      * @param queryTimeoutSeconds JDBC query timeout; 0 means no timeout (driver default)
      */
     public <T> List<T> query(
@@ -116,17 +106,14 @@ public class MySqlClient {
         }
     }
 
-    /**
-     * Executes a cursor-page query and automatically extracts the next-page token from the
-     * last row so callers do not need to handle cursor encoding.
-     *
-     * <p>The result's {@link PageResult#nextCursor()} is {@code null} when fewer than
-     * {@code pageSize} rows were returned, signalling the last page.
-     *
-     * @param pageSize        expected page size; used to detect whether more rows exist
-     * @param cursorExtractor extracts the stable (sortValue, id) position from a mapped row;
-     *                        return {@code null} to suppress next-cursor generation for that row
-     */
+    public <T> List<T> query(
+            Connection connection,
+            MillionScalePaginationSql.SqlPlan plan,
+            RowMapper<T> mapper
+    ) throws SQLException {
+        return query(connection, plan, mapper, 0);
+    }
+
     public <T> PageResult<T> queryPage(
             Connection connection,
             MillionScalePaginationSql.SqlPlan plan,
@@ -134,7 +121,29 @@ public class MySqlClient {
             Function<T, MillionScalePaginationSql.SeekCursor> cursorExtractor,
             RowMapper<T> mapper
     ) throws SQLException {
-        List<T> rows = query(connection, plan, mapper);
+        return queryPage(connection, plan, pageSize, cursorExtractor, mapper, 0);
+    }
+
+    /**
+     * Executes a cursor-page query and automatically extracts the next-page token from the last row.
+     *
+     * <p>{@link PageResult#nextCursor()} is {@code null} when fewer than {@code pageSize} rows were
+     * returned, signalling the last page.
+     *
+     * @param pageSize            expected page size; used to detect whether more rows exist
+     * @param cursorExtractor     extracts the stable (sortValue, id) position from a mapped row;
+     *                            return {@code null} to suppress next-cursor generation for that row
+     * @param queryTimeoutSeconds JDBC query timeout; 0 means no timeout (driver default)
+     */
+    public <T> PageResult<T> queryPage(
+            Connection connection,
+            MillionScalePaginationSql.SqlPlan plan,
+            int pageSize,
+            Function<T, MillionScalePaginationSql.SeekCursor> cursorExtractor,
+            RowMapper<T> mapper,
+            int queryTimeoutSeconds
+    ) throws SQLException {
+        List<T> rows = query(connection, plan, mapper, queryTimeoutSeconds);
         String nextCursor = null;
         if (rows.size() == pageSize) {
             MillionScalePaginationSql.SeekCursor pos = cursorExtractor.apply(rows.get(rows.size() - 1));
@@ -153,14 +162,10 @@ public class MySqlClient {
 
     public record HealthCheck(boolean enabled, boolean reachable, String message) {}
 
-    /**
-     * Bundles a page of rows with an opaque cursor token for the next page.
-     * Pass {@link #nextCursor()} back as the {@code after} argument of
-     * {@link MillionScalePaginationSql#cursorPage} to fetch the next page.
-     */
     public record PageResult<T>(List<T> rows, String nextCursor) {
         public PageResult {
-            rows = List.copyOf(rows);
+            // Wrap without copying — query() always returns a fresh ArrayList owned solely by PageResult.
+            rows = Collections.unmodifiableList(rows);
         }
 
         public boolean hasMore() {

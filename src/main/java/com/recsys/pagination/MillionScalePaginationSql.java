@@ -56,6 +56,10 @@ public final class MillionScalePaginationSql {
             this.afterOperator = afterOperator;
             this.beforeOperator = beforeOperator;
         }
+
+        public SortDirection reversed() {
+            return this == ASC ? DESC : ASC;
+        }
     }
 
     public record TableSpec(
@@ -121,10 +125,9 @@ public final class MillionScalePaginationSql {
         columns.add(table.idColumn());
         validateOptionalColumns(extraCoveredColumns).forEach(columns::add);
 
-        String indexedColumns = columns.stream()
+        String indexedColumns = String.join(", ", columns.stream()
                 .map(column -> column + orderSuffix(table, column))
-                .reduce((left, right) -> left + ", " + right)
-                .orElseThrow();
+                .toList());
 
         return "CREATE INDEX " + table.coveringIndexName()
                 + " ON " + table.tableName() + " (" + indexedColumns + ")";
@@ -168,27 +171,8 @@ public final class MillionScalePaginationSql {
     ) {
         Objects.requireNonNull(table, "table");
         validatePageSize(pageSize);
-
-        List<String> predicates = validatePredicates(wherePredicates);
-        List<Object> bindValues = new ArrayList<>(safeBindValues(whereBindValues));
-        if (after != null) {
-            predicates.add("(" + table.sortColumn() + " " + table.sortDirection().afterOperator + " ? OR ("
-                    + table.sortColumn() + " = ? AND " + table.idColumn() + " "
-                    + table.sortDirection().afterOperator + " ?))");
-            bindValues.add(after.sortValue());
-            bindValues.add(after.sortValue());
-            bindValues.add(after.id());
-        }
-        bindValues.add(pageSize);
-
-        return new SqlPlan(
-                "SELECT " + selectList(null, table.selectColumns())
-                        + " FROM " + table.tableName() + " FORCE INDEX (" + table.coveringIndexName() + ")"
-                        + whereClause(predicates)
-                        + orderBy(null, table)
-                        + " LIMIT ?",
-                bindValues
-        );
+        return cursorPageImpl(table, wherePredicates, whereBindValues, after,
+                table.sortDirection().afterOperator, table.sortDirection(), pageSize);
     }
 
     /**
@@ -246,8 +230,6 @@ public final class MillionScalePaginationSql {
      * Example for a DESC table (newest first):
      *   SQL ORDER BY sortColumn ASC, id ASC   ← reversed
      *   Result list  [oldest-of-page, …, newest-of-page]   ← caller reverses to DESC
-     *
-     * The {@link SortDirection#beforeOperator} (previously declared but unused) is applied here.
      */
     public static SqlPlan cursorPageBefore(
             TableSpec table,
@@ -259,22 +241,37 @@ public final class MillionScalePaginationSql {
         Objects.requireNonNull(table, "table");
         Objects.requireNonNull(before, "before cursor is required for cursorPageBefore");
         validatePageSize(pageSize);
+        return cursorPageImpl(table, wherePredicates, whereBindValues, before,
+                table.sortDirection().beforeOperator, table.sortDirection().reversed(), pageSize);
+    }
 
+    // Shared implementation for cursorPage and cursorPageBefore.
+    // cursor null → no seek predicate (first page); seekOperator and orderDir differ between the two.
+    private static SqlPlan cursorPageImpl(
+            TableSpec table,
+            List<String> wherePredicates,
+            List<Object> whereBindValues,
+            SeekCursor cursor,
+            String seekOperator,
+            SortDirection orderDir,
+            int pageSize
+    ) {
         List<String> predicates = validatePredicates(wherePredicates);
         List<Object> bindValues = new ArrayList<>(safeBindValues(whereBindValues));
-        predicates.add("(" + table.sortColumn() + " " + table.sortDirection().beforeOperator + " ? OR ("
-                + table.sortColumn() + " = ? AND " + table.idColumn() + " "
-                + table.sortDirection().beforeOperator + " ?))");
-        bindValues.add(before.sortValue());
-        bindValues.add(before.sortValue());
-        bindValues.add(before.id());
+        if (cursor != null) {
+            predicates.add("(" + table.sortColumn() + " " + seekOperator + " ? OR ("
+                    + table.sortColumn() + " = ? AND " + table.idColumn() + " " + seekOperator + " ?))");
+            bindValues.add(cursor.sortValue());
+            bindValues.add(cursor.sortValue());
+            bindValues.add(cursor.id());
+        }
         bindValues.add(pageSize);
 
         return new SqlPlan(
                 "SELECT " + selectList(null, table.selectColumns())
                         + " FROM " + table.tableName() + " FORCE INDEX (" + table.coveringIndexName() + ")"
                         + whereClause(predicates)
-                        + orderByReversed(null, table)
+                        + orderBy(null, table, orderDir)
                         + " LIMIT ?",
                 bindValues
         );
@@ -285,26 +282,22 @@ public final class MillionScalePaginationSql {
     }
 
     private static String orderBy(String alias, TableSpec table) {
-        String prefix = alias == null || alias.isBlank() ? "" : alias + ".";
-        return " ORDER BY " + prefix + table.sortColumn() + " " + table.sortDirection().sql
-                + ", " + prefix + table.idColumn() + " " + table.sortDirection().sql;
+        return orderBy(alias, table, table.sortDirection());
     }
 
-    private static String orderByReversed(String alias, TableSpec table) {
-        String prefix = alias == null || alias.isBlank() ? "" : alias + ".";
-        // Flip ASC↔DESC so LIMIT fetches the rows closest to the cursor boundary;
-        // the caller reverses the result list to restore table-natural order.
-        String reversedDir = table.sortDirection() == SortDirection.DESC ? "ASC" : "DESC";
-        return " ORDER BY " + prefix + table.sortColumn() + " " + reversedDir
-                + ", " + prefix + table.idColumn() + " " + reversedDir;
+    private static String orderBy(String alias, TableSpec table, SortDirection dir) {
+        String prefix = aliasPrefix(alias);
+        return " ORDER BY " + prefix + table.sortColumn() + " " + dir.sql
+                + ", " + prefix + table.idColumn() + " " + dir.sql;
     }
 
     private static String selectList(String alias, List<String> columns) {
-        String prefix = alias == null || alias.isBlank() ? "" : alias + ".";
-        return columns.stream()
-                .map(column -> prefix + column)
-                .reduce((left, right) -> left + ", " + right)
-                .orElseThrow();
+        String prefix = aliasPrefix(alias);
+        return String.join(", ", columns.stream().map(c -> prefix + c).toList());
+    }
+
+    private static String aliasPrefix(String alias) {
+        return alias == null || alias.isBlank() ? "" : alias + ".";
     }
 
     private static String orderSuffix(TableSpec table, String column) {
@@ -346,14 +339,8 @@ public final class MillionScalePaginationSql {
     }
 
     private static List<String> validateOptionalColumns(List<String> columns) {
-        if (columns == null || columns.isEmpty()) {
-            return List.of();
-        }
-        List<String> out = new ArrayList<>(columns.size());
-        for (String column : columns) {
-            out.add(identifier(column));
-        }
-        return out;
+        if (columns == null || columns.isEmpty()) return List.of();
+        return columns.stream().map(MillionScalePaginationSql::identifier).toList();
     }
 
     private static String identifier(String value) {

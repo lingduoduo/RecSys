@@ -212,6 +212,8 @@ src/main/java/com/recsys/
 │   ├── OnlineRecommendationEngine.java    Real-time scoring: recent history + trending
 │   ├── OnlinePredictionServer.java        Jetty entry point
 │   └── ...                (request/result records, feature stores, servlets)
+├── mysql/                  Optional JDBC helper and connection settings (MySQL opt-in)
+├── pagination/             SQL templates for million-row pagination (covering index, cursor, delayed join)
 ├── training/
 │   ├── rulebased/          Spark Word2Vec offline item embeddings
 │   └── modelbased/
@@ -1057,6 +1059,33 @@ movie_embeddings.txt / user_embeddings.txt (classpath)
 - `HealthProperties` — `@ConfigurationProperties(prefix = "recsys.health")` with `@Validated` startup checks; all probe thresholds in one place, overridable via env vars.
 - `HealthController` — `/health/live` (liveness), `/health/ready` (readiness gated on `ModelRuntimeProvider.areVariantsReady()`, load, and rolling metrics), `/health/load` (node-local concurrency snapshot), `/health/metrics` (global snapshot), `/health/ab-tests` (per-variant comparison snapshot).
 - `GlobalExceptionHandler` — maps bean-validation failures, malformed JSON, wrong content-type, and unexpected errors to a consistent `ApiError` shape.
+
+**MySQL and pagination (`com.recsys.mysql`, `com.recsys.pagination`):**
+
+- `MySqlConnectionSettings` — immutable settings record read from `MYSQL_ENABLED`, `MYSQL_URL`, `MYSQL_USER`, `MYSQL_PASSWORD`. Disabled by default so no serving path opens a DB connection at startup.
+- `MySqlClient` — thin JDBC wrapper with no connection pool. Callers pass an explicit `Connection` for scoped queries, or use the single-plan overload for one-shot reads. `query(..., queryTimeoutSeconds)` bounds slow scans. `queryPage()` executes a cursor-page plan and extracts the next-page token from the last row automatically, returning `PageResult<T>` (`rows` + `nextCursor`); `nextCursor` is `null` on the last page.
+- `MillionScalePaginationSql` — SQL template builder for three million-row pagination strategies, all using `FORCE INDEX` against a composite covering index:
+  - `coveringIndexDdl()` — generates a `CREATE INDEX` statement with equality-filter columns first, then sort column and id, then any extra projected columns.
+  - `countWithCoveringIndex()` — `SELECT COUNT(*) FORCE INDEX` forces MySQL to use the narrow index tree instead of the clustered primary key scan (5–20× faster on large tables).
+  - `cursorPage()` / `cursorPageBefore()` — keyset/seek pagination using a `SeekCursor(sortValue, id)` opaque token. Zero `OFFSET` at any depth; O(1) per page regardless of position. `cursorPageBefore` reverses `ORDER BY` and uses `beforeOperator`; callers reverse the returned list for display order.
+  - `delayedJoinPage()` — deferred-join pagination: inner subquery walks only the covering index for `(id, sortCol)` page keys; outer join fetches full rows only for those keys, avoiding reading skipped rows entirely.
+
+---
+
+## Pipeline Optimizations
+
+Optimizations applied to the serving path targeting OOM, Full GC, thread blocking, and CPU spikes:
+
+| Component | Problem | Fix |
+|---|---|---|
+| `OnlineFeatureStore` | `ConcurrentHashMap.compute()` held a CHM bin lock during the Redis network call, stalling all threads hashing to the same segment | Replaced with `CompletableFuture` inflight map; Redis fetch runs entirely outside any lock |
+| `RecommendationCache.TtlLruCache` | `synchronized` + access-order `LinkedHashMap` serialised every cache read through an exclusive write lock | `ReentrantReadWriteLock` + insertion-order `LinkedHashMap`; concurrent reads now share a read lock |
+| `RedisEmbeddingStore.loadAll()` | Accumulated all key names then issued one unbounded `MGET` — OOM / Full GC risk on large stores | Batch-`MGET` per SCAN page (≤500 keys); peak heap is now O(page) not O(all embeddings) |
+| `ModelArtifactService` | `Arrays.copyOf()` doubled live heap (two full copies of all embedding vectors) during startup | Removed defensive copy; vectors are read-only after load |
+| `OnlineFeatureStore.evictIfNeeded()` | O(N) `removeIf` over 10K entries ran on every cache-miss request at capacity | Rate-limited to once per 5 s; `Enumeration.nextElement()` replaced with `Iterator` (safe under concurrent modification) |
+| `OnlineLearner.evictIfNeeded()` | O(N log N) heap allocation ran on every `learn()` call past the item limit | Rate-limited to once per 5 s |
+| `UserTowerInferenceService.close()` | Closed `OrtEnvironment` (JVM-wide singleton), invalidating all other A/B-test variant sessions | Now only closes the per-variant `OrtSession`; environment is process-global |
+| `OnlineServingMetricsService` | `Instant.now()` allocation on every request's hot path | `System.currentTimeMillis() / 1000L` — no allocation |
 
 ---
 
