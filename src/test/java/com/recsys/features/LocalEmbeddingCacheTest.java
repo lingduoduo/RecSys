@@ -103,6 +103,24 @@ class LocalEmbeddingCacheTest {
         assertThat(cache.cacheSize()).isEqualTo(2);
     }
 
+    @Test
+    void cache_evictsOldEntriesWhenCapacityIsReached() {
+        LocalEmbeddingCache tinyCache = new LocalEmbeddingCache(backing, 2);
+        backing.put(1, new float[]{1f});
+        backing.put(2, new float[]{2f});
+        backing.put(3, new float[]{3f});
+
+        tinyCache.getEmbedding(1);
+        tinyCache.getEmbedding(2);
+        tinyCache.getEmbedding(3);
+
+        assertThat(tinyCache.cacheSize()).isEqualTo(2);
+
+        int getsBefore = backing.getCount;
+        assertThat(tinyCache.getEmbedding(1)).isNotNull();
+        assertThat(backing.getCount).isEqualTo(getsBefore + 1);
+    }
+
     // ── minimal in-memory EmbeddingStore stub ──────────────────────────────
 
     private static final class TrackingStore implements EmbeddingStore {

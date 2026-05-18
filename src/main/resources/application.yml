@@ -64,3 +64,5 @@ recsys:
     # Cold-start pool changes only on model deploy, so it can live much longer than per-user entries.
     cold-start-ttl-seconds: ${RECSYS_RECOMMENDATION_CACHE_COLD_START_TTL_SECONDS:3600}
     cold-start-max-k: ${RECSYS_RECOMMENDATION_CACHE_COLD_START_MAX_K:100}
+    # Max time a duplicate request waits for another thread's in-flight cache miss.
+    compute-wait-timeout-millis: ${RECSYS_RECOMMENDATION_CACHE_COMPUTE_WAIT_TIMEOUT_MILLIS:2000}

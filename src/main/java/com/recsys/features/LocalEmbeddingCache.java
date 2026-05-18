@@ -11,6 +11,7 @@ import java.util.List;
 import java.util.Map;
 import java.util.Set;
 import java.util.concurrent.ConcurrentHashMap;
+import java.util.concurrent.ConcurrentLinkedQueue;
 
 /**
  * JVM-heap cache (Tier 3) in front of a backing EmbeddingStore (Tier 2, typically Redis).
@@ -19,8 +20,8 @@ import java.util.concurrent.ConcurrentHashMap;
  * Write-through: setEmbedding writes to both the backing store and the cache atomically.
  *
  * Item embeddings are written infrequently (only when a new model trains) and read on
- * every similarity-search request, so a simple unbounded ConcurrentHashMap is appropriate —
- * the total size is bounded by the item catalog (typically tens of thousands of float[]).
+ * every similarity-search request. The cache is bounded to prevent accidental writes
+ * for arbitrary ids from growing heap until Full GC/OOM.
  *
  * Call warmUp() at startup to pre-populate the cache from Redis so the first requests
  * are served entirely from heap rather than paying a Redis round-trip.
@@ -28,12 +29,20 @@ import java.util.concurrent.ConcurrentHashMap;
 public class LocalEmbeddingCache implements EmbeddingStore {
 
     private static final Logger log = LoggerFactory.getLogger(LocalEmbeddingCache.class);
+    private static final int DEFAULT_MAX_ENTRIES = 100_000;
 
     private final EmbeddingStore backingStore;
+    private final int maxEntries;
     private final ConcurrentHashMap<Integer, float[]> cache = new ConcurrentHashMap<>();
+    private final ConcurrentLinkedQueue<Integer> evictionOrder = new ConcurrentLinkedQueue<>();
 
     public LocalEmbeddingCache(EmbeddingStore backingStore) {
+        this(backingStore, readIntEnv("LOCAL_EMBEDDING_CACHE_MAX_ENTRIES", DEFAULT_MAX_ENTRIES));
+    }
+
+    LocalEmbeddingCache(EmbeddingStore backingStore, int maxEntries) {
         this.backingStore = backingStore;
+        this.maxEntries = Math.max(1, maxEntries);
     }
 
     /**
@@ -43,7 +52,7 @@ public class LocalEmbeddingCache implements EmbeddingStore {
     public void warmUp() {
         if (!(backingStore instanceof RedisEmbeddingStore redisStore)) return;
         Map<Integer, float[]> all = redisStore.loadAll();
-        cache.putAll(all);
+        putAll(all);
         log.info("LocalEmbeddingCache warmed up with {} embeddings from Redis", all.size());
     }
 
@@ -52,7 +61,7 @@ public class LocalEmbeddingCache implements EmbeddingStore {
      * Avoids a Redis round-trip when the classpath data is already available at startup.
      */
     public void preload(Map<Integer, float[]> embeddings) {
-        cache.putAll(embeddings);
+        putAll(embeddings);
         log.info("LocalEmbeddingCache preloaded {} embeddings from file system", embeddings.size());
     }
 
@@ -62,7 +71,7 @@ public class LocalEmbeddingCache implements EmbeddingStore {
         if (cached != null) return cached;
 
         float[] fromStore = backingStore.getEmbedding(id);
-        if (fromStore != null) cache.put(id, fromStore);
+        if (fromStore != null) put(id, fromStore);
         return fromStore;
     }
 
@@ -84,7 +93,7 @@ public class LocalEmbeddingCache implements EmbeddingStore {
 
         if (!misses.isEmpty()) {
             Map<Integer, float[]> fetched = backingStore.getEmbeddings(misses);
-            cache.putAll(fetched);
+            putAll(fetched);
             result.putAll(fetched);
         }
 
@@ -94,13 +103,13 @@ public class LocalEmbeddingCache implements EmbeddingStore {
     @Override
     public void setEmbedding(int id, float[] vector, long ttlSeconds) {
         backingStore.setEmbedding(id, vector, ttlSeconds);
-        cache.put(id, vector);
+        put(id, vector);
     }
 
     @Override
     public void setEmbeddings(Map<Integer, float[]> vectors, long ttlSeconds) {
         backingStore.setEmbeddings(vectors, ttlSeconds);
-        cache.putAll(vectors);
+        putAll(vectors);
     }
 
     @Override
@@ -110,5 +119,40 @@ public class LocalEmbeddingCache implements EmbeddingStore {
 
     public int cacheSize() {
         return cache.size();
+    }
+
+    public int maxEntries() {
+        return maxEntries;
+    }
+
+    private void putAll(Map<Integer, float[]> embeddings) {
+        if (embeddings == null || embeddings.isEmpty()) return;
+        embeddings.forEach(this::put);
+    }
+
+    private void put(Integer id, float[] vector) {
+        if (id == null || vector == null) return;
+        if (cache.put(id, vector) == null) {
+            evictionOrder.offer(id);
+            evictOverflow();
+        }
+    }
+
+    private void evictOverflow() {
+        while (cache.size() > maxEntries) {
+            Integer eldest = evictionOrder.poll();
+            if (eldest == null) return;
+            cache.remove(eldest);
+        }
+    }
+
+    private static int readIntEnv(String envName, int defaultValue) {
+        String raw = System.getenv(envName);
+        if (raw == null || raw.isBlank()) return defaultValue;
+        try {
+            return Integer.parseInt(raw.trim());
+        } catch (NumberFormatException e) {
+            return defaultValue;
+        }
     }
 }

@@ -10,6 +10,8 @@ import java.util.Map;
 import java.util.concurrent.CompletableFuture;
 import java.util.concurrent.CompletionException;
 import java.util.concurrent.ConcurrentHashMap;
+import java.util.concurrent.TimeUnit;
+import java.util.concurrent.TimeoutException;
 import java.util.concurrent.atomic.AtomicLong;
 import java.util.function.Supplier;
 
@@ -30,13 +32,18 @@ class RecommendationCache {
         this.enabled = props.isEnabled();
         this.coldStartEnabled = props.isColdStartEnabled();
         this.coldStartMaxK = props.getColdStartMaxK();
-        this.recommendations = new TtlLruCache<>(props.getMaxEntries(), props.getTtlSeconds(), clock);
+        this.recommendations = new TtlLruCache<>(
+                props.getMaxEntries(),
+                props.getTtlSeconds(),
+                clock,
+                props.getComputeWaitTimeoutMillis());
         // Cold-start entries are variant+model-version scoped — they only change on deploy,
         // so a much longer TTL avoids re-computing the pool on every per-user TTL cycle.
         this.coldStarts = new TtlLruCache<>(
                 Math.max(1, props.getMaxEntries() / 20),
                 props.getColdStartTtlSeconds(),
-                clock);
+                clock,
+                props.getComputeWaitTimeoutMillis());
     }
 
     boolean isEnabled() {
@@ -132,11 +139,13 @@ class RecommendationCache {
         private final ConcurrentHashMap<K, CompletableFuture<V>> inflight = new ConcurrentHashMap<>();
         private final AtomicLong hits = new AtomicLong();
         private final AtomicLong misses = new AtomicLong();
+        private long computeWaitTimeoutMillis;
 
-        private TtlLruCache(int maxEntries, int ttlSeconds, Clock clock) {
+        private TtlLruCache(int maxEntries, int ttlSeconds, Clock clock, long computeWaitTimeoutMillis) {
             this.maxEntries = Math.max(1, maxEntries);
             this.ttlMillis = Math.max(1, ttlSeconds) * 1000L;
             this.clock = clock;
+            this.computeWaitTimeoutMillis = Math.max(1L, computeWaitTimeoutMillis);
             this.entries = new LinkedHashMap<>(16, 0.75f, true) {
                 @Override
                 protected boolean removeEldestEntry(Map.Entry<K, Entry<V>> eldest) {
@@ -193,8 +202,18 @@ class RecommendationCache {
 
             // Another thread is already computing; wait for its result.
             try {
-                return existing.join();
+                return existing.get(computeWaitTimeoutMillis, TimeUnit.MILLISECONDS);
+            } catch (TimeoutException ex) {
+                throw new IllegalStateException(
+                        "Timed out waiting for in-flight recommendation cache computation", ex);
+            } catch (InterruptedException ex) {
+                Thread.currentThread().interrupt();
+                throw new IllegalStateException("Interrupted while waiting for recommendation cache computation", ex);
             } catch (CompletionException ex) {
+                Throwable cause = ex.getCause();
+                if (cause instanceof RuntimeException re) throw re;
+                throw new RuntimeException(cause);
+            } catch (java.util.concurrent.ExecutionException ex) {
                 Throwable cause = ex.getCause();
                 if (cause instanceof RuntimeException re) throw re;
                 throw new RuntimeException(cause);
