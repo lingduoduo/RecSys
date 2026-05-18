@@ -131,6 +131,31 @@ public final class MillionScalePaginationSql {
     }
 
     /**
+     * COUNT(*) using the covering index so MySQL can answer via the smaller index tree instead
+     * of doing a full clustered-index scan.
+     *
+     * Without FORCE INDEX, MySQL's query planner sometimes prefers the primary key even when a
+     * narrower covering index would read far fewer bytes. For a 10 M-row table a covering index
+     * COUNT can be 5–20× faster than the unforced equivalent.
+     */
+    public static SqlPlan countWithCoveringIndex(
+            TableSpec table,
+            List<String> wherePredicates,
+            List<Object> whereBindValues
+    ) {
+        Objects.requireNonNull(table, "table");
+        List<String> predicates = validatePredicates(wherePredicates);
+        List<Object> bindValues = new ArrayList<>(safeBindValues(whereBindValues));
+
+        return new SqlPlan(
+                "SELECT COUNT(*) FROM " + table.tableName()
+                        + " FORCE INDEX (" + table.coveringIndexName() + ")"
+                        + whereClause(predicates),
+                bindValues
+        );
+    }
+
+    /**
      * Cursor/keyset pagination. This avoids OFFSET scans: every next page starts after the last
      * tuple from the previous page using the stable (sortColumn, id) ordering.
      */
@@ -208,6 +233,53 @@ public final class MillionScalePaginationSql {
         );
     }
 
+    /**
+     * Backward cursor page (previous page).
+     *
+     * Returns the rows that come immediately BEFORE {@code before} in the stable
+     * (sortColumn, id) ordering, using the covering index to avoid a table scan.
+     *
+     * The ORDER BY is reversed relative to the table's declared direction so that only the
+     * rows adjacent to the cursor boundary are fetched (LIMIT is applied closest-first).
+     * Callers must reverse the result list before display to restore table-natural order.
+     *
+     * Example for a DESC table (newest first):
+     *   SQL ORDER BY sortColumn ASC, id ASC   ← reversed
+     *   Result list  [oldest-of-page, …, newest-of-page]   ← caller reverses to DESC
+     *
+     * The {@link SortDirection#beforeOperator} (previously declared but unused) is applied here.
+     */
+    public static SqlPlan cursorPageBefore(
+            TableSpec table,
+            List<String> wherePredicates,
+            List<Object> whereBindValues,
+            SeekCursor before,
+            int pageSize
+    ) {
+        Objects.requireNonNull(table, "table");
+        Objects.requireNonNull(before, "before cursor is required for cursorPageBefore");
+        validatePageSize(pageSize);
+
+        List<String> predicates = validatePredicates(wherePredicates);
+        List<Object> bindValues = new ArrayList<>(safeBindValues(whereBindValues));
+        predicates.add("(" + table.sortColumn() + " " + table.sortDirection().beforeOperator + " ? OR ("
+                + table.sortColumn() + " = ? AND " + table.idColumn() + " "
+                + table.sortDirection().beforeOperator + " ?))");
+        bindValues.add(before.sortValue());
+        bindValues.add(before.sortValue());
+        bindValues.add(before.id());
+        bindValues.add(pageSize);
+
+        return new SqlPlan(
+                "SELECT " + selectList(null, table.selectColumns())
+                        + " FROM " + table.tableName() + " FORCE INDEX (" + table.coveringIndexName() + ")"
+                        + whereClause(predicates)
+                        + orderByReversed(null, table)
+                        + " LIMIT ?",
+                bindValues
+        );
+    }
+
     private static String whereClause(List<String> predicates) {
         return predicates.isEmpty() ? "" : " WHERE " + String.join(" AND ", predicates);
     }
@@ -216,6 +288,15 @@ public final class MillionScalePaginationSql {
         String prefix = alias == null || alias.isBlank() ? "" : alias + ".";
         return " ORDER BY " + prefix + table.sortColumn() + " " + table.sortDirection().sql
                 + ", " + prefix + table.idColumn() + " " + table.sortDirection().sql;
+    }
+
+    private static String orderByReversed(String alias, TableSpec table) {
+        String prefix = alias == null || alias.isBlank() ? "" : alias + ".";
+        // Flip ASC↔DESC so LIMIT fetches the rows closest to the cursor boundary;
+        // the caller reverses the result list to restore table-natural order.
+        String reversedDir = table.sortDirection() == SortDirection.DESC ? "ASC" : "DESC";
+        return " ORDER BY " + prefix + table.sortColumn() + " " + reversedDir
+                + ", " + prefix + table.idColumn() + " " + reversedDir;
     }
 
     private static String selectList(String alias, List<String> columns) {
