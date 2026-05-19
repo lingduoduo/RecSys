@@ -1,0 +1,17 @@
+# Spring Boot model serving service with ZGC (Java 17+, low-latency experiment)
+#
+# ONNX Runtime uses native memory outside the Java heap. Keep direct/native
+# memory capped and leave container headroom above Xmx for native allocations.
+-Xms512m
+-Xmx1536m
+-Xss512k
+-XX:SoftMaxHeapSize=1024m
+-XX:MaxMetaspaceSize=384m
+-XX:ReservedCodeCacheSize=160m
+-XX:MaxDirectMemorySize=512m
+-XX:+UseZGC
+-XX:ZUncommitDelay=300
+-XX:+HeapDumpOnOutOfMemoryError
+-XX:HeapDumpPath=logs/model-serving-zgc.hprof
+-XX:ErrorFile=logs/hs_err_model-serving-zgc_pid%p.log
+-Xlog:gc*,safepoint:file=logs/gc-model-serving-zgc-%p.log:time,uptime,level,tags:filecount=5,filesize=20M

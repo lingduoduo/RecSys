@@ -106,8 +106,11 @@ Profiles:
 | Profile | JVM options file | Run target |
 |---|---|---|
 | `recsys-serving` | `config/jvm/recsys-serving.jvmopts` | Jetty Recommendation Serving API, port `6010` |
+| `recsys-serving-zgc` | `config/jvm/recsys-serving-zgc.jvmopts` | Same API with ZGC for low-pause experiments |
 | `model-serving` | `config/jvm/model-serving.jvmopts` | Spring Boot ONNX model service, port `8080` |
+| `model-serving-zgc` | `config/jvm/model-serving-zgc.jvmopts` | Same model service with ZGC for low-pause experiments |
 | `online-serving` | `config/jvm/online-serving.jvmopts` | Jetty Online Prediction Server, port `7010` |
+| `online-serving-zgc` | `config/jvm/online-serving-zgc.jvmopts` | Same online server with ZGC for tail-latency experiments |
 | `offline-embedding` | `config/jvm/offline-embedding.jvmopts` | Local offline embedding / Spark driver runs |
 
 Tuning starts from the JVM memory model:
@@ -120,7 +123,30 @@ Tuning starts from the JVM memory model:
 | Direct/native memory | ONNX Runtime native buffers, NIO/direct buffers, JVM internals | `-XX:MaxDirectMemorySize`; larger in `model-serving` because ONNX uses native memory outside the Java heap |
 | Code cache | JIT-compiled hot paths for ranking, vector math, cache, metrics, Spark/Scala code | `-XX:ReservedCodeCacheSize` |
 
-All profiles use G1 GC, bounded pause targets, string deduplication, heap dumps on OOM, and rotating GC/safepoint logs under `logs/`. For production containers, set the process/container memory limit above `Xmx + MaxMetaspaceSize + MaxDirectMemorySize + thread_count * Xss + JVM/native overhead`; a practical first pass is 25-35% headroom above those explicit caps.
+Default profiles use G1 GC, bounded pause targets, string deduplication, heap dumps on OOM, and rotating GC/safepoint logs under `logs/`. The `*-zgc` profiles are low-pause alternatives for serving workloads on Java 17+. For production containers, set the process/container memory limit above `Xmx + MaxMetaspaceSize + MaxDirectMemorySize + thread_count * Xss + JVM/native overhead`; a practical first pass is 25-35% headroom above those explicit caps.
+
+### GC Strategy
+
+This repo targets Java 17, so the practical collector choices are G1 for the default path and ZGC for low-pause experiments:
+
+| GC topic | What it means in this repo | Operational note |
+|---|---|---|
+| Minor GC | Young-generation collection, normally logged as `Pause Young` under G1 | Frequent small young GCs are expected; watch p95/p99 pause time and allocation rate rather than raw count alone |
+| Full GC | Whole-heap compaction or recovery collection, normally logged as `Pause Full` | Treat as an incident for serving; lower live-set size, cap caches, increase heap, or fix allocation spikes |
+| STW | Stop-the-world pause where application threads cannot serve requests | All collectors have some STW phases; G1 aims for bounded pauses, ZGC keeps most work concurrent |
+| CMS | Legacy Concurrent Mark Sweep collector removed after Java 14 | Do not configure CMS on Java 17; migrate old CMS configs to G1 or ZGC |
+| G1 | Region-based default collector used by `recsys-serving`, `model-serving`, `online-serving`, and `offline-embedding` | Good default for mixed object lifetimes, caches, and moderate heaps; tune with `-XX:MaxGCPauseMillis` and heap sizing |
+| ZGC | Concurrent low-latency collector used by `recsys-serving-zgc`, `model-serving-zgc`, and `online-serving-zgc` | Best tested against p99 latency goals; leave CPU and memory headroom for concurrent relocation/marking |
+
+Use G1 first when throughput, predictable memory use, and simple operations matter. Try ZGC when serving p99/p999 latency is dominated by STW pauses after heap/caching fixes. Avoid CMS flags in this Java 17 project because the JVM will fail startup.
+
+GC logs can be summarized locally:
+
+```bash
+sh scripts/summarize-gc-logs.sh logs/gc-online-serving-*.log
+```
+
+The Spring Boot model service also exposes `GET /health/jvm`, including heap/non-heap pools, thread counts, young/minor GC counters, full/major GC counters, concurrent collector counters, STW collector counters, and per-collector roles. For serving workloads, useful alarms are any `Full GC`, STW max pause above the request SLO, rising old-heap occupancy after concurrent cycles, and GC CPU high enough to reduce throughput. For offline embedding, longer pauses may be acceptable if total job throughput is healthy.
 
 ---
 

@@ -54,6 +54,22 @@ class JvmMemoryMonitorTest {
         assertThat(gc.youngCollectionTimeMs()).isGreaterThanOrEqualTo(0);
         assertThat(gc.fullCollections()).isGreaterThanOrEqualTo(0);
         assertThat(gc.fullCollectionTimeMs()).isGreaterThanOrEqualTo(0);
+        assertThat(gc.concurrentCollections()).isGreaterThanOrEqualTo(0);
+        assertThat(gc.concurrentCollectionTimeMs()).isGreaterThanOrEqualTo(0);
+        assertThat(gc.stwCollections()).isGreaterThanOrEqualTo(0);
+        assertThat(gc.stwCollectionTimeMs()).isGreaterThanOrEqualTo(0);
+    }
+
+    @Test
+    void snapshot_gc_collectorsIncludeRoleBreakdown() {
+        assertThat(monitor.snapshot().gc().collectors())
+                .isNotEmpty()
+                .allSatisfy((name, stats) -> {
+                    assertThat(name).isEqualTo(stats.name());
+                    assertThat(stats.role()).isIn("young/minor", "full/major", "concurrent", "stw-other");
+                    assertThat(stats.collections()).isGreaterThanOrEqualTo(0);
+                    assertThat(stats.collectionTimeMs()).isGreaterThanOrEqualTo(0);
+                });
     }
 
     @Test

@@ -48,18 +48,33 @@ public class JvmMemoryMonitor {
         }
 
         long youngGcCount = 0, youngGcMs = 0, fullGcCount = 0, fullGcMs = 0;
+        long concurrentGcCount = 0, concurrentGcMs = 0, stwGcCount = 0, stwGcMs = 0;
+        Map<String, CollectorStats> collectors = new LinkedHashMap<>();
         for (GarbageCollectorMXBean gc : ManagementFactory.getGarbageCollectorMXBeans()) {
             long count = gc.getCollectionCount();
             long time  = gc.getCollectionTime();
             if (count < 0) continue;
-            String name = gc.getName().toLowerCase();
-            // G1 Young / Parallel Scavenge / Copy → young-gen collectors
-            if (name.contains("young") || name.contains("scavenge") || name.contains("copy")) {
+            String collectorName = gc.getName();
+            String name = collectorName.toLowerCase();
+            CollectorRole role = classifyCollector(name);
+            collectors.put(collectorName, new CollectorStats(collectorName, role.label, count, time));
+
+            if (role == CollectorRole.YOUNG) {
                 youngGcCount += count;
                 youngGcMs    += time;
-            } else {
+                stwGcCount += count;
+                stwGcMs    += time;
+            } else if (role == CollectorRole.FULL) {
                 fullGcCount += count;
                 fullGcMs    += time;
+                stwGcCount += count;
+                stwGcMs    += time;
+            } else if (role == CollectorRole.CONCURRENT) {
+                concurrentGcCount += count;
+                concurrentGcMs    += time;
+            } else {
+                stwGcCount += count;
+                stwGcMs    += time;
             }
         }
 
@@ -69,9 +84,44 @@ public class JvmMemoryMonitor {
                 nonHeapUsage.getUsed(), nonHeapUsage.getCommitted(), nonHeapUsage.getMax(), nonHeapPools);
         ThreadStats threadStats = new ThreadStats(
                 threads.getThreadCount(), threads.getDaemonThreadCount(), threads.getPeakThreadCount());
-        GcStats gc = new GcStats(youngGcCount, youngGcMs, fullGcCount, fullGcMs);
+        GcStats gc = new GcStats(
+                youngGcCount, youngGcMs,
+                fullGcCount, fullGcMs,
+                concurrentGcCount, concurrentGcMs,
+                stwGcCount, stwGcMs,
+                collectors);
 
         return new Snapshot(heap, nonHeap, threadStats, gc);
+    }
+
+    private static CollectorRole classifyCollector(String name) {
+        if (name.contains("young") || name.contains("scavenge") || name.contains("copy")
+                || name.contains("parnew")) {
+            return CollectorRole.YOUNG;
+        }
+        if (name.contains("zgc cycles") || name.contains("zgc cycle")
+                || name.contains("concurrentmarksweep") || name.contains("concurrent mark sweep")
+                || name.contains("shenandoah cycles") || name.contains("shenandoah cycle")) {
+            return CollectorRole.CONCURRENT;
+        }
+        if (name.contains("old") || name.contains("full") || name.contains("mark sweep")
+                || name.contains("marksweep")) {
+            return CollectorRole.FULL;
+        }
+        return CollectorRole.STW_OTHER;
+    }
+
+    private enum CollectorRole {
+        YOUNG("young/minor"),
+        FULL("full/major"),
+        CONCURRENT("concurrent"),
+        STW_OTHER("stw-other");
+
+        private final String label;
+
+        CollectorRole(String label) {
+            this.label = label;
+        }
     }
 
     // ── Records ──────────────────────────────────────────────────────────────
@@ -131,16 +181,29 @@ public class JvmMemoryMonitor {
     }
 
     /**
-     * Aggregate GC counters split into young-gen (minor) and full (major/mixed) collections.
+     * Aggregate GC counters split into young-gen (minor), full/major, concurrent, and STW collections.
      *
      * Elevated fullCollections or high fullCollectionTimeMs relative to youngCollectionTimeMs
      * signals old-gen pressure — common when the embedding cache grows beyond the tuned old-gen
-     * budget, or when Metaspace is under-provisioned on startup.
+     * budget, or when Metaspace is under-provisioned on startup. ZGC cycle counters are reported
+     * as concurrent rather than full; ZGC pause counters appear under stwCollections.
      */
     public record GcStats(
             long youngCollections,
             long youngCollectionTimeMs,
             long fullCollections,
-            long fullCollectionTimeMs
+            long fullCollectionTimeMs,
+            long concurrentCollections,
+            long concurrentCollectionTimeMs,
+            long stwCollections,
+            long stwCollectionTimeMs,
+            Map<String, CollectorStats> collectors
+    ) {}
+
+    public record CollectorStats(
+            String name,
+            String role,
+            long collections,
+            long collectionTimeMs
     ) {}
 }

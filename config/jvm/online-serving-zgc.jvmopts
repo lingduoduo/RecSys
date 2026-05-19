@@ -1,0 +1,17 @@
+# Online Prediction Server with ZGC (Java 17+, low-latency experiment)
+#
+# Use for high-QPS online serving when STW pause outliers hurt tail latency.
+# Validate CPU headroom before production use; concurrent GC work is not free.
+-Xms768m
+-Xmx1536m
+-Xss512k
+-XX:SoftMaxHeapSize=1024m
+-XX:MaxMetaspaceSize=320m
+-XX:ReservedCodeCacheSize=160m
+-XX:MaxDirectMemorySize=256m
+-XX:+UseZGC
+-XX:ZUncommitDelay=300
+-XX:+HeapDumpOnOutOfMemoryError
+-XX:HeapDumpPath=logs/online-serving-zgc.hprof
+-XX:ErrorFile=logs/hs_err_online-serving-zgc_pid%p.log
+-Xlog:gc*,safepoint:file=logs/gc-online-serving-zgc-%p.log:time,uptime,level,tags:filecount=5,filesize=20M
