@@ -95,7 +95,23 @@ Related production concerns:
 
 ## JVM Tuning
 
-The runnable JVM workloads use explicit option profiles under `config/jvm/` and a shared launcher:
+Three GC profile files live at the repo root. Pick one based on your latency target:
+
+| File | Collector | Pause target | When to use |
+|---|---|---|---|
+| `jvm.options` | G1GC | 100 ms | Default — balanced throughput and latency |
+| `jvm-g1.options` | G1GC (enhanced) | 100 ms | G1 with adaptive IHOP, reserve percent, mixed-GC count, and phase-level logging |
+| `jvm-zgc.options` | ZGC (Java 21 generational) | < 1 ms | Latency-critical inference path; requires Java 21+ |
+
+```bash
+# G1 (recommended default)
+java $(cat jvm-g1.options) -jar recsys-api-*.jar
+
+# ZGC for sub-millisecond pause experiments (Java 21+)
+java $(cat jvm-zgc.options) -jar recsys-api-*.jar
+```
+
+The runnable JVM workloads also use explicit option profiles under `config/jvm/` and a shared launcher:
 
 ```bash
 sh scripts/run-with-jvm-tuning.sh <profile> -- <maven command...>
@@ -129,14 +145,15 @@ Default profiles use G1 GC, bounded pause targets, string deduplication, heap du
 
 This repo targets Java 17, so the practical collector choices are G1 for the default path and ZGC for low-pause experiments:
 
-| GC topic | What it means in this repo | Operational note |
-|---|---|---|
-| Minor GC | Young-generation collection, normally logged as `Pause Young` under G1 | Frequent small young GCs are expected; watch p95/p99 pause time and allocation rate rather than raw count alone |
-| Full GC | Whole-heap compaction or recovery collection, normally logged as `Pause Full` | Treat as an incident for serving; lower live-set size, cap caches, increase heap, or fix allocation spikes |
-| STW | Stop-the-world pause where application threads cannot serve requests | All collectors have some STW phases; G1 aims for bounded pauses, ZGC keeps most work concurrent |
-| CMS | Legacy Concurrent Mark Sweep collector removed after Java 14 | Do not configure CMS on Java 17; migrate old CMS configs to G1 or ZGC |
-| G1 | Region-based default collector used by `recsys-serving`, `model-serving`, `online-serving`, and `offline-embedding` | Good default for mixed object lifetimes, caches, and moderate heaps; tune with `-XX:MaxGCPauseMillis` and heap sizing |
-| ZGC | Concurrent low-latency collector used by `recsys-serving-zgc`, `model-serving-zgc`, and `online-serving-zgc` | Best tested against p99 latency goals; leave CPU and memory headroom for concurrent relocation/marking |
+| GC event | STW? | Typical pause | What it means | When to act |
+|---|---|---|---|---|
+| Minor GC | ✅ | 5–25 ms | Young-gen collection (Eden + Survivor); `Pause Young` in G1 logs | Expected and frequent; act if p99 > `MaxGCPauseMillis` or allocation rate spikes |
+| G1 Mixed | ✅ | 10–50 ms | Reclaims young gen + selected old-gen regions; `Pause Mixed` in G1 logs | Normal when old gen fills gradually; frequent mixed GC means IHOP is too low |
+| Full GC | ✅ | 200 ms – 5 s | Whole-heap compaction; `Pause Full` in G1 logs | **Treat as an incident** — cap caches, increase heap, or fix allocation spikes |
+| STW | ✅ | varies | Any pause where all application threads halt | Monitor with `/health/gc` `stwLongestPauseMs`; act if above request SLO |
+| CMS | ❌ | N/A (concurrent) | Legacy Concurrent Mark Sweep; deprecated Java 9, removed Java 14 | Do not configure on Java 17; migrate to G1 or ZGC |
+| ZGC cycle | ❌ | N/A (wall time) | Concurrent GC cycle; actual STW phases < 1 ms | Watch `allocationStalls > 0` in `/health/gc` — signals need for more heap or GC threads |
+| ZGC STW | ✅ | < 1 ms | Initial/final mark, relocate-start; Java 21 generational ZGC targets sub-ms | > 5 ms indicates a JVM regression |
 
 Use G1 first when throughput, predictable memory use, and simple operations matter. Try ZGC when serving p99/p999 latency is dominated by STW pauses after heap/caching fixes. Avoid CMS flags in this Java 17 project because the JVM will fail startup.
 
@@ -146,7 +163,36 @@ GC logs can be summarized locally:
 sh scripts/summarize-gc-logs.sh logs/gc-online-serving-*.log
 ```
 
-The Spring Boot model service also exposes `GET /health/jvm`, including heap/non-heap pools, thread counts, young/minor GC counters, full/major GC counters, concurrent collector counters, STW collector counters, and per-collector roles. For serving workloads, useful alarms are any `Full GC`, STW max pause above the request SLO, rising old-heap occupancy after concurrent cycles, and GC CPU high enough to reduce throughput. For offline embedding, longer pauses may be acceptable if total job throughput is healthy.
+The Spring Boot model service exposes two GC observability endpoints:
+
+- `GET /health/jvm` — poll-based snapshot: heap/non-heap pools, thread counts, aggregate GC counters split by role (young, full, concurrent, STW), and per-collector breakdown.
+- `GET /health/gc` — event-driven snapshot from `GcEventTracker`, which receives a JMX notification on every individual GC event. Provides STW pause histogram bucketed by severity (`<1ms → >500ms`), per-type event counts (Minor, Mixed, Full, CMS, ZGC), cumulative allocation and promotion totals, and danger-signal counters for G1 evacuation failures and ZGC allocation stalls.
+
+```bash
+curl http://localhost:8080/health/gc
+```
+
+```json
+{
+  "byType": {
+    "MINOR_GC": {"events": 42, "totalPauseMs": 630, "avgPauseMs": 15.0},
+    "FULL_GC":  {"events": 0,  "totalPauseMs": 0,   "avgPauseMs": 0.0}
+  },
+  "stwEventCount": 42,
+  "stwTotalPauseMs": 630,
+  "stwLongestPauseMs": 28,
+  "stwAvgPauseMs": 15.0,
+  "stwPauseHistogram": {
+    "<1ms": 0, "1-10ms": 5, "10-50ms": 37, "50-200ms": 0, "200-500ms": 0, ">500ms": 0
+  },
+  "totalAllocatedBytes": 2147483648,
+  "totalPromotedBytes": 52428800,
+  "evacuationFailures": 0,
+  "allocationStalls": 0
+}
+```
+
+For serving workloads, useful alarms are: `evacuationFailures > 0` (G1 heap fragmentation), `allocationStalls > 0` (ZGC needs more heap or GC threads), `stwLongestPauseMs` above the request SLO, and any `FULL_GC` events. For offline embedding, longer pauses may be acceptable if total job throughput is healthy.
 
 ---
 
@@ -694,6 +740,24 @@ curl http://localhost:8080/health/load
 
 `POST /api/v1/recommend` is guarded by a per-instance concurrency limiter before model inference runs. When all request slots are occupied, the service returns `503 Service Unavailable` with `Retry-After: 1` instead of queueing indefinitely. This protects tail latency and lets upstream load balancers retry another healthy replica.
 
+#### JVM memory — `GET /health/jvm`
+
+Structured snapshot of the four JVM memory regions: heap (used/committed/max + per-pool breakdown), non-heap/metaspace pools, thread counts (live/daemon/peak), and aggregate GC counters split by collector role (young, full, concurrent, STW).
+
+```bash
+curl http://localhost:8080/health/jvm
+```
+
+#### GC events — `GET /health/gc`
+
+Event-driven GC observability via JMX notifications. Fires on every individual GC event — not a poll — so pause histograms and evacuation failure detection are accurate regardless of scrape interval.
+
+```bash
+curl http://localhost:8080/health/gc
+```
+
+Key fields: `stwPauseHistogram` (`<1ms` through `>500ms`), `stwLongestPauseMs`, `byType` breakdown (Minor GC / G1 Mixed / Full GC / ZGC cycle / ZGC STW), `evacuationFailures`, `allocationStalls`.
+
 #### Metrics — `GET /health/metrics`
 
 Exposes both all-time counters (lock-free atomic) and rolling-window stats:
@@ -827,6 +891,8 @@ mvn test -DexcludedGroups="" -Dgroups=load
 | `InferenceLoadTest` _(tag: load)_ | 100 concurrent requests across 10 threads; reports avg latency, P95 latency, throughput (req/s), and success rate; asserts P95 ≤ 2000 ms and success rate ≥ 99 % |
 | `OnlineRecommendationEngineTest` | Blends recent-history similarity with trending and excludes recently-watched movies; rejects unknown window values |
 | `OnlineRecommendationServiceTest` | Blended scoring (movie in both lists ranks first), online-only fallback when no embedding, recently-watched exclusion, unknown user 404, bad window propagation |
+| `JvmMemoryMonitorTest` | Heap/non-heap positive used bytes, usedFraction in [0,1], metaspace pool presence, thread count positivity, GC counter non-negativity, MB conversion correctness |
+| `GcEventTrackerTest` | Initial-state zero counters, histogram key presence (`<1ms` through `>500ms`), `GcType.stw` flag correctness, `TypeStats.avgPauseMs()` calculation, destroy idempotence, live-collector smoke test with `System.gc()` |
 
 ---
 
@@ -1123,7 +1189,9 @@ movie_embeddings.txt / user_embeddings.txt (classpath)
 - `InferenceMetricsService` — global rolling-window metrics plus per-variant counters. `abTestSnapshot(controlVariant)` computes success-rate and latency deltas vs control, exposed at `GET /health/ab-tests`.
 - `LoadShedder` — per-instance concurrency limiter and load snapshot used for overload protection and load-balancer readiness decisions.
 - `HealthProperties` — `@ConfigurationProperties(prefix = "recsys.health")` with `@Validated` startup checks; all probe thresholds in one place, overridable via env vars.
-- `HealthController` — `/health/live` (liveness), `/health/ready` (readiness gated on `ModelRuntimeProvider.areVariantsReady()`, load, and rolling metrics), `/health/load` (node-local concurrency snapshot), `/health/metrics` (global snapshot), `/health/ab-tests` (per-variant comparison snapshot).
+- `JvmMemoryMonitor` — poll-based snapshot of the four JVM memory regions (堆/栈/元空间/非堆) using `MemoryMXBean`, `MemoryPoolMXBeans`, `ThreadMXBean`, and `GarbageCollectorMXBeans`. Classifies collectors by role (young, full, concurrent, STW-other) and reports usedFraction per pool.
+- `GcEventTracker` — event-driven GC observability that attaches a JMX `NotificationListener` to each `GarbageCollectorMXBean` at `@PostConstruct` and fires on every individual GC event. Maintains STW pause histogram (6 severity buckets), per-type counters (`MINOR_GC`, `G1_MIXED`, `FULL_GC`, `CMS_PHASE`, `ZGC_CYCLE`, `ZGC_STW_PAUSE`), cumulative allocation/promotion byte totals from per-pool before/after snapshots, G1 evacuation failure detection, and ZGC allocation stall detection. Listeners deregister cleanly via `DisposableBean.destroy()`.
+- `HealthController` — `/health/live` (liveness), `/health/ready` (readiness gated on `ModelRuntimeProvider.areVariantsReady()`, load, and rolling metrics), `/health/load` (node-local concurrency snapshot), `/health/metrics` (global snapshot), `/health/ab-tests` (per-variant comparison snapshot), `/health/jvm` (JVM memory region snapshot from `JvmMemoryMonitor`), `/health/gc` (GC event snapshot from `GcEventTracker`).
 - `GlobalExceptionHandler` — maps bean-validation failures, malformed JSON, wrong content-type, and unexpected errors to a consistent `ApiError` shape.
 
 **MySQL and pagination (`com.recsys.mysql`, `com.recsys.pagination`):**
