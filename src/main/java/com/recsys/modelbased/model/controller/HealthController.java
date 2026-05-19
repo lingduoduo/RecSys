@@ -2,6 +2,7 @@ package com.recsys.modelbased.model.controller;
 
 import com.recsys.modelbased.model.config.HealthProperties;
 import com.recsys.modelbased.model.config.ABTestConfig;
+import com.recsys.modelbased.model.service.GcEventTracker;
 import com.recsys.modelbased.model.service.InferenceMetricsService;
 import com.recsys.modelbased.model.service.JvmMemoryMonitor;
 import com.recsys.modelbased.model.service.LoadShedder;
@@ -21,6 +22,7 @@ public class HealthController {
     private final ModelRuntimeProvider modelRuntimeProvider;
     private final InferenceMetricsService metricsService;
     private final JvmMemoryMonitor jvmMemoryMonitor;
+    private final GcEventTracker gcEventTracker;
     private final LoadShedder loadShedder;
     private final HealthProperties props;
     private final ABTestConfig abTestConfig;
@@ -28,12 +30,14 @@ public class HealthController {
     public HealthController(ModelRuntimeProvider modelRuntimeProvider,
                             InferenceMetricsService metricsService,
                             JvmMemoryMonitor jvmMemoryMonitor,
+                            GcEventTracker gcEventTracker,
                             LoadShedder loadShedder,
                             HealthProperties props,
                             ABTestConfig abTestConfig) {
         this.modelRuntimeProvider = modelRuntimeProvider;
         this.metricsService = metricsService;
         this.jvmMemoryMonitor = jvmMemoryMonitor;
+        this.gcEventTracker = gcEventTracker;
         this.loadShedder = loadShedder;
         this.props = props;
         this.abTestConfig = abTestConfig;
@@ -42,6 +46,11 @@ public class HealthController {
     @GetMapping("/jvm")
     public JvmMemoryMonitor.Snapshot jvmMemory() {
         return jvmMemoryMonitor.snapshot();
+    }
+
+    @GetMapping("/gc")
+    public GcEventTracker.Snapshot gcEvents() {
+        return gcEventTracker.snapshot();
     }
 
     // Liveness: is the JVM/process alive? Restart container if this fails.
