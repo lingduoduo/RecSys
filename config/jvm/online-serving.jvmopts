@@ -1,0 +1,21 @@
+# Online Prediction Server (Jetty, port 7010)
+#
+# JVM memory model mapping:
+# - Heap: hot recent-history cache, trending windows, metrics ring buffers, request objects.
+# - Thread stacks: request workers plus Kafka/Redis-adjacent call paths when enabled.
+# - Metaspace/method area: Jetty, Jedis, service classes, serialization classes.
+# - Code cache: JIT-compiled ranking, cache, and metrics hot paths.
+-Xms768m
+-Xmx1536m
+-Xss512k
+-XX:MaxMetaspaceSize=320m
+-XX:ReservedCodeCacheSize=160m
+-XX:MaxDirectMemorySize=256m
+-XX:+UseG1GC
+-XX:MaxGCPauseMillis=75
+-XX:+UseStringDeduplication
+-XX:+AlwaysPreTouch
+-XX:+HeapDumpOnOutOfMemoryError
+-XX:HeapDumpPath=logs/online-serving.hprof
+-XX:ErrorFile=logs/hs_err_online-serving_pid%p.log
+-Xlog:gc*,safepoint:file=logs/gc-online-serving-%p.log:time,uptime,level,tags:filecount=5,filesize=20M
