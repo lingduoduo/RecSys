@@ -7,10 +7,13 @@ Usage:
   sh scripts/run-with-jvm-tuning.sh <profile> -- <maven command...>
 
 Profiles:
-  recsys-serving     Jetty Recommendation Serving API, port 6010
-  model-serving      Spring Boot ONNX model service, port 8080
-  online-serving     Jetty Online Prediction Server, port 7010
-  offline-embedding  Local offline embedding / Spark driver runs
+  recsys-serving       Jetty Recommendation Serving API, G1 GC, port 6010
+  recsys-serving-zgc   Jetty Recommendation Serving API, ZGC, port 6010
+  model-serving        Spring Boot ONNX model service, G1 GC, port 8080
+  model-serving-zgc    Spring Boot ONNX model service, ZGC, port 8080
+  online-serving       Jetty Online Prediction Server, G1 GC, port 7010
+  online-serving-zgc   Jetty Online Prediction Server, ZGC, port 7010
+  offline-embedding    Local offline embedding / Spark driver runs, G1 GC
 
 Examples:
   sh scripts/run-with-jvm-tuning.sh recsys-serving -- mvn exec:java -Dexec.mainClass=com.recsys.serving.RecSysServer
@@ -30,11 +33,20 @@ case "$profile" in
   recsys-serving)
     opts_file="config/jvm/recsys-serving.jvmopts"
     ;;
+  recsys-serving-zgc)
+    opts_file="config/jvm/recsys-serving-zgc.jvmopts"
+    ;;
   model-serving)
     opts_file="config/jvm/model-serving.jvmopts"
     ;;
+  model-serving-zgc)
+    opts_file="config/jvm/model-serving-zgc.jvmopts"
+    ;;
   online-serving)
     opts_file="config/jvm/online-serving.jvmopts"
+    ;;
+  online-serving-zgc)
+    opts_file="config/jvm/online-serving-zgc.jvmopts"
     ;;
   offline-embedding)
     opts_file="config/jvm/offline-embedding.jvmopts"
