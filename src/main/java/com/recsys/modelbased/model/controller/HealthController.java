@@ -3,6 +3,7 @@ package com.recsys.modelbased.model.controller;
 import com.recsys.modelbased.model.config.HealthProperties;
 import com.recsys.modelbased.model.config.ABTestConfig;
 import com.recsys.modelbased.model.service.InferenceMetricsService;
+import com.recsys.modelbased.model.service.JvmMemoryMonitor;
 import com.recsys.modelbased.model.service.LoadShedder;
 import com.recsys.modelbased.model.service.ModelRuntimeProvider;
 import org.springframework.http.HttpStatus;
@@ -19,20 +20,28 @@ public class HealthController {
 
     private final ModelRuntimeProvider modelRuntimeProvider;
     private final InferenceMetricsService metricsService;
+    private final JvmMemoryMonitor jvmMemoryMonitor;
     private final LoadShedder loadShedder;
     private final HealthProperties props;
     private final ABTestConfig abTestConfig;
 
     public HealthController(ModelRuntimeProvider modelRuntimeProvider,
                             InferenceMetricsService metricsService,
+                            JvmMemoryMonitor jvmMemoryMonitor,
                             LoadShedder loadShedder,
                             HealthProperties props,
                             ABTestConfig abTestConfig) {
         this.modelRuntimeProvider = modelRuntimeProvider;
         this.metricsService = metricsService;
+        this.jvmMemoryMonitor = jvmMemoryMonitor;
         this.loadShedder = loadShedder;
         this.props = props;
         this.abTestConfig = abTestConfig;
+    }
+
+    @GetMapping("/jvm")
+    public JvmMemoryMonitor.Snapshot jvmMemory() {
+        return jvmMemoryMonitor.snapshot();
     }
 
     // Liveness: is the JVM/process alive? Restart container if this fails.
