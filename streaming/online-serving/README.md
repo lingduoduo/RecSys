@@ -202,13 +202,15 @@ Redis keys written by the script:
 
 ```bash
 mvn clean compile
-mvn exec:java -Dexec.mainClass="com.recsys.streaming.OnlinePredictionServer"
+sh scripts/run-with-jvm-tuning.sh online-serving -- \
+  mvn exec:java -Dexec.mainClass="com.recsys.streaming.OnlinePredictionServer"
 ```
 
 Optional env vars:
 
 ```bash
 ONLINE_DEMO_PORT=7010 REDIS_HOST=localhost REDIS_PORT=6379 \
+  sh scripts/run-with-jvm-tuning.sh online-serving -- \
   mvn exec:java -Dexec.mainClass="com.recsys.streaming.OnlinePredictionServer"
 ```
 

@@ -1,0 +1,21 @@
+# Recommendation Serving API (Jetty, port 6010)
+#
+# JVM memory model mapping:
+# - Heap: movie/user data, vector indexes, local embedding caches, response objects.
+# - Thread stacks: Jetty request threads and Redis client call frames.
+# - Metaspace/method area: loaded application, Jetty, Jedis, and JSON/JDK classes.
+# - Code cache: JIT-compiled hot recommendation and vector math paths.
+-Xms512m
+-Xmx1024m
+-Xss512k
+-XX:MaxMetaspaceSize=256m
+-XX:ReservedCodeCacheSize=128m
+-XX:MaxDirectMemorySize=128m
+-XX:+UseG1GC
+-XX:MaxGCPauseMillis=100
+-XX:+UseStringDeduplication
+-XX:+AlwaysPreTouch
+-XX:+HeapDumpOnOutOfMemoryError
+-XX:HeapDumpPath=logs/recsys-serving.hprof
+-XX:ErrorFile=logs/hs_err_recsys-serving_pid%p.log
+-Xlog:gc*,safepoint:file=logs/gc-recsys-serving-%p.log:time,uptime,level,tags:filecount=5,filesize=20M

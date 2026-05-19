@@ -20,6 +20,7 @@ RecSys is a compact Maven workspace for experimenting with recommendation-system
 - [Recommendation Serving API](#recommendation-serving-api)
 - [Configuration](#configuration)
 - [Capacity Planning](#capacity-planning)
+- [JVM Tuning](#jvm-tuning)
 - [Project Layout](#project-layout)
 - [API Reference](#api-reference)
 - [Model Serving Demo](#model-serving-demo)
@@ -92,6 +93,37 @@ Related production concerns:
 
 ---
 
+## JVM Tuning
+
+The runnable JVM workloads use explicit option profiles under `config/jvm/` and a shared launcher:
+
+```bash
+sh scripts/run-with-jvm-tuning.sh <profile> -- <maven command...>
+```
+
+Profiles:
+
+| Profile | JVM options file | Run target |
+|---|---|---|
+| `recsys-serving` | `config/jvm/recsys-serving.jvmopts` | Jetty Recommendation Serving API, port `6010` |
+| `model-serving` | `config/jvm/model-serving.jvmopts` | Spring Boot ONNX model service, port `8080` |
+| `online-serving` | `config/jvm/online-serving.jvmopts` | Jetty Online Prediction Server, port `7010` |
+| `offline-embedding` | `config/jvm/offline-embedding.jvmopts` | Local offline embedding / Spark driver runs |
+
+Tuning starts from the JVM memory model:
+
+| Area | What this service uses it for | Tuning control |
+|---|---|---|
+| Heap (`堆`) | Movie/user data, embeddings, vector indexes, local caches, request/response objects | `-Xms`, `-Xmx`, cache-size env vars such as `ONLINE_FEATURE_CACHE_MAX_USERS` and `RECSYS_RECOMMENDATION_CACHE_MAX_ENTRIES` |
+| Thread stack (`栈`) | Jetty/Tomcat request threads, Redis calls, Spark helper threads | `-Xss`; serving profiles use `512k`, offline embedding uses `1m` |
+| Method area / Metaspace (`方法区` / `元空间`) | Spring Boot, Jetty, Flink/Spark, ONNX/Jedis/Jackson class metadata | `-XX:MaxMetaspaceSize`; larger for Spring Boot and offline Spark runs |
+| Direct/native memory | ONNX Runtime native buffers, NIO/direct buffers, JVM internals | `-XX:MaxDirectMemorySize`; larger in `model-serving` because ONNX uses native memory outside the Java heap |
+| Code cache | JIT-compiled hot paths for ranking, vector math, cache, metrics, Spark/Scala code | `-XX:ReservedCodeCacheSize` |
+
+All profiles use G1 GC, bounded pause targets, string deduplication, heap dumps on OOM, and rotating GC/safepoint logs under `logs/`. For production containers, set the process/container memory limit above `Xmx + MaxMetaspaceSize + MaxDirectMemorySize + thread_count * Xss + JVM/native overhead`; a practical first pass is 25-35% headroom above those explicit caps.
+
+---
+
 ## Recommendation Serving API
 
 Runs the Jetty recommendation serving API on port `6010` with Redis-backed embeddings and Top-K state.
@@ -109,7 +141,8 @@ Run the API:
 
 ```bash
 mvn clean compile
-mvn exec:java -Dexec.mainClass="com.recsys.serving.RecSysServer"
+sh scripts/run-with-jvm-tuning.sh recsys-serving -- \
+  mvn exec:java -Dexec.mainClass="com.recsys.serving.RecSysServer"
 ```
 
 Smoke test:
@@ -127,8 +160,10 @@ curl -X POST "http://localhost:6010/v1/models/recmodel:predict" \
 Select a classpath embedding backend:
 
 ```bash
-RECSYS_VECTOR_BACKEND=lsh   mvn exec:java -Dexec.mainClass="com.recsys.serving.RecSysServer"
-RECSYS_VECTOR_BACKEND=exact mvn exec:java -Dexec.mainClass="com.recsys.serving.RecSysServer"
+RECSYS_VECTOR_BACKEND=lsh sh scripts/run-with-jvm-tuning.sh recsys-serving -- \
+  mvn exec:java -Dexec.mainClass="com.recsys.serving.RecSysServer"
+RECSYS_VECTOR_BACKEND=exact sh scripts/run-with-jvm-tuning.sh recsys-serving -- \
+  mvn exec:java -Dexec.mainClass="com.recsys.serving.RecSysServer"
 ```
 
 `lsh` is the default approximate backend. `exact` is useful for deterministic recall checks.
@@ -156,6 +191,7 @@ Example:
 
 ```bash
 PORT=7010 REDIS_HOST=localhost REDIS_PORT=6379 \
+  sh scripts/run-with-jvm-tuning.sh recsys-serving -- \
   mvn exec:java -Dexec.mainClass="com.recsys.serving.RecSysServer"
 ```
 
@@ -421,7 +457,8 @@ The full production artifact set is expected to come from an external PyTorch/ON
 The repo can generate sample offline item embeddings with Spark Word2Vec:
 
 ```bash
-mvn -Poffline-embedding exec:java \
+sh scripts/run-with-jvm-tuning.sh offline-embedding -- \
+  mvn -Poffline-embedding exec:java \
   -Dexec.mainClass="com.recsys.training.rulebased.ItemEmbeddingJob" \
   -Dexec.args="--output=output/item_embeddings"
 ```
@@ -429,7 +466,8 @@ mvn -Poffline-embedding exec:java \
 To preload those item embeddings into Redis for stripped-embedding model serving:
 
 ```bash
-mvn -Poffline-embedding exec:java \
+sh scripts/run-with-jvm-tuning.sh offline-embedding -- \
+  mvn -Poffline-embedding exec:java \
   -Dexec.mainClass="com.recsys.training.rulebased.ItemEmbeddingJob" \
   -Dexec.args="--output=output/item_embeddings --save-to-redis=true --redis-host=localhost --redis-port=6379"
 ```
@@ -440,7 +478,7 @@ Then run the Spring Boot model service with Redis-backed item embeddings:
 RECSYS_MODEL_ITEM_EMBEDDINGS_SOURCE=redis \
 RECSYS_MODEL_REDIS_ITEM_EMBEDDING_PREFIX=i2vEmb \
 RECSYS_MODEL_ARTIFACTS_DIR=/path/to/model/artifacts \
-mvn spring-boot:run
+sh scripts/run-with-jvm-tuning.sh model-serving -- mvn spring-boot:run
 ```
 
 ### Feature Contract
@@ -454,10 +492,11 @@ mvn spring-boot:run
 
 ```bash
 # Use bundled classpath artifacts
-mvn spring-boot:run
+sh scripts/run-with-jvm-tuning.sh model-serving -- mvn spring-boot:run
 
 # Load artifacts from your modeling pipeline's output directory
-RECSYS_MODEL_ARTIFACTS_DIR=/path/to/model/artifacts mvn spring-boot:run
+RECSYS_MODEL_ARTIFACTS_DIR=/path/to/model/artifacts \
+  sh scripts/run-with-jvm-tuning.sh model-serving -- mvn spring-boot:run
 ```
 
 ### Version Controller
@@ -731,7 +770,7 @@ Or via environment variables:
 ```bash
 RECSYS_AB_TEST_ENABLED=true \
 RECSYS_AB_TEST_LAYER_NAME=model-arch-test-2024q2 \
-  mvn spring-boot:run
+  sh scripts/run-with-jvm-tuning.sh model-serving -- mvn spring-boot:run
 ```
 
 ---
@@ -817,7 +856,8 @@ docker compose -f streaming/online-serving/docker-compose.yml up -d
 # 2. Load sample features into Redis (no Flink required)
 sh streaming/online-serving/scripts/load_online_features.sh
 # 3. Start the server
-mvn exec:java -Dexec.mainClass="com.recsys.streaming.OnlinePredictionServer"
+sh scripts/run-with-jvm-tuning.sh online-serving -- \
+  mvn exec:java -Dexec.mainClass="com.recsys.streaming.OnlinePredictionServer"
 # 4. Try it
 curl "http://localhost:7010/online/recommendation?userId=123&window=last_hour&k=5"
 curl "http://localhost:7010/online/ops"
@@ -955,7 +995,7 @@ For Redis-backed serving, preload the PyTorch-trained item vectors as Redis key-
 ```bash
 RECSYS_MODEL_ITEM_EMBEDDINGS_SOURCE=redis \
 RECSYS_MODEL_REDIS_ITEM_EMBEDDING_PREFIX=i2vEmb \
-mvn spring-boot:run
+sh scripts/run-with-jvm-tuning.sh model-serving -- mvn spring-boot:run
 ```
 
 `ModelArtifactService` still loads `feature_config.json` from the artifact bundle so it can validate metadata and vocab mappings. Item vectors come from the offline export, either as `item_embeddings.json` for local demos or `RedisEmbeddingStore.loadAll()` for production-style serving.

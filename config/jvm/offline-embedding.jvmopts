@@ -1,0 +1,20 @@
+# Offline embedding / Spark driver style local runs.
+#
+# JVM memory model mapping:
+# - Heap: local Spark driver data structures, tokenized interaction sequences, model output.
+# - Thread stacks: Spark scheduler/executor helper threads and deeper library call chains.
+# - Metaspace/method area: Spark, Scala, Hadoop, and project classes.
+# - Code cache: JIT-compiled Spark/Scala collection and ML hot paths.
+-Xms1g
+-Xmx4g
+-Xss1m
+-XX:MaxMetaspaceSize=512m
+-XX:ReservedCodeCacheSize=256m
+-XX:MaxDirectMemorySize=512m
+-XX:+UseG1GC
+-XX:MaxGCPauseMillis=200
+-XX:+UseStringDeduplication
+-XX:+HeapDumpOnOutOfMemoryError
+-XX:HeapDumpPath=logs/offline-embedding.hprof
+-XX:ErrorFile=logs/hs_err_offline-embedding_pid%p.log
+-Xlog:gc*,safepoint:file=logs/gc-offline-embedding-%p.log:time,uptime,level,tags:filecount=5,filesize=50M
