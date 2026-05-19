@@ -1,0 +1,69 @@
+# G1GC tuning profile — RecSys backend service
+#
+# When to choose G1:
+#   Heap 512 MB – 32 GB, mixed throughput + latency workload,
+#   pause target 50–200 ms, Java 11+.
+#   This service: heap dominated by float[] embedding cache (old gen) and
+#   short-lived inference arrays (young gen). G1 mixed collections reclaim
+#   old-gen slots incrementally, avoiding Full GC in normal operation.
+#
+# Usage:
+#   java $(cat jvm-g1.options) -jar recsys-api-*.jar
+
+# ── Heap ─────────────────────────────────────────────────────────────────────
+-Xms512m
+-Xmx2g
+
+# ── G1 collector ─────────────────────────────────────────────────────────────
+-XX:+UseG1GC
+
+# 4 MB regions: right-sized for float[128] = 512 B vectors (well below humongous
+# threshold of 2 MB = half region). Raise to 8 MB if embeddings exceed 512 dims.
+-XX:G1HeapRegionSize=4m
+
+# Soft pause target. G1 is probabilistic; bursts may still exceed this.
+-XX:MaxGCPauseMillis=100
+
+# Adaptive IHOP (default Java 12+): JVM auto-tunes the old-gen trigger instead of
+# using a fixed percentage. Outperforms static IHOP when object promotion rates vary.
+-XX:+G1UseAdaptiveIHOP
+# Static fallback used by adaptive IHOP as its initial value.
+-XX:InitiatingHeapOccupancyPercent=40
+
+# Reserve 10% of old gen as emergency free space. Without this, a sudden allocation
+# spike after IHOP triggers can cause G1 to fall back to a Full GC.
+-XX:G1ReservePercent=10
+
+# At most 8 mixed-GC rounds per concurrent-mark cycle before starting a new one.
+# Lower values reclaim old gen faster (better for bursty eviction); higher values
+# reduce mixed-GC frequency (better for steady throughput).
+-XX:G1MixedGCCountTarget=8
+
+# Reclaim old-gen regions whose live ratio is below 85%. Raising this causes more
+# regions to be collected per mixed GC but increases pause time.
+-XX:G1MixedGCLiveThresholdPercent=85
+
+# Deduplicate String objects with identical content (feature keys, variant tags).
+-XX:+UseStringDeduplication
+
+# ── Stack ─────────────────────────────────────────────────────────────────────
+# Serving path is shallow (HTTP → controller → ONNX → Redis); 256 KB is ample.
+-Xss256k
+
+# ── Metaspace ────────────────────────────────────────────────────────────────
+# Spring Boot 3 + ONNX Runtime ≈ 8–10 K classes. Floor prevents metaspace GC
+# churn at startup; cap prevents unbounded growth from CGLIB/Spring AOP proxies.
+-XX:MetaspaceSize=128m
+-XX:MaxMetaspaceSize=256m
+
+# ── GC logging — Minor GC / Mixed GC / Full GC / STW safepoints ─────────────
+# gc+heap=debug  : before/after heap sizes per collection — tracks Minor vs Full
+# gc+phases=debug: G1 phase breakdown (young, mixed, cleanup, remark)
+# gc+humongous   : log humongous allocations — first sign of region-size mistuning
+# safepoint=info : STW safepoint enter/exit times — catches non-GC STW pauses
+-Xlog:gc+heap=debug,gc+phases=debug,gc+humongous=debug,safepoint=info:file=gc-g1.log:time,uptime,level:filecount=5,filesize=20m
+
+# ── Diagnostics ───────────────────────────────────────────────────────────────
+-XX:+HeapDumpOnOutOfMemoryError
+-XX:HeapDumpPath=heap-dump-g1.hprof
+-XX:+PrintFlagsFinal
