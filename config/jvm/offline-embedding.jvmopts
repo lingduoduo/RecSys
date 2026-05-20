@@ -1,20 +1,54 @@
-# Offline embedding / Spark driver style local runs.
+# offline-embedding — Local offline embedding / Spark driver, G1GC
 #
-# JVM memory model mapping:
-# - Heap: local Spark driver data structures, tokenized interaction sequences, model output.
-# - Thread stacks: Spark scheduler/executor helper threads and deeper library call chains.
-# - Metaspace/method area: Spark, Scala, Hadoop, and project classes.
-# - Code cache: JIT-compiled Spark/Scala collection and ML hot paths.
--Xms1g
--Xmx4g
--Xss1m
--XX:MaxMetaspaceSize=512m
--XX:ReservedCodeCacheSize=256m
--XX:MaxDirectMemorySize=512m
+# Workload: batch processing with large intermediate data structures (embedding
+# matrices, item/user ID maps, mini-batch float[][]). Throughput > latency.
+#
+# Key differences from serving profiles:
+#   - Larger heap (4–8 g): batch data lives longer in old gen
+#   - Wider young gen (30–60 %): large mini-batches benefit from a big Eden
+#   - Higher pause target (200 ms): batch jobs tolerate longer STW
+#   - Lower IHOP (35 %): trigger concurrent mark earlier to keep up with
+#     rapid old-gen promotion from batch intermediate objects
+#   - Larger region size (8 m): batch arrays can be 1–4 MB; 8 m regions keep
+#     them out of the humongous path
+
+# ── 堆 (Heap) ─────────────────────────────────────────────────────────────────
+-Xms4g
+-Xmx8g
+
+# ── G1 collector ──────────────────────────────────────────────────────────────
 -XX:+UseG1GC
+# 8 MB regions for larger batch arrays; humongous threshold = 4 MB.
+-XX:G1HeapRegionSize=8m
+# Relaxed pause target: batch throughput matters more than individual pause time.
 -XX:MaxGCPauseMillis=200
--XX:+UseStringDeduplication
+
+# ── 新生代比例 ────────────────────────────────────────────────────────────────
+# Floor 30 % (1.2–2.4 g): batch mini-batches are large; small Eden = constant
+#   minor GC churn and excessive promotion.
+# Ceiling 60 % (2.4–4.8 g): allow G1 to expand young gen for throughput-heavy
+#   phases; G1 will shrink it again when old-gen pressure rises.
+-XX:+UnlockExperimentalVMOptions
+-XX:G1NewSizePercent=30
+-XX:G1MaxNewSizePercent=60
+
+# ── IHOP / mixed-GC ───────────────────────────────────────────────────────────
+# Lower IHOP: batch jobs promote aggressively; trigger concurrent mark at 35 %
+# so mixed GCs keep pace and avoid a Full GC at end-of-batch.
+-XX:+G1UseAdaptiveIHOP
+-XX:InitiatingHeapOccupancyPercent=35
+-XX:G1ReservePercent=10
+# Fewer mixed-GC rounds per cycle: reclaim old gen faster between batch phases.
+-XX:G1MixedGCCountTarget=4
+-XX:G1MixedGCLiveThresholdPercent=80
+
+# ── 其他 ──────────────────────────────────────────────────────────────────────
+# No string deduplication: batch jobs have few repeated feature-key strings.
+-Xss512k
+-XX:MetaspaceSize=192m
+-XX:MaxMetaspaceSize=384m
+
+# ── Logging / diagnostics ─────────────────────────────────────────────────────
+-Xlog:gc+heap=debug,gc+phases=debug,gc+humongous=debug,safepoint=info:file=logs/gc-offline-embedding.log:time,uptime,level:filecount=5,filesize=50m
 -XX:+HeapDumpOnOutOfMemoryError
--XX:HeapDumpPath=logs/offline-embedding.hprof
--XX:ErrorFile=logs/hs_err_offline-embedding_pid%p.log
--Xlog:gc*,safepoint:file=logs/gc-offline-embedding-%p.log:time,uptime,level,tags:filecount=5,filesize=50M
+-XX:HeapDumpPath=logs/heap-dump-offline-embedding.hprof
