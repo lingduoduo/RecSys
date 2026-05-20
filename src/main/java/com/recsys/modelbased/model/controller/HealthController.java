@@ -7,6 +7,7 @@ import com.recsys.modelbased.model.service.InferenceMetricsService;
 import com.recsys.modelbased.model.service.JvmMemoryMonitor;
 import com.recsys.modelbased.model.service.LoadShedder;
 import com.recsys.modelbased.model.service.ModelRuntimeProvider;
+import com.recsys.modelbased.model.service.RecommendationService;
 import org.springframework.http.HttpStatus;
 import org.springframework.http.ResponseEntity;
 import org.springframework.web.bind.annotation.GetMapping;
@@ -24,6 +25,7 @@ public class HealthController {
     private final JvmMemoryMonitor jvmMemoryMonitor;
     private final GcEventTracker gcEventTracker;
     private final LoadShedder loadShedder;
+    private final RecommendationService recommendationService;
     private final HealthProperties props;
     private final ABTestConfig abTestConfig;
 
@@ -32,6 +34,7 @@ public class HealthController {
                             JvmMemoryMonitor jvmMemoryMonitor,
                             GcEventTracker gcEventTracker,
                             LoadShedder loadShedder,
+                            RecommendationService recommendationService,
                             HealthProperties props,
                             ABTestConfig abTestConfig) {
         this.modelRuntimeProvider = modelRuntimeProvider;
@@ -39,6 +42,7 @@ public class HealthController {
         this.jvmMemoryMonitor = jvmMemoryMonitor;
         this.gcEventTracker = gcEventTracker;
         this.loadShedder = loadShedder;
+        this.recommendationService = recommendationService;
         this.props = props;
         this.abTestConfig = abTestConfig;
     }
@@ -67,6 +71,11 @@ public class HealthController {
     @GetMapping("/load")
     public LoadShedder.Snapshot load() {
         return loadShedder.snapshot();
+    }
+
+    @GetMapping("/cache")
+    public RecommendationService.CacheSnapshot cache() {
+        return recommendationService.cacheSnapshot();
     }
 
     @GetMapping("/ab-tests")

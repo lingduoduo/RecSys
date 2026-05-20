@@ -3,7 +3,7 @@ package com.recsys.modelbased.model.service;
 import ai.onnxruntime.*;
 
 import java.nio.LongBuffer;
-import java.util.HashSet;
+import java.util.ArrayList;
 import java.util.List;
 import java.util.Map;
 import java.util.PriorityQueue;
@@ -51,18 +51,27 @@ public class UserTowerInferenceService {
     }
 
     public double score(FeatureEncoder.EncodedFeatures features, long itemId) {
+        float[] scores = scoreBatch(features, new long[]{itemId});
+        return scores[0];
+    }
+
+    private float[] scoreBatch(FeatureEncoder.EncodedFeatures features, long[] itemIds) {
         if (!ready || session == null) {
             throw new IllegalStateException("ONNX session is not initialized or has been closed");
         }
+        if (features == null || itemIds == null || itemIds.length == 0) {
+            return new float[0];
+        }
         try {
-            long[] userArr = new long[]{features.getUserId()};
-            long[] itemArr = new long[]{itemId};
-            try (OnnxTensor userTensor = OnnxTensor.createTensor(environment, LongBuffer.wrap(userArr), new long[]{1});
-                 OnnxTensor itemTensor = OnnxTensor.createTensor(environment, LongBuffer.wrap(itemArr), new long[]{1})) {
+            long[] userArr = new long[itemIds.length];
+            for (int i = 0; i < userArr.length; i++) {
+                userArr[i] = features.getUserId();
+            }
+            try (OnnxTensor userTensor = OnnxTensor.createTensor(environment, LongBuffer.wrap(userArr), new long[]{userArr.length});
+                 OnnxTensor itemTensor = OnnxTensor.createTensor(environment, LongBuffer.wrap(itemIds), new long[]{itemIds.length})) {
                 Map<String, OnnxTensor> inputs = Map.of("user_id", userTensor, "item_id", itemTensor);
                 try (OrtSession.Result result = session.run(inputs)) {
-                    float[] output = (float[]) result.get("score").get().getValue();
-                    return output[0];
+                    return (float[]) result.get("score").get().getValue();
                 }
             }
         } catch (OrtException e) {
@@ -80,15 +89,32 @@ public class UserTowerInferenceService {
             return List.of();
         }
 
-        Set<String> seen = new HashSet<>();
-        PriorityQueue<ScoredItem> best = ScoredItems.minHeap();
+        List<String> itemIds = new ArrayList<>(candidateItemIds.size());
+        long[] encodedItemIds = new long[candidateItemIds.size()];
+        int count = 0;
         for (String itemId : candidateItemIds) {
-            if (!seen.add(itemId)) continue;
             Long encodedItemId = featureEncoder.encodeItemId(itemId);
-            if (encodedItemId == null) continue;
+            if (encodedItemId == null) {
+                continue;
+            }
+            itemIds.add(itemId);
+            encodedItemIds[count++] = encodedItemId;
+        }
+        if (count == 0) {
+            return List.of();
+        }
+        if (count < encodedItemIds.length) {
+            long[] compact = new long[count];
+            System.arraycopy(encodedItemIds, 0, compact, 0, count);
+            encodedItemIds = compact;
+        }
 
-            double score = score(features, encodedItemId);
-            ScoredItems.keepTopK(best, new ScoredItem(itemId, score), k);
+        float[] scores = scoreBatch(features, encodedItemIds);
+        PriorityQueue<ScoredItem> best = ScoredItems.minHeap();
+        int scoredCount = Math.min(scores.length, itemIds.size());
+        for (int i = 0; i < scoredCount; i++) {
+            double score = scores[i];
+            ScoredItems.keepTopK(best, new ScoredItem(itemIds.get(i), score), k);
         }
 
         return ScoredItems.descending(best);

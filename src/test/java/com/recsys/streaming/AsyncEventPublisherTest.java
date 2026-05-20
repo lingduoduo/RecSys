@@ -75,15 +75,34 @@ class AsyncEventPublisherTest {
     }
 
     @Test
-    void snapshot_reflectsPublishedAndDropped() {
-        try (var publisher = new AsyncEventPublisher(2, 1_000)) {
-            publisher.publish("e1");
-            publisher.publish("e2");
-            publisher.publish("e3"); // dropped
+    void snapshot_reflectsPublishedAndDropped() throws Exception {
+        CountDownLatch drainStarted = new CountDownLatch(1);
+        CountDownLatch releaseDrain = new CountDownLatch(1);
+        AsyncEventPublisher publisher = new AsyncEventPublisher(1, 1) {
+            @Override
+            protected void sendBatch(List<String> events) {
+                drainStarted.countDown();
+                try {
+                    releaseDrain.await(1, TimeUnit.SECONDS);
+                } catch (InterruptedException e) {
+                    Thread.currentThread().interrupt();
+                }
+                super.sendBatch(events);
+            }
+        };
+
+        try {
+            assertThat(publisher.publish("e1")).isTrue();
+            assertThat(drainStarted.await(1, TimeUnit.SECONDS)).isTrue();
+            assertThat(publisher.publish("e2")).isTrue();
+            assertThat(publisher.publish("e3")).isFalse();
 
             var snap = publisher.snapshot();
             assertThat(snap.published()).isEqualTo(2L);
             assertThat(snap.dropped()).isEqualTo(1L);
+        } finally {
+            releaseDrain.countDown();
+            publisher.close();
         }
     }
 }

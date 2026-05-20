@@ -165,6 +165,32 @@ class RecommendationEndToEndTest {
     }
 
     @Test
+    void healthCache_afterRepeatedRequest_exposesRecommendationCacheHitRate() throws Exception {
+        var payload = objectMapper.writeValueAsBytes(request("123", 5));
+        mockMvc.perform(post("/api/v1/recommend")
+                        .contentType(MediaType.APPLICATION_JSON)
+                        .content(payload))
+                .andReturn();
+        mockMvc.perform(post("/api/v1/recommend")
+                        .contentType(MediaType.APPLICATION_JSON)
+                        .content(payload))
+                .andReturn();
+
+        var resp = mockMvc.perform(get("/health/cache"))
+                .andReturn()
+                .getResponse();
+
+        assertThat(resp.getStatus()).isEqualTo(HttpStatus.OK.value());
+        var body = readMap(resp.getContentAsByteArray());
+        assertThat(body).containsEntry("enabled", true);
+
+        @SuppressWarnings("unchecked")
+        Map<String, Object> recommendations = (Map<String, Object>) body.get("recommendations");
+        assertThat(((Number) recommendations.get("hits")).longValue()).isGreaterThan(0L);
+        assertThat(recommendations).containsKey("hitRate");
+    }
+
+    @Test
     void abTestMetrics_afterRequest_exposesVariantComparison() throws Exception {
         mockMvc.perform(post("/api/v1/recommend")
                         .contentType(MediaType.APPLICATION_JSON)
