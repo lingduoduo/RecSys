@@ -1,6 +1,30 @@
 #!/usr/bin/env sh
 set -eu
 
+die() {
+  echo "$*" >&2
+  exit 1
+}
+
+require_command() {
+  command -v "$1" >/dev/null 2>&1 || die "Required command not found: $1"
+}
+
+require_pid() {
+  case "${1:-}" in
+    *[!0-9]*|'') echo "PID must be a number: ${1:-}" >&2; exit 64 ;;
+  esac
+  if ! kill -0 "$1" >/dev/null 2>&1; then
+    echo "Process is not running or not accessible: $1" >&2
+    exit 69
+  fi
+}
+
+repo_root() {
+  script_dir=$(CDPATH= cd -- "$(dirname -- "$0")" && pwd)
+  CDPATH= cd -- "$script_dir/.." && pwd
+}
+
 usage() {
   cat >&2 <<'USAGE'
 Usage:
@@ -16,7 +40,7 @@ Commands:
   jad <class>                     Decompile a loaded class.
 
 Environment:
-  ARTHAS_BOOT_JAR                 Path to arthas-boot.jar. Default: tools/arthas/arthas-boot.jar
+  ARTHAS_BOOT_JAR                 Path to arthas-boot.jar. Default: <repo>/tools/arthas/arthas-boot.jar
 
 Examples:
   sh scripts/arthas-diagnostics.sh 12345 thread
@@ -37,11 +61,11 @@ pid="$1"
 action="$2"
 shift 2
 
-case "$pid" in
-  *[!0-9]*|'') echo "PID must be a number: $pid" >&2; exit 64 ;;
-esac
+require_command java
+require_pid "$pid"
 
-arthas_boot="${ARTHAS_BOOT_JAR:-tools/arthas/arthas-boot.jar}"
+root_dir=$(repo_root)
+arthas_boot="${ARTHAS_BOOT_JAR:-$root_dir/tools/arthas/arthas-boot.jar}"
 
 if [ ! -r "$arthas_boot" ]; then
   cat >&2 <<EOF
@@ -56,11 +80,27 @@ EOF
   exit 66
 fi
 
-mkdir -p logs/arthas
+arthas_log_dir="$root_dir/logs/arthas"
+mkdir -p "$arthas_log_dir"
 
 run_arthas() {
   java -jar "$arthas_boot" -c "$1" "$pid"
 }
+
+require_identifier() {
+  case "$1" in
+    ''|*' '*|*';'*|*'|'*|*'&'*|*'`'*|*'$('*) echo "Invalid class or method pattern: $1" >&2; exit 64 ;;
+  esac
+}
+
+profiling=0
+profile_out=""
+stop_profiler() {
+  if [ "$profiling" -eq 1 ]; then
+    run_arthas "profiler stop --format html --file ${profile_out}" >/dev/null 2>&1 || true
+  fi
+}
+trap stop_profiler INT TERM EXIT
 
 case "$action" in
   session)
@@ -78,12 +118,18 @@ case "$action" in
     case "$seconds" in
       *[!0-9]*|'') echo "Duration must be seconds: $seconds" >&2; exit 64 ;;
     esac
-    out="logs/arthas/cpu-hotspot-${pid}-$(date +%Y%m%d-%H%M%S).html"
+    if [ "$seconds" -eq 0 ]; then
+      echo "Duration must be greater than zero" >&2
+      exit 64
+    fi
+    profile_out="$arthas_log_dir/cpu-hotspot-${pid}-$(date +%Y%m%d-%H%M%S).html"
     run_arthas "profiler start --event cpu"
+    profiling=1
     echo "Recording CPU hotspot profile for ${seconds}s..."
     sleep "$seconds"
-    run_arthas "profiler stop --format html --file ${out}"
-    echo "CPU hotspot flame graph: ${out}"
+    run_arthas "profiler stop --format html --file ${profile_out}"
+    profiling=0
+    echo "CPU hotspot flame graph: ${profile_out}"
     ;;
   classloader)
     echo "== Classloader tree =="
@@ -98,6 +144,8 @@ case "$action" in
     fi
     class_name="$1"
     method_name="$2"
+    require_identifier "$class_name"
+    require_identifier "$method_name"
     expr="${3:-'{params,returnObj,throwExp,#cost}'}"
     run_arthas "watch ${class_name} ${method_name} ${expr} -x 3 -n 5"
     ;;
@@ -105,12 +153,15 @@ case "$action" in
     if [ "$#" -lt 2 ]; then
       usage
     fi
+    require_identifier "$1"
+    require_identifier "$2"
     run_arthas "trace $1 $2 -n 5 --skipJDKMethod false"
     ;;
   jad)
     if [ "$#" -lt 1 ]; then
       usage
     fi
+    require_identifier "$1"
     run_arthas "jad $1"
     ;;
   *)
