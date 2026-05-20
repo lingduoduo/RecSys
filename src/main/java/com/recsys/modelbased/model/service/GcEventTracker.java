@@ -16,8 +16,10 @@ import java.lang.management.GarbageCollectorMXBean;
 import java.lang.management.ManagementFactory;
 import java.lang.management.MemoryUsage;
 import java.util.ArrayList;
+import java.util.Arrays;
 import java.util.LinkedHashMap;
 import java.util.List;
+import java.util.Locale;
 import java.util.Map;
 import java.util.concurrent.atomic.AtomicLong;
 import java.util.concurrent.atomic.LongAdder;
@@ -48,27 +50,20 @@ public class GcEventTracker implements DisposableBean {
     private static final long[] HISTOGRAM_BOUNDS = {1, 10, 50, 200, 500};
     private static final String[] HISTOGRAM_LABELS = {"<1ms", "1-10ms", "10-50ms", "50-200ms", "200-500ms", ">500ms"};
 
-    // Per-type event counters and cumulative STW pause time
     private final LongAdder[] typeCounts = new LongAdder[GcType.values().length];
     private final LongAdder[] typePauseMs = new LongAdder[GcType.values().length];
-
-    // STW pause histogram (bucket index → count)
     private final LongAdder[] histogramBuckets = new LongAdder[HISTOGRAM_LABELS.length];
 
-    // STW-specific aggregates
     private final LongAdder stwEventCount    = new LongAdder();
     private final LongAdder stwTotalPauseMs  = new LongAdder();
     private final AtomicLong stwLongestPauseMs = new AtomicLong(0);
 
-    // Allocation and promotion counters (bytes)
     private final LongAdder totalAllocatedBytes  = new LongAdder();
     private final LongAdder totalPromotedBytes    = new LongAdder();
 
-    // Danger signals
     private final LongAdder evacuationFailures = new LongAdder();
     private final LongAdder allocationStalls   = new LongAdder();
 
-    // Listener cleanup on shutdown
     private record ListenerRegistration(NotificationEmitter emitter, NotificationListener listener) {}
     private final List<ListenerRegistration> registrations = new ArrayList<>();
 
@@ -77,9 +72,7 @@ public class GcEventTracker implements DisposableBean {
             typeCounts[t.ordinal()]  = new LongAdder();
             typePauseMs[t.ordinal()] = new LongAdder();
         }
-        for (int i = 0; i < histogramBuckets.length; i++) {
-            histogramBuckets[i] = new LongAdder();
-        }
+        Arrays.setAll(histogramBuckets, i -> new LongAdder());
     }
 
     @PostConstruct
@@ -98,8 +91,11 @@ public class GcEventTracker implements DisposableBean {
         for (ListenerRegistration r : registrations) {
             try {
                 r.emitter().removeNotificationListener(r.listener());
-            } catch (Exception ignored) {}
+            } catch (Exception e) {
+                log.debug("GcEventTracker: failed to remove listener: {}", e.getMessage());
+            }
         }
+        registrations.clear();
     }
 
     // ── Notification handler ─────────────────────────────────────────────────
@@ -129,10 +125,7 @@ public class GcEventTracker implements DisposableBean {
     private void recordStwPause(long pauseMs) {
         stwEventCount.increment();
         stwTotalPauseMs.add(pauseMs);
-        long prev = stwLongestPauseMs.get();
-        while (pauseMs > prev && !stwLongestPauseMs.compareAndSet(prev, pauseMs)) {
-            prev = stwLongestPauseMs.get();
-        }
+        stwLongestPauseMs.accumulateAndGet(pauseMs, Math::max);
         histogramBuckets[bucketIndex(pauseMs)].increment();
     }
 
@@ -141,7 +134,7 @@ public class GcEventTracker implements DisposableBean {
         for (Map.Entry<String, MemoryUsage> entry : before.entrySet()) {
             MemoryUsage afterUsage = after.get(entry.getKey());
             if (afterUsage == null) continue;
-            String pool     = entry.getKey().toLowerCase();
+            String pool     = entry.getKey().toLowerCase(Locale.ROOT);
             long usedBefore = entry.getValue().getUsed();
             long usedAfter  = afterUsage.getUsed();
 
@@ -166,7 +159,7 @@ public class GcEventTracker implements DisposableBean {
 
     private void recordDangerSignals(String cause) {
         if (cause == null) return;
-        String lower = cause.toLowerCase();
+        String lower = cause.toLowerCase(Locale.ROOT);
         // G1 evacuation failure: not enough free regions to copy survivors; triggers Full GC fallback
         if (lower.contains("evacuation failure") || lower.contains("g1 evacuation")) {
             evacuationFailures.increment();
@@ -180,9 +173,9 @@ public class GcEventTracker implements DisposableBean {
     // ── Classification ───────────────────────────────────────────────────────
 
     private static GcType classifyEvent(String action, String name, String cause) {
-        String actionLow = action == null ? "" : action.toLowerCase();
-        String nameLow   = name   == null ? "" : name.toLowerCase();
-        String causeLow  = cause  == null ? "" : cause.toLowerCase();
+        String actionLow = action == null ? "" : action.toLowerCase(Locale.ROOT);
+        String nameLow   = name   == null ? "" : name.toLowerCase(Locale.ROOT);
+        String causeLow  = cause  == null ? "" : cause.toLowerCase(Locale.ROOT);
 
         // ZGC reports concurrent cycles and separate STW pauses
         if (nameLow.contains("zgc")) {
@@ -201,9 +194,7 @@ public class GcEventTracker implements DisposableBean {
         // G1 Mixed: collects young + selected old-gen regions; always STW
         if (nameLow.contains("mixed") || causeLow.contains("mixed")) return GcType.G1_MIXED;
 
-        // Standard action-based classification
         if (actionLow.contains("minor")) return GcType.MINOR_GC;
-        if (actionLow.contains("major") && nameLow.contains("full")) return GcType.FULL_GC;
         if (actionLow.contains("major")) return GcType.FULL_GC;
 
         // Fallback: check name for young/old hints
