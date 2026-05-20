@@ -205,6 +205,81 @@ curl http://localhost:8080/health/gc
 
 For serving workloads, useful alarms are: `evacuationFailures > 0` (G1 heap fragmentation), `allocationStalls > 0` (ZGC needs more heap or GC threads), `stwLongestPauseMs` above the request SLO, and any `FULL_GC` events. For offline embedding, longer pauses may be acceptable if total job throughput is healthy.
 
+### Arthas Runtime Diagnostics
+
+Use Arthas when the JVM is alive and the problem is happening now. The helper script expects an existing `arthas-boot.jar` at `tools/arthas/arthas-boot.jar`, or set `ARTHAS_BOOT_JAR`.
+
+```bash
+mkdir -p tools/arthas
+curl -L -o tools/arthas/arthas-boot.jar https://arthas.aliyun.com/arthas-boot.jar
+```
+
+Find the Java process, then run focused checks:
+
+```bash
+jps -lv
+
+# 线程分析: top CPU threads plus blocking/deadlock candidates.
+sh scripts/arthas-diagnostics.sh <pid> thread
+
+# CPU 热点: records an async-profiler flame graph under logs/arthas/.
+sh scripts/arthas-diagnostics.sh <pid> cpu 60
+
+# classloader: tree and loaded-class statistics; useful for duplicate classes or classloader leaks.
+sh scripts/arthas-diagnostics.sh <pid> classloader
+
+# watch: inspect method params, return value, exception, and cost for 5 calls.
+sh scripts/arthas-diagnostics.sh <pid> watch \
+  com.recsys.modelbased.model.service.RankingService rank
+
+# trace: show call path cost for slow methods.
+sh scripts/arthas-diagnostics.sh <pid> trace \
+  com.recsys.modelbased.model.service.RecommendationService recommend
+
+# jad: decompile the class actually loaded by this JVM.
+sh scripts/arthas-diagnostics.sh <pid> jad \
+  com.recsys.modelbased.model.service.RecommendationCache
+```
+
+Recommended incident flow:
+
+| Symptom | Arthas command | What to look for |
+|---|---|---|
+| CPU high | `cpu 60`, then `thread` | Flame graph top frames in ranking, JSON, Redis client, or cache code |
+| Request p99 high | `trace <class> <method>` | Slow subtree, Redis waits, model inference cost, synchronized/lock-heavy paths |
+| Suspect bad input/output | `watch <class> <method>` | Params, return object, thrown exception, and `#cost` without adding logs |
+| Thread stalls | `thread` | `BLOCKED`, deadlock output, or many workers waiting on the same monitor/future |
+| Class conflict/leak | `classloader` and `jad` | Multiple versions of a class, unexpected loader ownership, generated proxy buildup |
+
+### MAT Heap Analysis
+
+Use MAT when heap keeps growing, Full GC recurs, or an OOM heap dump is available. The helper script uses `jcmd` for dumps and Eclipse MAT's `ParseHeapDump` CLI for reports.
+
+```bash
+# Live-only heap dump: excludes unreachable garbage after a full GC.
+sh scripts/mat-heap-analysis.sh dump <pid>
+
+# Full heap dump: includes unreachable objects; useful when comparing pre/post GC.
+sh scripts/mat-heap-analysis.sh dump-all <pid>
+
+# Quick top classes before opening MAT.
+sh scripts/mat-heap-analysis.sh histogram <pid>
+
+# Generate MAT leak suspects, top components, and overview reports.
+MAT_PARSE_HEAP_DUMP=/path/to/mat/ParseHeapDump \
+  sh scripts/mat-heap-analysis.sh report logs/heap-dumps/heap-<pid>-<timestamp>.hprof
+```
+
+Heap dump analysis checklist:
+
+| Question | MAT view/report | RecSys-specific suspects |
+|---|---|---|
+| 内存泄漏 | Leak Suspects, Dominator Tree, Path To GC Roots | `RecommendationCache`, `LocalEmbeddingCache`, `OnlineFeatureStore`, Redis result buffers |
+| 大对象 | Histogram, Top Components, Dominator Tree | Large `float[]`, `double[]`, `byte[]`, `ArrayList`, Jackson buffers, ONNX tensors |
+| Cache oversizing | Dominator Tree retained heap by owner | Cache max entries too high, stale per-user recent-history entries, hot embedding cache growth |
+| Classloader leak | Histogram by classloader, Path To GC Roots | Old Spring/Jetty loaders retained by threads, timers, or static singletons |
+| OOM root cause | Leak Suspects plus GC logs | Full GC before OOM, humongous arrays, native/direct memory pressure outside heap |
+
 ---
 
 ## Recommendation Serving API
