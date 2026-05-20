@@ -74,6 +74,18 @@ public class RecommendationService {
         return "recommendations[" + cache.recommendationStats() + "] coldStart[" + cache.coldStartStats() + "]";
     }
 
+    /** Returns structured cache stats for health endpoints and dashboards. */
+    public CacheSnapshot cacheSnapshot() {
+        RecommendationCache.CacheStats recommendations = cache.recommendationStats();
+        RecommendationCache.CacheStats coldStart = cache.coldStartStats();
+        return new CacheSnapshot(
+                cache.isEnabled(),
+                cache.isColdStartEnabled(),
+                new CacheStatsSnapshot(recommendations.hits(), recommendations.misses(), recommendations.hitRate()),
+                new CacheStatsSnapshot(coldStart.hits(), coldStart.misses(), coldStart.hitRate())
+        );
+    }
+
     private List<ScoredItem> coldStartItems(
             RecommendRequest request,
             ModelRuntime runtime,
@@ -165,4 +177,13 @@ public class RecommendationService {
                 .limit(k)
                 .toList();
     }
+
+    public record CacheSnapshot(
+            boolean enabled,
+            boolean coldStartEnabled,
+            CacheStatsSnapshot recommendations,
+            CacheStatsSnapshot coldStart
+    ) {}
+
+    public record CacheStatsSnapshot(long hits, long misses, double hitRate) {}
 }
