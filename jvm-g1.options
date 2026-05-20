@@ -1,66 +1,98 @@
-# G1GC tuning profile — RecSys backend service
+# G1GC tuning profile — RecSys backend service (enhanced G1)
 #
-# When to choose G1:
-#   Heap 512 MB – 32 GB, mixed throughput + latency workload,
-#   pause target 50–200 ms, Java 11+.
-#   This service: heap dominated by float[] embedding cache (old gen) and
-#   short-lived inference arrays (young gen). G1 mixed collections reclaim
-#   old-gen slots incrementally, avoiding Full GC in normal operation.
+# When to choose this profile over jvm.options:
+#   Use when you need phase-level GC logging, adaptive IHOP diagnostics, or are
+#   actively tuning mixed-GC frequency and live-threshold on a production replica.
+#   For out-of-the-box use, jvm.options is the simpler starting point.
+#
+# Workload model:
+#   Heap dominated by float[] embedding cache in old gen (~50 MB) and
+#   short-lived inference arrays (float[], Map) in young gen.
+#   G1 mixed collections reclaim old-gen slots incrementally, avoiding
+#   Full GC in normal operation.
 #
 # Usage:
 #   java $(cat jvm-g1.options) -jar recsys-api-*.jar
 
-# ── Heap ─────────────────────────────────────────────────────────────────────
--Xms512m
+# ── 堆 (Heap) ─────────────────────────────────────────────────────────────────
+# Fixed heap: eliminates GC-triggered expansion pauses and OS page-fault stalls.
+-Xms2g
 -Xmx2g
 
-# ── G1 collector ─────────────────────────────────────────────────────────────
+# ── G1 collector ──────────────────────────────────────────────────────────────
 -XX:+UseG1GC
 
-# 4 MB regions: right-sized for float[128] = 512 B vectors (well below humongous
-# threshold of 2 MB = half region). Raise to 8 MB if embeddings exceed 512 dims.
+# 4 MB regions: right-sized for float[128] = 512 B vectors (well below the
+# humongous threshold of 2 MB = half region).
+# Raise to 8 MB if embeddings exceed 512 dims (float[512] = 2 KB → still safe).
 -XX:G1HeapRegionSize=4m
 
-# Soft pause target. G1 is probabilistic; bursts may still exceed this.
+# Soft STW pause target. G1 is probabilistic; bursts may still exceed this.
+# Lower to 50 ms only if your p99 SLO is tighter; expect more frequent minor GC.
 -XX:MaxGCPauseMillis=100
 
-# Adaptive IHOP (default Java 12+): JVM auto-tunes the old-gen trigger instead of
-# using a fixed percentage. Outperforms static IHOP when object promotion rates vary.
+# ── 新生代比例 (Young generation sizing) ──────────────────────────────────────
+# G1 adapts Eden size each collection to stay within MaxGCPauseMillis.
+#
+# Floor 20 % = 400 MB: prevents excessive minor GC frequency under high request
+#   allocation (JSON + float[] inference arrays at 100–1 000 req/s).
+# Ceiling 40 % = 800 MB: leaves ≥1.2 g for old-gen embedding + recommendation
+#   caches, preventing promotion-driven Full GC.
+#
+# Tuning guide: if /health/gc shows MINOR_GC avgPauseMs close to 100 ms, widen
+# G1MaxNewSizePercent by 5 %; if promoted bytes/s > 50 MB/s, shrink the floor.
+-XX:+UnlockExperimentalVMOptions
+-XX:G1NewSizePercent=20
+-XX:G1MaxNewSizePercent=40
+
+# ── IHOP / mixed-GC policy ────────────────────────────────────────────────────
+# Adaptive IHOP (Java 12+): JVM auto-tunes the old-gen marking trigger from
+# observed allocation and promotion rates. Seed is the static IHOP below.
 -XX:+G1UseAdaptiveIHOP
-# Static fallback used by adaptive IHOP as its initial value.
+# 40 % = 800 MB on 2 g heap. Triggers concurrent mark early enough that mixed
+# collections keep up with promotion rate; raise to 50 % if mixed GC is too
+# frequent at steady state.
 -XX:InitiatingHeapOccupancyPercent=40
 
-# Reserve 10% of old gen as emergency free space. Without this, a sudden allocation
-# spike after IHOP triggers can cause G1 to fall back to a Full GC.
--XX:G1ReservePercent=10
+# Emergency reserve: 15 % of old gen (≈ 240 MB) kept free for evacuation spikes.
+# Without this, a sudden promotion burst after IHOP fires can force a Full GC.
+-XX:G1ReservePercent=15
 
-# At most 8 mixed-GC rounds per concurrent-mark cycle before starting a new one.
-# Lower values reclaim old gen faster (better for bursty eviction); higher values
-# reduce mixed-GC frequency (better for steady throughput).
+# Up to 8 mixed-GC rounds per concurrent-mark cycle. Lower = reclaim old gen
+# faster (good for bursty eviction); higher = fewer mixed GCs (better throughput).
 -XX:G1MixedGCCountTarget=8
 
-# Reclaim old-gen regions whose live ratio is below 85%. Raising this causes more
-# regions to be collected per mixed GC but increases pause time.
+# Reclaim old-gen regions with ≤85 % live data. Raise to collect more per round
+# at the cost of longer per-round pause; lower to be more selective.
 -XX:G1MixedGCLiveThresholdPercent=85
 
-# Deduplicate String objects with identical content (feature keys, variant tags).
+# ── GC threads ────────────────────────────────────────────────────────────────
+# STW GC threads (default = min(ncpu, 8)). Uncomment and set to vCPU count if
+# minor GC pauses are longer than MaxGCPauseMillis on a high-core-count host.
+# -XX:ParallelGCThreads=8
+#
+# Concurrent marking threads (default = ParallelGCThreads / 4, min 1).
+# Increase if /health/gc shows Full GC events or rising old-gen occupancy while
+# concurrent mark is still running.
+# -XX:ConcGCThreads=4
+
+# ── 其他 (Other) ───────────────────────────────────────────────────────────────
 -XX:+UseStringDeduplication
 
-# ── Stack ─────────────────────────────────────────────────────────────────────
+# ── 栈 (Stack) ────────────────────────────────────────────────────────────────
 # Serving path is shallow (HTTP → controller → ONNX → Redis); 256 KB is ample.
 -Xss256k
 
-# ── Metaspace ────────────────────────────────────────────────────────────────
-# Spring Boot 3 + ONNX Runtime ≈ 8–10 K classes. Floor prevents metaspace GC
-# churn at startup; cap prevents unbounded growth from CGLIB/Spring AOP proxies.
+# ── 元空间 (Metaspace) ────────────────────────────────────────────────────────
+# Spring Boot 3 + ONNX Runtime ≈ 8–10 K classes.
 -XX:MetaspaceSize=128m
 -XX:MaxMetaspaceSize=256m
 
-# ── GC logging — Minor GC / Mixed GC / Full GC / STW safepoints ─────────────
-# gc+heap=debug  : before/after heap sizes per collection — tracks Minor vs Full
+# ── GC logging ────────────────────────────────────────────────────────────────
+# gc+heap=debug  : before/after heap sizes — tracks Minor vs Full
 # gc+phases=debug: G1 phase breakdown (young, mixed, cleanup, remark)
 # gc+humongous   : log humongous allocations — first sign of region-size mistuning
-# safepoint=info : STW safepoint enter/exit times — catches non-GC STW pauses
+# safepoint=info : STW safepoint times — catches non-GC STW pauses
 -Xlog:gc+heap=debug,gc+phases=debug,gc+humongous=debug,safepoint=info:file=gc-g1.log:time,uptime,level:filecount=5,filesize=20m
 
 # ── Diagnostics ───────────────────────────────────────────────────────────────

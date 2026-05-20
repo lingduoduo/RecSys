@@ -1,21 +1,39 @@
-# Recommendation Serving API (Jetty, port 6010)
+# recsys-serving — Jetty Recommendation Serving API, G1GC (port 6010)
 #
-# JVM memory model mapping:
-# - Heap: movie/user data, vector indexes, local embedding caches, response objects.
-# - Thread stacks: Jetty request threads and Redis client call frames.
-# - Metaspace/method area: loaded application, Jetty, Jedis, and JSON/JDK classes.
-# - Code cache: JIT-compiled hot recommendation and vector math paths.
--Xms512m
--Xmx1024m
--Xss512k
--XX:MaxMetaspaceSize=256m
--XX:ReservedCodeCacheSize=128m
--XX:MaxDirectMemorySize=128m
+# Lighter than model-serving: no ONNX runtime; primary work is ranking, blending,
+# and Redis/MySQL fetches. Lower baseline heap footprint than model-serving.
+
+# ── 堆 (Heap) ─────────────────────────────────────────────────────────────────
+# 1 g initial, 2 g max. Allow modest growth; serving objects are small.
+-Xms1g
+-Xmx2g
+
+# ── G1 collector ──────────────────────────────────────────────────────────────
 -XX:+UseG1GC
+-XX:G1HeapRegionSize=4m
 -XX:MaxGCPauseMillis=100
+
+# ── 新生代比例 ────────────────────────────────────────────────────────────────
+# Floor 20 % (200–400 MB): covers burst request allocation.
+# Ceiling 40 % (400–800 MB): leaves room for old-gen ranking caches.
+-XX:+UnlockExperimentalVMOptions
+-XX:G1NewSizePercent=20
+-XX:G1MaxNewSizePercent=40
+
+# ── IHOP / mixed-GC ───────────────────────────────────────────────────────────
+-XX:+G1UseAdaptiveIHOP
+-XX:InitiatingHeapOccupancyPercent=40
+-XX:G1ReservePercent=15
+-XX:G1MixedGCCountTarget=8
+-XX:G1MixedGCLiveThresholdPercent=85
+
+# ── 其他 ──────────────────────────────────────────────────────────────────────
 -XX:+UseStringDeduplication
--XX:+AlwaysPreTouch
+-Xss256k
+-XX:MetaspaceSize=96m
+-XX:MaxMetaspaceSize=192m
+
+# ── Logging / diagnostics ─────────────────────────────────────────────────────
+-Xlog:gc+heap=debug,gc+phases=debug,gc+humongous=debug,safepoint=info:file=logs/gc-recsys-serving.log:time,uptime,level:filecount=5,filesize=20m
 -XX:+HeapDumpOnOutOfMemoryError
--XX:HeapDumpPath=logs/recsys-serving.hprof
--XX:ErrorFile=logs/hs_err_recsys-serving_pid%p.log
--Xlog:gc*,safepoint:file=logs/gc-recsys-serving-%p.log:time,uptime,level,tags:filecount=5,filesize=20M
+-XX:HeapDumpPath=logs/heap-dump-recsys-serving.hprof

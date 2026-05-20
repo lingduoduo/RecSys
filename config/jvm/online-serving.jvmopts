@@ -1,21 +1,36 @@
-# Online Prediction Server (Jetty, port 7010)
+# online-serving — Jetty Online Prediction Server, G1GC (port 7010)
 #
-# JVM memory model mapping:
-# - Heap: hot recent-history cache, trending windows, metrics ring buffers, request objects.
-# - Thread stacks: request workers plus Kafka/Redis-adjacent call paths when enabled.
-# - Metaspace/method area: Jetty, Jedis, service classes, serialization classes.
-# - Code cache: JIT-compiled ranking, cache, and metrics hot paths.
--Xms768m
--Xmx1536m
--Xss512k
--XX:MaxMetaspaceSize=320m
--XX:ReservedCodeCacheSize=160m
--XX:MaxDirectMemorySize=256m
+# Workload: real-time feature scoring + candidate ranking; objects are small and
+# short-lived. Similar heap profile to recsys-serving.
+
+# ── 堆 (Heap) ─────────────────────────────────────────────────────────────────
+-Xms1g
+-Xmx2g
+
+# ── G1 collector ──────────────────────────────────────────────────────────────
 -XX:+UseG1GC
--XX:MaxGCPauseMillis=75
+-XX:G1HeapRegionSize=4m
+-XX:MaxGCPauseMillis=100
+
+# ── 新生代比例 ────────────────────────────────────────────────────────────────
+-XX:+UnlockExperimentalVMOptions
+-XX:G1NewSizePercent=20
+-XX:G1MaxNewSizePercent=40
+
+# ── IHOP / mixed-GC ───────────────────────────────────────────────────────────
+-XX:+G1UseAdaptiveIHOP
+-XX:InitiatingHeapOccupancyPercent=40
+-XX:G1ReservePercent=15
+-XX:G1MixedGCCountTarget=8
+-XX:G1MixedGCLiveThresholdPercent=85
+
+# ── 其他 ──────────────────────────────────────────────────────────────────────
 -XX:+UseStringDeduplication
--XX:+AlwaysPreTouch
+-Xss256k
+-XX:MetaspaceSize=96m
+-XX:MaxMetaspaceSize=192m
+
+# ── Logging / diagnostics ─────────────────────────────────────────────────────
+-Xlog:gc+heap=debug,gc+phases=debug,gc+humongous=debug,safepoint=info:file=logs/gc-online-serving.log:time,uptime,level:filecount=5,filesize=20m
 -XX:+HeapDumpOnOutOfMemoryError
--XX:HeapDumpPath=logs/online-serving.hprof
--XX:ErrorFile=logs/hs_err_online-serving_pid%p.log
--Xlog:gc*,safepoint:file=logs/gc-online-serving-%p.log:time,uptime,level,tags:filecount=5,filesize=20M
+-XX:HeapDumpPath=logs/heap-dump-online-serving.hprof

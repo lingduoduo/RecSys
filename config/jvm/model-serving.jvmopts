@@ -1,21 +1,41 @@
-# Spring Boot model serving service (Tomcat + ONNX Runtime, port 8080)
+# model-serving — Spring Boot ONNX inference service, G1GC (port 8080)
 #
-# JVM memory model mapping:
-# - Heap: feature config, item embeddings, request DTOs, recommendation cache.
-# - Thread stacks: Tomcat worker threads and model-serving call frames.
-# - Metaspace/method area: Spring Boot, validation, Jackson, ONNX Runtime bindings.
-# - Native/direct memory: ONNX Runtime native buffers and limited direct allocation.
--Xms512m
--Xmx1536m
--Xss512k
--XX:MaxMetaspaceSize=384m
--XX:ReservedCodeCacheSize=160m
--XX:MaxDirectMemorySize=512m
+# Heap model:
+#   Old gen: embedding cache (≤100 K float[128] ≈ 50 MB) + TtlLruCache lists
+#   Young gen: per-request float[] inference arrays, JSON marshalling objects
+#
+# -Xms == -Xmx: fixed heap eliminates expansion pauses and OS page-fault stalls.
+
+# ── 堆 (Heap) ─────────────────────────────────────────────────────────────────
+-Xms2g
+-Xmx2g
+
+# ── G1 collector ──────────────────────────────────────────────────────────────
 -XX:+UseG1GC
+-XX:G1HeapRegionSize=4m
 -XX:MaxGCPauseMillis=100
+
+# ── 新生代比例 ────────────────────────────────────────────────────────────────
+# Floor 20 % (400 MB): absorbs burst allocation from inference float[] arrays.
+# Ceiling 40 % (800 MB): leaves ≥1.2 g for old-gen caches; prevents Full GC.
+-XX:+UnlockExperimentalVMOptions
+-XX:G1NewSizePercent=20
+-XX:G1MaxNewSizePercent=40
+
+# ── IHOP / mixed-GC ───────────────────────────────────────────────────────────
+-XX:+G1UseAdaptiveIHOP
+-XX:InitiatingHeapOccupancyPercent=40
+-XX:G1ReservePercent=15
+-XX:G1MixedGCCountTarget=8
+-XX:G1MixedGCLiveThresholdPercent=85
+
+# ── 其他 ──────────────────────────────────────────────────────────────────────
 -XX:+UseStringDeduplication
--XX:+AlwaysPreTouch
+-Xss256k
+-XX:MetaspaceSize=128m
+-XX:MaxMetaspaceSize=256m
+
+# ── Logging / diagnostics ─────────────────────────────────────────────────────
+-Xlog:gc+heap=debug,gc+phases=debug,gc+humongous=debug,safepoint=info:file=logs/gc-model-serving.log:time,uptime,level:filecount=5,filesize=20m
 -XX:+HeapDumpOnOutOfMemoryError
--XX:HeapDumpPath=logs/model-serving.hprof
--XX:ErrorFile=logs/hs_err_model-serving_pid%p.log
--Xlog:gc*,safepoint:file=logs/gc-model-serving-%p.log:time,uptime,level,tags:filecount=5,filesize=20M
+-XX:HeapDumpPath=logs/heap-dump-model-serving.hprof

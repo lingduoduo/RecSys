@@ -13,8 +13,9 @@
 #   Or set JVM_OPTS="$(cat jvm.options)" and reference it in your start script.
 
 # ── 堆 (Heap) ────────────────────────────────────────────────────────────────
-# Pre-allocate the full heap to avoid OS page-fault stalls under first load.
--Xms512m
+# Fixed heap: pre-allocate in full to eliminate OS page-fault stalls at first
+# load and prevent GC-triggered heap expansions under traffic bursts.
+-Xms2g
 -Xmx2g
 
 # G1GC: best fit for this workload.
@@ -28,12 +29,34 @@
 # Raise to 8 MB if you increase embedding dimensions beyond ~512 floats.
 -XX:G1HeapRegionSize=4m
 
-# Keep GC pauses under 100 ms on the inference hot path.
+# Soft pause target. G1 is probabilistic — bursts can still exceed this, but
+# the adaptive young-gen sizing will shrink Eden to meet it under steady load.
 -XX:MaxGCPauseMillis=100
 
-# Trigger a mixed collection (reclaims old-gen embedding slots) when old gen
-# reaches 40% of heap, before it grows large enough to require a full GC.
+# ── 新生代比例 (Young generation sizing) ─────────────────────────────────────
+# G1 adapts the actual Eden size within [G1NewSizePercent, G1MaxNewSizePercent]
+# on each collection to stay within MaxGCPauseMillis.
+#
+# Min 20 % (400 MB on 2 g heap): floor prevents too-frequent minor GC when
+#   request allocation rate is high (inference float[] + JSON marshalling).
+# Max 40 % (800 MB on 2 g heap): ceiling leaves ≥1.2 g for old-gen embedding
+#   cache, preventing promotion-driven Full GC under cache pressure.
+-XX:+UnlockExperimentalVMOptions
+-XX:G1NewSizePercent=20
+-XX:G1MaxNewSizePercent=40
+
+# ── IHOP / mixed-GC policy ───────────────────────────────────────────────────
+# Adaptive IHOP (Java 12+ default): JVM auto-tunes the old-gen marking trigger
+# from observed allocation and promotion rates. Outperforms a fixed threshold
+# when request rates vary throughout the day.
+-XX:+G1UseAdaptiveIHOP
+# Static seed used by adaptive IHOP before it has enough history to adapt.
+# 40 % on a 2 g heap = 800 MB; triggers concurrent mark well before old gen fills.
 -XX:InitiatingHeapOccupancyPercent=40
+
+# Emergency reserve: 15 % of old gen kept free for evacuation spikes.
+# Without this a sudden promotion burst after IHOP fires can force a Full GC.
+-XX:G1ReservePercent=15
 
 # Deduplicate identical String objects that arise from repeated feature keys
 # (genre names, user-id strings, variant tags) interned across many requests.

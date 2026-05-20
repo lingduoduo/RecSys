@@ -1,17 +1,23 @@
-# Online Prediction Server with ZGC (Java 17+, low-latency experiment)
-#
-# Use for high-QPS online serving when STW pause outliers hurt tail latency.
-# Validate CPU headroom before production use; concurrent GC work is not free.
--Xms768m
--Xmx1536m
--Xss512k
--XX:SoftMaxHeapSize=1024m
--XX:MaxMetaspaceSize=320m
--XX:ReservedCodeCacheSize=160m
--XX:MaxDirectMemorySize=256m
+# online-serving-zgc — Jetty Online Prediction Server, ZGC (port 7010)
+# Requires Java 21+.
+
+# ── 堆 (Heap) ─────────────────────────────────────────────────────────────────
+-Xms1g
+-Xmx3g
+
+# ── ZGC (Java 21 Generational ZGC) ───────────────────────────────────────────
 -XX:+UseZGC
+-XX:+ZGenerational
+-XX:ZCollectionInterval=5
 -XX:ZUncommitDelay=300
+# -XX:ConcGCThreads=4
+
+# ── 其他 ──────────────────────────────────────────────────────────────────────
+-Xss256k
+-XX:MetaspaceSize=96m
+-XX:MaxMetaspaceSize=192m
+
+# ── Logging / diagnostics ─────────────────────────────────────────────────────
+-Xlog:gc*,safepoint=info:file=logs/gc-online-serving-zgc.log:time,uptime,level:filecount=5,filesize=20m
 -XX:+HeapDumpOnOutOfMemoryError
--XX:HeapDumpPath=logs/online-serving-zgc.hprof
--XX:ErrorFile=logs/hs_err_online-serving-zgc_pid%p.log
--Xlog:gc*,safepoint:file=logs/gc-online-serving-zgc-%p.log:time,uptime,level,tags:filecount=5,filesize=20M
+-XX:HeapDumpPath=logs/heap-dump-online-serving-zgc.hprof

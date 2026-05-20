@@ -141,6 +141,17 @@ Tuning starts from the JVM memory model:
 
 Default profiles use G1 GC, bounded pause targets, string deduplication, heap dumps on OOM, and rotating GC/safepoint logs under `logs/`. The `*-zgc` profiles are low-pause alternatives for serving workloads on Java 17+. For production containers, set the process/container memory limit above `Xmx + MaxMetaspaceSize + MaxDirectMemorySize + thread_count * Xss + JVM/native overhead`; a practical first pass is 25-35% headroom above those explicit caps.
 
+Serving G1 profiles use fixed heaps (`-Xms == -Xmx`) to remove heap-resize latency during traffic ramps. Offline embedding uses a growth range because batch runs may not always need the full heap.
+
+| Profile | `-Xms` | `-Xmx` | 新生代 band | GC pause target | Region size | Rationale |
+|---|---:|---:|---:|---:|---:|---|
+| `recsys-serving` | `1g` | `2g` | `20%–40%` | `100 ms` | 4 MB | Jetty ranking/blending; small request objects; 2 g max leaves room for ranking caches |
+| `model-serving` | `2g` | `2g` | `20%–40%` | `100 ms` | 4 MB | Spring Boot + ONNX; fixed heap prevents expansion pauses; float[128] embeddings well below humongous threshold |
+| `online-serving` | `1g` | `2g` | `20%–40%` | `100 ms` | 4 MB | Real-time feature scoring; similar object profile to recsys-serving |
+| `offline-embedding` | `4g` | `8g` | `30%–60%` | `200 ms` | 8 MB | Batch throughput-first; large Eden absorbs mini-batch float[][]; 8 MB regions keep batch arrays out of humongous path |
+
+The young-gen band is set with `-XX:G1NewSizePercent` / `-XX:G1MaxNewSizePercent`. G1 adapts Eden within that range each collection to stay within `MaxGCPauseMillis`; treat the band as guardrails, not a fixed split. ZGC variants (`*-zgc`) use `Xmx` = 3–4 g to give the concurrent relocation 25–50 % headroom.
+
 ### GC Strategy
 
 This repo targets Java 17, so the practical collector choices are G1 for the default path and ZGC for low-pause experiments:
