@@ -7,11 +7,11 @@ import java.util.ArrayList;
 import java.util.Collection;
 import java.util.Collections;
 import java.util.HashMap;
+import java.util.LinkedHashMap;
+import java.util.LinkedHashSet;
 import java.util.List;
 import java.util.Map;
 import java.util.Set;
-import java.util.concurrent.ConcurrentHashMap;
-import java.util.concurrent.ConcurrentLinkedQueue;
 
 /**
  * JVM-heap cache (Tier 3) in front of a backing EmbeddingStore (Tier 2, typically Redis).
@@ -20,8 +20,8 @@ import java.util.concurrent.ConcurrentLinkedQueue;
  * Write-through: setEmbedding writes to both the backing store and the cache atomically.
  *
  * Item embeddings are written infrequently (only when a new model trains) and read on
- * every similarity-search request. The cache is bounded to prevent accidental writes
- * for arbitrary ids from growing heap until Full GC/OOM.
+ * every similarity-search request. The cache is bounded with access-order LRU eviction
+ * to prevent arbitrary ids from growing heap until Full GC/OOM.
  *
  * Call warmUp() at startup to pre-populate the cache from Redis so the first requests
  * are served entirely from heap rather than paying a Redis round-trip.
@@ -33,8 +33,7 @@ public class LocalEmbeddingCache implements EmbeddingStore {
 
     private final EmbeddingStore backingStore;
     private final int maxEntries;
-    private final ConcurrentHashMap<Integer, float[]> cache = new ConcurrentHashMap<>();
-    private final ConcurrentLinkedQueue<Integer> evictionOrder = new ConcurrentLinkedQueue<>();
+    private final Map<Integer, float[]> cache;
 
     public LocalEmbeddingCache(EmbeddingStore backingStore) {
         this(backingStore, readIntEnv("LOCAL_EMBEDDING_CACHE_MAX_ENTRIES", DEFAULT_MAX_ENTRIES));
@@ -43,6 +42,12 @@ public class LocalEmbeddingCache implements EmbeddingStore {
     LocalEmbeddingCache(EmbeddingStore backingStore, int maxEntries) {
         this.backingStore = backingStore;
         this.maxEntries = Math.max(1, maxEntries);
+        this.cache = Collections.synchronizedMap(new LinkedHashMap<>(16, 0.75f, true) {
+            @Override
+            protected boolean removeEldestEntry(Map.Entry<Integer, float[]> eldest) {
+                return size() > LocalEmbeddingCache.this.maxEntries;
+            }
+        });
     }
 
     /**
@@ -67,7 +72,10 @@ public class LocalEmbeddingCache implements EmbeddingStore {
 
     @Override
     public float[] getEmbedding(int id) {
-        float[] cached = cache.get(id);
+        float[] cached;
+        synchronized (cache) {
+            cached = cache.get(id);
+        }
         if (cached != null) return cached;
 
         float[] fromStore = backingStore.getEmbedding(id);
@@ -80,19 +88,21 @@ public class LocalEmbeddingCache implements EmbeddingStore {
         if (ids == null || ids.isEmpty()) return Collections.emptyMap();
 
         Map<Integer, float[]> result = new HashMap<>(ids.size() * 2);
-        List<Integer> misses = new ArrayList<>();
+        Set<Integer> misses = new LinkedHashSet<>();
 
-        for (int id : ids) {
-            float[] cached = cache.get(id);
-            if (cached != null) {
-                result.put(id, cached);
-            } else {
-                misses.add(id);
+        synchronized (cache) {
+            for (int id : ids) {
+                float[] cached = cache.get(id);
+                if (cached != null) {
+                    result.put(id, cached);
+                } else {
+                    misses.add(id);
+                }
             }
         }
 
         if (!misses.isEmpty()) {
-            Map<Integer, float[]> fetched = backingStore.getEmbeddings(misses);
+            Map<Integer, float[]> fetched = backingStore.getEmbeddings(new ArrayList<>(misses));
             putAll(fetched);
             result.putAll(fetched);
         }
@@ -118,7 +128,9 @@ public class LocalEmbeddingCache implements EmbeddingStore {
     }
 
     public int cacheSize() {
-        return cache.size();
+        synchronized (cache) {
+            return cache.size();
+        }
     }
 
     public int maxEntries() {
@@ -127,23 +139,21 @@ public class LocalEmbeddingCache implements EmbeddingStore {
 
     private void putAll(Map<Integer, float[]> embeddings) {
         if (embeddings == null || embeddings.isEmpty()) return;
-        embeddings.forEach(this::put);
+        synchronized (cache) {
+            embeddings.forEach(this::putLocked);
+        }
     }
 
     private void put(Integer id, float[] vector) {
         if (id == null || vector == null) return;
-        if (cache.put(id, vector) == null) {
-            evictionOrder.offer(id);
-            evictOverflow();
+        synchronized (cache) {
+            putLocked(id, vector);
         }
     }
 
-    private void evictOverflow() {
-        while (cache.size() > maxEntries) {
-            Integer eldest = evictionOrder.poll();
-            if (eldest == null) return;
-            cache.remove(eldest);
-        }
+    private void putLocked(Integer id, float[] vector) {
+        if (id == null || vector == null) return;
+        cache.put(id, vector);
     }
 
     private static int readIntEnv(String envName, int defaultValue) {
