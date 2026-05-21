@@ -3,8 +3,10 @@ package com.recsys.features;
 import org.junit.jupiter.api.BeforeEach;
 import org.junit.jupiter.api.Test;
 
+import java.util.ArrayList;
 import java.util.Collection;
 import java.util.HashMap;
+import java.util.List;
 import java.util.Map;
 import java.util.Set;
 import static org.assertj.core.api.Assertions.assertThat;
@@ -47,6 +49,18 @@ class LocalEmbeddingCacheTest {
         assertThat(first).containsKeys(1, 2);
         assertThat(second).containsKeys(1, 2);
         assertThat(backing.mgetCount).isEqualTo(1); // second batch served entirely from heap
+    }
+
+    @Test
+    void getEmbeddings_deduplicatesBatchMissesBeforeFetching() {
+        backing.put(1, new float[]{1f, 0f});
+        backing.put(2, new float[]{0f, 1f});
+
+        Map<Integer, float[]> result = cache.getEmbeddings(List.of(1, 1, 2, 2));
+
+        assertThat(result).containsKeys(1, 2);
+        assertThat(backing.mgetCount).isEqualTo(1);
+        assertThat(backing.lastMgetIds).containsExactly(1, 2);
     }
 
     @Test
@@ -121,12 +135,33 @@ class LocalEmbeddingCacheTest {
         assertThat(backing.getCount).isEqualTo(getsBefore + 1);
     }
 
+    @Test
+    void cache_keepsRecentlyAccessedEntriesWhenCapacityIsReached() {
+        LocalEmbeddingCache tinyCache = new LocalEmbeddingCache(backing, 2);
+        backing.put(1, new float[]{1f});
+        backing.put(2, new float[]{2f});
+        backing.put(3, new float[]{3f});
+
+        tinyCache.getEmbedding(1);
+        tinyCache.getEmbedding(2);
+        tinyCache.getEmbedding(1); // refresh key 1, so key 2 is now least recently used
+        tinyCache.getEmbedding(3);
+
+        int getsBefore = backing.getCount;
+        assertThat(tinyCache.getEmbedding(1)).isNotNull();
+        assertThat(backing.getCount).isEqualTo(getsBefore);
+
+        assertThat(tinyCache.getEmbedding(2)).isNotNull();
+        assertThat(backing.getCount).isEqualTo(getsBefore + 1);
+    }
+
     // ── minimal in-memory EmbeddingStore stub ──────────────────────────────
 
     private static final class TrackingStore implements EmbeddingStore {
         final Map<Integer, float[]> data = new HashMap<>();
         int getCount  = 0;
         int mgetCount = 0;
+        List<Integer> lastMgetIds = List.of();
 
         void put(int id, float[] vec) { data.put(id, vec); }
 
@@ -139,6 +174,7 @@ class LocalEmbeddingCacheTest {
         @Override
         public Map<Integer, float[]> getEmbeddings(Collection<Integer> ids) {
             mgetCount++;
+            lastMgetIds = new ArrayList<>(ids);
             Map<Integer, float[]> result = new HashMap<>();
             for (int id : ids) {
                 float[] v = data.get(id);
