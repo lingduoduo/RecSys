@@ -16,15 +16,32 @@ import java.util.HashSet;
 import java.util.List;
 import java.util.Map;
 import java.util.Set;
+import java.util.concurrent.ThreadLocalRandom;
 
 public class RedisEmbeddingStore implements EmbeddingStore {
     private static final Logger log = LoggerFactory.getLogger(RedisEmbeddingStore.class);
     private final JedisPool pool;
     private final String keyPrefix;
+    // 缓存雪崩 — random TTL jitter: staggers expiry across keys so a batch write does not
+    // cause all entries to expire simultaneously and trigger a thundering herd on Redis.
+    // jitterFraction=0.1 means ±10% of baseTtl is added as a random offset.
+    private final double jitterFraction;
 
     public RedisEmbeddingStore(JedisPool pool, String keyPrefix) {
+        this(pool, keyPrefix, 0.1);
+    }
+
+    RedisEmbeddingStore(JedisPool pool, String keyPrefix, double jitterFraction) {
         this.pool = pool;
         this.keyPrefix = keyPrefix;
+        this.jitterFraction = Math.max(0.0, Math.min(0.5, jitterFraction));
+    }
+
+    // Adds uniform random jitter in [-jitter, +jitter] to baseTtl to spread expiry times.
+    private long jitteredTtl(long baseTtl) {
+        if (jitterFraction <= 0.0 || baseTtl <= 0) return baseTtl;
+        double offset = baseTtl * jitterFraction * (2.0 * ThreadLocalRandom.current().nextDouble() - 1.0);
+        return Math.max(1L, baseTtl + Math.round(offset));
     }
 
     @Override
@@ -49,7 +66,7 @@ public class RedisEmbeddingStore implements EmbeddingStore {
             setEmbeddingNoTtl(movieId, vector);
             return;
         }
-        SetParams params = SetParams.setParams().ex(ttlSeconds);
+        SetParams params = SetParams.setParams().ex(jitteredTtl(ttlSeconds));
         try (Jedis jedis = pool.getResource()) {
             jedis.set(keyPrefix + ":" + movieId, toVectorString(vector), params);
         }
@@ -57,17 +74,19 @@ public class RedisEmbeddingStore implements EmbeddingStore {
 
     // Bulk write — mirrors the Spark/Scala pattern of iterating model vectors after training.
     // Uses a pipeline to send all SETs in one round-trip instead of N.
+    // Each key gets an independently jittered TTL to stagger expiry (缓存雪崩/随机TTL):
+    // when ttlSeconds > 0, every pipeline.set() call draws a fresh random jitter so entries
+    // written in the same batch do not all expire at the same moment.
     @Override
     public void setEmbeddings(Map<Integer, float[]> vectors, long ttlSeconds) {
         if (vectors == null || vectors.isEmpty()) return;
-        SetParams params = ttlSeconds > 0 ? SetParams.setParams().ex(ttlSeconds) : null;
         try (Jedis jedis = pool.getResource();
              Pipeline pipeline = jedis.pipelined()) {
             for (Map.Entry<Integer, float[]> entry : vectors.entrySet()) {
                 String key = keyPrefix + ":" + entry.getKey();
                 String value = toVectorString(entry.getValue());
-                if (params != null) {
-                    pipeline.set(key, value, params);
+                if (ttlSeconds > 0) {
+                    pipeline.set(key, value, SetParams.setParams().ex(jitteredTtl(ttlSeconds)));
                 } else {
                     pipeline.set(key, value);
                 }

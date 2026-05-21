@@ -11,6 +11,7 @@ import static org.mockito.ArgumentMatchers.anyList;
 import static org.mockito.ArgumentMatchers.anyString;
 import static org.mockito.Mockito.mock;
 import static org.mockito.Mockito.never;
+import static org.mockito.Mockito.times;
 import static org.mockito.Mockito.verify;
 import static org.mockito.Mockito.when;
 
@@ -102,5 +103,94 @@ class RedisRateLimiterTest {
         limiter.tryAcquire("online"); // 4th call must hit Redis
 
         verify(jedis).eval(anyString(), anyList(), anyList());
+    }
+
+    // ── Circuit breaker tests (缓存雪崩/限流降级) ────────────────────────────
+
+    @Test
+    void circuitBreaker_startsInClosedState() {
+        JedisPool pool = mock(JedisPool.class);
+        // failureThreshold=3, resetWindowMs=10_000
+        RedisRateLimiter limiter = new RedisRateLimiter(pool, "rate:", 100L, 1, 0.0, 3, 10_000L);
+
+        assertThat(limiter.circuitState())
+                .isEqualTo(RedisRateLimiter.CircuitState.CLOSED);
+    }
+
+    @Test
+    void circuitBreaker_opensAfterConsecutiveFailureThreshold() {
+        JedisPool pool = mock(JedisPool.class);
+        when(pool.getResource()).thenThrow(new RuntimeException("redis down"));
+        RedisRateLimiter limiter = new RedisRateLimiter(pool, "rate:", 100L, 1, 0.0, 3, 10_000L);
+
+        for (int i = 0; i < 3; i++) limiter.tryAcquire("x");
+
+        assertThat(limiter.circuitState())
+                .isEqualTo(RedisRateLimiter.CircuitState.OPEN);
+    }
+
+    @Test
+    void circuitBreaker_failsOpenWithoutRedisCallWhenOpen() {
+        JedisPool pool = mock(JedisPool.class);
+        when(pool.getResource()).thenThrow(new RuntimeException("redis down"));
+        // threshold=1 so a single failure opens the circuit
+        RedisRateLimiter limiter = new RedisRateLimiter(pool, "rate:", 100L, 1, 0.0, 1, 10_000L);
+
+        limiter.tryAcquire("x"); // opens circuit (1 failure)
+
+        // All subsequent calls must be fail-open without touching Redis.
+        RedisRateLimiter.Decision d = limiter.tryAcquire("x");
+        assertThat(d.allowed()).isTrue();
+        assertThat(d.failOpen()).isTrue();
+        // Only the first call hit Redis.
+        verify(pool, times(1)).getResource();
+    }
+
+    @Test
+    void circuitBreaker_halfOpenAfterResetWindow() throws Exception {
+        JedisPool pool = mock(JedisPool.class);
+        when(pool.getResource()).thenThrow(new RuntimeException("redis down"));
+        // threshold=1, resetWindowMs=20ms (very short for testing)
+        RedisRateLimiter limiter = new RedisRateLimiter(pool, "rate:", 100L, 1, 0.0, 1, 20L);
+
+        limiter.tryAcquire("x"); // opens circuit
+        Thread.sleep(30);       // wait past reset window
+
+        assertThat(limiter.circuitState())
+                .isEqualTo(RedisRateLimiter.CircuitState.HALF_OPEN);
+    }
+
+    @Test
+    void circuitBreaker_closesOnSuccessfulProbeInHalfOpen() throws Exception {
+        Jedis jedis = mock(Jedis.class);
+        JedisPool pool = mock(JedisPool.class);
+        // First call throws (opens circuit); all subsequent calls return jedis (Redis recovered).
+        // Chained stubs avoid re-stubbing after thenThrow, which would re-fire the exception.
+        when(pool.getResource())
+                .thenThrow(new RuntimeException("redis down"))
+                .thenReturn(jedis);
+        when(jedis.eval(anyString(), anyList(), anyList())).thenReturn(List.of(1L, 99L, 1L));
+        RedisRateLimiter limiter = new RedisRateLimiter(pool, "rate:", 100L, 1, 0.0, 1, 20L);
+
+        limiter.tryAcquire("x"); // opens circuit (1st call throws)
+        Thread.sleep(30);        // wait past reset window → HALF_OPEN
+
+        RedisRateLimiter.Decision probe = limiter.tryAcquire("x"); // probe succeeds → CLOSED
+        assertThat(probe.allowed()).isTrue();
+        assertThat(probe.failOpen()).isFalse();
+        assertThat(limiter.circuitState())
+                .isEqualTo(RedisRateLimiter.CircuitState.CLOSED);
+    }
+
+    @Test
+    void snapshot_includesCircuitState() {
+        JedisPool pool = mock(JedisPool.class);
+        RedisRateLimiter limiter = new RedisRateLimiter(pool, "rate:", 100L, 1, 0.7, 5, 30_000L);
+
+        RedisRateLimiter.Snapshot snap = limiter.snapshot();
+
+        assertThat(snap.circuitState()).isEqualTo(RedisRateLimiter.CircuitState.CLOSED);
+        assertThat(snap.enabled()).isTrue();
+        assertThat(snap.limit()).isEqualTo(100L);
     }
 }
