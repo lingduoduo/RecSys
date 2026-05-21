@@ -155,6 +155,82 @@ class LocalEmbeddingCacheTest {
         assertThat(backing.getCount).isEqualTo(getsBefore + 1);
     }
 
+    // ── Bloom filter / null sentinel tests (缓存穿透 protection) ──────────
+
+    @Test
+    void bloomFilter_inactiveBeforePreload_doesNotBlockLegitimateIds() {
+        backing.put(1, new float[]{1f});
+        // No preload/warmUp — bloom is inactive; backing must still be consulted.
+        assertThat(cache.getEmbedding(1)).isNotNull();
+        assertThat(backing.getCount).isEqualTo(1);
+    }
+
+    @Test
+    void bloomFilter_activatesAfterPreload_blocksAbsentIds() {
+        backing.put(1, new float[]{1f});
+        cache.preload(Map.of(1, new float[]{1f})); // populates bloom with only ID 1
+
+        assertThat(cache.isBloomPopulated()).isTrue();
+        // ID 99 is not in the bloom filter → skip backing store entirely.
+        int beforeCount = backing.getCount;
+        assertThat(cache.getEmbedding(99)).isNull();
+        assertThat(backing.getCount).isEqualTo(beforeCount); // no backing call
+    }
+
+    @Test
+    void bloomFilter_allowsIdsPresentAfterPreload() {
+        cache.preload(Map.of(1, new float[]{1f}, 2, new float[]{2f}));
+
+        int beforeCount = backing.getCount;
+        // IDs 1 and 2 are in the bloom filter (and in the heap cache) → served from heap.
+        assertThat(cache.getEmbedding(1)).isNotNull();
+        assertThat(cache.getEmbedding(2)).isNotNull();
+        assertThat(backing.getCount).isEqualTo(beforeCount);
+    }
+
+    @Test
+    void nullSentinel_preventsRepeatedBackingStoreCallsForAbsentId() {
+        // ID 55 does not exist in the backing store.
+        assertThat(cache.getEmbedding(55)).isNull();
+        assertThat(backing.getCount).isEqualTo(1);
+
+        // Second call: null sentinel should short-circuit before the backing store.
+        assertThat(cache.getEmbedding(55)).isNull();
+        assertThat(backing.getCount).isEqualTo(1); // no additional backing call
+    }
+
+    @Test
+    void nullSentinel_isClearedOnWrite() {
+        // Establish a null sentinel for ID 7.
+        assertThat(cache.getEmbedding(7)).isNull();
+        assertThat(backing.getCount).isEqualTo(1);
+
+        // Write ID 7 — sentinel must be cleared so future reads go through.
+        cache.setEmbedding(7, new float[]{7f}, 0);
+
+        int beforeCount = backing.getCount;
+        assertThat(cache.getEmbedding(7)).isNotNull(); // served from heap cache
+        assertThat(backing.getCount).isEqualTo(beforeCount);
+    }
+
+    @Test
+    void getEmbeddings_nullSentinelFiltersAbsentIdsFromBatchFetch() {
+        backing.put(1, new float[]{1f});
+        cache.getEmbedding(1); // warm ID 1 into heap cache via individual get
+        // Establish null sentinels for IDs 2 and 3.
+        cache.getEmbedding(2);
+        cache.getEmbedding(3);
+        int mgetsBefore = backing.mgetCount;
+
+        // Batch: ID 1 is a heap hit; IDs 2 and 3 are blocked by null sentinels.
+        Map<Integer, float[]> result = cache.getEmbeddings(Set.of(1, 2, 3));
+
+        assertThat(result).containsKey(1);
+        assertThat(result).doesNotContainKey(2);
+        assertThat(result).doesNotContainKey(3);
+        assertThat(backing.mgetCount).isEqualTo(mgetsBefore); // no extra batch fetch
+    }
+
     // ── minimal in-memory EmbeddingStore stub ──────────────────────────────
 
     private static final class TrackingStore implements EmbeddingStore {
