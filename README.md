@@ -343,6 +343,7 @@ docker compose -f docker-compose.streaming.yml down
 | `PORT` | `6010` | API server port |
 | `REDIS_HOST` | `localhost` | Redis host |
 | `REDIS_PORT` | `6379` | Redis port |
+| `LOCAL_EMBEDDING_CACHE_MAX_ENTRIES` | `100000` | Max item/user embeddings retained in the local JVM read-through cache |
 | `RECSYS_VECTOR_BACKEND` | `lsh` | Embedding backend: `lsh` or `exact`; `faiss` falls back to `lsh` in the portable build |
 
 Example:
@@ -1235,6 +1236,7 @@ movie_embeddings.txt / user_embeddings.txt (classpath)
 - `RedisEmbeddingStore` is a generic key-prefix store for `getEmbedding`, `setEmbedding`, `setEmbeddings`, and `scanIds`.
 - Supports both `i2vEmb:` item and `u2vEmb:` user embeddings.
 - Bulk writes use Redis pipelines; bulk reads use `SCAN` + `MGET` to avoid blocking large keyspace operations.
+- `LocalEmbeddingCache` is the bounded JVM read-through/write-through layer in front of Redis. It uses access-order LRU eviction so frequently read embeddings stay resident under capacity pressure, and batch reads deduplicate cache misses before issuing Redis `MGET`.
 
 **Servlet and ranking:**
 
@@ -1301,6 +1303,7 @@ Optimizations applied to the serving path targeting OOM, Full GC, thread blockin
 | `OnlineFeatureStore` | `ConcurrentHashMap.compute()` held a CHM bin lock during the Redis network call, stalling all threads hashing to the same segment | Replaced with `CompletableFuture` inflight map; Redis fetch runs entirely outside any lock |
 | `RecommendationCache.TtlLruCache` | `synchronized` + access-order `LinkedHashMap` serialised every cache read through an exclusive write lock | `ReentrantReadWriteLock` + insertion-order `LinkedHashMap`; concurrent reads now share a read lock |
 | `RedisEmbeddingStore.loadAll()` | Accumulated all key names then issued one unbounded `MGET` — OOM / Full GC risk on large stores | Batch-`MGET` per SCAN page (≤500 keys); peak heap is now O(page) not O(all embeddings) |
+| `LocalEmbeddingCache` | FIFO-style eviction could evict hot embeddings inserted early, and repeated IDs in a batch request were forwarded as duplicate misses | Access-order LRU keeps recently used vectors hot; batch misses are deduplicated before the backing-store fetch |
 | `ModelArtifactService` | `Arrays.copyOf()` doubled live heap (two full copies of all embedding vectors) during startup | Removed defensive copy; vectors are read-only after load |
 | `OnlineFeatureStore.evictIfNeeded()` | O(N) `removeIf` over 10K entries ran on every cache-miss request at capacity | Rate-limited to once per 5 s; `Enumeration.nextElement()` replaced with `Iterator` (safe under concurrent modification) |
 | `OnlineLearner.evictIfNeeded()` | O(N log N) heap allocation ran on every `learn()` call past the item limit | Rate-limited to once per 5 s |
