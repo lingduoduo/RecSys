@@ -1238,6 +1238,12 @@ movie_embeddings.txt / user_embeddings.txt (classpath)
 - Bulk writes use Redis pipelines; bulk reads use `SCAN` + `MGET` to avoid blocking large keyspace operations.
 - `LocalEmbeddingCache` is the bounded JVM read-through/write-through layer in front of Redis. It uses access-order LRU eviction so frequently read embeddings stay resident under capacity pressure, and batch reads deduplicate cache misses before issuing Redis `MGET`.
 
+**Hot-key and multi-level cache controls:**
+
+- `HotKeyDetector` — sliding-window hot-key detection (滑动窗口热Key检测). Each key uses two buckets, current + previous, and alpha-weighted rate blending so hotness does not reset abruptly at bucket boundaries. The per-key path is lock-free (`AtomicLong currentCount` + volatile `prevCount`). Public API: `record`, `isHot`, `accessRate`, `topHotKeys(n)`, and `evictIdle`.
+- `ShardedTopKStore` — key sharding + hot local cache for Top-K windows (Key分片 + 热点本地缓存). Each logical window is replicated across physical Redis shards such as `topk:{window}:s0 ... topk:{window}:s{N-1}`. On a local-cache miss, one shard is chosen at random, reducing per-key Redis QPS by roughly `N`; the 2 s JVM cache and per-window singleflight absorb most reads, so sharding is mainly active on TTL refresh. `seedAllShards()` fan-out writes keep shard replicas consistent during Flink trending refreshes. Monitoring methods: `localHitRate()` and `redisFetches()`.
+- `MultiLevelEmbeddingCache` — explicit L1 -> L2 -> L3 embedding cache. L1 is the JVM hot-key cache, L2 is usually Redis, and L3 is an optional fallback snapshot. L2/L3 hits promote to L1; when L1 is full, `HotKeyDetector.isHot()` gates eviction of one arbitrary entry so genuinely hot keys can still enter. L2 exceptions fall through to L3 for graceful degradation. `TierStats` exposes `l1HitRate()` and `l2HitRate()` for request-path monitoring.
+
 **Servlet and ranking:**
 
 - `BaseApiServlet` centralizes JSON headers, Jackson serialization, error responses, and request parameter parsing.
@@ -1304,6 +1310,9 @@ Optimizations applied to the serving path targeting OOM, Full GC, thread blockin
 | `RecommendationCache.TtlLruCache` | `synchronized` + access-order `LinkedHashMap` serialised every cache read through an exclusive write lock | `ReentrantReadWriteLock` + insertion-order `LinkedHashMap`; concurrent reads now share a read lock |
 | `RedisEmbeddingStore.loadAll()` | Accumulated all key names then issued one unbounded `MGET` — OOM / Full GC risk on large stores | Batch-`MGET` per SCAN page (≤500 keys); peak heap is now O(page) not O(all embeddings) |
 | `LocalEmbeddingCache` | FIFO-style eviction could evict hot embeddings inserted early, and repeated IDs in a batch request were forwarded as duplicate misses | Access-order LRU keeps recently used vectors hot; batch misses are deduplicated before the backing-store fetch |
+| `HotKeyDetector` | Fixed-window hot-key counters reset abruptly at boundaries and can misclassify traffic spikes or post-boundary hot keys | Two-bucket sliding window blends current and previous bucket rates with alpha weighting; lock-free per-key counters keep request-path overhead low |
+| `ShardedTopKStore` | A single `topk:{window}` sorted-set key can become a Redis hot key when JVM caches expire across many instances | Replicates each logical window into N shard keys, reads a random shard on TTL refresh, and uses local 2 s cache + singleflight to collapse most reads |
+| `MultiLevelEmbeddingCache` | Redis hiccups or uneven embedding popularity can turn hot embedding reads into repeated network calls or hard misses | L1 JVM hot-key cache promotes L2/L3 hits, falls through from L2 to L3 on errors, and exposes per-tier hit rates for tuning |
 | `ModelArtifactService` | `Arrays.copyOf()` doubled live heap (two full copies of all embedding vectors) during startup | Removed defensive copy; vectors are read-only after load |
 | `OnlineFeatureStore.evictIfNeeded()` | O(N) `removeIf` over 10K entries ran on every cache-miss request at capacity | Rate-limited to once per 5 s; `Enumeration.nextElement()` replaced with `Iterator` (safe under concurrent modification) |
 | `OnlineLearner.evictIfNeeded()` | O(N log N) heap allocation ran on every `learn()` call past the item limit | Rate-limited to once per 5 s |
