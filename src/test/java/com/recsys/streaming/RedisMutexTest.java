@@ -107,4 +107,68 @@ class RedisMutexTest {
         // No release call when lock was never acquired.
         verify(jedis, never()).eval(anyString(), anyList(), anyList());
     }
+
+    // ── Distributed-lock correctness verification (分布式锁验证) ─────────────────
+
+    @Test
+    void tryAcquire_usesSingleAtomicSetNxExCommand() {
+        Jedis jedis = mock(Jedis.class);
+        JedisPool pool = mock(JedisPool.class);
+        when(pool.getResource()).thenReturn(jedis);
+        when(jedis.set(anyString(), anyString(), any(SetParams.class))).thenReturn("OK");
+
+        new RedisMutex(pool, "mutex:", 5L).tryAcquire("resource");
+
+        // Exactly one SET NX EX — no separate SETNX or EXPIRE (atomic by design).
+        verify(jedis, times(1)).set(eq("mutex:resource"), anyString(), any(SetParams.class));
+        verify(jedis, never()).setnx(anyString(), anyString());
+        verify(jedis, never()).expire(anyString(), anyLong());
+        verify(jedis, never()).eval(anyString(), anyList(), anyList());
+    }
+
+    @Test
+    void tryAcquire_producesUniqueTokensOnEachCall() {
+        Jedis jedis = mock(Jedis.class);
+        JedisPool pool = mock(JedisPool.class);
+        when(pool.getResource()).thenReturn(jedis);
+        when(jedis.set(anyString(), anyString(), any(SetParams.class))).thenReturn("OK");
+        RedisMutex mutex = new RedisMutex(pool, "mutex:", 5L);
+
+        String t1 = mutex.tryAcquire("r");
+        String t2 = mutex.tryAcquire("r");
+
+        assertThat(t1).isNotEqualTo(t2); // each acquisition uses a fresh UUID
+    }
+
+    @Test
+    void release_usesLuaFencingTokenScript() {
+        Jedis jedis = mock(Jedis.class);
+        JedisPool pool = mock(JedisPool.class);
+        when(pool.getResource()).thenReturn(jedis);
+        when(jedis.eval(anyString(), anyList(), anyList())).thenReturn(1L);
+
+        new RedisMutex(pool, "mutex:", 5L).release("resource", "tok");
+
+        // Lua script receives the lock key and the caller's token.
+        verify(jedis).eval(anyString(),
+                eq(java.util.List.of("mutex:resource")),
+                eq(java.util.List.of("tok")));
+    }
+
+    @Test
+    void withLock_releasesLockEvenWhenActionThrows() {
+        Jedis jedis = mock(Jedis.class);
+        JedisPool pool = mock(JedisPool.class);
+        when(pool.getResource()).thenReturn(jedis);
+        when(jedis.set(anyString(), anyString(), any(SetParams.class))).thenReturn("OK");
+        when(jedis.eval(anyString(), anyList(), anyList())).thenReturn(1L);
+        RedisMutex mutex = new RedisMutex(pool, "mutex:", 5L);
+
+        try {
+            mutex.withLock("r", () -> { throw new RuntimeException("boom"); }, () -> null);
+        } catch (RuntimeException ignored) {}
+
+        // Even though the action threw, release (eval) must still be called.
+        verify(jedis).eval(anyString(), anyList(), anyList());
+    }
 }
