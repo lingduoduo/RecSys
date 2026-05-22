@@ -7,6 +7,8 @@ import redis.clients.jedis.JedisPool;
 import redis.clients.jedis.params.SetParams;
 
 import java.util.concurrent.CountDownLatch;
+import java.util.concurrent.ExecutorService;
+import java.util.concurrent.Executors;
 import java.util.concurrent.TimeUnit;
 import java.util.concurrent.atomic.AtomicInteger;
 
@@ -118,9 +120,39 @@ class WatchdogLockTest {
         assertThat(renewed).isTrue();
         // First eval call is the renewal; verify it carries the correct token and TTL.
         verify(jedis, atLeastOnce()).eval(
-                contains("EXPIRE"),          // RENEW_SCRIPT contains EXPIRE
+                contains("PEXPIRE"),         // renewal uses millisecond TTL precision
                 eq(java.util.List.of("wdlock:res")),
-                argThat(args -> args.contains(lock.token()) && args.contains("3")));
+                argThat(args -> args.contains(lock.token()) && args.contains("3000")));
+    }
+
+    @Test
+    void watchdog_marksLockLostWhenRenewalTokenNoLongerMatches() {
+        when(jedis.set(anyString(), anyString(), any(SetParams.class))).thenReturn("OK");
+        when(jedis.eval(anyString(), anyList(), anyList())).thenReturn(0L);
+
+        WatchdogLock lock = WatchdogLock.tryAcquire(pool, "wdlock:", "res", 30L);
+        assertThat(lock).isNotNull();
+
+        lock.renewLease();
+
+        assertThat(lock.isHeld()).isFalse();
+        assertThat(lock.hasLostOwnership()).isTrue();
+        assertThat(lock.release()).isFalse();
+    }
+
+    @Test
+    void watchdog_marksLockLostWhenRenewalErrorsPastLocalLeaseDeadline() throws InterruptedException {
+        when(jedis.set(anyString(), anyString(), any(SetParams.class))).thenReturn("OK");
+        when(jedis.eval(anyString(), anyList(), anyList())).thenThrow(new RuntimeException("redis down"));
+
+        WatchdogLock lock = WatchdogLock.tryAcquire(pool, "wdlock:", "res", 1L);
+        assertThat(lock).isNotNull();
+
+        Thread.sleep(1_050L);
+        lock.renewLease();
+
+        assertThat(lock.isHeld()).isFalse();
+        assertThat(lock.hasLostOwnership()).isTrue();
     }
 
     // ── Release ──────────────────────────────────────────────────────────────────
@@ -154,6 +186,39 @@ class WatchdogLockTest {
         boolean second = lock.release();   // second call — already released
 
         assertThat(second).isFalse();
+    }
+
+    @Test
+    void release_isAtomicAcrossConcurrentCallers() throws Exception {
+        when(jedis.set(anyString(), anyString(), any(SetParams.class))).thenReturn("OK");
+        when(jedis.eval(anyString(), anyList(), anyList())).thenReturn(1L);
+        WatchdogLock lock = WatchdogLock.tryAcquire(pool, "wdlock:", "res", 30L);
+        assertThat(lock).isNotNull();
+
+        int threads = 8;
+        ExecutorService executor = Executors.newFixedThreadPool(threads);
+        CountDownLatch ready = new CountDownLatch(threads);
+        CountDownLatch start = new CountDownLatch(1);
+        AtomicInteger successfulReleases = new AtomicInteger();
+
+        for (int i = 0; i < threads; i++) {
+            executor.submit(() -> {
+                ready.countDown();
+                start.await();
+                if (lock.release()) {
+                    successfulReleases.incrementAndGet();
+                }
+                return null;
+            });
+        }
+
+        assertThat(ready.await(1, TimeUnit.SECONDS)).isTrue();
+        start.countDown();
+        executor.shutdown();
+        assertThat(executor.awaitTermination(1, TimeUnit.SECONDS)).isTrue();
+
+        assertThat(successfulReleases.get()).isEqualTo(1);
+        verify(jedis, times(1)).eval(contains("DEL"), anyList(), anyList());
     }
 
     @Test
