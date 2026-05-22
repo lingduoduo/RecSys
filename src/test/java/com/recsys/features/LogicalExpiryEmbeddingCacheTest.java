@@ -7,6 +7,11 @@ import java.util.HashMap;
 import java.util.List;
 import java.util.Map;
 import java.util.Set;
+import java.util.ArrayList;
+import java.util.concurrent.CountDownLatch;
+import java.util.concurrent.ExecutorService;
+import java.util.concurrent.Executors;
+import java.util.concurrent.TimeUnit;
 import java.util.concurrent.atomic.AtomicInteger;
 
 import static org.assertj.core.api.Assertions.assertThat;
@@ -26,6 +31,42 @@ class LogicalExpiryEmbeddingCacheTest {
 
         assertThat(result).containsExactly(1f, 0f);
         assertThat(backing.getCount).isEqualTo(1);
+    }
+
+    @Test
+    void coldMiss_concurrentReadersShareSingleBackingFetch() throws Exception {
+        var backing = new TrackingStore();
+        backing.put(1, new float[]{1f, 0f});
+        backing.blockReads = true;
+        CountDownLatch releaseRead = new CountDownLatch(1);
+        backing.releaseRead = releaseRead;
+        var cache = new LogicalExpiryEmbeddingCache(backing, 60L, SYNC_EXECUTOR);
+
+        int threadCount = 8;
+        ExecutorService executor = Executors.newFixedThreadPool(threadCount);
+        CountDownLatch ready = new CountDownLatch(threadCount);
+        CountDownLatch start = new CountDownLatch(1);
+        var futures = new ArrayList<java.util.concurrent.Future<float[]>>();
+        for (int i = 0; i < threadCount; i++) {
+            futures.add(executor.submit(() -> {
+                ready.countDown();
+                start.await();
+                return cache.getEmbedding(1);
+            }));
+        }
+
+        assertThat(ready.await(1, TimeUnit.SECONDS)).isTrue();
+        start.countDown();
+        assertThat(backing.readEntered.await(1, TimeUnit.SECONDS)).isTrue();
+        releaseRead.countDown();
+
+        for (java.util.concurrent.Future<float[]> future : futures) {
+            assertThat(future.get(1, TimeUnit.SECONDS)).containsExactly(1f, 0f);
+        }
+        executor.shutdownNow();
+
+        assertThat(backing.getCount).isEqualTo(1);
+        assertThat(cache.inflightColdMisses()).isZero();
     }
 
     @Test
@@ -110,16 +151,38 @@ class LogicalExpiryEmbeddingCacheTest {
         assertThat(result).doesNotContainKey(3); // absent in backing store
     }
 
+    @Test
+    void getEmbeddings_returnsEmptyForNullOrEmptyInput() {
+        var cache = new LogicalExpiryEmbeddingCache(new TrackingStore(), 60L, SYNC_EXECUTOR);
+
+        assertThat(cache.getEmbeddings(null)).isEmpty();
+        assertThat(cache.getEmbeddings(List.of())).isEmpty();
+    }
+
     // ── minimal in-memory EmbeddingStore stub ──────────────────────────────
 
     private static final class TrackingStore implements EmbeddingStore {
         final Map<Integer, float[]> data = new HashMap<>();
         int getCount = 0;
+        volatile boolean blockReads = false;
+        CountDownLatch readEntered = new CountDownLatch(1);
+        CountDownLatch releaseRead = new CountDownLatch(0);
 
         void put(int id, float[] vec) { data.put(id, vec); }
 
         @Override
-        public float[] getEmbedding(int id) { getCount++; return data.get(id); }
+        public synchronized float[] getEmbedding(int id) {
+            getCount++;
+            if (blockReads) {
+                readEntered.countDown();
+                try {
+                    releaseRead.await(1, TimeUnit.SECONDS);
+                } catch (InterruptedException e) {
+                    Thread.currentThread().interrupt();
+                }
+            }
+            return data.get(id);
+        }
 
         @Override
         public Map<Integer, float[]> getEmbeddings(Collection<Integer> ids) {
