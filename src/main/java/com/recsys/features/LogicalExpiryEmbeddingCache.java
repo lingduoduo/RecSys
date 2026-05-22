@@ -23,10 +23,12 @@ import java.util.concurrent.ForkJoinPool;
  *   - Before soft expiry  → cache hit, return immediately.
  *   - Past soft expiry    → return the stale (but valid) value AND schedule exactly one
  *                           background refresh via {@link #scheduleRefresh}; no herd.
- *   - Cold miss           → synchronous fetch from the backing store and cache the result.
+ *   - Cold miss           → synchronous singleflight fetch from the backing store and
+ *                           cache the result.
  *
- * Background refreshes are deduped per ID: if a refresh for ID X is already in flight,
- * subsequent soft-expired reads for X just return the stale value without queuing another task.
+ * Cold misses and background refreshes are deduped per ID: if work for ID X is already
+ * in flight, concurrent readers share it or return the stale value without queuing
+ * another task.
  *
  * The backing store must be written with a hard TTL longer than softTtlSeconds; use
  * {@code setEmbedding(id, vec, softTtlSeconds * 2)} or {@code -1} for no expiry.
@@ -42,6 +44,7 @@ public final class LogicalExpiryEmbeddingCache implements EmbeddingStore {
     private final ConcurrentHashMap<Integer, LogicalEntry> cache = new ConcurrentHashMap<>();
     // Tracks IDs with in-flight background refreshes to avoid duplicate tasks.
     private final ConcurrentHashMap<Integer, Boolean> refreshing = new ConcurrentHashMap<>();
+    private final SingleFlight<Integer, float[]> coldMissSingleFlight = new SingleFlight<>(2_000L);
     private final Executor refreshExecutor;
 
     public LogicalExpiryEmbeddingCache(EmbeddingStore backingStore, long softTtlSeconds) {
@@ -61,23 +64,21 @@ public final class LogicalExpiryEmbeddingCache implements EmbeddingStore {
         LogicalEntry entry = cache.get(id);
 
         if (entry == null) {
-            // Cold miss: synchronous fetch, cache with fresh soft expiry.
-            float[] value = backingStore.getEmbedding(id);
-            if (value != null) {
-                cache.put(id, new LogicalEntry(value, now + softTtlMs));
-            }
-            return value;
+            // Cold miss: synchronous fetch, deduped across concurrent callers.
+            return coldMissSingleFlight.execute(id, () -> loadColdMiss(id));
         }
 
         if (entry.softExpiresAtMs() <= now) {
             // Past soft expiry: return stale value and schedule one background refresh.
-            scheduleRefresh(id, now);
+            scheduleRefresh(id);
         }
         return entry.value();
     }
 
     @Override
     public Map<Integer, float[]> getEmbeddings(Collection<Integer> ids) {
+        if (ids == null || ids.isEmpty()) return Map.of();
+
         long now = System.currentTimeMillis();
         Map<Integer, float[]> result = new HashMap<>(ids.size() * 2);
         Set<Integer> coldMisses = new HashSet<>();
@@ -85,17 +86,18 @@ public final class LogicalExpiryEmbeddingCache implements EmbeddingStore {
         for (int id : ids) {
             LogicalEntry entry = cache.get(id);
             if (entry != null) {
-                if (entry.softExpiresAtMs() <= now) scheduleRefresh(id, now);
+                if (entry.softExpiresAtMs() <= now) scheduleRefresh(id);
                 result.put(id, entry.value());
             } else {
                 coldMisses.add(id);
             }
         }
 
-        if (!coldMisses.isEmpty()) {
-            Map<Integer, float[]> fetched = backingStore.getEmbeddings(coldMisses);
-            fetched.forEach((id, vec) -> cache.put(id, new LogicalEntry(vec, now + softTtlMs)));
-            result.putAll(fetched);
+        for (int id : coldMisses) {
+            float[] value = coldMissSingleFlight.execute(id, () -> loadColdMiss(id));
+            if (value != null) {
+                result.put(id, value);
+            }
         }
 
         return result;
@@ -119,14 +121,14 @@ public final class LogicalExpiryEmbeddingCache implements EmbeddingStore {
         return backingStore.scanIds(maxKeys);
     }
 
-    private void scheduleRefresh(int id, long now) {
+    private void scheduleRefresh(int id) {
         // putIfAbsent is the singleflight guard: only one refresh task per ID.
         if (refreshing.putIfAbsent(id, Boolean.TRUE) != null) return;
         refreshExecutor.execute(() -> {
             try {
                 float[] fresh = backingStore.getEmbedding(id);
                 if (fresh != null) {
-                    cache.put(id, new LogicalEntry(fresh, now + softTtlMs));
+                    cache.put(id, new LogicalEntry(fresh, System.currentTimeMillis() + softTtlMs));
                 }
             } catch (Exception e) {
                 log.warn("Background refresh failed for embedding {}: {}", id, e.toString());
@@ -136,6 +138,18 @@ public final class LogicalExpiryEmbeddingCache implements EmbeddingStore {
         });
     }
 
+    private float[] loadColdMiss(int id) {
+        LogicalEntry cached = cache.get(id);
+        if (cached != null) return cached.value();
+
+        float[] value = backingStore.getEmbedding(id);
+        if (value != null) {
+            cache.put(id, new LogicalEntry(value, System.currentTimeMillis() + softTtlMs));
+        }
+        return value;
+    }
+
     int cacheSize() { return cache.size(); }
     boolean isRefreshing(int id) { return refreshing.containsKey(id); }
+    int inflightColdMisses() { return coldMissSingleFlight.inflightCount(); }
 }
