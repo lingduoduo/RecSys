@@ -18,8 +18,8 @@ import static org.mockito.Mockito.*;
  *
  * Key invariants under test:
  *  1. acquireNaive  → issues SETNX and EXPIRE as two separate commands (non-atomic gap)
- *  2. acquireWithLua → issues a single eval() — no separate SETNX/EXPIRE calls
- *  3. acquire        → issues a single SET NX EX command — no eval() needed
+ *  2. acquireWithLua → issues one Lua SET NX PX acquisition — no SETNX/EXPIRE calls
+ *  3. acquire        → issues a single SET NX PX command — no eval() needed
  *  4. release        → uses a Lua fencing-token check; returns false on token mismatch
  */
 class RedisDistributedLockTest {
@@ -70,10 +70,10 @@ class RedisDistributedLockTest {
         verify(jedis, never()).set(anyString(), anyString(), any(SetParams.class));
     }
 
-    // ── Approach 2: Lua script (atomic SETNX + EXPIRE) ────────────────────────────
+    // ── Approach 2: Lua script (atomic SET NX PX) ────────────────────────────────
 
     @Test
-    void acquireWithLua_issusSingleEvalCall_closingAtomicityGap() {
+    void acquireWithLua_issuesSingleEvalCall_closingAtomicityGap() {
         when(jedis.eval(anyString(), anyList(), anyList())).thenReturn(1L);
 
         RedisDistributedLock lock = new RedisDistributedLock(pool, "dlock:", 30L);
@@ -87,7 +87,7 @@ class RedisDistributedLockTest {
     }
 
     @Test
-    void acquireWithLua_passesCorrectScriptAndArgs() {
+    void acquireWithLua_passesOptimizedSetNxPxScriptAndMillisecondTtl() {
         when(jedis.eval(anyString(), anyList(), anyList())).thenReturn(1L);
 
         RedisDistributedLock lock = new RedisDistributedLock(pool, "dlock:", 10L);
@@ -96,7 +96,11 @@ class RedisDistributedLockTest {
         verify(jedis).eval(
                 eq(RedisDistributedLock.ACQUIRE_LUA),
                 eq(List.of("dlock:res")),
-                argThat(args -> args.size() == 2 && "10".equals(args.get(1))));
+                argThat(args -> args.size() == 2 && "10000".equals(args.get(1))));
+        assertThat(RedisDistributedLock.ACQUIRE_LUA)
+                .contains("'SET'", "'NX'", "'PX'")
+                .doesNotContain("SETNX")
+                .doesNotContain("EXPIRE");
     }
 
     @Test
@@ -108,10 +112,10 @@ class RedisDistributedLockTest {
         assertThat(token).isNull();
     }
 
-    // ── Approach 3: SET NX EX (single atomic command) ────────────────────────────
+    // ── Approach 3: SET NX PX (single atomic command) ────────────────────────────
 
     @Test
-    void acquire_issuesSingleSetNxExCommand() {
+    void acquire_issuesSingleSetNxPxCommand() {
         when(jedis.set(anyString(), anyString(), any(SetParams.class))).thenReturn("OK");
 
         RedisDistributedLock lock = new RedisDistributedLock(pool, "dlock:", 30L);
@@ -120,9 +124,10 @@ class RedisDistributedLockTest {
         assertThat(token).isNotNull();
         verify(jedis, times(1)).set(
                 eq("dlock:resource:3"), eq(token), any(SetParams.class));
-        // No eval() and no setnx() — single-command approach.
+        // No eval(), no setnx(), no expire() — single-command approach.
         verify(jedis, never()).eval(anyString(), anyList(), anyList());
         verify(jedis, never()).setnx(anyString(), anyString());
+        verify(jedis, never()).expire(anyString(), anyLong());
     }
 
     @Test
@@ -174,6 +179,26 @@ class RedisDistributedLockTest {
                 .release("resource:1", "stale-token");
 
         assertThat(released).isFalse();
+    }
+
+    @Test
+    void release_returnsFalseForBlankTokenWithoutCallingRedis() {
+        boolean nullReleased = new RedisDistributedLock(pool, "dlock:", 30L)
+                .release("resource:1", null);
+        boolean blankReleased = new RedisDistributedLock(pool, "dlock:", 30L)
+                .release("resource:1", " ");
+
+        assertThat(nullReleased).isFalse();
+        assertThat(blankReleased).isFalse();
+        verifyNoInteractions(jedis);
+    }
+
+    @Test
+    void defaultTtlMillis_convertsConfiguredSeconds() {
+        RedisDistributedLock lock = new RedisDistributedLock(pool, "dlock:", 30L);
+
+        assertThat(lock.defaultTtlSeconds()).isEqualTo(30L);
+        assertThat(lock.defaultTtlMillis()).isEqualTo(30_000L);
     }
 
     @Test

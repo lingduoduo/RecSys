@@ -17,10 +17,10 @@ import java.util.UUID;
  * │   the key has no TTL and the lock is stuck until manual intervention.            │
  * │                                                                                  │
  * │ Approach 2 — Lua script      (acquireWithLua)                                    │
- * │   Wraps SETNX + EXPIRE inside a Lua script; Redis executes the script as a       │
- * │   single atomic unit, closing the crash window.                                  │
+ * │   Runs SET key token NX PX ttl inside a Lua script.  This preserves a single     │
+ * │   atomic Redis operation while leaving room to add fencing counters or metadata. │
  * │                                                                                  │
- * │ Approach 3 — SET NX EX       (acquire)      ← recommended                       │
+ * │ Approach 3 — SET NX PX       (acquire)      ← recommended                       │
  * │   A single Redis command (available since 2.6.12) that is both atomic and more   │
  * │   efficient than a round-trip Lua eval.                                          │
  * └──────────────────────────────────────────────────────────────────────────────────┘
@@ -34,13 +34,12 @@ import java.util.UUID;
  */
 public final class RedisDistributedLock {
 
-    // ── Lua: SETNX + EXPIRE wrapped atomically (approach 2) ───────────────────────
-    // Redis executes the entire script as one atomic operation, so there is no window
-    // between the existence check and the TTL assignment.
+    // ── Lua: SET NX PX wrapped atomically (approach 2) ───────────────────────────
+    // Uses one Redis write operation inside Lua instead of SETNX + EXPIRE. This keeps
+    // the Lua extension point without recreating the old two-step lock acquisition.
     static final String ACQUIRE_LUA = """
-            local result = redis.call('SETNX', KEYS[1], ARGV[1])
-            if result == 1 then
-              redis.call('EXPIRE', KEYS[1], tonumber(ARGV[2]))
+            local result = redis.call('SET', KEYS[1], ARGV[1], 'NX', 'PX', tonumber(ARGV[2]))
+            if result then
               return 1
             end
             return 0
@@ -59,6 +58,7 @@ public final class RedisDistributedLock {
     private final JedisPool pool;
     private final String keyPrefix;
     private final long defaultTtlSeconds;
+    private final long defaultTtlMillis;
 
     public RedisDistributedLock(JedisPool pool) {
         this(pool, "dlock:", 30L);
@@ -68,6 +68,7 @@ public final class RedisDistributedLock {
         this.pool = pool;
         this.keyPrefix = keyPrefix;
         this.defaultTtlSeconds = Math.max(1L, defaultTtlSeconds);
+        this.defaultTtlMillis = this.defaultTtlSeconds * 1_000L;
     }
 
     // ── Approach 1: SETNX + EXPIRE (non-atomic) ───────────────────────────────────
@@ -94,11 +95,12 @@ public final class RedisDistributedLock {
         }
     }
 
-    // ── Approach 2: Lua script (atomic SETNX + EXPIRE) ────────────────────────────
+    // ── Approach 2: Lua script (atomic SET NX PX) ────────────────────────────────
 
     /**
-     * ATOMIC via Lua: SETNX and EXPIRE are executed as a single Redis operation.
-     * Functionally equivalent to approach 3 but makes the atomicity mechanism explicit.
+     * ATOMIC via Lua: SET key token NX PX ttlMillis is executed as one Redis command
+     * inside the script. Functionally equivalent to approach 3, with an extension point
+     * for future fencing counters or acquisition metadata.
      *
      * @return a unique fencing token if acquired; {@code null} if the lock is held
      */
@@ -109,15 +111,15 @@ public final class RedisDistributedLock {
             Object result = jedis.eval(
                     ACQUIRE_LUA,
                     List.of(key),
-                    List.of(token, Long.toString(defaultTtlSeconds)));
+                    List.of(token, Long.toString(defaultTtlMillis)));
             return result instanceof Number n && n.longValue() == 1L ? token : null;
         }
     }
 
-    // ── Approach 3: SET NX EX (single atomic command — recommended) ───────────────
+    // ── Approach 3: SET NX PX (single atomic command — recommended) ──────────────
 
     /**
-     * ATOMIC via {@code SET key value NX EX ttl}: one round-trip, no Lua overhead.
+     * ATOMIC via {@code SET key value NX PX ttlMillis}: one round-trip, no Lua overhead.
      * This is the canonical production approach for distributed locking in Redis.
      *
      * @return a unique fencing token if acquired; {@code null} if the lock is held
@@ -126,7 +128,7 @@ public final class RedisDistributedLock {
         String key = keyPrefix + resource;
         String token = UUID.randomUUID().toString();
         try (Jedis jedis = pool.getResource()) {
-            String result = jedis.set(key, token, SetParams.setParams().nx().ex(defaultTtlSeconds));
+            String result = jedis.set(key, token, SetParams.setParams().nx().px(defaultTtlMillis));
             return "OK".equals(result) ? token : null;
         }
     }
@@ -141,6 +143,7 @@ public final class RedisDistributedLock {
      *         {@code false} if the token did not match (lock expired or re-acquired)
      */
     public boolean release(String resource, String token) {
+        if (token == null || token.isBlank()) return false;
         String key = keyPrefix + resource;
         try (Jedis jedis = pool.getResource()) {
             Object result = jedis.eval(RELEASE_LUA, List.of(key), List.of(token));
@@ -150,4 +153,6 @@ public final class RedisDistributedLock {
 
     /** Returns the configured default TTL in seconds. */
     public long defaultTtlSeconds() { return defaultTtlSeconds; }
+    /** Returns the configured default TTL in milliseconds. */
+    public long defaultTtlMillis() { return defaultTtlMillis; }
 }
