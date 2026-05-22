@@ -9,6 +9,10 @@ import java.util.HashMap;
 import java.util.List;
 import java.util.Map;
 import java.util.Set;
+import java.util.concurrent.CountDownLatch;
+import java.util.concurrent.ExecutorService;
+import java.util.concurrent.Executors;
+import java.util.concurrent.TimeUnit;
 import static org.assertj.core.api.Assertions.assertThat;
 
 class LocalEmbeddingCacheTest {
@@ -31,6 +35,40 @@ class LocalEmbeddingCacheTest {
 
         assertThat(first).isEqualTo(second);
         assertThat(backing.getCount).isEqualTo(1); // second call served from heap
+    }
+
+    @Test
+    void getEmbedding_concurrentMissUsesSingleBackingRead() throws Exception {
+        backing.put(1, new float[]{1f, 0f});
+        backing.blockReads = true;
+        int threadCount = 8;
+        ExecutorService executor = Executors.newFixedThreadPool(threadCount);
+        CountDownLatch ready = new CountDownLatch(threadCount);
+        CountDownLatch start = new CountDownLatch(1);
+        CountDownLatch releaseBackingRead = new CountDownLatch(1);
+        backing.releaseRead = releaseBackingRead;
+
+        List<java.util.concurrent.Future<float[]>> futures = new ArrayList<>();
+        for (int i = 0; i < threadCount; i++) {
+            futures.add(executor.submit(() -> {
+                ready.countDown();
+                start.await();
+                return cache.getEmbedding(1);
+            }));
+        }
+
+        assertThat(ready.await(1, TimeUnit.SECONDS)).isTrue();
+        start.countDown();
+        assertThat(backing.readEntered.await(1, TimeUnit.SECONDS)).isTrue();
+        releaseBackingRead.countDown();
+
+        for (java.util.concurrent.Future<float[]> future : futures) {
+            assertThat(future.get(1, TimeUnit.SECONDS)).containsExactly(1f, 0f);
+        }
+        executor.shutdownNow();
+
+        assertThat(backing.getCount).isEqualTo(1);
+        assertThat(cache.inflightMisses()).isZero();
     }
 
     @Test
@@ -238,12 +276,23 @@ class LocalEmbeddingCacheTest {
         int getCount  = 0;
         int mgetCount = 0;
         List<Integer> lastMgetIds = List.of();
+        volatile boolean blockReads = false;
+        CountDownLatch readEntered = new CountDownLatch(1);
+        CountDownLatch releaseRead = new CountDownLatch(0);
 
         void put(int id, float[] vec) { data.put(id, vec); }
 
         @Override
         public float[] getEmbedding(int id) {
             getCount++;
+            if (blockReads) {
+                readEntered.countDown();
+                try {
+                    releaseRead.await(1, TimeUnit.SECONDS);
+                } catch (InterruptedException e) {
+                    Thread.currentThread().interrupt();
+                }
+            }
             return data.get(id);
         }
 

@@ -45,6 +45,7 @@ public class LocalEmbeddingCache implements EmbeddingStore {
     private static final int DEFAULT_MAX_ENTRIES = 100_000;
     // Short null-sentinel TTL: absorbs burst penetration without staling too long.
     private static final long NULL_SENTINEL_TTL_MS = 30_000L;
+    private static final long MISS_WAIT_TIMEOUT_MS = 2_000L;
 
     private final EmbeddingStore backingStore;
     private final int maxEntries;
@@ -56,6 +57,7 @@ public class LocalEmbeddingCache implements EmbeddingStore {
 
     // 缓存穿透 — Null sentinel: maps absent ID → expiry timestamp.
     private final ConcurrentHashMap<Integer, Long> nullSentinels = new ConcurrentHashMap<>();
+    private final SingleFlight<Integer, float[]> missSingleFlight = new SingleFlight<>(MISS_WAIT_TIMEOUT_MS);
 
     public LocalEmbeddingCache(EmbeddingStore backingStore) {
         this(backingStore, readIntEnv("LOCAL_EMBEDDING_CACHE_MAX_ENTRIES", DEFAULT_MAX_ENTRIES));
@@ -121,14 +123,7 @@ public class LocalEmbeddingCache implements EmbeddingStore {
         }
         if (cached != null) return cached;
 
-        float[] fromStore = backingStore.getEmbedding(id);
-        if (fromStore != null) {
-            bloom.add(id);
-            put(id, fromStore);
-        } else {
-            nullSentinels.put(id, System.currentTimeMillis() + NULL_SENTINEL_TTL_MS);
-        }
-        return fromStore;
+        return missSingleFlight.execute(id, () -> loadMissingEmbedding(id));
     }
 
     @Override
@@ -207,6 +202,28 @@ public class LocalEmbeddingCache implements EmbeddingStore {
     }
 
     boolean isBloomPopulated() { return bloomPopulated; }
+
+    int inflightMisses() { return missSingleFlight.inflightCount(); }
+
+    private float[] loadMissingEmbedding(int id) {
+        Long nullExpiry = nullSentinels.get(id);
+        long now = System.currentTimeMillis();
+        if (nullExpiry != null && nullExpiry > now) return null;
+
+        synchronized (cache) {
+            float[] cached = cache.get(id);
+            if (cached != null) return cached;
+        }
+
+        float[] fromStore = backingStore.getEmbedding(id);
+        if (fromStore != null) {
+            bloom.add(id);
+            put(id, fromStore);
+        } else {
+            nullSentinels.put(id, now + NULL_SENTINEL_TTL_MS);
+        }
+        return fromStore;
+    }
 
     // Bulk put without activating bloomPopulated (used by setEmbeddings — partial write).
     private void putAll(Map<Integer, float[]> embeddings) {

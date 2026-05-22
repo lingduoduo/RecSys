@@ -98,6 +98,18 @@ class ShardedTopKStoreTest {
                 argThat((String key) -> key.matches("topk:last_hour:s[0-3]")), anyLong(), anyLong());
     }
 
+    @Test
+    void getTopKIds_fallsBackToLegacyKeyWhenShardIsEmpty() {
+        when(jedis.zrevrange(argThat((String key) -> key.matches("topk:last_hour:s[0-3]")), anyLong(), anyLong()))
+                .thenReturn(List.of());
+        when(jedis.zrevrange("topk:last_hour", 0, 99))
+                .thenReturn(List.of("10", "20"));
+        ShardedTopKStore store = new ShardedTopKStore(pool, "topk:", 4, 5_000L, new HotKeyDetector());
+
+        assertThat(store.getTopKIds("last_hour", 2)).containsExactly("10", "20");
+        assertThat(store.legacyFallbackFetches()).isEqualTo(1L);
+    }
+
     // ── Write path: fan-out to all shards ─────────────────────────────────────────
 
     @Test
@@ -110,6 +122,7 @@ class ShardedTopKStoreTest {
         verify(jedis).zadd("topk:last_hour:s0", scores);
         verify(jedis).zadd("topk:last_hour:s1", scores);
         verify(jedis).zadd("topk:last_hour:s2", scores);
+        verify(jedis).zadd("topk:last_hour", scores);
     }
 
     @Test

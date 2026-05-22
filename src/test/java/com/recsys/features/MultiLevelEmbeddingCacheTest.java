@@ -138,6 +138,19 @@ class MultiLevelEmbeddingCacheTest {
         assertThat(l2Reads.get()).isEqualTo(1); // only ID 3 fetched from L2
     }
 
+    @Test
+    void getEmbeddings_deduplicatesL1MissesBeforeL2Fetch() {
+        AtomicInteger l2Reads = new AtomicInteger();
+        Map<Integer, float[]> l2Data = new HashMap<>(Map.of(1, new float[]{1f}, 2, new float[]{2f}));
+        EmbeddingStore l2 = countingStore(l2Data, l2Reads);
+        MultiLevelEmbeddingCache cache = new MultiLevelEmbeddingCache.Builder(l2).build();
+
+        Map<Integer, float[]> result = cache.getEmbeddings(java.util.List.of(1, 1, 2, 2));
+
+        assertThat(result).containsKeys(1, 2);
+        assertThat(l2Reads.get()).isEqualTo(2);
+    }
+
     // ── Write-through ─────────────────────────────────────────────────────────────
 
     @Test
