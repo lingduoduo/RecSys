@@ -11,6 +11,7 @@ import java.util.UUID;
 import java.util.concurrent.Executors;
 import java.util.concurrent.ScheduledExecutorService;
 import java.util.concurrent.TimeUnit;
+import java.util.concurrent.atomic.AtomicBoolean;
 
 /**
  * Distributed lock with watchdog lease renewal — Redisson 看门狗 pattern.
@@ -30,6 +31,9 @@ import java.util.concurrent.TimeUnit;
  *
  * Renewal uses a Lua script so the TTL is extended only while this holder's token still
  * matches — a pre-empted process cannot accidentally renew a lock held by someone else.
+ * Renewal state is tracked with one atomic "held" flag: release, token-mismatch renewal,
+ * and lease-deadline expiry all race through the same transition so the caller never sees
+ * the lock as held after ownership is known to be lost.
  *
  * Usage:
  * <pre>{@code
@@ -51,7 +55,7 @@ public final class WatchdogLock implements AutoCloseable {
     // Extend TTL only if this holder's token still matches (prevents ghost renewals).
     private static final String RENEW_SCRIPT = """
             if redis.call('GET', KEYS[1]) == ARGV[1] then
-              return redis.call('EXPIRE', KEYS[1], tonumber(ARGV[2]))
+              return redis.call('PEXPIRE', KEYS[1], tonumber(ARGV[2]))
             end
             return 0
             """;
@@ -68,15 +72,21 @@ public final class WatchdogLock implements AutoCloseable {
     private final String lockKey;
     private final String token;
     private final long leaseTtlSeconds;
+    private final long leaseTtlMillis;
     private final ScheduledExecutorService watchdog;
-    private volatile boolean released = false;
+    private final AtomicBoolean held = new AtomicBoolean(true);
+    private final AtomicBoolean lostOwnership = new AtomicBoolean(false);
+    private volatile long leaseDeadlineMillis;
 
     private WatchdogLock(JedisPool pool, String lockKey, String token,
-                         long leaseTtlSeconds, ScheduledExecutorService watchdog) {
+                         long leaseTtlSeconds, long leaseDeadlineMillis,
+                         ScheduledExecutorService watchdog) {
         this.pool = pool;
         this.lockKey = lockKey;
         this.token = token;
         this.leaseTtlSeconds = leaseTtlSeconds;
+        this.leaseTtlMillis = TimeUnit.SECONDS.toMillis(leaseTtlSeconds);
+        this.leaseDeadlineMillis = leaseDeadlineMillis;
         this.watchdog = watchdog;
     }
 
@@ -110,31 +120,45 @@ public final class WatchdogLock implements AutoCloseable {
             return t;
         });
 
-        WatchdogLock lock = new WatchdogLock(pool, lockKey, token, leaseTtlSeconds, watchdog);
-        watchdog.scheduleAtFixedRate(
+        WatchdogLock lock = new WatchdogLock(pool, lockKey, token, leaseTtlSeconds,
+                System.currentTimeMillis() + TimeUnit.SECONDS.toMillis(leaseTtlSeconds), watchdog);
+        watchdog.scheduleWithFixedDelay(
                 lock::renewLease,
                 renewIntervalSeconds, renewIntervalSeconds, TimeUnit.SECONDS);
         return lock;
     }
 
     // Called by the watchdog on every renewal interval.
-    private void renewLease() {
-        if (released) {
+    void renewLease() {
+        if (!held.get()) {
             watchdog.shutdownNow();
             return;
         }
         try (Jedis jedis = pool.getResource()) {
             Object result = jedis.eval(RENEW_SCRIPT,
-                    List.of(lockKey), List.of(token, Long.toString(leaseTtlSeconds)));
+                    List.of(lockKey), List.of(token, Long.toString(leaseTtlMillis)));
             if (result instanceof Number n && n.longValue() == 1L) {
-                log.debug("Watchdog: renewed TTL for {} (+{}s)", lockKey, leaseTtlSeconds);
+                leaseDeadlineMillis = System.currentTimeMillis() + leaseTtlMillis;
+                if (held.get()) {
+                    log.debug("Watchdog: renewed TTL for {} (+{}ms)", lockKey, leaseTtlMillis);
+                }
             } else {
                 // Token no longer matches — key expired or was deleted externally.
                 log.warn("Watchdog: renewal failed for {} (token mismatch or key gone)", lockKey);
-                watchdog.shutdownNow();
+                markOwnershipLost();
             }
         } catch (Exception e) {
             log.warn("Watchdog: renewal error for {}: {}", lockKey, e.toString());
+            if (System.currentTimeMillis() >= leaseDeadlineMillis) {
+                markOwnershipLost();
+            }
+        }
+    }
+
+    private void markOwnershipLost() {
+        lostOwnership.set(true);
+        if (held.compareAndSet(true, false)) {
+            watchdog.shutdownNow();
         }
     }
 
@@ -145,8 +169,7 @@ public final class WatchdogLock implements AutoCloseable {
      *         {@code false} if already released or the token no longer matches
      */
     public boolean release() {
-        if (released) return false;
-        released = true;
+        if (!held.compareAndSet(true, false)) return false;
         watchdog.shutdownNow();
         try (Jedis jedis = pool.getResource()) {
             Object result = jedis.eval(RELEASE_SCRIPT, List.of(lockKey), List.of(token));
@@ -164,7 +187,9 @@ public final class WatchdogLock implements AutoCloseable {
     }
 
     /** {@code true} while the lock is held and the watchdog is running. */
-    public boolean isHeld() { return !released; }
+    public boolean isHeld() { return held.get(); }
+    /** {@code true} once renewal proves the lock expired, disappeared, or was re-acquired. */
+    public boolean hasLostOwnership() { return lostOwnership.get(); }
     /** Fencing token used for this lock instance. */
     public String token() { return token; }
     /** Configured lease TTL in seconds. */
