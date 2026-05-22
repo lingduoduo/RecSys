@@ -2,7 +2,7 @@ package com.recsys.serving;
 
 import com.recsys.features.CandidateGenerator;
 import com.recsys.features.DataManager;
-import com.recsys.features.RedisTopKStore;
+import com.recsys.streaming.TrendingStore;
 import com.recsys.models.Movie;
 import com.recsys.models.RecommendationResponse;
 import com.recsys.models.User;
@@ -17,11 +17,11 @@ public class RecommendationService extends BaseApiServlet {
 
     private final DataManager dataManager;
     private final CandidateGenerator candidates;
-    private final RedisTopKStore topkStore;
+    private final TrendingStore topkStore;
 
     public RecommendationService(DataManager dataManager,
                                  CandidateGenerator candidates,
-                                 RedisTopKStore topkStore) {
+                                 TrendingStore topkStore) {
         this.dataManager = dataManager;
         this.candidates = candidates;
         this.topkStore = topkStore;

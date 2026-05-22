@@ -7,7 +7,8 @@ import com.recsys.features.EmbeddingStore;
 import com.recsys.features.LocalEmbeddingCache;
 import com.recsys.features.PairPredictionService;
 import com.recsys.features.RedisEmbeddingStore;
-import com.recsys.features.RedisTopKStore;
+import com.recsys.features.ShardedTopKStore;
+import com.recsys.streaming.TrendingStore;
 import org.eclipse.jetty.server.Server;
 import org.eclipse.jetty.servlet.ServletContextHandler;
 import org.eclipse.jetty.servlet.ServletHolder;
@@ -44,7 +45,7 @@ public class RecSysServer {
             PairPredictionService pairPredictionService = new PairPredictionService();
             RedisEmbeddingStore embStore     = new RedisEmbeddingStore(jedisPool, "i2vEmb");
             RedisEmbeddingStore userEmbStore = new RedisEmbeddingStore(jedisPool, "u2vEmb");
-            RedisTopKStore topkStore = new RedisTopKStore(jedisPool, "topk:");
+            TrendingStore topkStore = new ShardedTopKStore(jedisPool, "topk:");
 
             seedEmbeddings(embStore, userEmbStore);
 
@@ -85,7 +86,7 @@ public class RecSysServer {
                                        DataManager dataManager,
                                        CandidateGenerator candidateGenerator,
                                        EmbeddingStore embStore,
-                                       RedisTopKStore topkStore,
+                                       TrendingStore topkStore,
                                        PairPredictionService pairPredictionService) {
         context.addServlet(new ServletHolder(new MovieService(dataManager)), ROUTE_ITEM);
         context.addServlet(new ServletHolder(new UserService(dataManager)), ROUTE_USER);

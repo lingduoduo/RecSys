@@ -7,6 +7,7 @@ import java.util.ArrayList;
 import java.util.Collection;
 import java.util.Collections;
 import java.util.HashMap;
+import java.util.LinkedHashSet;
 import java.util.Map;
 import java.util.Set;
 import java.util.concurrent.ConcurrentHashMap;
@@ -117,7 +118,7 @@ public final class MultiLevelEmbeddingCache implements EmbeddingStore {
         if (ids == null || ids.isEmpty()) return Collections.emptyMap();
 
         Map<Integer, float[]> result = new HashMap<>(ids.size() * 2);
-        java.util.List<Integer> l1Misses = new ArrayList<>();
+        Set<Integer> l1Misses = new LinkedHashSet<>();
 
         // L1 batch check
         for (int id : ids) {
@@ -129,7 +130,7 @@ public final class MultiLevelEmbeddingCache implements EmbeddingStore {
         if (l1Misses.isEmpty()) return result;
 
         // L2 batch fetch for misses
-        java.util.List<Integer> l2Misses = new ArrayList<>();
+        Set<Integer> l2Misses = new LinkedHashSet<>();
         try {
             Map<Integer, float[]> l2Result = l2.getEmbeddings(l1Misses);
             for (int id : l1Misses) {

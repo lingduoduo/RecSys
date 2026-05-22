@@ -59,6 +59,7 @@ public final class ShardedTopKStore implements TrendingStore {
     // Metrics
     private final AtomicLong localHits   = new AtomicLong();
     private final AtomicLong redisFetches = new AtomicLong();
+    private final AtomicLong legacyFallbackFetches = new AtomicLong();
 
     private final HotKeyDetector hotKeyDetector;
 
@@ -127,6 +128,13 @@ public final class ShardedTopKStore implements TrendingStore {
 
         try (Jedis jedis = pool.getResource()) {
             List<String> ids = List.copyOf(jedis.zrevrange(key, 0, fetchSize - 1));
+            if (ids.isEmpty()) {
+                List<String> legacyIds = List.copyOf(jedis.zrevrange(legacyKey(window), 0, fetchSize - 1));
+                if (!legacyIds.isEmpty()) {
+                    legacyFallbackFetches.incrementAndGet();
+                    ids = legacyIds;
+                }
+            }
             redisFetches.incrementAndGet();
             CachedIds result = new CachedIds(ids, now + cacheTtlMs);
             if (cacheTtlMs > 0L) hotCache.put(window, result);
@@ -156,6 +164,11 @@ public final class ShardedTopKStore implements TrendingStore {
                 log.warn("Failed to seed shard {} for window {}: {}", shard, window, e.toString());
             }
         }
+        try (Jedis jedis = pool.getResource()) {
+            jedis.zadd(legacyKey(window), memberScores);
+        } catch (Exception e) {
+            log.warn("Failed to seed legacy top-K key for window {}: {}", window, e.toString());
+        }
         hotCache.remove(window); // invalidate so next read reflects new data
     }
 
@@ -175,6 +188,9 @@ public final class ShardedTopKStore implements TrendingStore {
     /** Cumulative Redis fetches (shard reads) since construction. */
     public long redisFetches() { return redisFetches.get(); }
 
+    /** Cumulative reads served from the legacy unsharded key because a shard was empty. */
+    public long legacyFallbackFetches() { return legacyFallbackFetches.get(); }
+
     /** Local cache hit rate: {@code localHits / (localHits + redisFetches)}. */
     public double localHitRate() {
         long h = localHits.get(), r = redisFetches.get();
@@ -188,6 +204,10 @@ public final class ShardedTopKStore implements TrendingStore {
 
     private static List<String> slice(List<String> ids, int k) {
         return ids.size() <= k ? ids : ids.subList(0, k);
+    }
+
+    private String legacyKey(String window) {
+        return keyPrefix + window;
     }
 
     private record CachedIds(List<String> ids, long expiresAtMs) {}

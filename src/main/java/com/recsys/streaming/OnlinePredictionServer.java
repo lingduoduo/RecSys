@@ -2,7 +2,7 @@ package com.recsys.streaming;
 
 import com.recsys.features.CandidateGenerator;
 import com.recsys.features.DataManager;
-import com.recsys.features.RedisTopKStore;
+import com.recsys.features.ShardedTopKStore;
 import org.eclipse.jetty.server.Server;
 import org.eclipse.jetty.servlet.ServletContextHandler;
 import org.eclipse.jetty.servlet.ServletHolder;
@@ -26,7 +26,7 @@ public final class OnlinePredictionServer {
 
             DataManager dataManager = DataManager.getInstance();
             CandidateGenerator candidateGenerator = new CandidateGenerator(dataManager);
-            RedisTopKStore topkStore = new RedisTopKStore(jedisPool, "topk:");
+            TrendingStore topkStore = new ShardedTopKStore(jedisPool, "topk:");
             OnlineFeatureStore onlineFeatureStore = new OnlineFeatureStore(jedisPool);
             OnlineRecommendationEngine engine = new OnlineRecommendationEngine(dataManager, topkStore, onlineFeatureStore);
             OnlineRecommendationService recommendationService =
