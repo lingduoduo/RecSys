@@ -25,6 +25,7 @@ public class DataManager {
     private final Map<Integer, User> users;
     private final List<Rating> ratings;
     private final Map<Integer, List<Rating>> ratingsByUser;
+    private final Map<Integer, Set<Integer>> watchedByUser;
     private final Map<Integer, List<Movie>> similarMovies;
     private final Map<String, List<Movie>> moviesByGenre;
     private final List<Movie> topRatedMovies;
@@ -41,6 +42,13 @@ public class DataManager {
                 .collect(Collectors.toUnmodifiableMap(
                         Map.Entry::getKey,
                         entry -> List.copyOf(entry.getValue())
+                ));
+        watchedByUser = ratingsByUser.entrySet().stream()
+                .collect(Collectors.toUnmodifiableMap(
+                        Map.Entry::getKey,
+                        entry -> entry.getValue().stream()
+                                .map(Rating::movieId)
+                                .collect(Collectors.toUnmodifiableSet())
                 ));
         similarMovies = DataLoader.buildSimilarMovies(movies, ratings);
         Map<Integer, Double> avgRatings = DataLoader.computeAvgRatings(ratings);
@@ -84,6 +92,10 @@ public class DataManager {
 
     public List<Rating> getRatingsByUser(int userId) {
         return ratingsByUser.getOrDefault(userId, List.of());
+    }
+
+    public Set<Integer> getWatchedMovieIds(int userId) {
+        return watchedByUser.getOrDefault(userId, Set.of());
     }
 
     public List<Rating> getAllRatings() {

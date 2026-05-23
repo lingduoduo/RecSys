@@ -60,7 +60,7 @@ public class CandidateGenerator {
     // with already-watched movies excluded.
     public List<Movie> byUserHistory(int userId, int limitPerGenre) {
         List<Rating> history = dataManager.getRatingsByUser(userId);
-        Set<Integer> watched = history.stream().map(Rating::movieId).collect(Collectors.toSet());
+        Set<Integer> watched = dataManager.getWatchedMovieIds(userId);
 
         Set<String> genres = new HashSet<>();
         for (Rating r : history) {
@@ -90,8 +90,7 @@ public class CandidateGenerator {
                 : null;
         if (userVec == null) return List.of();
 
-        Set<Integer> watched = dataManager.getRatingsByUser(userId).stream()
-                .map(Rating::movieId).collect(Collectors.toSet());
+        Set<Integer> watched = dataManager.getWatchedMovieIds(userId);
 
         return embeddingIndex.search(userVec, k, watched).stream()
                 .map(s -> dataManager.getMovieById(s.id()))

@@ -11,7 +11,6 @@ import java.util.List;
 import java.util.Map;
 import java.util.Objects;
 import java.util.Set;
-import java.util.stream.Collectors;
 
 public final class OnlineRecommendationService {
 
@@ -107,9 +106,8 @@ public final class OnlineRecommendationService {
             scores.merge(m.id(), MODEL_WEIGHT * (nModel - i) / (double) nModel, Double::sum);
         }
 
-        Set<Integer> recentIds = recentMovies.stream()
-                .map(Movie::id)
-                .collect(Collectors.toSet());
+        Set<Integer> recentIds = new java.util.HashSet<>(recentMovies.size() * 2);
+        for (Movie m : recentMovies) recentIds.add(m.id());
         scores.keySet().removeIf(recentIds::contains);
         scores.replaceAll((movieId, score) -> score + onlineLearner.scoreAdjustment(movieId));
 

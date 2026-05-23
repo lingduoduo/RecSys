@@ -93,10 +93,18 @@ public final class LogicalExpiryEmbeddingCache implements EmbeddingStore {
             }
         }
 
-        for (int id : coldMisses) {
-            float[] value = coldMissSingleFlight.execute(id, () -> loadColdMiss(id));
-            if (value != null) {
-                result.put(id, value);
+        // Batch-resolve all cold misses in a single backing-store call (one Redis MGET instead of N
+        // individual round-trips). Concurrent single-key getEmbedding() calls are still deduped via
+        // coldMissSingleFlight; concurrent batch callers may race on writes, but those are idempotent.
+        if (!coldMisses.isEmpty()) {
+            Map<Integer, float[]> batchResult = backingStore.getEmbeddings(coldMisses);
+            long softExpiry = System.currentTimeMillis() + softTtlMs;
+            for (int id : coldMisses) {
+                float[] value = batchResult.get(id);
+                if (value != null) {
+                    cache.put(id, new LogicalEntry(value, softExpiry));
+                    result.put(id, value);
+                }
             }
         }
 
