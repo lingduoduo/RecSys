@@ -1,0 +1,157 @@
+# API gateway: accepts external traffic on 8010; egress to serving pods and DNS only.
+# NLB in ip-target mode sends packets directly to pod IPs, so NetworkPolicy applies.
+apiVersion: networking.k8s.io/v1
+kind: NetworkPolicy
+metadata:
+  name: recsys-api-gateway
+  namespace: recsys
+spec:
+  podSelector:
+    matchLabels:
+      app: recsys-api-gateway
+  policyTypes: [Ingress, Egress]
+  ingress:
+    - ports:
+        - port: 8010
+  egress:
+    - to:
+        - podSelector:
+            matchLabels:
+              app: recsys-catalog-serving
+      ports:
+        - port: 6010
+    - to:
+        - podSelector:
+            matchLabels:
+              app: recsys-model-serving
+      ports:
+        - port: 8080
+    - to:
+        - podSelector:
+            matchLabels:
+              app: recsys-online-serving
+      ports:
+        - port: 7010
+    - ports:
+        - port: 53
+          protocol: UDP
+        - port: 53
+          protocol: TCP
+---
+# Catalog serving: ingress from gateway only; egress to Redis and DNS.
+apiVersion: networking.k8s.io/v1
+kind: NetworkPolicy
+metadata:
+  name: recsys-catalog-serving
+  namespace: recsys
+spec:
+  podSelector:
+    matchLabels:
+      app: recsys-catalog-serving
+  policyTypes: [Ingress, Egress]
+  ingress:
+    - from:
+        - podSelector:
+            matchLabels:
+              app: recsys-api-gateway
+      ports:
+        - port: 6010
+  egress:
+    - to:
+        - podSelector:
+            matchLabels:
+              app: redis
+      ports:
+        - port: 6379
+    - ports:
+        - port: 53
+          protocol: UDP
+        - port: 53
+          protocol: TCP
+---
+# Model serving: ingress from gateway only; egress to Redis and DNS.
+apiVersion: networking.k8s.io/v1
+kind: NetworkPolicy
+metadata:
+  name: recsys-model-serving
+  namespace: recsys
+spec:
+  podSelector:
+    matchLabels:
+      app: recsys-model-serving
+  policyTypes: [Ingress, Egress]
+  ingress:
+    - from:
+        - podSelector:
+            matchLabels:
+              app: recsys-api-gateway
+      ports:
+        - port: 8080
+  egress:
+    - to:
+        - podSelector:
+            matchLabels:
+              app: redis
+      ports:
+        - port: 6379
+    - ports:
+        - port: 53
+          protocol: UDP
+        - port: 53
+          protocol: TCP
+---
+# Online serving: ingress from gateway only; egress to Redis and DNS.
+apiVersion: networking.k8s.io/v1
+kind: NetworkPolicy
+metadata:
+  name: recsys-online-serving
+  namespace: recsys
+spec:
+  podSelector:
+    matchLabels:
+      app: recsys-online-serving
+  policyTypes: [Ingress, Egress]
+  ingress:
+    - from:
+        - podSelector:
+            matchLabels:
+              app: recsys-api-gateway
+      ports:
+        - port: 7010
+  egress:
+    - to:
+        - podSelector:
+            matchLabels:
+              app: redis
+      ports:
+        - port: 6379
+    - ports:
+        - port: 53
+          protocol: UDP
+        - port: 53
+          protocol: TCP
+---
+# Redis: ingress from serving pods only; no egress needed.
+apiVersion: networking.k8s.io/v1
+kind: NetworkPolicy
+metadata:
+  name: redis
+  namespace: recsys
+spec:
+  podSelector:
+    matchLabels:
+      app: redis
+  policyTypes: [Ingress]
+  ingress:
+    - from:
+        - podSelector:
+            matchLabels:
+              app: recsys-catalog-serving
+        - podSelector:
+            matchLabels:
+              app: recsys-model-serving
+        - podSelector:
+            matchLabels:
+              app: recsys-online-serving
+      ports:
+        - port: 6379

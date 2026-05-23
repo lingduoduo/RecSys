@@ -14,3 +14,5 @@ patches:
   - path: cloud-map-service-patch.yaml
   # Switch gateway env vars to Cloud Map private DNS names.
   - path: configmap-patch.yaml
+  # Force Always pull policy so ECR tag reassignment is picked up on every rollout.
+  - path: image-pull-policy-patch.yaml
