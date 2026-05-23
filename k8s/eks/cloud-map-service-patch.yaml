@@ -1,0 +1,41 @@
+# Strategic-merge patches: add AWS Cloud Map registration annotations to every ClusterIP Service.
+#
+# The aws-cloud-map-controller-for-k8s watches these annotations and registers/deregisters
+# pod endpoints in the named private DNS namespace (recsys.internal) automatically.
+# external-dns with --provider=aws-sd also reads external-dns.alpha.kubernetes.io/hostname
+# to create the Route 53 Resolver records used by non-cluster clients (Lambda, EC2, etc.).
+#
+# After applying, pods in other clusters (or EC2/Lambda) can reach these services via:
+#   http://catalog-serving.recsys.internal:6010
+#   http://model-serving.recsys.internal:8080
+#   http://online-serving.recsys.internal:7010
+---
+apiVersion: v1
+kind: Service
+metadata:
+  name: recsys-catalog-serving
+  namespace: recsys
+  annotations:
+    cloudmap.aws.amazon.com/cloud-map-namespace-name: recsys.internal
+    cloudmap.aws.amazon.com/cloud-map-service-name: catalog-serving
+    external-dns.alpha.kubernetes.io/hostname: catalog-serving.recsys.internal
+---
+apiVersion: v1
+kind: Service
+metadata:
+  name: recsys-model-serving
+  namespace: recsys
+  annotations:
+    cloudmap.aws.amazon.com/cloud-map-namespace-name: recsys.internal
+    cloudmap.aws.amazon.com/cloud-map-service-name: model-serving
+    external-dns.alpha.kubernetes.io/hostname: model-serving.recsys.internal
+---
+apiVersion: v1
+kind: Service
+metadata:
+  name: recsys-online-serving
+  namespace: recsys
+  annotations:
+    cloudmap.aws.amazon.com/cloud-map-namespace-name: recsys.internal
+    cloudmap.aws.amazon.com/cloud-map-service-name: online-serving
+    external-dns.alpha.kubernetes.io/hostname: online-serving.recsys.internal

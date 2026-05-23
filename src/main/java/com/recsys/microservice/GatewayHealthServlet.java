@@ -14,6 +14,10 @@ import java.time.Instant;
 import java.util.LinkedHashMap;
 import java.util.List;
 import java.util.Map;
+import java.util.concurrent.CompletableFuture;
+import java.util.concurrent.ExecutionException;
+import java.util.concurrent.TimeUnit;
+import java.util.concurrent.TimeoutException;
 
 final class GatewayHealthServlet extends HttpServlet {
     private static final ObjectMapper MAPPER = new ObjectMapper();
@@ -23,21 +27,39 @@ final class GatewayHealthServlet extends HttpServlet {
     private final Duration timeout;
 
     GatewayHealthServlet(List<MicroserviceRoute> routes,
+                         HttpClient httpClient,
                          Duration timeout) {
         this.routes = List.copyOf(routes);
+        this.httpClient = httpClient;
         this.timeout = timeout;
-        this.httpClient = HttpClient.newBuilder().connectTimeout(timeout).build();
     }
 
     @Override
     protected void doGet(HttpServletRequest request, HttpServletResponse response) throws IOException {
+        // Fire all health checks in parallel so total latency = max(individual), not sum.
+        // Critical for Cloud Map, which deregisters instances that miss successive health checks.
+        List<CompletableFuture<ServiceHealth>> futures = routes.stream()
+                .map(route -> CompletableFuture.supplyAsync(() -> check(route.healthUri())))
+                .toList();
+
+        long waitMs = timeout.toMillis() + 500L;
         Map<String, Object> services = new LinkedHashMap<>();
         boolean allUp = true;
-
-        for (MicroserviceRoute route : routes) {
-            java.net.URI healthUri = route.healthUri();
-            ServiceHealth health = check(healthUri);
-            services.put(route.name(), health.asMap(route, healthUri));
+        for (int i = 0; i < routes.size(); i++) {
+            MicroserviceRoute route = routes.get(i);
+            ServiceHealth health;
+            try {
+                health = futures.get(i).get(waitMs, TimeUnit.MILLISECONDS);
+            } catch (TimeoutException e) {
+                health = new ServiceHealth(false, 0, timeout.toMillis(), "health check timed out");
+            } catch (InterruptedException e) {
+                Thread.currentThread().interrupt();
+                health = new ServiceHealth(false, 0, timeout.toMillis(), "interrupted");
+            } catch (ExecutionException e) {
+                health = new ServiceHealth(false, 0, timeout.toMillis(),
+                        e.getCause() != null ? e.getCause().getMessage() : e.getMessage());
+            }
+            services.put(route.name(), health.asMap(route, route.healthUri()));
             allUp = allUp && health.up();
         }
 
