@@ -8,7 +8,6 @@ import com.recsys.features.LocalEmbeddingCache;
 import com.recsys.features.PairPredictionService;
 import com.recsys.features.RedisEmbeddingStore;
 import com.recsys.features.ShardedTopKStore;
-import com.recsys.microservice.NacosServiceRegistry;
 import com.recsys.streaming.TrendingStore;
 import org.eclipse.jetty.server.Server;
 import org.eclipse.jetty.servlet.ServletContextHandler;
@@ -18,7 +17,6 @@ import org.slf4j.LoggerFactory;
 import redis.clients.jedis.JedisPool;
 
 import java.net.InetSocketAddress;
-import java.util.Map;
 
 public class RecSysServer {
 
@@ -42,12 +40,7 @@ public class RecSysServer {
         int redisPort = readIntEnv("REDIS_PORT", 6379);
         int port = readIntEnv("PORT", DEFAULT_PORT);
 
-        try (JedisPool jedisPool = new JedisPool(redisHost, redisPort);
-             NacosServiceRegistry registry = NacosServiceRegistry.fromEnv();
-             NacosServiceRegistry.Registration registration = registry.register(
-                     System.getenv().getOrDefault("NACOS_CATALOG_SERVICE_NAME", "recsys-catalog-serving"),
-                     port,
-                     Map.of("role", "catalog-serving", "scheme", "http"))) {
+        try (JedisPool jedisPool = new JedisPool(redisHost, redisPort)) {
             DataManager dataManager = DataManager.getInstance();
             PairPredictionService pairPredictionService = new PairPredictionService();
             RedisEmbeddingStore embStore     = new RedisEmbeddingStore(jedisPool, "i2vEmb");

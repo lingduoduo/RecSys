@@ -19,15 +19,12 @@ final class GatewayHealthServlet extends HttpServlet {
     private static final ObjectMapper MAPPER = new ObjectMapper();
 
     private final List<MicroserviceRoute> routes;
-    private final NacosServiceRegistry registry;
     private final HttpClient httpClient;
     private final Duration timeout;
 
     GatewayHealthServlet(List<MicroserviceRoute> routes,
-                         NacosServiceRegistry registry,
                          Duration timeout) {
         this.routes = List.copyOf(routes);
-        this.registry = registry;
         this.timeout = timeout;
         this.httpClient = HttpClient.newBuilder().connectTimeout(timeout).build();
     }
@@ -38,7 +35,7 @@ final class GatewayHealthServlet extends HttpServlet {
         boolean allUp = true;
 
         for (MicroserviceRoute route : routes) {
-            java.net.URI healthUri = route.healthUri(registry);
+            java.net.URI healthUri = route.healthUri();
             ServiceHealth health = check(healthUri);
             services.put(route.name(), health.asMap(route, healthUri));
             allUp = allUp && health.up();
@@ -80,7 +77,6 @@ final class GatewayHealthServlet extends HttpServlet {
             result.put("status", up ? "UP" : "DOWN");
             result.put("prefix", route.prefix());
             result.put("baseUrl", route.baseUri().toString());
-            result.put("serviceName", route.serviceName());
             result.put("healthUrl", healthUri.toString());
             result.put("statusCode", statusCode);
             result.put("latencyMs", latencyMs);

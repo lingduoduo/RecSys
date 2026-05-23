@@ -1,0 +1,67 @@
+apiVersion: apps/v1
+kind: Deployment
+metadata:
+  name: recsys-online-serving
+  namespace: recsys
+  labels:
+    app: recsys-online-serving
+spec:
+  replicas: 2
+  selector:
+    matchLabels:
+      app: recsys-online-serving
+  template:
+    metadata:
+      labels:
+        app: recsys-online-serving
+    spec:
+      containers:
+        - name: online-serving
+          image: recsys-backend-service:local
+          imagePullPolicy: IfNotPresent
+          envFrom:
+            - configMapRef:
+                name: recsys-config
+          env:
+            - name: RECSYS_MAIN_CLASS
+              value: com.recsys.streaming.OnlinePredictionServer
+            - name: ONLINE_DEMO_PORT
+              value: "7010"
+            - name: JAVA_OPTS
+              value: "-Xms512m -Xmx1g"
+          ports:
+            - name: http
+              containerPort: 7010
+          readinessProbe:
+            httpGet:
+              path: /health
+              port: http
+            initialDelaySeconds: 20
+            periodSeconds: 10
+          livenessProbe:
+            httpGet:
+              path: /health
+              port: http
+            initialDelaySeconds: 45
+            periodSeconds: 20
+          resources:
+            requests:
+              cpu: 250m
+              memory: 768Mi
+            limits:
+              cpu: "1"
+              memory: 1536Mi
+---
+apiVersion: v1
+kind: Service
+metadata:
+  name: recsys-online-serving
+  namespace: recsys
+spec:
+  type: ClusterIP
+  selector:
+    app: recsys-online-serving
+  ports:
+    - name: http
+      port: 7010
+      targetPort: http
