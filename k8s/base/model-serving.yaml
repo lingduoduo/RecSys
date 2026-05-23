@@ -1,0 +1,68 @@
+apiVersion: apps/v1
+kind: Deployment
+metadata:
+  name: recsys-model-serving
+  namespace: recsys
+  labels:
+    app: recsys-model-serving
+spec:
+  replicas: 2
+  selector:
+    matchLabels:
+      app: recsys-model-serving
+  template:
+    metadata:
+      labels:
+        app: recsys-model-serving
+    spec:
+      containers:
+        - name: model-serving
+          image: recsys-backend-service:local
+          imagePullPolicy: IfNotPresent
+          envFrom:
+            - configMapRef:
+                name: recsys-config
+          env:
+            - name: RECSYS_MAIN_CLASS
+              value: com.recsys.modelbased.model.ModelApplication
+            - name: SERVER_PORT
+              value: "8080"
+            - name: JAVA_OPTS
+              value: "-Xms1g -Xmx2g -XX:MaxDirectMemorySize=512m"
+          ports:
+            - name: http
+              containerPort: 8080
+          readinessProbe:
+            httpGet:
+              path: /health/ready
+              port: http
+            initialDelaySeconds: 45
+            periodSeconds: 10
+            failureThreshold: 6
+          livenessProbe:
+            httpGet:
+              path: /health/live
+              port: http
+            initialDelaySeconds: 60
+            periodSeconds: 20
+          resources:
+            requests:
+              cpu: 500m
+              memory: 2Gi
+            limits:
+              cpu: "2"
+              memory: 3Gi
+---
+apiVersion: v1
+kind: Service
+metadata:
+  name: recsys-model-serving
+  namespace: recsys
+spec:
+  type: ClusterIP
+  selector:
+    app: recsys-model-serving
+  ports:
+    - name: http
+      port: 8080
+      targetPort: http

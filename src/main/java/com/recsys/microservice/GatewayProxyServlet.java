@@ -32,15 +32,12 @@ final class GatewayProxyServlet extends HttpServlet {
     );
 
     private final List<MicroserviceRoute> routes;
-    private final NacosServiceRegistry registry;
     private final HttpClient httpClient;
     private final Duration requestTimeout;
 
     GatewayProxyServlet(List<MicroserviceRoute> routes,
-                        NacosServiceRegistry registry,
                         Duration requestTimeout) {
         this.routes = List.copyOf(routes);
-        this.registry = registry;
         this.requestTimeout = requestTimeout;
         this.httpClient = HttpClient.newBuilder()
                 .connectTimeout(requestTimeout)
@@ -59,7 +56,7 @@ final class GatewayProxyServlet extends HttpServlet {
             return;
         }
 
-        URI target = route.rewrite(path, request.getQueryString(), registry);
+        URI target = route.rewrite(path, request.getQueryString());
         try {
             HttpResponse<byte[]> upstream = httpClient.send(
                     buildUpstreamRequest(request, target),

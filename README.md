@@ -379,53 +379,39 @@ curl -X POST "http://localhost:8010/api/model/api/v1/recommend" \
 
 The gateway strips the service prefix before proxying, so `/api/catalog/item?id=1` becomes `/item?id=1` on the catalog service. `GET /health` aggregates downstream health checks and returns `503` with `status: DEGRADED` when any registered service is unavailable.
 
-### Nacos Discovery And Config Center
+### Docker, Kubernetes, And EKS
 
-Nacos is optional. With `NACOS_DISCOVERY_ENABLED=false` and `NACOS_CONFIG_ENABLED=false` the services keep using localhost URLs and local `application.yml`.
+The same image can run every service by setting `RECSYS_MAIN_CLASS`.
 
-Start a local Nacos server:
-
-```bash
-docker compose -f docker-compose.nacos.yml up -d
-```
-
-Enable Nacos discovery for the Jetty catalog service, online service, and gateway:
+Build the image locally:
 
 ```bash
-NACOS_DISCOVERY_ENABLED=true \
-NACOS_SERVER_ADDR=localhost:8848 \
-sh scripts/run-microservices-local.sh
+docker build -t recsys-backend-service:local .
 ```
 
-The gateway still has static fallbacks, but when Nacos discovery is enabled it resolves these service names before proxying:
-
-| Gateway route | Nacos env var | Default service name |
-|---|---|---|
-| `/api/catalog` | `NACOS_CATALOG_SERVICE_NAME` | `recsys-catalog-serving` |
-| `/api/model` | `NACOS_MODEL_SERVICE_NAME` | `recsys-model-serving` |
-| `/api/online` | `NACOS_ONLINE_SERVICE_NAME` | `recsys-online-serving` |
-| gateway self-registration | `NACOS_GATEWAY_SERVICE_NAME` | `recsys-api-gateway` |
-
-The Spring Boot model service uses Spring Cloud Alibaba for both service discovery and config center. To load remote config, create a Nacos config data item such as `recsys-model-serving.yml` in group `DEFAULT_GROUP`, then run:
+Deploy the local Kubernetes manifests:
 
 ```bash
-NACOS_DISCOVERY_ENABLED=true \
-NACOS_CONFIG_ENABLED=true \
-NACOS_SERVER_ADDR=localhost:8848 \
-NACOS_CONFIG_DATA_ID=recsys-model-serving.yml \
-mvn spring-boot:run
+kubectl apply -k k8s/base
+kubectl -n recsys rollout status deployment/recsys-api-gateway
 ```
 
-Example Nacos config body:
+On Kubernetes and EKS, service discovery is handled by Kubernetes Services and DNS. The gateway receives cluster-local URLs from `k8s/base/configmap.yaml`:
 
-```yaml
-recsys:
-  recommendation-cache:
-    ttl-seconds: 120
-    max-entries: 5000
-  health:
-    max-concurrent-requests: 32
+```text
+CATALOG_SERVICE_URL=http://recsys-catalog-serving:6010
+MODEL_SERVICE_URL=http://recsys-model-serving:8080
+ONLINE_SERVICE_URL=http://recsys-online-serving:7010
 ```
+
+For EKS, push the image to Amazon ECR, set the image in `k8s/eks/kustomization.yaml`, and apply the overlay:
+
+```bash
+kubectl apply -k k8s/eks
+kubectl -n recsys get svc recsys-api-gateway
+```
+
+See [docs/aws/eks-deployment.md](docs/aws/eks-deployment.md) for ECR and EKS commands.
 
 ---
 
@@ -460,15 +446,6 @@ On startup the server seeds Redis with bundled movie and user embeddings if the 
 | `CATALOG_SERVICE_URL` | `http://localhost:6010` | Base URL for `/api/catalog` |
 | `MODEL_SERVICE_URL` | `http://localhost:8080` | Base URL for `/api/model` |
 | `ONLINE_SERVICE_URL` | `http://localhost:7010` | Base URL for `/api/online` |
-| `NACOS_DISCOVERY_ENABLED` | `false` | Enable Nacos registration/discovery for Jetty services and gateway routing |
-| `NACOS_SERVER_ADDR` | `localhost:8848` | Nacos server address |
-| `NACOS_NAMESPACE` | _(empty)_ | Optional Nacos namespace |
-| `NACOS_GROUP` | `DEFAULT_GROUP` | Nacos discovery/config group |
-| `NACOS_REGISTER_IP` | local host address | IP registered by Jetty services |
-| `NACOS_CATALOG_SERVICE_NAME` | `recsys-catalog-serving` | Catalog service name in Nacos |
-| `NACOS_MODEL_SERVICE_NAME` | `recsys-model-serving` | Model service name in Nacos |
-| `NACOS_ONLINE_SERVICE_NAME` | `recsys-online-serving` | Online service name in Nacos |
-| `NACOS_GATEWAY_SERVICE_NAME` | `recsys-api-gateway` | Gateway service name in Nacos |
 
 ### Model serving service (Spring Boot, port 8080)
 
@@ -488,8 +465,6 @@ On startup the server seeds Redis with bundled movie and user embeddings if the 
 | `MYSQL_URL` | `jdbc:mysql://localhost:3306/recsys?...` | JDBC URL used only by explicit `MySqlClient` callers |
 | `MYSQL_USER` | `recsys` | MySQL username |
 | `MYSQL_PASSWORD` | _(empty)_ | MySQL password |
-| `NACOS_CONFIG_ENABLED` | `false` | Enable Spring Cloud Alibaba Nacos config center |
-| `NACOS_CONFIG_DATA_ID` | `recsys-model-serving.yml` | Nacos config data ID imported by Spring Boot |
 
 All `recsys.health.*` values are validated at startup — misconfiguration fails fast. Override via `application.yml` or environment variables (e.g. `RECSYS_HEALTH_MAX_FAILURE_RATE=0.3`).
 

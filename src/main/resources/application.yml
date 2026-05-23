@@ -7,32 +7,9 @@ server:
 spring:
   application:
     name: ${SPRING_APPLICATION_NAME:recsys-model-serving}
-  config:
-    import: optional:nacos:${NACOS_CONFIG_DATA_ID:recsys-model-serving.yml}?group=${NACOS_GROUP:DEFAULT_GROUP}
   lifecycle:
     # Maximum time to wait for in-flight requests to complete before forcing shutdown.
     timeout-per-shutdown-phase: ${RECSYS_SHUTDOWN_TIMEOUT:30s}
-  cloud:
-    nacos:
-      server-addr: ${NACOS_SERVER_ADDR:localhost:8848}
-      username: ${NACOS_USERNAME:}
-      password: ${NACOS_PASSWORD:}
-      discovery:
-        enabled: ${NACOS_DISCOVERY_ENABLED:false}
-        register-enabled: ${NACOS_DISCOVERY_REGISTER_ENABLED:${NACOS_DISCOVERY_ENABLED:false}}
-        namespace: ${NACOS_NAMESPACE:}
-        group: ${NACOS_GROUP:DEFAULT_GROUP}
-        service: ${NACOS_MODEL_SERVICE_NAME:recsys-model-serving}
-        metadata:
-          role: model-serving
-          version: ${RECSYS_SERVICE_VERSION:local}
-      config:
-        enabled: ${NACOS_CONFIG_ENABLED:false}
-        import-check:
-          enabled: false
-        namespace: ${NACOS_NAMESPACE:}
-        group: ${NACOS_GROUP:DEFAULT_GROUP}
-        file-extension: yml
 
 debug: false
 
