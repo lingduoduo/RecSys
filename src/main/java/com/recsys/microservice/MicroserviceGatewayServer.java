@@ -23,20 +23,27 @@ public final class MicroserviceGatewayServer {
         Duration timeout = Duration.ofMillis(timeoutMs);
         List<MicroserviceRoute> routes = MicroserviceRoute.defaults();
 
-        Server server = new Server(new InetSocketAddress(DEFAULT_HOST, port));
-        ServletContextHandler context = new ServletContextHandler();
-        context.setContextPath("/");
-        context.addServlet(new ServletHolder(new GatewayHealthServlet(routes, timeout)), "/health");
-        context.addServlet(new ServletHolder(new GatewayProxyServlet(routes, timeout)), "/*");
-        server.setHandler(context);
-        server.setStopAtShutdown(true);
+        try (NacosServiceRegistry registry = NacosServiceRegistry.fromEnv();
+             NacosServiceRegistry.Registration registration = registry.register(
+                     readEnv("NACOS_GATEWAY_SERVICE_NAME", "recsys-api-gateway"),
+                     port,
+                     java.util.Map.of("role", "api-gateway", "scheme", "http"))) {
+            Server server = new Server(new InetSocketAddress(DEFAULT_HOST, port));
+            ServletContextHandler context = new ServletContextHandler();
+            context.setContextPath("/");
+            context.addServlet(new ServletHolder(new GatewayHealthServlet(routes, registry, timeout)), "/health");
+            context.addServlet(new ServletHolder(new GatewayProxyServlet(routes, registry, timeout)), "/*");
+            server.setHandler(context);
+            server.setStopAtShutdown(true);
 
-        log.info("Starting RecSys API gateway on port {}", port);
-        for (MicroserviceRoute route : routes) {
-            log.info("Route {} {} -> {}", route.name(), route.prefix(), route.baseUri());
+            log.info("Starting RecSys API gateway on port {} (nacosDiscovery={})", port, registry.enabled());
+            for (MicroserviceRoute route : routes) {
+                log.info("Route {} {} -> {} (nacosService={})", route.name(), route.prefix(),
+                        route.baseUri(), route.serviceName());
+            }
+            server.start();
+            server.join();
         }
-        server.start();
-        server.join();
     }
 
     private static int readIntEnv(String name, int defaultValue) {
@@ -49,5 +56,10 @@ public final class MicroserviceGatewayServer {
         } catch (NumberFormatException e) {
             throw new IllegalStateException("env var " + name + " is not a valid integer: " + value);
         }
+    }
+
+    private static String readEnv(String name, String defaultValue) {
+        String value = System.getenv(name);
+        return value == null || value.isBlank() ? defaultValue : value.trim();
     }
 }
