@@ -14,9 +14,16 @@ import java.time.Duration;
 import java.util.Enumeration;
 import java.util.List;
 import java.util.Locale;
+import java.util.Map;
 import java.util.Set;
 
 final class GatewayProxyServlet extends HttpServlet {
+    // One retry on IOException: Cloud Map instance registration/deregistration causes a brief
+    // window where DNS resolves to a departing endpoint. A single retry after 50 ms recovers
+    // from that transient failure without significantly increasing tail latency.
+    private static final int MAX_PROXY_ATTEMPTS = 2;
+    private static final long RETRY_DELAY_MS = 50L;
+
     private static final Set<String> HOP_BY_HOP_HEADERS = Set.of(
             "connection",
             "content-length",
@@ -34,15 +41,16 @@ final class GatewayProxyServlet extends HttpServlet {
     private final List<MicroserviceRoute> routes;
     private final HttpClient httpClient;
     private final Duration requestTimeout;
+    private final Map<String, RouteCircuitBreaker> circuitBreakers;
 
     GatewayProxyServlet(List<MicroserviceRoute> routes,
-                        Duration requestTimeout) {
+                        HttpClient httpClient,
+                        Duration requestTimeout,
+                        Map<String, RouteCircuitBreaker> circuitBreakers) {
         this.routes = List.copyOf(routes);
+        this.httpClient = httpClient;
         this.requestTimeout = requestTimeout;
-        this.httpClient = HttpClient.newBuilder()
-                .connectTimeout(requestTimeout)
-                .followRedirects(HttpClient.Redirect.NEVER)
-                .build();
+        this.circuitBreakers = Map.copyOf(circuitBreakers);
     }
 
     @Override
@@ -56,26 +64,58 @@ final class GatewayProxyServlet extends HttpServlet {
             return;
         }
 
-        URI target = route.rewrite(path, request.getQueryString());
-        try {
-            HttpResponse<byte[]> upstream = httpClient.send(
-                    buildUpstreamRequest(request, target),
-                    HttpResponse.BodyHandlers.ofByteArray()
-            );
-            writeUpstreamResponse(response, upstream);
-        } catch (InterruptedException e) {
-            Thread.currentThread().interrupt();
-            writeGatewayError(response, HttpServletResponse.SC_BAD_GATEWAY,
-                    "interrupted while proxying " + route.name());
-        } catch (RuntimeException e) {
-            writeGatewayError(response, HttpServletResponse.SC_BAD_GATEWAY,
-                    "failed to proxy " + route.name() + ": " + e.getMessage());
+        RouteCircuitBreaker cb = circuitBreakers.get(route.name());
+        if (cb != null && !cb.tryAcquire()) {
+            writeGatewayError(response, HttpServletResponse.SC_SERVICE_UNAVAILABLE,
+                    route.name() + " circuit open — upstream unavailable, retry later");
+            return;
         }
+
+        URI target = route.rewrite(path, request.getQueryString());
+        // Buffer the body once — the InputStream can only be read once and we may retry.
+        byte[] requestBody = shouldForwardBody(request)
+                ? request.getInputStream().readAllBytes()
+                : null;
+
+        IOException lastIoe = null;
+        for (int attempt = 0; attempt < MAX_PROXY_ATTEMPTS; attempt++) {
+            try {
+                HttpResponse<byte[]> upstream = httpClient.send(
+                        buildUpstreamRequest(request, target, requestBody),
+                        HttpResponse.BodyHandlers.ofByteArray()
+                );
+                if (cb != null) cb.recordSuccess();
+                writeUpstreamResponse(response, upstream);
+                return;
+            } catch (InterruptedException e) {
+                Thread.currentThread().interrupt();
+                writeGatewayError(response, HttpServletResponse.SC_BAD_GATEWAY,
+                        "interrupted while proxying " + route.name());
+                return;
+            } catch (IOException e) {
+                lastIoe = e;
+                if (attempt + 1 < MAX_PROXY_ATTEMPTS) {
+                    try {
+                        Thread.sleep(RETRY_DELAY_MS);
+                    } catch (InterruptedException ie) {
+                        Thread.currentThread().interrupt();
+                        writeGatewayError(response, HttpServletResponse.SC_BAD_GATEWAY,
+                                "interrupted while proxying " + route.name());
+                        return;
+                    }
+                }
+            }
+        }
+        if (cb != null) cb.recordFailure();
+        writeGatewayError(response, HttpServletResponse.SC_BAD_GATEWAY,
+                "failed to proxy " + route.name() + " after " + MAX_PROXY_ATTEMPTS
+                        + " attempts: " + lastIoe.getMessage());
     }
 
-    private HttpRequest buildUpstreamRequest(HttpServletRequest request, URI target) throws IOException {
-        HttpRequest.BodyPublisher bodyPublisher = shouldForwardBody(request)
-                ? HttpRequest.BodyPublishers.ofByteArray(request.getInputStream().readAllBytes())
+    private HttpRequest buildUpstreamRequest(HttpServletRequest request, URI target,
+                                             byte[] body) {
+        HttpRequest.BodyPublisher bodyPublisher = body != null
+                ? HttpRequest.BodyPublishers.ofByteArray(body)
                 : HttpRequest.BodyPublishers.noBody();
 
         HttpRequest.Builder builder = HttpRequest.newBuilder(target)
