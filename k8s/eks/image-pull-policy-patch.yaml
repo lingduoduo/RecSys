@@ -1,0 +1,51 @@
+# In EKS, images are pulled from ECR where the mutable tag (e.g. "latest") can be
+# reassigned on each deploy. IfNotPresent (the base default) silently serves a stale
+# image if the tag is already in the node's cache. Always forces a fresh pull so every
+# rollout picks up the current ECR digest.
+apiVersion: apps/v1
+kind: Deployment
+metadata:
+  name: recsys-api-gateway
+  namespace: recsys
+spec:
+  template:
+    spec:
+      containers:
+        - name: api-gateway
+          imagePullPolicy: Always
+---
+apiVersion: apps/v1
+kind: Deployment
+metadata:
+  name: recsys-catalog-serving
+  namespace: recsys
+spec:
+  template:
+    spec:
+      containers:
+        - name: catalog-serving
+          imagePullPolicy: Always
+---
+apiVersion: apps/v1
+kind: Deployment
+metadata:
+  name: recsys-model-serving
+  namespace: recsys
+spec:
+  template:
+    spec:
+      containers:
+        - name: model-serving
+          imagePullPolicy: Always
+---
+apiVersion: apps/v1
+kind: Deployment
+metadata:
+  name: recsys-online-serving
+  namespace: recsys
+spec:
+  template:
+    spec:
+      containers:
+        - name: online-serving
+          imagePullPolicy: Always

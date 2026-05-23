@@ -15,10 +15,27 @@ spec:
       labels:
         app: recsys-model-serving
     spec:
+      terminationGracePeriodSeconds: 60
+      securityContext:
+        runAsNonRoot: true
+        seccompProfile:
+          type: RuntimeDefault
+      topologySpreadConstraints:
+        - maxSkew: 1
+          topologyKey: topology.kubernetes.io/zone
+          whenUnsatisfiable: ScheduleAnyway
+          labelSelector:
+            matchLabels:
+              app: recsys-model-serving
       containers:
         - name: model-serving
           image: recsys-backend-service:local
           imagePullPolicy: IfNotPresent
+          securityContext:
+            allowPrivilegeEscalation: false
+            readOnlyRootFilesystem: true
+            capabilities:
+              drop: ["ALL"]
           envFrom:
             - configMapRef:
                 name: recsys-config
@@ -32,19 +49,31 @@ spec:
           ports:
             - name: http
               containerPort: 8080
+          volumeMounts:
+            - name: tmp
+              mountPath: /tmp
+          lifecycle:
+            preStop:
+              exec:
+                command: ["sleep", "5"]
+          startupProbe:
+            httpGet:
+              path: /health/ready
+              port: http
+            failureThreshold: 18
+            periodSeconds: 10
           readinessProbe:
             httpGet:
               path: /health/ready
               port: http
-            initialDelaySeconds: 45
             periodSeconds: 10
-            failureThreshold: 6
+            failureThreshold: 3
           livenessProbe:
             httpGet:
               path: /health/live
               port: http
-            initialDelaySeconds: 60
             periodSeconds: 20
+            failureThreshold: 3
           resources:
             requests:
               cpu: 500m
@@ -52,6 +81,9 @@ spec:
             limits:
               cpu: "2"
               memory: 3Gi
+      volumes:
+        - name: tmp
+          emptyDir: {}
 ---
 apiVersion: v1
 kind: Service

@@ -5,4 +5,7 @@ logs/
 .git/
 .idea/
 .DS_Store
-streaming/online-serving/data/
+src/test/
+streaming/
+k8s/
+*.md
