@@ -18,6 +18,7 @@ RecSys is a compact Maven workspace for experimenting with recommendation-system
 
 - [Recommendation Flow](#recommendation-flow)
 - [Recommendation Serving API](#recommendation-serving-api)
+- [Microservice Gateway](#microservice-gateway)
 - [Configuration](#configuration)
 - [Capacity Planning](#capacity-planning)
 - [JVM Tuning](#jvm-tuning)
@@ -334,6 +335,52 @@ docker compose -f docker-compose.streaming.yml down
 
 ---
 
+## Microservice Gateway
+
+The repo can run as a small local microservice topology instead of one combined endpoint:
+
+| Service | Port | Gateway prefix | Entrypoint |
+|---|---:|---|---|
+| Catalog / classic recommendation | `6010` | `/api/catalog` | `com.recsys.serving.RecSysServer` |
+| Model recommendation | `8080` | `/api/model` | `com.recsys.modelbased.model.ModelApplication` |
+| Online recommendation | `7010` | `/api/online` | `com.recsys.streaming.OnlinePredictionServer` |
+| API gateway | `8010` | `/` | `com.recsys.microservice.MicroserviceGatewayServer` |
+
+Start Redis/Kafka/Flink infrastructure first if you need Redis-backed serving paths:
+
+```bash
+docker compose -f docker-compose.streaming.yml up -d
+```
+
+Run all local services plus the gateway:
+
+```bash
+sh scripts/run-microservices-local.sh
+```
+
+Or run only the gateway when the downstream services are already running:
+
+```bash
+sh scripts/run-with-jvm-tuning.sh api-gateway -- \
+  mvn exec:java -Dexec.mainClass="com.recsys.microservice.MicroserviceGatewayServer"
+```
+
+Gateway smoke tests:
+
+```bash
+curl "http://localhost:8010/health"
+curl "http://localhost:8010/api/catalog/item?id=1"
+curl "http://localhost:8010/api/catalog/getrecommendation?userId=123&mode=embedding&k=5"
+curl "http://localhost:8010/api/online/online/recommendation?userId=123&window=last_hour&k=5"
+curl -X POST "http://localhost:8010/api/model/api/v1/recommend" \
+  -H "Content-Type: application/json" \
+  -d '{"userId":"123","k":5}'
+```
+
+The gateway strips the service prefix before proxying, so `/api/catalog/item?id=1` becomes `/item?id=1` on the catalog service. `GET /health` aggregates downstream health checks and returns `503` with `status: DEGRADED` when any registered service is unavailable.
+
+---
+
 ## Configuration
 
 ### Recommendation Serving API (Jetty, port 6010)
@@ -355,6 +402,16 @@ PORT=7010 REDIS_HOST=localhost REDIS_PORT=6379 \
 ```
 
 On startup the server seeds Redis with bundled movie and user embeddings if the Redis keys are empty.
+
+### Microservice Gateway (Jetty, port 8010)
+
+| Env var | Default | Purpose |
+|---|---:|---|
+| `GATEWAY_PORT` | `8010` | Gateway server port |
+| `GATEWAY_TIMEOUT_MS` | `3000` | Upstream connect/request timeout |
+| `CATALOG_SERVICE_URL` | `http://localhost:6010` | Base URL for `/api/catalog` |
+| `MODEL_SERVICE_URL` | `http://localhost:8080` | Base URL for `/api/model` |
+| `ONLINE_SERVICE_URL` | `http://localhost:7010` | Base URL for `/api/online` |
 
 ### Model serving service (Spring Boot, port 8080)
 
@@ -400,6 +457,7 @@ All `recsys.ab-test.*` values are validated at startup. Override via `applicatio
 src/main/java/com/recsys/
 ├── models/                 Immutable API/domain records
 ├── features/               Data loading, indexed access, retrieval, vector math, Redis stores
+├── microservice/           Local API gateway and route health aggregation
 ├── serving/                Jetty server and servlet endpoints (port 6010)
 ├── streaming/              Online serving layer (port 7010)
 │   ├── flink/              Flink streaming job — writes online features to Redis

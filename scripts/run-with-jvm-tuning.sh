@@ -13,11 +13,13 @@ Profiles:
   model-serving-zgc    Spring Boot ONNX model service, ZGC, port 8080
   online-serving       Jetty Online Prediction Server, G1 GC, port 7010
   online-serving-zgc   Jetty Online Prediction Server, ZGC, port 7010
+  api-gateway          Jetty microservice API gateway, G1 GC, port 8010
   offline-embedding    Local offline embedding / Spark driver runs, G1 GC
 
 Examples:
   sh scripts/run-with-jvm-tuning.sh recsys-serving -- mvn exec:java -Dexec.mainClass=com.recsys.serving.RecSysServer
   sh scripts/run-with-jvm-tuning.sh model-serving -- mvn spring-boot:run
+  sh scripts/run-with-jvm-tuning.sh api-gateway -- mvn exec:java -Dexec.mainClass=com.recsys.microservice.MicroserviceGatewayServer
 USAGE
 }
 
@@ -47,6 +49,9 @@ case "$profile" in
     ;;
   online-serving-zgc)
     opts_file="config/jvm/online-serving-zgc.jvmopts"
+    ;;
+  api-gateway)
+    opts_file="config/jvm/api-gateway.jvmopts"
     ;;
   offline-embedding)
     opts_file="config/jvm/offline-embedding.jvmopts"

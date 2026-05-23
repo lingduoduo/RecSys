@@ -1,0 +1,12 @@
+# api-gateway — Jetty reverse proxy for local RecSys microservices (port 8010)
+
+-Xms256m
+-Xmx512m
+-XX:+UseG1GC
+-XX:MaxGCPauseMillis=100
+-Xss256k
+-XX:MetaspaceSize=64m
+-XX:MaxMetaspaceSize=128m
+-Xlog:gc,safepoint=info:file=logs/gc-api-gateway.log:time,uptime,level:filecount=3,filesize=10m
+-XX:+HeapDumpOnOutOfMemoryError
+-XX:HeapDumpPath=logs/heap-dump-api-gateway.hprof
