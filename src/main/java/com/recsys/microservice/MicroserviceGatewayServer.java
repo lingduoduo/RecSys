@@ -10,6 +10,8 @@ import java.net.InetSocketAddress;
 import java.net.http.HttpClient;
 import java.time.Duration;
 import java.util.List;
+import java.util.Map;
+import java.util.stream.Collectors;
 
 public final class MicroserviceGatewayServer {
     private static final Logger log = LoggerFactory.getLogger(MicroserviceGatewayServer.class);
@@ -40,11 +42,16 @@ public final class MicroserviceGatewayServer {
                 .followRedirects(HttpClient.Redirect.NEVER)
                 .build();
 
+        // One circuit breaker per route — shared between proxy (records outcomes) and
+        // health servlet (exposes state in the /health response body).
+        Map<String, RouteCircuitBreaker> circuitBreakers = routes.stream()
+                .collect(Collectors.toUnmodifiableMap(MicroserviceRoute::name, r -> new RouteCircuitBreaker()));
+
         Server server = new Server(new InetSocketAddress(DEFAULT_HOST, port));
         ServletContextHandler context = new ServletContextHandler();
         context.setContextPath("/");
-        context.addServlet(new ServletHolder(new GatewayHealthServlet(routes, httpClient, timeout)), "/health");
-        context.addServlet(new ServletHolder(new GatewayProxyServlet(routes, httpClient, timeout)), "/*");
+        context.addServlet(new ServletHolder(new GatewayHealthServlet(routes, httpClient, timeout, circuitBreakers)), "/health");
+        context.addServlet(new ServletHolder(new GatewayProxyServlet(routes, httpClient, timeout, circuitBreakers)), "/*");
         server.setHandler(context);
         server.setStopAtShutdown(true);
 

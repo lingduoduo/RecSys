@@ -14,6 +14,7 @@ import java.time.Instant;
 import java.util.LinkedHashMap;
 import java.util.List;
 import java.util.Map;
+import java.util.Map;
 import java.util.concurrent.CompletableFuture;
 import java.util.concurrent.ExecutionException;
 import java.util.concurrent.TimeUnit;
@@ -25,13 +26,16 @@ final class GatewayHealthServlet extends HttpServlet {
     private final List<MicroserviceRoute> routes;
     private final HttpClient httpClient;
     private final Duration timeout;
+    private final Map<String, RouteCircuitBreaker> circuitBreakers;
 
     GatewayHealthServlet(List<MicroserviceRoute> routes,
                          HttpClient httpClient,
-                         Duration timeout) {
+                         Duration timeout,
+                         Map<String, RouteCircuitBreaker> circuitBreakers) {
         this.routes = List.copyOf(routes);
         this.httpClient = httpClient;
         this.timeout = timeout;
+        this.circuitBreakers = Map.copyOf(circuitBreakers);
     }
 
     @Override
@@ -59,7 +63,8 @@ final class GatewayHealthServlet extends HttpServlet {
                 health = new ServiceHealth(false, 0, timeout.toMillis(),
                         e.getCause() != null ? e.getCause().getMessage() : e.getMessage());
             }
-            services.put(route.name(), health.asMap(route, route.healthUri()));
+            RouteCircuitBreaker cb = circuitBreakers.get(route.name());
+            services.put(route.name(), health.asMap(route, route.healthUri(), cb));
             allUp = allUp && health.up();
         }
 
@@ -94,7 +99,8 @@ final class GatewayHealthServlet extends HttpServlet {
     }
 
     private record ServiceHealth(boolean up, int statusCode, long latencyMs, String error) {
-        Map<String, Object> asMap(MicroserviceRoute route, java.net.URI healthUri) {
+        Map<String, Object> asMap(MicroserviceRoute route, java.net.URI healthUri,
+                                  RouteCircuitBreaker circuitBreaker) {
             Map<String, Object> result = new LinkedHashMap<>();
             result.put("status", up ? "UP" : "DOWN");
             result.put("prefix", route.prefix());
@@ -102,6 +108,9 @@ final class GatewayHealthServlet extends HttpServlet {
             result.put("healthUrl", healthUri.toString());
             result.put("statusCode", statusCode);
             result.put("latencyMs", latencyMs);
+            if (circuitBreaker != null) {
+                result.put("circuitState", circuitBreaker.state().name());
+            }
             if (error != null && !error.isBlank()) {
                 result.put("error", error);
             }

@@ -14,6 +14,7 @@ import java.time.Duration;
 import java.util.Enumeration;
 import java.util.List;
 import java.util.Locale;
+import java.util.Map;
 import java.util.Set;
 
 final class GatewayProxyServlet extends HttpServlet {
@@ -40,13 +41,16 @@ final class GatewayProxyServlet extends HttpServlet {
     private final List<MicroserviceRoute> routes;
     private final HttpClient httpClient;
     private final Duration requestTimeout;
+    private final Map<String, RouteCircuitBreaker> circuitBreakers;
 
     GatewayProxyServlet(List<MicroserviceRoute> routes,
                         HttpClient httpClient,
-                        Duration requestTimeout) {
+                        Duration requestTimeout,
+                        Map<String, RouteCircuitBreaker> circuitBreakers) {
         this.routes = List.copyOf(routes);
         this.httpClient = httpClient;
         this.requestTimeout = requestTimeout;
+        this.circuitBreakers = Map.copyOf(circuitBreakers);
     }
 
     @Override
@@ -57,6 +61,13 @@ final class GatewayProxyServlet extends HttpServlet {
         if (route == null) {
             writeGatewayError(response, HttpServletResponse.SC_NOT_FOUND,
                     "no microservice route matches " + path);
+            return;
+        }
+
+        RouteCircuitBreaker cb = circuitBreakers.get(route.name());
+        if (cb != null && !cb.tryAcquire()) {
+            writeGatewayError(response, HttpServletResponse.SC_SERVICE_UNAVAILABLE,
+                    route.name() + " circuit open — upstream unavailable, retry later");
             return;
         }
 
@@ -73,6 +84,7 @@ final class GatewayProxyServlet extends HttpServlet {
                         buildUpstreamRequest(request, target, requestBody),
                         HttpResponse.BodyHandlers.ofByteArray()
                 );
+                if (cb != null) cb.recordSuccess();
                 writeUpstreamResponse(response, upstream);
                 return;
             } catch (InterruptedException e) {
@@ -94,6 +106,7 @@ final class GatewayProxyServlet extends HttpServlet {
                 }
             }
         }
+        if (cb != null) cb.recordFailure();
         writeGatewayError(response, HttpServletResponse.SC_BAD_GATEWAY,
                 "failed to proxy " + route.name() + " after " + MAX_PROXY_ATTEMPTS
                         + " attempts: " + lastIoe.getMessage());
