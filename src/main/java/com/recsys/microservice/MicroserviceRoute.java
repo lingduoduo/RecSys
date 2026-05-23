@@ -8,19 +8,26 @@ import java.util.Objects;
 record MicroserviceRoute(String name,
                          String prefix,
                          String envVar,
+                         String serviceNameEnvVar,
+                         String serviceName,
                          URI baseUri,
                          String healthPath) {
 
     private static final List<MicroserviceRoute> DEFAULTS = List.of(
-            fromEnv("catalog", "/api/catalog", "CATALOG_SERVICE_URL", "http://localhost:6010", "/health"),
-            fromEnv("model", "/api/model", "MODEL_SERVICE_URL", "http://localhost:8080", "/health/ready"),
-            fromEnv("online", "/api/online", "ONLINE_SERVICE_URL", "http://localhost:7010", "/health")
+            fromEnv("catalog", "/api/catalog", "CATALOG_SERVICE_URL", "NACOS_CATALOG_SERVICE_NAME",
+                    "recsys-catalog-serving", "http://localhost:6010", "/health"),
+            fromEnv("model", "/api/model", "MODEL_SERVICE_URL", "NACOS_MODEL_SERVICE_NAME",
+                    "recsys-model-serving", "http://localhost:8080", "/health/ready"),
+            fromEnv("online", "/api/online", "ONLINE_SERVICE_URL", "NACOS_ONLINE_SERVICE_NAME",
+                    "recsys-online-serving", "http://localhost:7010", "/health")
     );
 
     MicroserviceRoute {
         Objects.requireNonNull(name, "name");
         Objects.requireNonNull(prefix, "prefix");
         Objects.requireNonNull(envVar, "envVar");
+        Objects.requireNonNull(serviceNameEnvVar, "serviceNameEnvVar");
+        Objects.requireNonNull(serviceName, "serviceName");
         Objects.requireNonNull(baseUri, "baseUri");
         Objects.requireNonNull(healthPath, "healthPath");
         if (!prefix.startsWith("/")) {
@@ -47,7 +54,7 @@ record MicroserviceRoute(String name,
         return best;
     }
 
-    URI rewrite(String requestPath, String query) {
+    URI rewrite(String requestPath, String query, NacosServiceRegistry registry) {
         String normalizedPath = normalizePath(requestPath);
         if (!matchesPrefix(normalizedPath, prefix)) {
             throw new IllegalArgumentException("path does not match route " + prefix + ": " + requestPath);
@@ -57,21 +64,26 @@ record MicroserviceRoute(String name,
         if (suffix.isBlank()) {
             suffix = "/";
         }
-        String targetPath = joinPaths(baseUri.getPath(), suffix);
-        return URI.create(newUri(baseUri, targetPath, query));
+        URI resolvedBaseUri = registry.resolve(serviceName, baseUri);
+        String targetPath = joinPaths(resolvedBaseUri.getPath(), suffix);
+        return URI.create(newUri(resolvedBaseUri, targetPath, query));
     }
 
-    URI healthUri() {
-        return URI.create(newUri(baseUri, joinPaths(baseUri.getPath(), healthPath), null));
+    URI healthUri(NacosServiceRegistry registry) {
+        URI resolvedBaseUri = registry.resolve(serviceName, baseUri);
+        return URI.create(newUri(resolvedBaseUri, joinPaths(resolvedBaseUri.getPath(), healthPath), null));
     }
 
     private static MicroserviceRoute fromEnv(String name,
                                              String prefix,
                                              String envVar,
+                                             String serviceNameEnvVar,
+                                             String defaultServiceName,
                                              String defaultBaseUri,
                                              String healthPath) {
         String raw = System.getenv().getOrDefault(envVar, defaultBaseUri);
-        return new MicroserviceRoute(name, prefix, envVar, URI.create(raw), healthPath);
+        String serviceName = System.getenv().getOrDefault(serviceNameEnvVar, defaultServiceName);
+        return new MicroserviceRoute(name, prefix, envVar, serviceNameEnvVar, serviceName, URI.create(raw), healthPath);
     }
 
     private static boolean matchesPrefix(String path, String prefix) {

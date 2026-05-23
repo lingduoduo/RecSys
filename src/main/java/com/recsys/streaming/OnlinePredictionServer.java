@@ -3,12 +3,14 @@ package com.recsys.streaming;
 import com.recsys.features.CandidateGenerator;
 import com.recsys.features.DataManager;
 import com.recsys.features.ShardedTopKStore;
+import com.recsys.microservice.NacosServiceRegistry;
 import org.eclipse.jetty.server.Server;
 import org.eclipse.jetty.servlet.ServletContextHandler;
 import org.eclipse.jetty.servlet.ServletHolder;
 import redis.clients.jedis.JedisPool;
 
 import java.net.InetSocketAddress;
+import java.util.Map;
 
 public final class OnlinePredictionServer {
     private static final String DEFAULT_HOST = "0.0.0.0";
@@ -22,6 +24,11 @@ public final class OnlinePredictionServer {
         int port = readIntEnv("ONLINE_DEMO_PORT", DEFAULT_PORT);
 
         try (JedisPool jedisPool = new JedisPool(redisHost, redisPort);
+             NacosServiceRegistry registry = NacosServiceRegistry.fromEnv();
+             NacosServiceRegistry.Registration registration = registry.register(
+                     System.getenv().getOrDefault("NACOS_ONLINE_SERVICE_NAME", "recsys-online-serving"),
+                     port,
+                     Map.of("role", "online-serving", "scheme", "http"));
              AsyncEventPublisher asyncEventPublisher = new AsyncEventPublisher()) {
 
             DataManager dataManager = DataManager.getInstance();

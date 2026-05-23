@@ -19,11 +19,15 @@ final class GatewayHealthServlet extends HttpServlet {
     private static final ObjectMapper MAPPER = new ObjectMapper();
 
     private final List<MicroserviceRoute> routes;
+    private final NacosServiceRegistry registry;
     private final HttpClient httpClient;
     private final Duration timeout;
 
-    GatewayHealthServlet(List<MicroserviceRoute> routes, Duration timeout) {
+    GatewayHealthServlet(List<MicroserviceRoute> routes,
+                         NacosServiceRegistry registry,
+                         Duration timeout) {
         this.routes = List.copyOf(routes);
+        this.registry = registry;
         this.timeout = timeout;
         this.httpClient = HttpClient.newBuilder().connectTimeout(timeout).build();
     }
@@ -34,8 +38,9 @@ final class GatewayHealthServlet extends HttpServlet {
         boolean allUp = true;
 
         for (MicroserviceRoute route : routes) {
-            ServiceHealth health = check(route);
-            services.put(route.name(), health.asMap(route));
+            java.net.URI healthUri = route.healthUri(registry);
+            ServiceHealth health = check(healthUri);
+            services.put(route.name(), health.asMap(route, healthUri));
             allUp = allUp && health.up();
         }
 
@@ -49,10 +54,10 @@ final class GatewayHealthServlet extends HttpServlet {
         ));
     }
 
-    private ServiceHealth check(MicroserviceRoute route) {
+    private ServiceHealth check(java.net.URI healthUri) {
         long startNs = System.nanoTime();
         try {
-            HttpRequest request = HttpRequest.newBuilder(route.healthUri())
+            HttpRequest request = HttpRequest.newBuilder(healthUri)
                     .timeout(timeout)
                     .GET()
                     .build();
@@ -70,12 +75,13 @@ final class GatewayHealthServlet extends HttpServlet {
     }
 
     private record ServiceHealth(boolean up, int statusCode, long latencyMs, String error) {
-        Map<String, Object> asMap(MicroserviceRoute route) {
+        Map<String, Object> asMap(MicroserviceRoute route, java.net.URI healthUri) {
             Map<String, Object> result = new LinkedHashMap<>();
             result.put("status", up ? "UP" : "DOWN");
             result.put("prefix", route.prefix());
             result.put("baseUrl", route.baseUri().toString());
-            result.put("healthUrl", route.healthUri().toString());
+            result.put("serviceName", route.serviceName());
+            result.put("healthUrl", healthUri.toString());
             result.put("statusCode", statusCode);
             result.put("latencyMs", latencyMs);
             if (error != null && !error.isBlank()) {
