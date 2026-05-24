@@ -70,6 +70,17 @@ class RouteCircuitBreakerTest {
     }
 
     @Test
+    void halfOpenAllowsOnlyOneProbe() throws InterruptedException {
+        RouteCircuitBreaker cb = new RouteCircuitBreaker(1, 50L);
+        cb.recordFailure();
+        Thread.sleep(60);
+        assertThat(cb.state()).isEqualTo(HALF_OPEN);
+
+        assertThat(cb.tryAcquire()).isTrue();  // first caller gets the probe token
+        assertThat(cb.tryAcquire()).isFalse(); // second concurrent caller is fast-failed
+    }
+
+    @Test
     void halfOpenReopensOnFailure() throws InterruptedException {
         RouteCircuitBreaker cb = new RouteCircuitBreaker(1, 50L);
 

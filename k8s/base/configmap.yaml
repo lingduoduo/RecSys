@@ -16,3 +16,15 @@ data:
   RECSYS_RECOMMENDATION_CACHE_MAX_ENTRIES: "10000"
   RECSYS_HEALTH_MAX_CONCURRENT_REQUESTS: "64"
   RECSYS_HEALTH_MAX_IN_FLIGHT_UTILIZATION: "0.95"
+  # Gateway local rate limiting (token-bucket, per gateway replica).
+  # Set MODEL_RPS lower: ONNX inference is CPU-heavy and cannot absorb the same burst.
+  GATEWAY_RATE_LIMIT_RPS: "100"
+  GATEWAY_RATE_LIMIT_BURST: "200"
+  GATEWAY_RATE_LIMIT_MODEL_RPS: "50"
+  GATEWAY_RATE_LIMIT_MODEL_BURST: "100"
+  # Gateway circuit-breaker thresholds (shared across all routes).
+  GATEWAY_CB_FAILURE_THRESHOLD: "5"
+  GATEWAY_CB_COOLDOWN_MS: "10000"
+  # Online-serving Redis rate limiter (cross-instance, fixed-window).
+  ONLINE_REDIS_RATE_LIMIT_QPS: "200"
+  ONLINE_REDIS_RATE_LIMIT_WINDOW_SECONDS: "1"

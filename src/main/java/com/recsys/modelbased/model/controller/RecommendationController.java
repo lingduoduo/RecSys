@@ -2,6 +2,7 @@ package com.recsys.modelbased.model.controller;
 
 import com.recsys.modelbased.model.dto.RecommendRequest;
 import com.recsys.modelbased.model.dto.RecommendResponse;
+import java.util.Optional;
 import com.recsys.modelbased.model.service.ABTestService;
 import com.recsys.modelbased.model.service.InferenceMetricsService;
 import com.recsys.modelbased.model.service.LoadShedder;
@@ -40,8 +41,13 @@ public class RecommendationController {
                                        HttpServletResponse httpResponse) {
         long startNs = System.nanoTime();
         if (!loadShedder.tryAcquire()) {
+            // Degradation (降级): serve stale cache or cold-start popular items before failing.
+            Optional<RecommendResponse> fallback = recommendationService.tryServeFromCache(request);
+            if (fallback.isPresent()) {
+                httpResponse.setHeader("X-Served-From", "degraded-cache");
+                return fallback.get();
+            }
             metricsService.recordFailure(0L, abTestService.getVariantForUser(request.getUserId()));
-            // Estimate how soon a slot is likely to free based on recent average latency.
             throw new ServiceOverloadedException(retryAfterSeconds(metricsService.snapshot()));
         }
         try {

@@ -44,8 +44,11 @@ public final class MicroserviceGatewayServer {
 
         // One circuit breaker per route — shared between proxy (records outcomes) and
         // health servlet (exposes state in the /health response body).
+        int cbFailureThreshold = readIntEnv("GATEWAY_CB_FAILURE_THRESHOLD", RouteCircuitBreaker.DEFAULT_FAILURE_THRESHOLD);
+        long cbCooldownMs = readLongEnv("GATEWAY_CB_COOLDOWN_MS", RouteCircuitBreaker.DEFAULT_COOLDOWN_MS);
         Map<String, RouteCircuitBreaker> circuitBreakers = routes.stream()
-                .collect(Collectors.toUnmodifiableMap(MicroserviceRoute::name, r -> new RouteCircuitBreaker()));
+                .collect(Collectors.toUnmodifiableMap(MicroserviceRoute::name,
+                        r -> new RouteCircuitBreaker(cbFailureThreshold, cbCooldownMs)));
         GatewayRateLimiter rateLimiter = GatewayRateLimiter.fromEnvironment(routes);
 
         Server server = new Server(new InetSocketAddress(DEFAULT_HOST, port));
@@ -76,6 +79,18 @@ public final class MicroserviceGatewayServer {
             return Integer.parseInt(value.trim());
         } catch (NumberFormatException e) {
             throw new IllegalStateException("env var " + name + " is not a valid integer: " + value);
+        }
+    }
+
+    private static long readLongEnv(String name, long defaultValue) {
+        String value = System.getenv(name);
+        if (value == null || value.isBlank()) {
+            return defaultValue;
+        }
+        try {
+            return Long.parseLong(value.trim());
+        } catch (NumberFormatException e) {
+            throw new IllegalStateException("env var " + name + " is not a valid long: " + value);
         }
     }
 
