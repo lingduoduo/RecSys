@@ -37,6 +37,8 @@ kubectl -n recsys get svc recsys-api-gateway
 The gateway service is `type: LoadBalancer` and includes AWS NLB annotations. For
 production, replace the demo Redis Deployment with Amazon ElastiCache or another
 managed Redis endpoint by changing `REDIS_HOST` in `k8s/base/configmap.yaml`.
+For public ingress throttling and shared gateway limits, see
+[rate-limiting-investigation.md](rate-limiting-investigation.md).
 
 ## Service Discovery
 

@@ -24,6 +24,7 @@ final class GatewayProxyServlet extends HttpServlet {
     // from that transient failure without significantly increasing tail latency.
     private static final int MAX_PROXY_ATTEMPTS = 2;
     private static final long RETRY_DELAY_MS = 50L;
+    private static final int SC_TOO_MANY_REQUESTS = 429;
 
     private static final Set<String> HOP_BY_HOP_HEADERS = Set.of(
             "connection",
@@ -43,15 +44,25 @@ final class GatewayProxyServlet extends HttpServlet {
     private final HttpClient httpClient;
     private final Duration requestTimeout;
     private final Map<String, RouteCircuitBreaker> circuitBreakers;
+    private final GatewayRateLimiter rateLimiter;
 
     GatewayProxyServlet(List<MicroserviceRoute> routes,
                         HttpClient httpClient,
                         Duration requestTimeout,
                         Map<String, RouteCircuitBreaker> circuitBreakers) {
+        this(routes, httpClient, requestTimeout, circuitBreakers, GatewayRateLimiter.disabled());
+    }
+
+    GatewayProxyServlet(List<MicroserviceRoute> routes,
+                        HttpClient httpClient,
+                        Duration requestTimeout,
+                        Map<String, RouteCircuitBreaker> circuitBreakers,
+                        GatewayRateLimiter rateLimiter) {
         this.routes = List.copyOf(routes);
         this.httpClient = httpClient;
         this.requestTimeout = requestTimeout;
         this.circuitBreakers = Map.copyOf(circuitBreakers);
+        this.rateLimiter = rateLimiter == null ? GatewayRateLimiter.disabled() : rateLimiter;
     }
 
     @Override
@@ -62,6 +73,17 @@ final class GatewayProxyServlet extends HttpServlet {
         if (route == null) {
             writeGatewayError(response, HttpServletResponse.SC_NOT_FOUND,
                     "no microservice route matches " + path);
+            return;
+        }
+
+        GatewayRateLimiter.Decision rateDecision = rateLimiter.tryAcquire(route.name());
+        if (!rateDecision.allowed()) {
+            int retryAfterSeconds = Math.max(1, (int) Math.ceil(rateDecision.retryAfter().toMillis() / 1000.0));
+            response.setHeader("Retry-After", Integer.toString(retryAfterSeconds));
+            response.setHeader("X-RateLimit-Limit", Integer.toString(rateDecision.limit()));
+            response.setHeader("X-RateLimit-Remaining", Integer.toString(rateDecision.remaining()));
+            writeGatewayError(response, SC_TOO_MANY_REQUESTS,
+                    route.name() + " gateway rate limited");
             return;
         }
 

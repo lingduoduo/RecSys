@@ -446,6 +446,10 @@ On startup the server seeds Redis with bundled movie and user embeddings if the 
 | `CATALOG_SERVICE_URL` | `http://localhost:6010` | Base URL for `/api/catalog` |
 | `MODEL_SERVICE_URL` | `http://localhost:8080` | Base URL for `/api/model` |
 | `ONLINE_SERVICE_URL` | `http://localhost:7010` | Base URL for `/api/online` |
+| `GATEWAY_RATE_LIMIT_RPS` | `0` | Optional per-gateway-pod local token-bucket rate; `0` disables gateway throttling |
+| `GATEWAY_RATE_LIMIT_BURST` | `0` | Optional per-gateway-pod local token-bucket burst capacity |
+| `GATEWAY_RATE_LIMIT_<ROUTE>_RPS` | _(unset)_ | Optional per-route override, for example `GATEWAY_RATE_LIMIT_MODEL_RPS` |
+| `GATEWAY_RATE_LIMIT_<ROUTE>_BURST` | _(unset)_ | Optional per-route burst override, for example `GATEWAY_RATE_LIMIT_MODEL_BURST` |
 
 ### Model serving service (Spring Boot, port 8080)
 
