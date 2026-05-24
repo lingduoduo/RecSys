@@ -46,18 +46,22 @@ public final class MicroserviceGatewayServer {
         // health servlet (exposes state in the /health response body).
         Map<String, RouteCircuitBreaker> circuitBreakers = routes.stream()
                 .collect(Collectors.toUnmodifiableMap(MicroserviceRoute::name, r -> new RouteCircuitBreaker()));
+        GatewayRateLimiter rateLimiter = GatewayRateLimiter.fromEnvironment(routes);
 
         Server server = new Server(new InetSocketAddress(DEFAULT_HOST, port));
         ServletContextHandler context = new ServletContextHandler();
         context.setContextPath("/");
         context.addServlet(new ServletHolder(new GatewayHealthServlet(routes, httpClient, timeout, circuitBreakers)), "/health");
-        context.addServlet(new ServletHolder(new GatewayProxyServlet(routes, httpClient, timeout, circuitBreakers)), "/*");
+        context.addServlet(new ServletHolder(new GatewayProxyServlet(routes, httpClient, timeout, circuitBreakers, rateLimiter)), "/*");
         server.setHandler(context);
         server.setStopAtShutdown(true);
 
         log.info("Starting RecSys API gateway on port {}", port);
         for (MicroserviceRoute route : routes) {
             log.info("Route {} {} -> {}", route.name(), route.prefix(), route.baseUri());
+        }
+        if (rateLimiter.isEnabled()) {
+            log.info("Gateway local rate limiting enabled");
         }
         server.start();
         server.join();
