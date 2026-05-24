@@ -6,6 +6,7 @@ import jakarta.servlet.http.HttpServletRequest;
 import jakarta.servlet.http.HttpServletResponse;
 
 import java.io.IOException;
+import java.net.URI;
 import java.net.http.HttpClient;
 import java.net.http.HttpRequest;
 import java.net.http.HttpResponse;
@@ -13,7 +14,6 @@ import java.time.Duration;
 import java.time.Instant;
 import java.util.LinkedHashMap;
 import java.util.List;
-import java.util.Map;
 import java.util.Map;
 import java.util.concurrent.CompletableFuture;
 import java.util.concurrent.ExecutionException;
@@ -78,7 +78,7 @@ final class GatewayHealthServlet extends HttpServlet {
         ));
     }
 
-    private ServiceHealth check(java.net.URI healthUri) {
+    private ServiceHealth check(URI healthUri) {
         long startNs = System.nanoTime();
         try {
             HttpRequest request = HttpRequest.newBuilder(healthUri)
@@ -99,7 +99,7 @@ final class GatewayHealthServlet extends HttpServlet {
     }
 
     private record ServiceHealth(boolean up, int statusCode, long latencyMs, String error) {
-        Map<String, Object> asMap(MicroserviceRoute route, java.net.URI healthUri,
+        Map<String, Object> asMap(MicroserviceRoute route, URI healthUri,
                                   RouteCircuitBreaker circuitBreaker) {
             Map<String, Object> result = new LinkedHashMap<>();
             result.put("status", up ? "UP" : "DOWN");

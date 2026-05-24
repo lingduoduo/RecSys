@@ -3,6 +3,7 @@ kind: Kustomization
 resources:
   - ../base
   - gateway-irsa.yaml       # IRSA ServiceAccount + gateway Deployment patch
+  - patches/irsa-model-serving.yaml
 
 images:
   - name: recsys-backend-service

@@ -10,6 +10,7 @@ import java.net.URI;
 import java.net.http.HttpClient;
 import java.net.http.HttpRequest;
 import java.net.http.HttpResponse;
+import java.net.http.HttpTimeoutException;
 import java.time.Duration;
 import java.util.Enumeration;
 import java.util.List;
@@ -87,6 +88,12 @@ final class GatewayProxyServlet extends HttpServlet {
                 if (cb != null) cb.recordSuccess();
                 writeUpstreamResponse(response, upstream);
                 return;
+            } catch (HttpTimeoutException e) {
+                // Timeouts already consumed the full deadline — no point retrying.
+                if (cb != null) cb.recordFailure();
+                writeGatewayError(response, HttpServletResponse.SC_GATEWAY_TIMEOUT,
+                        "upstream timeout proxying " + route.name());
+                return;
             } catch (InterruptedException e) {
                 Thread.currentThread().interrupt();
                 writeGatewayError(response, HttpServletResponse.SC_BAD_GATEWAY,
@@ -107,9 +114,10 @@ final class GatewayProxyServlet extends HttpServlet {
             }
         }
         if (cb != null) cb.recordFailure();
+        String reason = lastIoe != null ? lastIoe.getMessage() : "unknown error";
         writeGatewayError(response, HttpServletResponse.SC_BAD_GATEWAY,
                 "failed to proxy " + route.name() + " after " + MAX_PROXY_ATTEMPTS
-                        + " attempts: " + lastIoe.getMessage());
+                        + " attempts: " + reason);
     }
 
     private HttpRequest buildUpstreamRequest(HttpServletRequest request, URI target,
