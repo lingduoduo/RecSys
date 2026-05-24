@@ -44,4 +44,24 @@ class MicroserviceRouteTest {
 
         assertEquals("http://online:7010/base/online/recommendation?userId=123&k=5", rewritten.toString());
     }
+
+    @Test
+    void healthUri_combinesBaseUriAndHealthPath() {
+        MicroserviceRoute route = new MicroserviceRoute(
+                "model", "/api/model", "MODEL_SERVICE_URL",
+                URI.create("http://model-serving.recsys.internal:8080"), "/health/ready");
+
+        assertEquals("http://model-serving.recsys.internal:8080/health/ready",
+                route.healthUri().toString());
+    }
+
+    @Test
+    void healthUri_worksWithBaseUriSubPath() {
+        MicroserviceRoute route = new MicroserviceRoute(
+                "catalog", "/api/catalog", "CATALOG_SERVICE_URL",
+                URI.create("http://catalog-serving.recsys.internal:6010/v1"), "/health");
+
+        assertEquals("http://catalog-serving.recsys.internal:6010/v1/health",
+                route.healthUri().toString());
+    }
 }

@@ -1,7 +1,7 @@
 apiVersion: policy/v1
 kind: PodDisruptionBudget
 metadata:
-  name: recsys-api-gateway
+  name: recsys-api-gateway-pdb
   namespace: recsys
 spec:
   minAvailable: 1
@@ -12,7 +12,7 @@ spec:
 apiVersion: policy/v1
 kind: PodDisruptionBudget
 metadata:
-  name: recsys-catalog-serving
+  name: recsys-catalog-serving-pdb
   namespace: recsys
 spec:
   minAvailable: 1
@@ -23,7 +23,7 @@ spec:
 apiVersion: policy/v1
 kind: PodDisruptionBudget
 metadata:
-  name: recsys-model-serving
+  name: recsys-model-serving-pdb
   namespace: recsys
 spec:
   minAvailable: 1
@@ -34,7 +34,7 @@ spec:
 apiVersion: policy/v1
 kind: PodDisruptionBudget
 metadata:
-  name: recsys-online-serving
+  name: recsys-online-serving-pdb
   namespace: recsys
 spec:
   minAvailable: 1

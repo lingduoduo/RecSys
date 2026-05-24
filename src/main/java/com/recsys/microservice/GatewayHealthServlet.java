@@ -16,6 +16,9 @@ import java.util.LinkedHashMap;
 import java.util.List;
 import java.util.Map;
 import java.util.concurrent.CompletableFuture;
+import java.util.concurrent.ExecutionException;
+import java.util.concurrent.TimeUnit;
+import java.util.concurrent.TimeoutException;
 
 final class GatewayHealthServlet extends HttpServlet {
     private static final ObjectMapper MAPPER = new ObjectMapper();
@@ -23,41 +26,45 @@ final class GatewayHealthServlet extends HttpServlet {
     private final List<MicroserviceRoute> routes;
     private final HttpClient httpClient;
     private final Duration timeout;
+    private final Map<String, RouteCircuitBreaker> circuitBreakers;
 
     GatewayHealthServlet(List<MicroserviceRoute> routes,
-                         Duration timeout) {
+                         HttpClient httpClient,
+                         Duration timeout,
+                         Map<String, RouteCircuitBreaker> circuitBreakers) {
         this.routes = List.copyOf(routes);
+        this.httpClient = httpClient;
         this.timeout = timeout;
-        this.httpClient = HttpClient.newBuilder().connectTimeout(timeout).build();
+        this.circuitBreakers = Map.copyOf(circuitBreakers);
     }
 
     @Override
     protected void doGet(HttpServletRequest request, HttpServletResponse response) throws IOException {
-        record RouteCheck(MicroserviceRoute route, URI healthUri,
-                          long startNs, CompletableFuture<HttpResponse<Void>> future) {}
+        // Fire all health checks in parallel so total latency = max(individual), not sum.
+        // Critical for Cloud Map, which deregisters instances that miss successive health checks.
+        List<CompletableFuture<ServiceHealth>> futures = routes.stream()
+                .map(route -> CompletableFuture.supplyAsync(() -> check(route.healthUri())))
+                .toList();
 
-        List<RouteCheck> checks = routes.stream().map(route -> {
-            URI healthUri = route.healthUri();
-            HttpRequest req = HttpRequest.newBuilder(healthUri).timeout(timeout).GET().build();
-            return new RouteCheck(route, healthUri, System.nanoTime(),
-                    httpClient.sendAsync(req, HttpResponse.BodyHandlers.discarding()));
-        }).toList();
-
-        CompletableFuture.allOf(checks.stream().map(RouteCheck::future).toArray(CompletableFuture[]::new)).join();
-
+        long waitMs = timeout.toMillis() + 500L;
         Map<String, Object> services = new LinkedHashMap<>();
         boolean allUp = true;
-        for (RouteCheck check : checks) {
-            long latencyMs = (System.nanoTime() - check.startNs()) / 1_000_000;
+        for (int i = 0; i < routes.size(); i++) {
+            MicroserviceRoute route = routes.get(i);
             ServiceHealth health;
             try {
-                HttpResponse<Void> resp = check.future().join();
-                health = new ServiceHealth(resp.statusCode() < 500, resp.statusCode(), latencyMs, null);
-            } catch (Exception ex) {
-                Throwable cause = ex.getCause() != null ? ex.getCause() : ex;
-                health = new ServiceHealth(false, 0, latencyMs, cause.getMessage());
+                health = futures.get(i).get(waitMs, TimeUnit.MILLISECONDS);
+            } catch (TimeoutException e) {
+                health = new ServiceHealth(false, 0, timeout.toMillis(), "health check timed out");
+            } catch (InterruptedException e) {
+                Thread.currentThread().interrupt();
+                health = new ServiceHealth(false, 0, timeout.toMillis(), "interrupted");
+            } catch (ExecutionException e) {
+                health = new ServiceHealth(false, 0, timeout.toMillis(),
+                        e.getCause() != null ? e.getCause().getMessage() : e.getMessage());
             }
-            services.put(check.route().name(), health.asMap(check.route(), check.healthUri()));
+            RouteCircuitBreaker cb = circuitBreakers.get(route.name());
+            services.put(route.name(), health.asMap(route, route.healthUri(), cb));
             allUp = allUp && health.up();
         }
 
@@ -71,8 +78,29 @@ final class GatewayHealthServlet extends HttpServlet {
         ));
     }
 
+    private ServiceHealth check(URI healthUri) {
+        long startNs = System.nanoTime();
+        try {
+            HttpRequest request = HttpRequest.newBuilder(healthUri)
+                    .timeout(timeout)
+                    .GET()
+                    .build();
+            HttpResponse<Void> upstream = httpClient.send(request, HttpResponse.BodyHandlers.discarding());
+            long latencyMs = (System.nanoTime() - startNs) / 1_000_000;
+            return new ServiceHealth(upstream.statusCode() < 500, upstream.statusCode(), latencyMs, null);
+        } catch (InterruptedException e) {
+            Thread.currentThread().interrupt();
+            long latencyMs = (System.nanoTime() - startNs) / 1_000_000;
+            return new ServiceHealth(false, 0, latencyMs, "interrupted");
+        } catch (RuntimeException | IOException e) {
+            long latencyMs = (System.nanoTime() - startNs) / 1_000_000;
+            return new ServiceHealth(false, 0, latencyMs, e.getMessage());
+        }
+    }
+
     private record ServiceHealth(boolean up, int statusCode, long latencyMs, String error) {
-        Map<String, Object> asMap(MicroserviceRoute route, java.net.URI healthUri) {
+        Map<String, Object> asMap(MicroserviceRoute route, URI healthUri,
+                                  RouteCircuitBreaker circuitBreaker) {
             Map<String, Object> result = new LinkedHashMap<>();
             result.put("status", up ? "UP" : "DOWN");
             result.put("prefix", route.prefix());
@@ -80,6 +108,9 @@ final class GatewayHealthServlet extends HttpServlet {
             result.put("healthUrl", healthUri.toString());
             result.put("statusCode", statusCode);
             result.put("latencyMs", latencyMs);
+            if (circuitBreaker != null) {
+                result.put("circuitState", circuitBreaker.state().name());
+            }
             if (error != null && !error.isBlank()) {
                 result.put("error", error);
             }
