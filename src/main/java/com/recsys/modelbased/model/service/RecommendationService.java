@@ -12,6 +12,7 @@ import java.util.Collections;
 import java.util.HashSet;
 import java.util.List;
 import java.util.Map;
+import java.util.Optional;
 import java.util.Set;
 import java.util.TreeSet;
 
@@ -84,6 +85,37 @@ public class RecommendationService {
                 new CacheStatsSnapshot(recommendations.hits(), recommendations.misses(), recommendations.hitRate()),
                 new CacheStatsSnapshot(coldStart.hits(), coldStart.misses(), coldStart.hitRate())
         );
+    }
+
+    /**
+     * Degradation path: returns a cached response without acquiring a model-runtime slot.
+     * Tries the per-user cache first, then the shared cold-start pool.
+     * Returns empty when the cache is disabled or no entries exist for this user/variant.
+     */
+    public Optional<RecommendResponse> tryServeFromCache(RecommendRequest request) {
+        if (!cache.isEnabled()) return Optional.empty();
+        ABTestService.Assignment assignment = abTestService.getAssignmentForUser(request.getUserId());
+        ModelRuntime runtime = modelRuntimeProvider.getRuntime(assignment.variant());
+        if (runtime == null) return Optional.empty();
+        String modelVersion = runtime.modelVersion();
+        List<String> excludedItemIds = normalizedExcludeItemIds(request);
+
+        var cacheKey = new RecommendationCache.RecommendationKey(
+                request.getUserId(), request.getK(), excludedItemIds, assignment.variant(), modelVersion);
+        List<ScoredItem> items = cache.get(cacheKey);
+        if (items != null) {
+            return Optional.of(response(request, modelVersion, assignment, items));
+        }
+
+        if (cache.isColdStartEnabled()) {
+            var coldStartKey = new RecommendationCache.ColdStartKey(assignment.variant(), modelVersion);
+            List<ScoredItem> pool = cache.getColdStart(coldStartKey);
+            if (pool != null) {
+                return Optional.of(response(request, modelVersion, assignment,
+                        limitAndExclude(pool, excludedItemIds, request.getK())));
+            }
+        }
+        return Optional.empty();
     }
 
     private List<ScoredItem> coldStartItems(

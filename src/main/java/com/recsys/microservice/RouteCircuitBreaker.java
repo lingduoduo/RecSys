@@ -1,5 +1,6 @@
 package com.recsys.microservice;
 
+import java.util.concurrent.atomic.AtomicBoolean;
 import java.util.concurrent.atomic.AtomicInteger;
 import java.util.concurrent.atomic.AtomicLong;
 
@@ -29,6 +30,9 @@ final class RouteCircuitBreaker {
 
     private final AtomicInteger consecutiveFailures = new AtomicInteger(0);
     private final AtomicLong    openedAtMs          = new AtomicLong(0L);
+    // Guards the single probe request allowed in HALF_OPEN. Set to true when a probe is
+    // in flight; cleared by recordSuccess() or recordFailure() when the probe completes.
+    private final AtomicBoolean probing             = new AtomicBoolean(false);
 
     RouteCircuitBreaker() {
         this(DEFAULT_FAILURE_THRESHOLD, DEFAULT_COOLDOWN_MS);
@@ -47,16 +51,27 @@ final class RouteCircuitBreaker {
         return elapsed >= cooldownMs ? State.HALF_OPEN : State.OPEN;
     }
 
-    /** Returns {@code true} when the request should proceed (CLOSED or HALF_OPEN). */
+    /**
+     * Returns {@code true} when the request should proceed.
+     * CLOSED → always true.
+     * OPEN   → always false (fast-fail).
+     * HALF_OPEN → exactly one probe request is allowed via CAS; all concurrent callers
+     *             get false until that probe completes (recordSuccess / recordFailure).
+     */
     boolean tryAcquire() {
-        return state() != State.OPEN;
+        State s = state();
+        if (s == State.CLOSED)   return true;
+        if (s == State.OPEN)     return false;
+        return probing.compareAndSet(false, true);
     }
 
     void recordSuccess() {
         consecutiveFailures.set(0);
+        probing.set(false);
     }
 
     void recordFailure() {
+        probing.set(false);
         if (consecutiveFailures.incrementAndGet() >= failureThreshold) {
             openedAtMs.set(System.currentTimeMillis());
         }
