@@ -8,3 +8,5 @@ resources:
   - model-serving.yaml
   - online-serving.yaml
   - api-gateway.yaml
+  - hpa.yaml
+  - pdb.yaml

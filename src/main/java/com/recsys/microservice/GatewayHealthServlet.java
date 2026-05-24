@@ -6,6 +6,7 @@ import jakarta.servlet.http.HttpServletRequest;
 import jakarta.servlet.http.HttpServletResponse;
 
 import java.io.IOException;
+import java.net.URI;
 import java.net.http.HttpClient;
 import java.net.http.HttpRequest;
 import java.net.http.HttpResponse;
@@ -14,6 +15,7 @@ import java.time.Instant;
 import java.util.LinkedHashMap;
 import java.util.List;
 import java.util.Map;
+import java.util.concurrent.CompletableFuture;
 
 final class GatewayHealthServlet extends HttpServlet {
     private static final ObjectMapper MAPPER = new ObjectMapper();
@@ -31,13 +33,31 @@ final class GatewayHealthServlet extends HttpServlet {
 
     @Override
     protected void doGet(HttpServletRequest request, HttpServletResponse response) throws IOException {
+        record RouteCheck(MicroserviceRoute route, URI healthUri,
+                          long startNs, CompletableFuture<HttpResponse<Void>> future) {}
+
+        List<RouteCheck> checks = routes.stream().map(route -> {
+            URI healthUri = route.healthUri();
+            HttpRequest req = HttpRequest.newBuilder(healthUri).timeout(timeout).GET().build();
+            return new RouteCheck(route, healthUri, System.nanoTime(),
+                    httpClient.sendAsync(req, HttpResponse.BodyHandlers.discarding()));
+        }).toList();
+
+        CompletableFuture.allOf(checks.stream().map(RouteCheck::future).toArray(CompletableFuture[]::new)).join();
+
         Map<String, Object> services = new LinkedHashMap<>();
         boolean allUp = true;
-
-        for (MicroserviceRoute route : routes) {
-            java.net.URI healthUri = route.healthUri();
-            ServiceHealth health = check(healthUri);
-            services.put(route.name(), health.asMap(route, healthUri));
+        for (RouteCheck check : checks) {
+            long latencyMs = (System.nanoTime() - check.startNs()) / 1_000_000;
+            ServiceHealth health;
+            try {
+                HttpResponse<Void> resp = check.future().join();
+                health = new ServiceHealth(resp.statusCode() < 500, resp.statusCode(), latencyMs, null);
+            } catch (Exception ex) {
+                Throwable cause = ex.getCause() != null ? ex.getCause() : ex;
+                health = new ServiceHealth(false, 0, latencyMs, cause.getMessage());
+            }
+            services.put(check.route().name(), health.asMap(check.route(), check.healthUri()));
             allUp = allUp && health.up();
         }
 
@@ -49,26 +69,6 @@ final class GatewayHealthServlet extends HttpServlet {
                 "checkedAt", Instant.now().toString(),
                 "services", services
         ));
-    }
-
-    private ServiceHealth check(java.net.URI healthUri) {
-        long startNs = System.nanoTime();
-        try {
-            HttpRequest request = HttpRequest.newBuilder(healthUri)
-                    .timeout(timeout)
-                    .GET()
-                    .build();
-            HttpResponse<Void> upstream = httpClient.send(request, HttpResponse.BodyHandlers.discarding());
-            long latencyMs = (System.nanoTime() - startNs) / 1_000_000;
-            return new ServiceHealth(upstream.statusCode() < 500, upstream.statusCode(), latencyMs, null);
-        } catch (InterruptedException e) {
-            Thread.currentThread().interrupt();
-            long latencyMs = (System.nanoTime() - startNs) / 1_000_000;
-            return new ServiceHealth(false, 0, latencyMs, "interrupted");
-        } catch (RuntimeException | IOException e) {
-            long latencyMs = (System.nanoTime() - startNs) / 1_000_000;
-            return new ServiceHealth(false, 0, latencyMs, e.getMessage());
-        }
     }
 
     private record ServiceHealth(boolean up, int statusCode, long latencyMs, String error) {

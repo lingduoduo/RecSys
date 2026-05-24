@@ -10,6 +10,7 @@ import java.net.URI;
 import java.net.http.HttpClient;
 import java.net.http.HttpRequest;
 import java.net.http.HttpResponse;
+import java.net.http.HttpTimeoutException;
 import java.time.Duration;
 import java.util.Enumeration;
 import java.util.List;
@@ -63,6 +64,12 @@ final class GatewayProxyServlet extends HttpServlet {
                     HttpResponse.BodyHandlers.ofByteArray()
             );
             writeUpstreamResponse(response, upstream);
+        } catch (HttpTimeoutException e) {
+            writeGatewayError(response, HttpServletResponse.SC_GATEWAY_TIMEOUT,
+                    "upstream timeout proxying " + route.name());
+        } catch (IOException e) {
+            writeGatewayError(response, HttpServletResponse.SC_BAD_GATEWAY,
+                    "upstream IO error proxying " + route.name() + ": " + e.getMessage());
         } catch (InterruptedException e) {
             Thread.currentThread().interrupt();
             writeGatewayError(response, HttpServletResponse.SC_BAD_GATEWAY,

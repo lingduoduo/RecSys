@@ -51,6 +51,13 @@ spec:
             limits:
               cpu: "1"
               memory: 1536Mi
+      topologySpreadConstraints:
+        - maxSkew: 1
+          topologyKey: topology.kubernetes.io/zone
+          whenUnsatisfiable: ScheduleAnyway
+          labelSelector:
+            matchLabels:
+              app: recsys-catalog-serving
 ---
 apiVersion: v1
 kind: Service
