@@ -42,7 +42,7 @@ public class SagaOrchestrator {
         SagaInstance saga = store.find(sagaId)
                 .orElseGet(() -> {
                     SagaInstance created = new SagaInstance(sagaId, definition.name(), correlationId, payloadJson, now());
-                    store.save(created);
+                    store.saveConditionally(created);
                     publish(created, SagaEventType.SAGA_STARTED, null);
                     return created;
                 });
@@ -64,7 +64,7 @@ public class SagaOrchestrator {
                 transition(saga, SagaStatus.STEP_STARTED, SagaEventType.STEP_STARTED, step.name());
                 runWithRetry(saga, step, action);
                 saga.markStepCompleted(step.name(), now());
-                store.save(saga);
+                store.saveConditionally(saga);
                 completedInThisRun.add(step);
                 publish(saga, SagaEventType.STEP_COMPLETED, step.name());
             }
@@ -84,28 +84,34 @@ public class SagaOrchestrator {
         List<SagaStep> completed = completedInThisRun.isEmpty()
                 ? allSteps.stream().filter(step -> saga.completedSteps().contains(step.name())).toList()
                 : completedInThisRun;
-        try {
-            for (int i = completed.size() - 1; i >= 0; i--) {
-                SagaStep step = completed.get(i);
-                SagaStepAction compensation = compensations.get(step.name());
-                if (compensation == null) {
-                    continue;
-                }
+        // Best-effort: attempt every compensation regardless of individual failures so no
+        // step is silently left uncompensated. Failures are accumulated and reported together.
+        List<String> compensationErrors = new ArrayList<>();
+        for (int i = completed.size() - 1; i >= 0; i--) {
+            SagaStep step = completed.get(i);
+            SagaStepAction compensation = compensations.get(step.name());
+            if (compensation == null) {
+                continue;
+            }
+            try {
                 transition(saga, SagaStatus.COMPENSATING, SagaEventType.COMPENSATION_STARTED, step.name());
                 runWithRetry(saga, step, compensation);
                 saga.markCompensated(step.name(), now());
-                store.save(saga);
+                store.saveConditionally(saga);
                 publish(saga, SagaEventType.COMPENSATION_COMPLETED, step.name());
+            } catch (RuntimeException e) {
+                compensationErrors.add(step.name() + ": " + e.getMessage());
             }
-            saga.fail(originalFailure.getMessage(), now());
-            store.save(saga);
-            publish(saga, SagaEventType.SAGA_FAILED, saga.currentStep());
-        } catch (RuntimeException compensationFailure) {
-            saga.fail("compensation failed after original error: "
-                    + originalFailure.getMessage() + "; compensation error: " + compensationFailure.getMessage(), now());
-            store.save(saga);
-            publish(saga, SagaEventType.SAGA_FAILED, saga.currentStep());
-            throw compensationFailure;
+        }
+        String failureMessage = originalFailure.getMessage();
+        if (!compensationErrors.isEmpty()) {
+            failureMessage += "; compensation errors: " + String.join(", ", compensationErrors);
+        }
+        saga.fail(failureMessage, now());
+        store.saveConditionally(saga);
+        publish(saga, SagaEventType.SAGA_FAILED, saga.currentStep());
+        if (!compensationErrors.isEmpty()) {
+            throw new SagaException(failureMessage, originalFailure);
         }
     }
 
@@ -127,7 +133,7 @@ public class SagaOrchestrator {
 
     private void transition(SagaInstance saga, SagaStatus status, SagaEventType eventType, String stepName) {
         saga.mark(status, stepName, now());
-        store.save(saga);
+        store.saveConditionally(saga);
         publish(saga, eventType, stepName);
     }
 

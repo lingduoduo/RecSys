@@ -17,4 +17,20 @@ public class InMemorySagaStateStore implements SagaStateStore {
     public void save(SagaInstance saga) {
         sagas.put(saga.sagaId(), saga.copy());
     }
+
+    @Override
+    public void saveConditionally(SagaInstance saga) {
+        int[] nextVersion = {-1};
+        sagas.compute(saga.sagaId(), (id, stored) -> {
+            int storedVersion = stored == null ? 0 : stored.version();
+            if (storedVersion != saga.version()) {
+                throw new SagaConflictException(id, saga.version(), storedVersion);
+            }
+            nextVersion[0] = storedVersion + 1;
+            SagaInstance copy = saga.copy();
+            copy.setVersion(nextVersion[0]);
+            return copy;
+        });
+        saga.setVersion(nextVersion[0]);
+    }
 }

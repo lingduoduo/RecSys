@@ -12,6 +12,7 @@ import java.util.Map;
 import java.util.concurrent.atomic.AtomicInteger;
 
 import static org.assertj.core.api.Assertions.assertThat;
+import static org.assertj.core.api.Assertions.assertThatThrownBy;
 
 class TccSagaOrchestratorTest {
     private final Clock clock = Clock.fixed(Instant.parse("2026-05-25T12:00:00Z"), ZoneOffset.UTC);
@@ -152,6 +153,58 @@ class TccSagaOrchestratorTest {
                 "confirm:reserve-feature-refresh",
                 "cancel:reserve-feature-refresh"
         );
+    }
+
+    @Test
+    void execute_bestEffortCancel_continuesAfterOneCancelFailure() {
+        InMemorySagaStateStore store = new InMemorySagaStateStore();
+        List<String> calls = new ArrayList<>();
+        TccSagaOrchestrator orchestrator = new TccSagaOrchestrator(store, SagaEventPublisher.NOOP, clock);
+
+        SagaDefinition definition = new SagaDefinition("recommendation-refresh-tcc", List.of(
+                SagaStep.local("step-a"),
+                SagaStep.local("step-b"),
+                SagaStep.local("step-c")
+        ));
+
+        // step-c try fails, triggering cancel of step-b then step-a in reverse order
+        // step-b cancel throws — best-effort must still run step-a cancel
+        assertThatThrownBy(() -> orchestrator.execute(
+                "tcc-5", "req-5", "{}",
+                definition,
+                Map.of(
+                        "step-a", participant(calls),
+                        "step-b", new RecordingParticipant(calls) {
+                            @Override
+                            public void cancel(SagaInstance saga, SagaStep step) {
+                                calls.add("cancel:" + step.name());
+                                throw new IllegalStateException("step-b cancel failed");
+                            }
+                        },
+                        "step-c", new RecordingParticipant(calls) {
+                            @Override
+                            public void tryReserve(SagaInstance saga, SagaStep step) {
+                                calls.add("try:" + step.name());
+                                throw new IllegalStateException("step-c try failed");
+                            }
+                        }
+                )
+        )).isInstanceOf(SagaException.class)
+                .hasMessageContaining("step-b")
+                .hasMessageContaining("cancel errors");
+
+        assertThat(calls).containsExactly(
+                "try:step-a",
+                "try:step-b",
+                "try:step-c",
+                "cancel:step-b",
+                "cancel:step-a"
+        );
+
+        SagaInstance stored = store.find("tcc-5").orElseThrow();
+        assertThat(stored.status()).isEqualTo(SagaStatus.FAILED);
+        // step-a was cancelled even though step-b cancel failed
+        assertThat(stored.cancelledSteps()).contains("step-a");
     }
 
     private static SagaDefinition definition() {

@@ -1,5 +1,6 @@
 package com.recsys.modelbased.model.service;
 
+import org.springframework.beans.factory.annotation.Autowired;
 import org.springframework.beans.factory.annotation.Value;
 import org.springframework.stereotype.Component;
 
@@ -35,6 +36,7 @@ public class ModelRateLimiter {
     private final Map<String, TokenBucket> buckets;
     private final LongSupplier tickerNanos;
 
+    @Autowired
     public ModelRateLimiter(
             @Value("${recsys.model.rate-limit.rps:0.0}") double rps,
             @Value("${recsys.model.rate-limit.burst:0}") int burst,
