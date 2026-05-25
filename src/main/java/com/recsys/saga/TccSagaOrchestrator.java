@@ -6,6 +6,7 @@ import java.util.ArrayList;
 import java.util.List;
 import java.util.Map;
 import java.util.Objects;
+import java.util.concurrent.ThreadLocalRandom;
 
 /**
  * Try/Confirm/Cancel orchestration for stronger eventual consistency.
@@ -15,6 +16,8 @@ import java.util.Objects;
  * in reverse order. Participants must be idempotent by sagaId + stepName + phase.
  */
 public class TccSagaOrchestrator {
+    // Full-jitter exponential backoff cap. Matches the MaxDelaySeconds in the Step Functions ASL.
+    private static final long MAX_BACKOFF_MS = 30_000L;
     private final SagaStateStore store;
     private final SagaEventPublisher publisher;
     private final Clock clock;
@@ -36,7 +39,7 @@ public class TccSagaOrchestrator {
         SagaInstance saga = store.find(sagaId)
                 .orElseGet(() -> {
                     SagaInstance created = new SagaInstance(sagaId, definition.name(), correlationId, payloadJson, now());
-                    store.save(created);
+                    store.saveConditionally(created);
                     publish(created, SagaEventType.SAGA_STARTED, null);
                     return created;
                 });
@@ -65,7 +68,7 @@ public class TccSagaOrchestrator {
             transition(saga, SagaStatus.TRYING, SagaEventType.TRY_STARTED, step.name());
             runWithRetry(saga, step, participant::tryReserve);
             saga.markTried(step.name(), now());
-            store.save(saga);
+            store.saveConditionally(saga);
             publish(saga, SagaEventType.TRY_COMPLETED, step.name());
         }
     }
@@ -79,7 +82,7 @@ public class TccSagaOrchestrator {
             transition(saga, SagaStatus.CONFIRMING, SagaEventType.CONFIRM_STARTED, step.name());
             runWithRetry(saga, step, participant::confirm);
             saga.markConfirmed(step.name(), now());
-            store.save(saga);
+            store.saveConditionally(saga);
             publish(saga, SagaEventType.CONFIRM_COMPLETED, step.name());
         }
     }
@@ -96,25 +99,31 @@ public class TccSagaOrchestrator {
                 cancellable.add(step);
             }
         }
-        try {
-            for (int i = cancellable.size() - 1; i >= 0; i--) {
-                SagaStep step = cancellable.get(i);
-                TccParticipant participant = participantFor(participants, step);
+        // Best-effort: attempt every cancel regardless of individual failures so no
+        // reservation is silently left dangling. Failures are accumulated and reported together.
+        List<String> cancelErrors = new ArrayList<>();
+        for (int i = cancellable.size() - 1; i >= 0; i--) {
+            SagaStep step = cancellable.get(i);
+            TccParticipant participant = participantFor(participants, step);
+            try {
                 transition(saga, SagaStatus.CANCELLING, SagaEventType.CANCEL_STARTED, step.name());
                 runWithRetry(saga, step, participant::cancel);
                 saga.markCancelled(step.name(), now());
-                store.save(saga);
+                store.saveConditionally(saga);
                 publish(saga, SagaEventType.CANCEL_COMPLETED, step.name());
+            } catch (RuntimeException e) {
+                cancelErrors.add(step.name() + ": " + e.getMessage());
             }
-            saga.fail(originalFailure.getMessage(), now());
-            store.save(saga);
-            publish(saga, SagaEventType.SAGA_FAILED, saga.currentStep());
-        } catch (RuntimeException cancelFailure) {
-            saga.fail("cancel failed after original error: "
-                    + originalFailure.getMessage() + "; cancel error: " + cancelFailure.getMessage(), now());
-            store.save(saga);
-            publish(saga, SagaEventType.SAGA_FAILED, saga.currentStep());
-            throw cancelFailure;
+        }
+        String failureMessage = originalFailure.getMessage();
+        if (!cancelErrors.isEmpty()) {
+            failureMessage += "; cancel errors: " + String.join(", ", cancelErrors);
+        }
+        saga.fail(failureMessage, now());
+        store.saveConditionally(saga);
+        publish(saga, SagaEventType.SAGA_FAILED, saga.currentStep());
+        if (!cancelErrors.isEmpty()) {
+            throw new SagaException(failureMessage, originalFailure);
         }
     }
 
@@ -134,10 +143,9 @@ public class TccSagaOrchestrator {
                 return;
             } catch (RuntimeException e) {
                 last = e;
-                if (attempt == step.maxAttempts()) {
-                    break;
+                if (attempt < step.maxAttempts()) {
+                    sleep(step.backoff(), attempt);
                 }
-                sleep(step.backoff());
             }
         }
         throw new SagaException("TCC step failed after " + step.maxAttempts() + " attempts: " + step.name(), last);
@@ -145,7 +153,7 @@ public class TccSagaOrchestrator {
 
     private void transition(SagaInstance saga, SagaStatus status, SagaEventType eventType, String stepName) {
         saga.mark(status, stepName, now());
-        store.save(saga);
+        store.saveConditionally(saga);
         publish(saga, eventType, stepName);
     }
 
@@ -167,12 +175,20 @@ public class TccSagaOrchestrator {
         return clock.instant();
     }
 
-    private void sleep(java.time.Duration backoff) {
-        if (backoff == null || backoff.isZero() || backoff.isNegative()) {
+    private void sleep(java.time.Duration baseBackoff, int attempt) {
+        if (baseBackoff == null || baseBackoff.isZero() || baseBackoff.isNegative()) {
+            return;
+        }
+        // Full-jitter exponential backoff: uniform(0, min(MAX_BACKOFF_MS, base * 2^(attempt-1))).
+        // Prevents thundering herd when multiple TCC steps hit an AWS service quota simultaneously.
+        long baseMs = baseBackoff.toMillis();
+        long ceiling = Math.min(MAX_BACKOFF_MS, baseMs << Math.min(attempt - 1, 10));
+        long sleepMs = ceiling > 0 ? ThreadLocalRandom.current().nextLong(ceiling + 1) : 0L;
+        if (sleepMs <= 0) {
             return;
         }
         try {
-            Thread.sleep(backoff.toMillis());
+            Thread.sleep(sleepMs);
         } catch (InterruptedException e) {
             Thread.currentThread().interrupt();
             throw new SagaException("interrupted during TCC retry backoff", e);

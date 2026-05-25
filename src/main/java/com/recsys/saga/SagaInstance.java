@@ -21,6 +21,7 @@ public final class SagaInstance {
     private final List<String> triedSteps = new ArrayList<>();
     private final List<String> confirmedSteps = new ArrayList<>();
     private final List<String> cancelledSteps = new ArrayList<>();
+    private int version = 0;
 
     public SagaInstance(String sagaId, String sagaType, String correlationId, String payloadJson, Instant now) {
         this.sagaId = requireText(sagaId, "sagaId");
@@ -129,6 +130,14 @@ public final class SagaInstance {
         mark(SagaStatus.CANCELLED, step, now);
     }
 
+    int version() {
+        return version;
+    }
+
+    void setVersion(int version) {
+        this.version = version;
+    }
+
     void fail(String reason, Instant now) {
         this.failureReason = reason == null || reason.isBlank() ? "unknown" : reason;
         mark(SagaStatus.FAILED, currentStep, now);
@@ -145,6 +154,7 @@ public final class SagaInstance {
         copy.triedSteps.addAll(triedSteps);
         copy.confirmedSteps.addAll(confirmedSteps);
         copy.cancelledSteps.addAll(cancelledSteps);
+        copy.version = version;
         return copy;
     }
 

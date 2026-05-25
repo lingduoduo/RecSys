@@ -12,6 +12,7 @@ import java.util.Map;
 import java.util.concurrent.atomic.AtomicInteger;
 
 import static org.assertj.core.api.Assertions.assertThat;
+import static org.assertj.core.api.Assertions.assertThatThrownBy;
 
 class SagaOrchestratorTest {
     private final Clock clock = Clock.fixed(Instant.parse("2026-05-25T12:00:00Z"), ZoneOffset.UTC);
@@ -124,6 +125,56 @@ class SagaOrchestratorTest {
                 "action:publish-refresh-event",
                 "compensate:reserve-recommendation"
         );
+    }
+
+    @Test
+    void execute_bestEffortCompensation_continuesAfterOneCompensationFailure() {
+        InMemorySagaStateStore store = new InMemorySagaStateStore();
+        List<String> calls = new ArrayList<>();
+        SagaOrchestrator orchestrator = new SagaOrchestrator(store, SagaEventPublisher.NOOP, clock);
+
+        SagaDefinition definition = new SagaDefinition("recommendation-refresh", List.of(
+                SagaStep.local("step-a"),
+                SagaStep.local("step-b"),
+                SagaStep.local("step-c")
+        ));
+
+        // step-c always fails, triggering compensation of step-b then step-a in reverse order
+        // step-b compensation throws — best-effort must still run step-a compensation
+        assertThatThrownBy(() -> orchestrator.execute(
+                "saga-5", "req-5", "{}",
+                definition,
+                Map.of(
+                        "step-a", (saga, step) -> calls.add("action:" + step.name()),
+                        "step-b", (saga, step) -> calls.add("action:" + step.name()),
+                        "step-c", (saga, step) -> {
+                            calls.add("action:" + step.name());
+                            throw new IllegalStateException("step-c failed");
+                        }
+                ),
+                Map.of(
+                        "step-a", (saga, step) -> calls.add("compensate:" + step.name()),
+                        "step-b", (saga, step) -> {
+                            calls.add("compensate:" + step.name());
+                            throw new IllegalStateException("step-b compensation failed");
+                        }
+                )
+        )).isInstanceOf(SagaException.class)
+                .hasMessageContaining("step-b")
+                .hasMessageContaining("compensation errors");
+
+        assertThat(calls).containsExactly(
+                "action:step-a",
+                "action:step-b",
+                "action:step-c",
+                "compensate:step-b",
+                "compensate:step-a"
+        );
+
+        SagaInstance stored = store.find("saga-5").orElseThrow();
+        assertThat(stored.status()).isEqualTo(SagaStatus.FAILED);
+        // step-a was compensated even though step-b compensation failed
+        assertThat(stored.compensatedSteps()).contains("step-a");
     }
 
     private static SagaDefinition definition() {
