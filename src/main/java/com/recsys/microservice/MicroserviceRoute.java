@@ -14,7 +14,9 @@ record MicroserviceRoute(String name,
     private static final List<MicroserviceRoute> DEFAULTS = List.of(
             fromEnv("catalog", "/api/catalog", "CATALOG_SERVICE_URL", "http://localhost:6010", "/health"),
             fromEnv("model", "/api/model", "MODEL_SERVICE_URL", "http://localhost:8080", "/health/ready"),
-            fromEnv("online", "/api/online", "ONLINE_SERVICE_URL", "http://localhost:7010", "/health")
+            fromEnv("online", "/api/online", "ONLINE_SERVICE_URL", "http://localhost:7010", "/health"),
+            // Default to Ollama; override via LLM_SERVICE_URL for any OpenAI-compatible endpoint.
+            fromEnv("llm", "/api/llm", "LLM_SERVICE_URL", "http://localhost:11434", "/api/tags")
     );
 
     MicroserviceRoute {

@@ -26,7 +26,7 @@ public final class MicroserviceGatewayServer {
         int port = readIntEnv("GATEWAY_PORT", DEFAULT_PORT);
         int timeoutMs = readIntEnv("GATEWAY_TIMEOUT_MS", 3000);
         Duration timeout = Duration.ofMillis(timeoutMs);
-        List<MicroserviceRoute> routes = MicroserviceRoute.defaults();
+        List<MicroserviceRoute> allRoutes = MicroserviceRoute.defaults();
 
         // Respect Cloud Map DNS TTL. The JVM caches successful lookups indefinitely by default,
         // which prevents new Cloud Map endpoint registrations from being picked up during
@@ -42,29 +42,73 @@ public final class MicroserviceGatewayServer {
                 .followRedirects(HttpClient.Redirect.NEVER)
                 .build();
 
+        // LLM requests can take much longer than regular API calls (large context, slow inference).
+        // Use a separate HttpClient with a dedicated timeout so LLM latency does not block the
+        // shared pool.
+        int llmTimeoutMs = readIntEnv("LLM_TIMEOUT_MS", LlmProxyServlet.DEFAULT_TIMEOUT_MS);
+        Duration llmTimeout = Duration.ofMillis(llmTimeoutMs);
+        HttpClient llmHttpClient = HttpClient.newBuilder()
+                .connectTimeout(llmTimeout)
+                .followRedirects(HttpClient.Redirect.NEVER)
+                .build();
+
         // One circuit breaker per route — shared between proxy (records outcomes) and
         // health servlet (exposes state in the /health response body).
         int cbFailureThreshold = readIntEnv("GATEWAY_CB_FAILURE_THRESHOLD", RouteCircuitBreaker.DEFAULT_FAILURE_THRESHOLD);
         long cbCooldownMs = readLongEnv("GATEWAY_CB_COOLDOWN_MS", RouteCircuitBreaker.DEFAULT_COOLDOWN_MS);
-        Map<String, RouteCircuitBreaker> circuitBreakers = routes.stream()
+        Map<String, RouteCircuitBreaker> circuitBreakers = allRoutes.stream()
                 .collect(Collectors.toUnmodifiableMap(MicroserviceRoute::name,
                         r -> new RouteCircuitBreaker(cbFailureThreshold, cbCooldownMs)));
-        GatewayRateLimiter rateLimiter = GatewayRateLimiter.fromEnvironment(routes);
+
+        // Split routes: LLM gets its own servlet; everything else uses the general proxy.
+        MicroserviceRoute llmRoute = allRoutes.stream()
+                .filter(r -> "llm".equals(r.name()))
+                .findFirst()
+                .orElseThrow(() -> new IllegalStateException("no llm route in defaults"));
+        List<MicroserviceRoute> proxyRoutes = allRoutes.stream()
+                .filter(r -> !"llm".equals(r.name()))
+                .toList();
+
+        GatewayRateLimiter rateLimiter = GatewayRateLimiter.fromEnvironment(proxyRoutes);
+
+        LlmTokenRateLimiter llmTokenRateLimiter = LlmTokenRateLimiter.fromEnvironment();
+        LlmResponseCache llmResponseCache = LlmResponseCache.fromEnvironment();
+        int llmDefaultTokenEstimate = readIntEnv("LLM_DEFAULT_TOKEN_ESTIMATE", LlmProxyServlet.DEFAULT_TOKEN_ESTIMATE);
+        long llmMaxRetryWaitMs = readLongEnv("LLM_MAX_RETRY_WAIT_MS", LlmProxyServlet.DEFAULT_MAX_RETRY_WAIT_MS);
+
+        LlmProxyServlet llmProxyServlet = new LlmProxyServlet(
+                llmRoute,
+                llmHttpClient,
+                llmTimeout,
+                circuitBreakers.get("llm"),
+                llmTokenRateLimiter,
+                llmResponseCache,
+                llmDefaultTokenEstimate,
+                llmMaxRetryWaitMs
+        );
 
         Server server = new Server(new InetSocketAddress(DEFAULT_HOST, port));
         ServletContextHandler context = new ServletContextHandler();
         context.setContextPath("/");
-        context.addServlet(new ServletHolder(new GatewayHealthServlet(routes, httpClient, timeout, circuitBreakers)), "/health");
-        context.addServlet(new ServletHolder(new GatewayProxyServlet(routes, httpClient, timeout, circuitBreakers, rateLimiter)), "/*");
+        context.addServlet(new ServletHolder(new GatewayHealthServlet(allRoutes, httpClient, timeout, circuitBreakers)), "/health");
+        // Register LLM servlet before the catch-all so Jetty's more-specific path wins.
+        context.addServlet(new ServletHolder(llmProxyServlet), "/api/llm/*");
+        context.addServlet(new ServletHolder(new GatewayProxyServlet(proxyRoutes, httpClient, timeout, circuitBreakers, rateLimiter)), "/*");
         server.setHandler(context);
         server.setStopAtShutdown(true);
 
         log.info("Starting RecSys API gateway on port {}", port);
-        for (MicroserviceRoute route : routes) {
+        for (MicroserviceRoute route : allRoutes) {
             log.info("Route {} {} -> {}", route.name(), route.prefix(), route.baseUri());
         }
         if (rateLimiter.isEnabled()) {
             log.info("Gateway local rate limiting enabled");
+        }
+        if (llmTokenRateLimiter.isEnabled()) {
+            log.info("LLM token rate limiting enabled");
+        }
+        if (llmResponseCache.isEnabled()) {
+            log.info("LLM response cache enabled (timeout={}ms)", llmTimeoutMs);
         }
         server.start();
         server.join();
