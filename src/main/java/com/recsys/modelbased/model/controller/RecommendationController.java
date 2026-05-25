@@ -6,6 +6,8 @@ import java.util.Optional;
 import com.recsys.modelbased.model.service.ABTestService;
 import com.recsys.modelbased.model.service.InferenceMetricsService;
 import com.recsys.modelbased.model.service.LoadShedder;
+import com.recsys.modelbased.model.service.ModelRateLimiter;
+import com.recsys.modelbased.model.service.RateLimitExceededException;
 import com.recsys.modelbased.model.service.RecommendationService;
 import com.recsys.modelbased.model.service.ServiceOverloadedException;
 import jakarta.servlet.http.HttpServletResponse;
@@ -21,15 +23,18 @@ public class RecommendationController {
     private final InferenceMetricsService metricsService;
     private final ABTestService abTestService;
     private final LoadShedder loadShedder;
+    private final ModelRateLimiter modelRateLimiter;
 
     public RecommendationController(RecommendationService recommendationService,
                                     InferenceMetricsService metricsService,
                                     ABTestService abTestService,
-                                    LoadShedder loadShedder) {
+                                    LoadShedder loadShedder,
+                                    ModelRateLimiter modelRateLimiter) {
         this.recommendationService = recommendationService;
         this.metricsService = metricsService;
         this.abTestService = abTestService;
         this.loadShedder = loadShedder;
+        this.modelRateLimiter = modelRateLimiter;
     }
 
     @PostMapping(
@@ -40,6 +45,13 @@ public class RecommendationController {
     public RecommendResponse recommend(@Valid @RequestBody RecommendRequest request,
                                        HttpServletResponse httpResponse) {
         long startNs = System.nanoTime();
+        // Per-user rate check runs before the global semaphore so a single user can't burn
+        // concurrency slots that other users need.
+        ModelRateLimiter.Decision rateDecision = modelRateLimiter.tryAcquire(request.getUserId());
+        if (!rateDecision.allowed()) {
+            int retryAfter = Math.max(1, (int) Math.ceil(rateDecision.retryAfter().toMillis() / 1000.0));
+            throw new RateLimitExceededException(retryAfter);
+        }
         if (!loadShedder.tryAcquire()) {
             // Degradation (降级): serve stale cache or cold-start popular items before failing.
             Optional<RecommendResponse> fallback = recommendationService.tryServeFromCache(request);

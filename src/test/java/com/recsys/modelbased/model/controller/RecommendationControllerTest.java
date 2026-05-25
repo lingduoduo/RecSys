@@ -8,7 +8,10 @@ import com.recsys.modelbased.model.dto.ScoredItem;
 import com.recsys.modelbased.model.service.ABTestService;
 import com.recsys.modelbased.model.service.InferenceMetricsService;
 import com.recsys.modelbased.model.service.LoadShedder;
+import com.recsys.modelbased.model.service.ModelRateLimiter;
 import com.recsys.modelbased.model.service.RecommendationService;
+
+import java.time.Duration;
 import org.junit.jupiter.api.BeforeEach;
 import org.junit.jupiter.api.Test;
 import org.springframework.beans.factory.annotation.Autowired;
@@ -36,6 +39,7 @@ class RecommendationControllerTest {
     @MockBean InferenceMetricsService metricsService;
     @MockBean ABTestService abTestService;
     @MockBean LoadShedder loadShedder;
+    @MockBean ModelRateLimiter modelRateLimiter;
 
     @BeforeEach
     void allowRequest() {
@@ -44,6 +48,8 @@ class RecommendationControllerTest {
         // Default snapshot used by the controller for the X-Capacity-Weight header.
         when(loadShedder.snapshot()).thenReturn(
                 new LoadShedder.Snapshot(0, 64, 0.0, 0.95, 0L, 0L, 100, false));
+        // Rate limiter allows all requests by default; individual tests override this.
+        when(modelRateLimiter.tryAcquire(any())).thenReturn(ModelRateLimiter.Decision.unlimited());
     }
 
     // --- happy path ---
@@ -149,6 +155,22 @@ class RecommendationControllerTest {
                 .andExpect(status().isBadRequest())
                 .andExpect(jsonPath("$.error").value("custom service rule violated"))
                 .andExpect(jsonPath("$.violations").isArray());
+    }
+
+    @Test
+    void recommend_userRateLimited_returns429WithRetryAfter() throws Exception {
+        when(modelRateLimiter.tryAcquire("123"))
+                .thenReturn(new ModelRateLimiter.Decision(false, 10, 0, Duration.ofSeconds(2)));
+
+        var req = new RecommendRequest();
+        req.setUserId("123");
+        req.setK(5);
+
+        mockMvc.perform(post("/api/v1/recommend")
+                        .contentType(MediaType.APPLICATION_JSON)
+                        .content(objectMapper.writeValueAsString(req)))
+                .andExpect(status().isTooManyRequests())
+                .andExpect(header().string("Retry-After", "2"));
     }
 
     @Test
