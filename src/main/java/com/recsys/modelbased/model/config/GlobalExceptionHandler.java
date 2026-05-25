@@ -1,6 +1,7 @@
 package com.recsys.modelbased.model.config;
 
 import com.recsys.modelbased.model.dto.ApiError;
+import com.recsys.modelbased.model.service.RateLimitExceededException;
 import com.recsys.modelbased.model.service.ServiceOverloadedException;
 import jakarta.servlet.http.HttpServletRequest;
 import org.slf4j.Logger;
@@ -51,6 +52,13 @@ public class GlobalExceptionHandler {
     @ResponseStatus(HttpStatus.BAD_REQUEST)
     public ApiError handleIllegalArgument(IllegalArgumentException ex) {
         return new ApiError(ex.getMessage(), List.of());
+    }
+
+    @ExceptionHandler(RateLimitExceededException.class)
+    public ResponseEntity<ApiError> handleRateLimit(RateLimitExceededException ex) {
+        return ResponseEntity.status(HttpStatus.TOO_MANY_REQUESTS)
+                .header(HttpHeaders.RETRY_AFTER, Integer.toString(ex.getRetryAfterSeconds()))
+                .body(new ApiError(ex.getMessage(), List.of()));
     }
 
     @ExceptionHandler(ServiceOverloadedException.class)

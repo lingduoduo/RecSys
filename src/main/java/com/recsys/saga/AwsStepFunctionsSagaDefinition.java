@@ -55,7 +55,9 @@ public final class AwsStepFunctionsSagaDefinition {
                 .append("        \"ErrorEquals\": [\"States.ALL\"],\n")
                 .append("        \"IntervalSeconds\": ").append(Math.max(1, step.backoff().toSeconds())).append(",\n")
                 .append("        \"MaxAttempts\": ").append(step.maxAttempts()).append(",\n")
-                .append("        \"BackoffRate\": 2.0\n")
+                .append("        \"BackoffRate\": 2.0,\n")
+                .append("        \"MaxDelaySeconds\": 30,\n")
+                .append("        \"JitterStrategy\": \"FULL\"\n")
                 .append("      }],\n")
                 .append("      \"Catch\": [{\n")
                 .append("        \"ErrorEquals\": [\"States.ALL\"],\n")
@@ -75,7 +77,9 @@ public final class AwsStepFunctionsSagaDefinition {
                 + "        \"ErrorEquals\": [\"States.ALL\"],\n"
                 + "        \"IntervalSeconds\": " + Math.max(1, step.backoff().toSeconds()) + ",\n"
                 + "        \"MaxAttempts\": " + step.maxAttempts() + ",\n"
-                + "        \"BackoffRate\": 2.0\n"
+                + "        \"BackoffRate\": 2.0,\n"
+                + "        \"MaxDelaySeconds\": 30,\n"
+                + "        \"JitterStrategy\": \"FULL\"\n"
                 + "      }],\n"
                 + "      \"Next\": \"" + next + "\"\n"
                 + "    }";
