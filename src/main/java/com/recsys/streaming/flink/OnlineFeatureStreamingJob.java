@@ -67,7 +67,6 @@ public final class OnlineFeatureStreamingJob {
         env.enableCheckpointing(Math.max(5_000L, windowSeconds * 1_000L));
 
         DataStream<MovieEvent> events = buildEventStream(env, params)
-                .filter(e -> e != null)
                 .filter(OnlineFeatureStreamingJob::requiresEventIdentity)
                 .keyBy(MovieEvent::idempotencyKey)
                 .process(new DeduplicateEventsFunction(idempotencyTtlSeconds))
@@ -127,19 +126,25 @@ public final class OnlineFeatureStreamingJob {
                     .build();
 
             return env.fromSource(source, WatermarkStrategy.noWatermarks(), "kafka-movie-events")
-                    .map(OnlineFeatureStreamingJob::parseEvent);
+                    .flatMap((String line, Collector<MovieEvent> out) -> {
+                        MovieEvent e = parseEvent(line);
+                        if (e != null) out.collect(e);
+                    }).returns(MovieEvent.class);
         }
 
         String inputFile = params.get("input-file", "streaming/online-serving/data/movie_events.ndjson");
         return env.readTextFile(inputFile)
                 .filter(line -> !line.isBlank())
-                .map(OnlineFeatureStreamingJob::parseEvent);
+                .flatMap((String line, Collector<MovieEvent> out) -> {
+                    MovieEvent e = parseEvent(line);
+                    if (e != null) out.collect(e);
+                }).returns(MovieEvent.class);
     }
 
     private static Properties kafkaProperties(ParameterTool params) {
         Properties properties = new Properties();
         properties.setProperty("max.poll.records", params.get("mq.max-poll-records", "500"));
-        properties.setProperty("fetch.min.bytes", params.get("mq.fetch-min-bytes", "1"));
+        properties.setProperty("fetch.min.bytes", params.get("mq.fetch-min-bytes", "1024"));
         properties.setProperty("fetch.max.wait.ms", params.get("mq.fetch-max-wait-ms", "500"));
         for (Map.Entry<String, String> entry : params.toMap().entrySet()) {
             if (entry.getKey().startsWith("kafka.")) {
