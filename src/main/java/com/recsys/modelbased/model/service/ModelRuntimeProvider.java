@@ -14,8 +14,10 @@ import redis.clients.jedis.JedisPool;
 
 import java.io.IOException;
 import java.util.LinkedHashSet;
+import java.util.List;
 import java.util.Map;
 import java.util.Set;
+import java.util.concurrent.CompletableFuture;
 import java.util.concurrent.ConcurrentHashMap;
 import java.util.stream.Collectors;
 
@@ -71,10 +73,13 @@ public class ModelRuntimeProvider {
             variants.add(ModelVariants.normalizeOrDefault(abTestConfig.getBucketAVariant()));
             variants.add(ModelVariants.normalizeOrDefault(abTestConfig.getBucketBVariant()));
         }
-        for (String variant : variants) {
-            log.info("Pre-warming model runtime for variant '{}'", variant);
-            getRuntime(variant);
-        }
+        List<CompletableFuture<Void>> futures = variants.stream()
+                .map(variant -> CompletableFuture.runAsync(() -> {
+                    log.info("Pre-warming model runtime for variant '{}'", variant);
+                    getRuntime(variant);
+                }))
+                .toList();
+        CompletableFuture.allOf(futures.toArray(CompletableFuture[]::new)).join();
     }
 
     public ModelRuntime getRuntime(String variant) {

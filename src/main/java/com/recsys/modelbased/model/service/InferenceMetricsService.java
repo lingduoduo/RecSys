@@ -5,7 +5,6 @@ import org.slf4j.Logger;
 import org.slf4j.LoggerFactory;
 import org.springframework.stereotype.Service;
 
-import java.time.Instant;
 import java.util.ArrayDeque;
 import java.util.Deque;
 import java.util.LinkedHashMap;
@@ -77,7 +76,7 @@ public class InferenceMetricsService {
         totalLatencyMs.addAndGet(latencyMs);
 
         // Rolling window requires a lock: evict + add + running-total updates must be atomic
-        long now = Instant.now().getEpochSecond();
+        long now = System.currentTimeMillis() / 1_000L;
         synchronized (lock) {
             evict(now);
             window.addLast(new RequestRecord(now, latencyMs, failed));
@@ -95,7 +94,7 @@ public class InferenceMetricsService {
         double allTimeAvgLatencyMs = total > 0 ? (double) totalLatencyMs.get() / total : 0.0;
 
         // Read rolling window under lock for consistency — O(1) via running totals
-        long now = Instant.now().getEpochSecond();
+        long now = System.currentTimeMillis() / 1_000L;
         long recentTotal;
         long recentFailures;
         double recentAvgLatencyMs;
