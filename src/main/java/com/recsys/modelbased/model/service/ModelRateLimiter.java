@@ -18,9 +18,8 @@ import java.util.function.LongSupplier;
  * all active users. Each user gets an independent bucket that refills at {@code rps}
  * tokens/second with a maximum burst of {@code burst} tokens.
  *
- * The limiter tracks at most {@code maxUsers} buckets; the least-recently-used entry is
- * evicted when the map is full (access-ordered LRU). Only users who actually exceed the
- * local pre-check are tracked, so memory usage stays proportional to active concurrency.
+ * The limiter tracks at most {@code maxUsers} buckets (access-ordered LRU). All callers
+ * to {@link #tryAcquire} are tracked; the LRU cap bounds memory to at most maxUsers buckets.
  *
  * Controlled via Spring properties:
  *   recsys.model.rate-limit.rps        — per-user requests/sec (default 0 = disabled)

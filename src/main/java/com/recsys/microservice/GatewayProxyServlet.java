@@ -76,7 +76,7 @@ final class GatewayProxyServlet extends HttpServlet {
             return;
         }
 
-        GatewayRateLimiter.Decision rateDecision = rateLimiter.tryAcquire(route.name());
+        TokenBucket.Decision rateDecision = rateLimiter.tryAcquire(route.name());
         if (!rateDecision.allowed()) {
             int retryAfterSeconds = Math.max(1, (int) Math.ceil(rateDecision.retryAfter().toMillis() / 1000.0));
             response.setHeader("Retry-After", Integer.toString(retryAfterSeconds));

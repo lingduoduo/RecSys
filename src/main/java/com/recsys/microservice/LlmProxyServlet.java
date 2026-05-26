@@ -96,7 +96,11 @@ final class LlmProxyServlet extends HttpServlet {
                 ? request.getInputStream().readAllBytes()
                 : null;
 
-        boolean streaming = requestBody != null && isStreamingRequest(requestBody);
+        // Parse body once to extract both the streaming flag and the token estimate.
+        BodyMeta meta = requestBody != null
+                ? parseBodyMeta(requestBody, defaultTokenEstimate)
+                : new BodyMeta(false, defaultTokenEstimate);
+        boolean streaming = meta.streaming();
 
         // Cache check (non-streaming only — streaming responses are not deterministic per call)
         if (!streaming && requestBody != null) {
@@ -108,10 +112,7 @@ final class LlmProxyServlet extends HttpServlet {
         }
 
         // Token rate limit pre-check
-        int estimatedTokens = requestBody != null
-                ? extractMaxTokens(requestBody, defaultTokenEstimate)
-                : defaultTokenEstimate;
-        LlmTokenRateLimiter.Decision tokenDecision = tokenRateLimiter.tryAcquire(estimatedTokens);
+        TokenBucket.Decision tokenDecision = tokenRateLimiter.tryAcquire(meta.maxTokens());
         if (!tokenDecision.allowed()) {
             int retryAfterSec = Math.max(1, (int) Math.ceil(tokenDecision.retryAfter().toMillis() / 1000.0));
             response.setHeader("Retry-After", Integer.toString(retryAfterSec));
@@ -302,36 +303,21 @@ final class LlmProxyServlet extends HttpServlet {
         return uri;
     }
 
-    /**
-     * Returns true when the request body contains {@code "stream": true} (OpenAI-compatible format).
-     * Parses the full body with Jackson so the field position does not matter.
-     */
-    static boolean isStreamingRequest(byte[] body) {
-        if (body == null || body.length == 0) return false;
-        try {
-            JsonNode root = MAPPER.readTree(body);
-            JsonNode stream = root.get("stream");
-            return stream != null && stream.isBoolean() && stream.booleanValue();
-        } catch (Exception ignored) {
-            return false;
-        }
-    }
+    record BodyMeta(boolean streaming, int maxTokens) {}
 
-    /**
-     * Reads {@code max_tokens} from the request JSON body as the token cost estimate.
-     * Falls back to {@code defaultValue} when the field is absent or unparseable.
-     */
-    static int extractMaxTokens(byte[] body, int defaultValue) {
-        if (body == null || body.length == 0) return defaultValue;
+    static BodyMeta parseBodyMeta(byte[] body, int defaultTokenEstimate) {
+        if (body == null || body.length == 0) return new BodyMeta(false, defaultTokenEstimate);
         try {
             JsonNode root = MAPPER.readTree(body);
-            JsonNode maxTokens = root.get("max_tokens");
-            if (maxTokens != null && maxTokens.isInt()) {
-                return Math.max(1, maxTokens.intValue());
-            }
+            JsonNode streamNode = root.get("stream");
+            boolean streaming = streamNode != null && streamNode.isBoolean() && streamNode.booleanValue();
+            JsonNode maxTokensNode = root.get("max_tokens");
+            int maxTokens = (maxTokensNode != null && maxTokensNode.isInt())
+                    ? Math.max(1, maxTokensNode.intValue()) : defaultTokenEstimate;
+            return new BodyMeta(streaming, maxTokens);
         } catch (Exception ignored) {
+            return new BodyMeta(false, defaultTokenEstimate);
         }
-        return defaultValue;
     }
 
     /**

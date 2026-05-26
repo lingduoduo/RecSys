@@ -6,8 +6,6 @@ import java.util.ArrayList;
 import java.util.List;
 import java.util.Map;
 import java.util.Objects;
-import java.util.concurrent.ThreadLocalRandom;
-
 /**
  * Try/Confirm/Cancel orchestration for stronger eventual consistency.
  *
@@ -16,8 +14,6 @@ import java.util.concurrent.ThreadLocalRandom;
  * in reverse order. Participants must be idempotent by sagaId + stepName + phase.
  */
 public class TccSagaOrchestrator {
-    // Full-jitter exponential backoff cap. Matches the MaxDelaySeconds in the Step Functions ASL.
-    private static final long MAX_BACKOFF_MS = 30_000L;
     private final SagaStateStore store;
     private final SagaEventPublisher publisher;
     private final Clock clock;
@@ -144,7 +140,7 @@ public class TccSagaOrchestrator {
             } catch (RuntimeException e) {
                 last = e;
                 if (attempt < step.maxAttempts()) {
-                    sleep(step.backoff(), attempt);
+                    SagaBackoff.sleep(step.backoff(), attempt);
                 }
             }
         }
@@ -175,23 +171,4 @@ public class TccSagaOrchestrator {
         return clock.instant();
     }
 
-    private void sleep(java.time.Duration baseBackoff, int attempt) {
-        if (baseBackoff == null || baseBackoff.isZero() || baseBackoff.isNegative()) {
-            return;
-        }
-        // Full-jitter exponential backoff: uniform(0, min(MAX_BACKOFF_MS, base * 2^(attempt-1))).
-        // Prevents thundering herd when multiple TCC steps hit an AWS service quota simultaneously.
-        long baseMs = baseBackoff.toMillis();
-        long ceiling = Math.min(MAX_BACKOFF_MS, baseMs << Math.min(attempt - 1, 10));
-        long sleepMs = ceiling > 0 ? ThreadLocalRandom.current().nextLong(ceiling + 1) : 0L;
-        if (sleepMs <= 0) {
-            return;
-        }
-        try {
-            Thread.sleep(sleepMs);
-        } catch (InterruptedException e) {
-            Thread.currentThread().interrupt();
-            throw new SagaException("interrupted during TCC retry backoff", e);
-        }
-    }
 }

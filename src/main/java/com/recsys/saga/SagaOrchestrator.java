@@ -6,8 +6,6 @@ import java.util.ArrayList;
 import java.util.List;
 import java.util.Map;
 import java.util.Objects;
-import java.util.concurrent.ThreadLocalRandom;
-
 /**
  * Durable orchestration core for eventual consistency workflows.
  *
@@ -16,8 +14,6 @@ import java.util.concurrent.ThreadLocalRandom;
  * replay are expected in an at-least-once AWS event path.
  */
 public class SagaOrchestrator {
-    // Full-jitter exponential backoff cap. Matches the MaxDelaySeconds in the Step Functions ASL.
-    private static final long MAX_BACKOFF_MS = 30_000L;
 
     private final SagaStateStore store;
     private final SagaEventPublisher publisher;
@@ -124,7 +120,7 @@ public class SagaOrchestrator {
             } catch (RuntimeException e) {
                 last = e;
                 if (attempt < step.maxAttempts()) {
-                    sleep(step.backoff(), attempt);
+                    SagaBackoff.sleep(step.backoff(), attempt);
                 }
             }
         }
@@ -155,23 +151,4 @@ public class SagaOrchestrator {
         return clock.instant();
     }
 
-    private void sleep(java.time.Duration baseBackoff, int attempt) {
-        if (baseBackoff == null || baseBackoff.isZero() || baseBackoff.isNegative()) {
-            return;
-        }
-        // Full-jitter exponential backoff: uniform(0, min(MAX_BACKOFF_MS, base * 2^(attempt-1))).
-        // Prevents thundering herd when multiple saga steps hit an AWS service quota simultaneously.
-        long baseMs = baseBackoff.toMillis();
-        long ceiling = Math.min(MAX_BACKOFF_MS, baseMs << Math.min(attempt - 1, 10));
-        long sleepMs = ceiling > 0 ? ThreadLocalRandom.current().nextLong(ceiling + 1) : 0L;
-        if (sleepMs <= 0) {
-            return;
-        }
-        try {
-            Thread.sleep(sleepMs);
-        } catch (InterruptedException e) {
-            Thread.currentThread().interrupt();
-            throw new SagaException("interrupted during saga retry backoff", e);
-        }
-    }
 }

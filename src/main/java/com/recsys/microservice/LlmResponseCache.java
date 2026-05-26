@@ -23,6 +23,15 @@ final class LlmResponseCache {
 
     record Entry(int status, Map<String, List<String>> headers, byte[] body, long insertedAtMs) {}
 
+    // MessageDigest is not thread-safe; one instance per thread avoids locking.
+    private static final ThreadLocal<MessageDigest> SHA256 = ThreadLocal.withInitial(() -> {
+        try {
+            return MessageDigest.getInstance("SHA-256");
+        } catch (NoSuchAlgorithmException e) {
+            throw new IllegalStateException("SHA-256 not available", e);
+        }
+    });
+
     private final Map<String, Entry> cache;
     private final long ttlMs;
     private final boolean enabled;
@@ -48,8 +57,8 @@ final class LlmResponseCache {
     }
 
     static LlmResponseCache fromEnvironment() {
-        int maxSize = readInt("LLM_CACHE_MAX_SIZE", 500);
-        long ttlSeconds = readLong("LLM_CACHE_TTL_SECONDS", 300L);
+        int maxSize = EnvVars.readInt("LLM_CACHE_MAX_SIZE", 500);
+        long ttlSeconds = EnvVars.readLong("LLM_CACHE_TTL_SECONDS", 300L);
         return new LlmResponseCache(maxSize, ttlSeconds * 1000L);
     }
 
@@ -76,34 +85,13 @@ final class LlmResponseCache {
     }
 
     int size() {
-        return cache == null ? 0 : cache.size();
+        if (!enabled) return 0;
+        return cache.size();
     }
 
     private static String hash(byte[] data) {
-        try {
-            return HexFormat.of().formatHex(MessageDigest.getInstance("SHA-256").digest(data));
-        } catch (NoSuchAlgorithmException e) {
-            throw new IllegalStateException("SHA-256 not available", e);
-        }
-    }
-
-    private static int readInt(String name, int def) {
-        String raw = System.getenv(name);
-        if (raw == null || raw.isBlank()) return def;
-        try {
-            return Integer.parseInt(raw.trim());
-        } catch (NumberFormatException e) {
-            throw new IllegalStateException("env var " + name + " is not a valid integer: " + raw);
-        }
-    }
-
-    private static long readLong(String name, long def) {
-        String raw = System.getenv(name);
-        if (raw == null || raw.isBlank()) return def;
-        try {
-            return Long.parseLong(raw.trim());
-        } catch (NumberFormatException e) {
-            throw new IllegalStateException("env var " + name + " is not a valid long: " + raw);
-        }
+        MessageDigest md = SHA256.get();
+        md.reset();
+        return HexFormat.of().formatHex(md.digest(data));
     }
 }
