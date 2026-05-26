@@ -52,18 +52,21 @@ public class RecommendationController {
             int retryAfter = Math.max(1, (int) Math.ceil(rateDecision.retryAfter().toMillis() / 1000.0));
             throw new RateLimitExceededException(retryAfter);
         }
+        // Compute A/B assignment once — reused by all downstream paths so the hash is not
+        // recomputed on the failure recording path or the degraded-cache fallback.
+        ABTestService.Assignment assignment = abTestService.getAssignmentForUser(request.getUserId());
         if (!loadShedder.tryAcquire()) {
             // Degradation (降级): serve stale cache or cold-start popular items before failing.
-            Optional<RecommendResponse> fallback = recommendationService.tryServeFromCache(request);
+            Optional<RecommendResponse> fallback = recommendationService.tryServeFromCache(request, assignment);
             if (fallback.isPresent()) {
                 httpResponse.setHeader("X-Served-From", "degraded-cache");
                 return fallback.get();
             }
-            metricsService.recordFailure(0L, abTestService.getVariantForUser(request.getUserId()));
+            metricsService.recordFailure(0L, assignment.variant());
             throw new ServiceOverloadedException(retryAfterSeconds(metricsService.snapshot()));
         }
         try {
-            RecommendResponse response = recommendationService.recommend(request);
+            RecommendResponse response = recommendationService.recommend(request, assignment);
             metricsService.recordSuccess(elapsedMs(startNs), response.abTestVariant(), response.modelVersion());
             // Advertise current capacity so load balancers can adjust routing weight in real time
             // without waiting for the next /health/ready poll (e.g. Envoy, Consul, NGINX Plus).
@@ -73,7 +76,7 @@ public class RecommendationController {
             // service-level guard — not an inference failure
             throw e;
         } catch (RuntimeException e) {
-            metricsService.recordFailure(elapsedMs(startNs), abTestService.getVariantForUser(request.getUserId()));
+            metricsService.recordFailure(elapsedMs(startNs), assignment.variant());
             throw e;
         } finally {
             loadShedder.release();

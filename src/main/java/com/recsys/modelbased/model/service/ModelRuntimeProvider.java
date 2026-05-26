@@ -87,6 +87,15 @@ public class ModelRuntimeProvider {
         return runtimes.computeIfAbsent(normalizedVariant, this::buildRuntime);
     }
 
+    /**
+     * Returns the already-loaded runtime for {@code variant}, or {@code null} if it has not been
+     * built yet. Unlike {@link #getRuntime}, this never triggers a cold build — safe to call on
+     * degradation paths where adding ONNX-load latency would worsen an overload condition.
+     */
+    public ModelRuntime getLoadedRuntime(String variant) {
+        return runtimes.get(ModelVariants.normalizeOrDefault(variant));
+    }
+
     public String getModelVersion(String variant) {
         return getRuntime(variant).modelVersion();
     }
