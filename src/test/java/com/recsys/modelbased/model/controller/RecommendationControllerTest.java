@@ -44,7 +44,8 @@ class RecommendationControllerTest {
     @BeforeEach
     void allowRequest() {
         when(loadShedder.tryAcquire()).thenReturn(true);
-        when(abTestService.getVariantForUser(any())).thenReturn("training");
+        when(abTestService.getAssignmentForUser(any())).thenReturn(
+                new ABTestService.Assignment("training", -1, "default", false));
         // Default snapshot used by the controller for the X-Capacity-Weight header.
         when(loadShedder.snapshot()).thenReturn(
                 new LoadShedder.Snapshot(0, 64, 0.0, 0.95, 0L, 0L, 100, false));
@@ -60,7 +61,7 @@ class RecommendationControllerTest {
                 new ScoredItem("1", 0.95),
                 new ScoredItem("3", 0.72)
         ));
-        when(recommendationService.recommend(any())).thenReturn(response);
+        when(recommendationService.recommend(any(), any())).thenReturn(response);
 
         var req = new RecommendRequest();
         req.setUserId("123");
@@ -142,7 +143,7 @@ class RecommendationControllerTest {
 
     @Test
     void recommend_serviceThrowsIllegalArgument_returns400() throws Exception {
-        when(recommendationService.recommend(any()))
+        when(recommendationService.recommend(any(), any()))
                 .thenThrow(new IllegalArgumentException("custom service rule violated"));
 
         var req = new RecommendRequest();

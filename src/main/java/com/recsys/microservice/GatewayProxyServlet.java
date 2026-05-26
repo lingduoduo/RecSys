@@ -174,7 +174,7 @@ final class GatewayProxyServlet extends HttpServlet {
 
     private static boolean shouldForwardBody(HttpServletRequest request) {
         String method = request.getMethod();
-        if ("GET".equalsIgnoreCase(method) || "HEAD".equalsIgnoreCase(method) || "DELETE".equalsIgnoreCase(method)) {
+        if ("GET".equals(method) || "HEAD".equals(method) || "DELETE".equals(method)) {
             return false;
         }
         return request.getContentLengthLong() != 0;

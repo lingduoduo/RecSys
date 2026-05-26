@@ -7,8 +7,6 @@ import com.recsys.modelbased.model.dto.ScoredItem;
 import org.springframework.beans.factory.annotation.Autowired;
 import org.springframework.stereotype.Service;
 
-import java.util.ArrayList;
-import java.util.Collections;
 import java.util.HashSet;
 import java.util.List;
 import java.util.Map;
@@ -51,7 +49,15 @@ public class RecommendationService {
         if (request.getK() <= 0 || request.getK() > 100) {
             throw new IllegalArgumentException("k must be between 1 and 100");
         }
-        ABTestService.Assignment assignment = abTestService.getAssignmentForUser(request.getUserId());
+        return recommend(request, abTestService.getAssignmentForUser(request.getUserId()));
+    }
+
+    /**
+     * Skips the A/B recomputation when the caller already holds the assignment.
+     * The controller computes the assignment once and passes it here so the same hash
+     * is not recalculated on the error path.
+     */
+    public RecommendResponse recommend(RecommendRequest request, ABTestService.Assignment assignment) {
         ModelRuntime runtime = modelRuntimeProvider.getRuntime(assignment.variant());
         String modelVersion = runtime.modelVersion();
         List<String> excludedItemIds = normalizedExcludeItemIds(request);
@@ -94,8 +100,16 @@ public class RecommendationService {
      */
     public Optional<RecommendResponse> tryServeFromCache(RecommendRequest request) {
         if (!cache.isEnabled()) return Optional.empty();
-        ABTestService.Assignment assignment = abTestService.getAssignmentForUser(request.getUserId());
-        ModelRuntime runtime = modelRuntimeProvider.getRuntime(assignment.variant());
+        return tryServeFromCache(request, abTestService.getAssignmentForUser(request.getUserId()));
+    }
+
+    /**
+     * Degradation path with a pre-computed assignment. Uses {@link ModelRuntimeProvider#getLoadedRuntime}
+     * so a cold variant never triggers an ONNX load while the instance is already overloaded.
+     */
+    public Optional<RecommendResponse> tryServeFromCache(RecommendRequest request, ABTestService.Assignment assignment) {
+        if (!cache.isEnabled()) return Optional.empty();
+        ModelRuntime runtime = modelRuntimeProvider.getLoadedRuntime(assignment.variant());
         if (runtime == null) return Optional.empty();
         String modelVersion = runtime.modelVersion();
         List<String> excludedItemIds = normalizedExcludeItemIds(request);
@@ -153,7 +167,7 @@ public class RecommendationService {
             List<String> excludedItemIds
     ) {
         FeatureEncoder.EncodedFeatures encoded = runtime.featureEncoder().encode(request);
-        Set<String> excluded = new HashSet<>(excludedItemIds);
+        Set<String> excluded = excludedItemIds.isEmpty() ? Set.of() : new HashSet<>(excludedItemIds);
         Integer numericUserId = parseUserId(request.getUserId());
         Set<String> candidates = runtime.candidateSelectionService().selectCandidates(numericUserId, excluded);
         int scoringSize = Math.min(MAX_RECALL_SIZE, request.getK() * RECALL_MULTIPLIER);
@@ -196,7 +210,7 @@ public class RecommendationService {
         if (request.getExcludeItemIds() == null || request.getExcludeItemIds().isEmpty()) {
             return List.of();
         }
-        return Collections.unmodifiableList(new ArrayList<>(new TreeSet<>(request.getExcludeItemIds())));
+        return List.copyOf(new TreeSet<>(request.getExcludeItemIds()));
     }
 
     private static List<ScoredItem> limitAndExclude(List<ScoredItem> items, List<String> excludedItemIds, int k) {
