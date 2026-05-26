@@ -18,7 +18,7 @@ public class ModelVersionService {
         this.abTestConfig = abTestConfig;
     }
 
-    public synchronized ModelVersionResponse listVersions() {
+    public ModelVersionResponse listVersions() {
         String active = ModelVariants.require(abTestConfig.getDefaultVariant());
         var variants = runtimeProvider.loadedVariants().stream()
                 .sorted(Comparator.comparing(ModelRuntimeProvider.LoadedVariant::variant))
