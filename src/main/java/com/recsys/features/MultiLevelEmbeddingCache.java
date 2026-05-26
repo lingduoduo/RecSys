@@ -76,19 +76,18 @@ public final class MultiLevelEmbeddingCache implements EmbeddingStore {
 
     @Override
     public float[] getEmbedding(int id) {
-        String hotKey = "id:" + id;
-        hotKeyDetector.record(hotKey);
-
         // L1 — JVM hot-key cache (fastest, no network)
         float[] v = l1.get(id);
         if (v != null) { l1Hits.incrementAndGet(); return v; }
+
+        hotKeyDetector.record(id);
 
         // L2 — Redis (or wrapping LocalEmbeddingCache)
         try {
             v = l2.getEmbedding(id);
             if (v != null) {
                 l2Hits.incrementAndGet();
-                promoteToL1IfEligible(id, v, hotKey);
+                promoteToL1IfEligible(id, v);
                 return v;
             }
         } catch (Exception e) {
@@ -101,7 +100,7 @@ public final class MultiLevelEmbeddingCache implements EmbeddingStore {
                 v = l3.getEmbedding(id);
                 if (v != null) {
                     l3Hits.incrementAndGet();
-                    promoteToL1IfEligible(id, v, hotKey);
+                    promoteToL1IfEligible(id, v);
                     return v;
                 }
             } catch (Exception e) {
@@ -117,17 +116,19 @@ public final class MultiLevelEmbeddingCache implements EmbeddingStore {
     public Map<Integer, float[]> getEmbeddings(Collection<Integer> ids) {
         if (ids == null || ids.isEmpty()) return Collections.emptyMap();
 
-        Map<Integer, float[]> result = new HashMap<>(ids.size() * 2);
+        Map<Integer, float[]> result = new HashMap<>(ids.size() * 4 / 3 + 1);
         Set<Integer> l1Misses = new LinkedHashSet<>();
 
         // L1 batch check
         for (int id : ids) {
-            hotKeyDetector.record("id:" + id);   // one string per id; recomputed on promotion only when L1 is full
             float[] v = l1.get(id);
             if (v != null) { l1Hits.incrementAndGet(); result.put(id, v); }
             else            { l1Misses.add(id); }
         }
         if (l1Misses.isEmpty()) return result;
+
+        // Record hot-key accesses only for L1 misses
+        for (int id : l1Misses) hotKeyDetector.record(id);
 
         // L2 batch fetch for misses
         Set<Integer> l2Misses = new LinkedHashSet<>();
@@ -135,7 +136,7 @@ public final class MultiLevelEmbeddingCache implements EmbeddingStore {
             Map<Integer, float[]> l2Result = l2.getEmbeddings(l1Misses);
             for (int id : l1Misses) {
                 float[] v = l2Result.get(id);
-                if (v != null) { l2Hits.incrementAndGet(); promoteToL1IfEligible(id, v, "id:" + id); result.put(id, v); }
+                if (v != null) { l2Hits.incrementAndGet(); promoteToL1IfEligible(id, v); result.put(id, v); }
                 else           { l2Misses.add(id); }
             }
         } catch (Exception e) {
@@ -150,7 +151,7 @@ public final class MultiLevelEmbeddingCache implements EmbeddingStore {
                 Map<Integer, float[]> l3Result = l3.getEmbeddings(l2Misses);
                 for (int id : l2Misses) {
                     float[] v = l3Result.get(id);
-                    if (v != null) { l3Hits.incrementAndGet(); promoteToL1IfEligible(id, v, "id:" + id); result.put(id, v); }
+                    if (v != null) { l3Hits.incrementAndGet(); promoteToL1IfEligible(id, v); result.put(id, v); }
                     else           { misses.incrementAndGet(); }
                 }
             } catch (Exception e) {
@@ -193,12 +194,11 @@ public final class MultiLevelEmbeddingCache implements EmbeddingStore {
     // ── Hot-key promotion ─────────────────────────────────────────────────────────
 
     // Promotes id → vec to L1 if there is capacity, or if the key is classified as hot.
-    // hotKey is precomputed by the caller to avoid a second string allocation in the common path.
     // When L1 is full and the key is hot, one arbitrary entry is evicted to make room.
-    private void promoteToL1IfEligible(int id, float[] vec, String hotKey) {
+    private void promoteToL1IfEligible(int id, float[] vec) {
         if (l1.containsKey(id)) { l1.put(id, vec); return; } // refresh existing entry
         if (l1.size() < l1Capacity) { l1.put(id, vec); return; } // space available
-        if (hotKeyDetector.isHot(hotKey)) {
+        if (hotKeyDetector.isHot(id)) {
             // Evict one arbitrary entry — not LRU, but this L1 is purpose-built for hot keys.
             Integer evict = l1.keySet().iterator().next();
             l1.remove(evict);
