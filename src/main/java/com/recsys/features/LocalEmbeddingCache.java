@@ -3,7 +3,6 @@ package com.recsys.features;
 import org.slf4j.Logger;
 import org.slf4j.LoggerFactory;
 
-import java.util.ArrayList;
 import java.util.Collection;
 import java.util.Collections;
 import java.util.HashMap;
@@ -157,7 +156,7 @@ public class LocalEmbeddingCache implements EmbeddingStore {
         }
 
         if (!toFetch.isEmpty()) {
-            Map<Integer, float[]> fetched = backingStore.getEmbeddings(new ArrayList<>(toFetch));
+            Map<Integer, float[]> fetched = backingStore.getEmbeddings(toFetch);
             for (int id : toFetch) {
                 if (fetched.containsKey(id)) {
                     bloom.add(id);

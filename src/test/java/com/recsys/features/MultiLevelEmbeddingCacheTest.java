@@ -186,7 +186,7 @@ class MultiLevelEmbeddingCacheTest {
         assertThat(cache.l1Size()).isEqualTo(2);
 
         // Record many accesses for ID 5 so detector marks it hot.
-        for (int i = 0; i < 200; i++) detector.record("id:5");
+        for (int i = 0; i < 200; i++) detector.record(5);
 
         // ID 5 should be promoted despite L1 being full.
         cache.getEmbedding(5);

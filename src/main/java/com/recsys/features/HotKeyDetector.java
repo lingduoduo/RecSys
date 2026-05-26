@@ -29,6 +29,7 @@ public final class HotKeyDetector {
     private static final long DEFAULT_HOT_THRESHOLD_PS = 500L; // accesses / second
 
     private final ConcurrentHashMap<String, WindowCounter> counters = new ConcurrentHashMap<>();
+    private final ConcurrentHashMap<Integer, WindowCounter> intCounters = new ConcurrentHashMap<>();
     private final long windowMs;
     private final double hotThresholdPerSecond;
 
@@ -47,9 +48,21 @@ public final class HotKeyDetector {
         counters.computeIfAbsent(key, k -> new WindowCounter(now)).record(now, windowMs);
     }
 
+    /** Records one access for integer {@code id}. Avoids String allocation on hot paths. */
+    public void record(int id) {
+        long now = System.currentTimeMillis();
+        intCounters.computeIfAbsent(id, k -> new WindowCounter(now)).record(now, windowMs);
+    }
+
     /** Returns {@code true} when the smoothed per-second access rate exceeds the threshold. */
     public boolean isHot(String key) {
         WindowCounter c = counters.get(key);
+        return c != null && c.rate(System.currentTimeMillis(), windowMs) >= hotThresholdPerSecond;
+    }
+
+    /** Integer-keyed variant of {@link #isHot(String)}. */
+    public boolean isHot(int id) {
+        WindowCounter c = intCounters.get(id);
         return c != null && c.rate(System.currentTimeMillis(), windowMs) >= hotThresholdPerSecond;
     }
 
@@ -84,6 +97,10 @@ public final class HotKeyDetector {
     public void evictIdle() {
         long now = System.currentTimeMillis();
         counters.entrySet().removeIf(e -> {
+            long sinceWindow = now - e.getValue().windowStartMs;
+            return sinceWindow > 2 * windowMs && e.getValue().currentCount.get() == 0L;
+        });
+        intCounters.entrySet().removeIf(e -> {
             long sinceWindow = now - e.getValue().windowStartMs;
             return sinceWindow > 2 * windowMs && e.getValue().currentCount.get() == 0L;
         });
