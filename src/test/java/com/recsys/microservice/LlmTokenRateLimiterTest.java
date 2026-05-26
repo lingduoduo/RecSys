@@ -76,7 +76,7 @@ class LlmTokenRateLimiterTest {
         );
 
         limiter.tryAcquire(1000); // drain bucket
-        LlmTokenRateLimiter.Decision denied = limiter.tryAcquire(500);
+        TokenBucket.Decision denied = limiter.tryAcquire(500);
         assertFalse(denied.allowed());
         // 500 tokens at 1000 tokens/s = ~500 ms wait
         assertTrue(denied.retryAfter().toMillis() >= 400,

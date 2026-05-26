@@ -33,6 +33,9 @@ RecSys is a compact Maven workspace for experimenting with recommendation-system
 - [Embedding Storage Paths](#embedding-storage-paths)
 - [Developer Notes](#developer-notes)
 - [Pipeline Optimizations](#pipeline-optimizations)
+- [LLM Gateway](#llm-gateway)
+- [Model Rate Limiting](#model-rate-limiting)
+- [AWS Saga Orchestration](#aws-saga-orchestration)
 - [LLM Integration Ideas](#llm-integration-ideas)
 
 ---
@@ -344,6 +347,7 @@ The repo can run as a small local microservice topology instead of one combined 
 | Catalog / classic recommendation | `6010` | `/api/catalog` | `com.recsys.serving.RecSysServer` |
 | Model recommendation | `8080` | `/api/model` | `com.recsys.modelbased.model.ModelApplication` |
 | Online recommendation | `7010` | `/api/online` | `com.recsys.streaming.OnlinePredictionServer` |
+| LLM proxy | _(external)_ | `/api/llm` | forwarded to `LLM_SERVICE_URL` (default Ollama `11434`) |
 | API gateway | `8010` | `/` | `com.recsys.microservice.MicroserviceGatewayServer` |
 
 Start Redis/Kafka/Flink infrastructure first if you need Redis-backed serving paths:
@@ -505,6 +509,7 @@ src/main/java/com/recsys/
 │   └── ...                (request/result records, feature stores, servlets)
 ├── mysql/                  Optional JDBC helper and connection settings (MySQL opt-in)
 ├── pagination/             SQL templates for million-row pagination (covering index, cursor, delayed join)
+├── saga/                   AWS saga orchestration (SagaOrchestrator, TccSagaOrchestrator, Step Functions ASL generation)
 ├── training/
 │   ├── rulebased/          Spark Word2Vec offline item embeddings
 │   └── modelbased/
@@ -1384,6 +1389,26 @@ movie_embeddings.txt / user_embeddings.txt (classpath)
 - `HealthController` — `/health/live` (liveness), `/health/ready` (readiness gated on `ModelRuntimeProvider.areVariantsReady()`, load, and rolling metrics), `/health/load` (node-local concurrency snapshot), `/health/metrics` (global snapshot), `/health/ab-tests` (per-variant comparison snapshot), `/health/jvm` (JVM memory region snapshot from `JvmMemoryMonitor`), `/health/gc` (GC event snapshot from `GcEventTracker`).
 - `GlobalExceptionHandler` — maps bean-validation failures, malformed JSON, wrong content-type, and unexpected errors to a consistent `ApiError` shape.
 
+**LLM gateway (`com.recsys.microservice`):**
+
+- `LlmProxyServlet` — LLM-optimized reverse proxy; detects `"stream":true` for SSE passthrough, retries once on upstream `429`, pre-checks a token budget, caches non-streaming `200` responses by SHA-256, and shares a circuit breaker with the health servlet.
+- `LlmResponseCache` — LRU cache with TTL keyed by SHA-256 of the request body. Uses a `ThreadLocal<MessageDigest>` to avoid per-call `MessageDigest` allocation. Disabled when `LLM_CACHE_MAX_SIZE` or `LLM_CACHE_TTL_SECONDS` is zero.
+- `LlmTokenRateLimiter` — token-count-aware rate limiter; consumes `max_tokens` per call rather than one token per request, preventing large-context calls from exhausting a shared quota.
+- `EnvVars` — package-private utility (`EnvReader` FI + `readInt`/`readLong`/`readDouble` helpers) shared across all gateway components to parse environment variables.
+- `TokenBucket` — package-private refillable token bucket with `tryAcquire(int needed)` and `tryAcquire()` (= 1 token), shared by `GatewayRateLimiter` and `LlmTokenRateLimiter`.
+
+**Model rate limiting (`com.recsys.modelbased.model.service`):**
+
+- `ModelRateLimiter` — per-user token bucket (`recsys.model.rate-limit.*`); enforced in `RecommendationController` before the global concurrency semaphore. Throws `RateLimitExceededException` which `GlobalExceptionHandler` maps to `429` with `Retry-After`.
+
+**AWS saga orchestration (`com.recsys.saga`):**
+
+- `SagaOrchestrator` — sequential compensating-transaction orchestrator with best-effort rollback and full-jitter exponential backoff on retries.
+- `TccSagaOrchestrator` — Try/Confirm/Cancel orchestrator; Try reserves, Confirm commits, Cancel releases in reverse order.
+- `AwsStepFunctionsSagaDefinition` / `AwsTccStepFunctionsSagaDefinition` — generate Step Functions ASL JSON with per-step retry policies and jitter strategy.
+- `InMemorySagaStateStore` — `ConcurrentHashMap`-backed store with optimistic locking via `saveConditionally`; throws `SagaConflictException` on version mismatch.
+- `SagaBackoff` — shared full-jitter exponential backoff (`uniform(0, min(30 s, base * 2^attempt))`) used by both orchestrators.
+
 **MySQL and pagination (`com.recsys.mysql`, `com.recsys.pagination`):**
 
 - `MySqlConnectionSettings` — immutable settings record read from `MYSQL_ENABLED`, `MYSQL_URL`, `MYSQL_USER`, `MYSQL_PASSWORD`. Disabled by default so no serving path opens a DB connection at startup.
@@ -1414,6 +1439,137 @@ Optimizations applied to the serving path targeting OOM, Full GC, thread blockin
 | `OnlineLearner.evictIfNeeded()` | O(N log N) heap allocation ran on every `learn()` call past the item limit | Rate-limited to once per 5 s |
 | `UserTowerInferenceService.close()` | Closed `OrtEnvironment` (JVM-wide singleton), invalidating all other A/B-test variant sessions | Now only closes the per-variant `OrtSession`; environment is process-global |
 | `OnlineServingMetricsService` | `Instant.now()` allocation on every request's hot path | `System.currentTimeMillis() / 1000L` — no allocation |
+
+---
+
+## LLM Gateway
+
+The API gateway includes an LLM-optimized reverse proxy route registered at `/api/llm/*`. It uses a dedicated `HttpClient` with a longer timeout (default 120 s) so large-context inference calls do not block the shared proxy pool.
+
+| Feature | Behaviour |
+|---|---|
+| Streaming passthrough | Detects `"stream":true` in the request JSON and pipes the SSE/chunked upstream response byte-by-byte without buffering |
+| Retry-on-429 | When the upstream LLM returns `429 Too Many Requests`, reads `Retry-After` and retries once (buffered mode only; streaming 429s surface immediately) |
+| Token-based rate limiting | Reads `max_tokens` from the request body and pre-checks a local token-bucket; requests that would exhaust the budget get `429` with `Retry-After` and `X-RateLimit-*` headers |
+| Response caching | Non-streaming `200` responses are cached in an LRU map keyed by SHA-256 of the request body; cache hits return `X-Cache: HIT` and skip the upstream entirely |
+| Circuit breaker | Shared with the gateway health endpoint; opens after repeated upstream 5xx / timeouts and fast-fails with `503` during the cooldown window |
+
+Default route target is Ollama (`http://localhost:11434`). Override via `LLM_SERVICE_URL` for any OpenAI-compatible endpoint.
+
+### LLM gateway environment variables
+
+| Env var | Default | Purpose |
+|---|---:|---|
+| `LLM_SERVICE_URL` | `http://localhost:11434` | Base URL for the LLM backend |
+| `LLM_TIMEOUT_MS` | `120000` | Per-request timeout in ms |
+| `LLM_MAX_RETRY_WAIT_MS` | `30000` | Max `Retry-After` wait before abandoning the 429 retry |
+| `LLM_DEFAULT_TOKEN_ESTIMATE` | `1000` | Token estimate used when `max_tokens` is absent |
+| `LLM_TOKEN_RATE_LIMIT_TPS` | `0` | Refill rate in LLM-tokens/second (`0` = disabled) |
+| `LLM_TOKEN_RATE_LIMIT_BURST` | `0` | Burst capacity in LLM-tokens (`0` = disabled) |
+| `LLM_CACHE_MAX_SIZE` | `500` | Max cached responses before LRU eviction (`0` = disabled) |
+| `LLM_CACHE_TTL_SECONDS` | `300` | Cache entry TTL in seconds (`0` = disabled) |
+
+Smoke test (Ollama):
+
+```bash
+curl -X POST "http://localhost:8010/api/llm/api/generate" \
+  -H "Content-Type: application/json" \
+  -d '{"model":"llama3","prompt":"Summarize this movie: Inception","max_tokens":200}'
+```
+
+---
+
+## Model Rate Limiting
+
+`ModelRateLimiter` applies a per-user token-bucket rate limit to the Spring Boot model inference endpoint (`POST /api/v1/recommend`). The check runs before the global concurrency semaphore so a single high-traffic user cannot monopolise the shared ONNX inference slots.
+
+Each user gets an independent bucket that refills at `rps` tokens/second with a `burst` capacity. Up to `maxUsers` buckets are tracked with LRU eviction. When the bucket is empty the service returns `429 Too Many Requests` with a `Retry-After` header.
+
+| Property | Default | Purpose |
+|---|---:|---|
+| `recsys.model.rate-limit.rps` | `0.0` | Per-user requests/second (`0` = disabled) |
+| `recsys.model.rate-limit.burst` | `0` | Burst capacity per user (`0` = disabled) |
+| `recsys.model.rate-limit.max-users` | `10000` | Max tracked users (LRU eviction above this) |
+
+Example — allow each user 5 req/s with a burst of 10:
+
+```yaml
+recsys:
+  model:
+    rate-limit:
+      rps: 5.0
+      burst: 10
+```
+
+Or via environment variables:
+
+```bash
+RECSYS_MODEL_RATE_LIMIT_RPS=5.0 \
+RECSYS_MODEL_RATE_LIMIT_BURST=10 \
+  sh scripts/run-with-jvm-tuning.sh model-serving -- mvn spring-boot:run
+```
+
+`429` response shape:
+
+```json
+{"error": "request rate limit exceeded — retry after 1s", "violations": []}
+```
+
+The `Retry-After` header is set to the ceiling of the bucket refill wait in seconds.
+
+---
+
+## AWS Saga Orchestration
+
+The `com.recsys.saga` package provides durable multi-step orchestration for eventual-consistency workflows backed by AWS Step Functions.
+
+### Orchestrators
+
+| Class | Pattern | When to use |
+|---|---|---|
+| `SagaOrchestrator` | Choreography / compensating transaction | Steps can run in sequence with rollback-on-failure; compensations run best-effort so every completed step is attempted regardless of individual failures |
+| `TccSagaOrchestrator` | Try / Confirm / Cancel | Stronger consistency — Try reserves without committing, Confirm makes it final, Cancel releases all unconfirmed reservations in reverse order |
+
+Both orchestrators use **full-jitter exponential backoff** (matching `MaxDelaySeconds: 30` and `JitterStrategy: FULL` in the generated Step Functions ASL) to prevent thundering herd on AWS service quota hits.
+
+### State store
+
+`SagaStateStore` is an interface with two write operations:
+
+- `save(saga)` — unconditional write (used by simple stores)
+- `saveConditionally(saga)` — optimistic locking; throws `SagaConflictException` when the stored version does not match, then increments the version on success
+
+`InMemorySagaStateStore` implements both with `ConcurrentHashMap.compute` for atomic version checks (suitable for single-node testing). Production deployments should back this with DynamoDB conditional writes or an equivalent.
+
+### Step Functions ASL generation
+
+`AwsStepFunctionsSagaDefinition.render(definition)` and `AwsTccStepFunctionsSagaDefinition.render(definition)` produce ready-to-deploy Step Functions JSON with:
+
+- Per-step `Retry` policies (exponential backoff, `MaxDelaySeconds: 30`, `JitterStrategy: FULL`)
+- `Catch` routing to compensating / cancel states on failure
+- Terminal `SagaCompleted` (Succeed) and `SagaCancelled` / `ManualReconciliationRequired` (Fail) states
+
+### Usage sketch
+
+```java
+SagaOrchestrator orchestrator = new SagaOrchestrator(store, publisher, Clock.systemUTC());
+
+SagaInstance result = orchestrator.execute(
+    sagaId, correlationId, payloadJson,
+    definition,          // SagaDefinition with ordered SagaStep list
+    Map.of(
+        "charge-payment",  (saga, step) -> paymentService.charge(...),
+        "reserve-model",   (saga, step) -> modelSlotService.reserve(...)
+    ),
+    Map.of(
+        "charge-payment",  (saga, step) -> paymentService.refund(...),
+        "reserve-model",   (saga, step) -> modelSlotService.release(...)
+    )
+);
+// result.status() == SagaStatus.COMPLETED or FAILED
+```
+
+Participant commands should use `sagaId + stepName` as their idempotency key because retries and replay are expected in the at-least-once AWS event path.
 
 ---
 

@@ -17,14 +17,15 @@ public final class MicroserviceGatewayServer {
     private static final Logger log = LoggerFactory.getLogger(MicroserviceGatewayServer.class);
     private static final String DEFAULT_HOST = "0.0.0.0";
     private static final int DEFAULT_PORT = 8010;
+    private static final String LLM_ROUTE_NAME = "llm";
     // Cloud Map DNS TTL is 15–30 s. Cap the JVM cache so Blue/Green endpoint changes propagate.
     private static final String CLOUD_MAP_DNS_TTL_SECONDS = "30";
 
     private MicroserviceGatewayServer() {}
 
     public static void main(String[] args) throws Exception {
-        int port = readIntEnv("GATEWAY_PORT", DEFAULT_PORT);
-        int timeoutMs = readIntEnv("GATEWAY_TIMEOUT_MS", 3000);
+        int port = EnvVars.readInt("GATEWAY_PORT", DEFAULT_PORT);
+        int timeoutMs = EnvVars.readInt("GATEWAY_TIMEOUT_MS", 3000);
         Duration timeout = Duration.ofMillis(timeoutMs);
         List<MicroserviceRoute> allRoutes = MicroserviceRoute.defaults();
 
@@ -45,7 +46,7 @@ public final class MicroserviceGatewayServer {
         // LLM requests can take much longer than regular API calls (large context, slow inference).
         // Use a separate HttpClient with a dedicated timeout so LLM latency does not block the
         // shared pool.
-        int llmTimeoutMs = readIntEnv("LLM_TIMEOUT_MS", LlmProxyServlet.DEFAULT_TIMEOUT_MS);
+        int llmTimeoutMs = EnvVars.readInt("LLM_TIMEOUT_MS", LlmProxyServlet.DEFAULT_TIMEOUT_MS);
         Duration llmTimeout = Duration.ofMillis(llmTimeoutMs);
         HttpClient llmHttpClient = HttpClient.newBuilder()
                 .connectTimeout(llmTimeout)
@@ -54,33 +55,33 @@ public final class MicroserviceGatewayServer {
 
         // One circuit breaker per route — shared between proxy (records outcomes) and
         // health servlet (exposes state in the /health response body).
-        int cbFailureThreshold = readIntEnv("GATEWAY_CB_FAILURE_THRESHOLD", RouteCircuitBreaker.DEFAULT_FAILURE_THRESHOLD);
-        long cbCooldownMs = readLongEnv("GATEWAY_CB_COOLDOWN_MS", RouteCircuitBreaker.DEFAULT_COOLDOWN_MS);
+        int cbFailureThreshold = EnvVars.readInt("GATEWAY_CB_FAILURE_THRESHOLD", RouteCircuitBreaker.DEFAULT_FAILURE_THRESHOLD);
+        long cbCooldownMs = EnvVars.readLong("GATEWAY_CB_COOLDOWN_MS", RouteCircuitBreaker.DEFAULT_COOLDOWN_MS);
         Map<String, RouteCircuitBreaker> circuitBreakers = allRoutes.stream()
                 .collect(Collectors.toUnmodifiableMap(MicroserviceRoute::name,
                         r -> new RouteCircuitBreaker(cbFailureThreshold, cbCooldownMs)));
 
         // Split routes: LLM gets its own servlet; everything else uses the general proxy.
         MicroserviceRoute llmRoute = allRoutes.stream()
-                .filter(r -> "llm".equals(r.name()))
+                .filter(r -> LLM_ROUTE_NAME.equals(r.name()))
                 .findFirst()
                 .orElseThrow(() -> new IllegalStateException("no llm route in defaults"));
         List<MicroserviceRoute> proxyRoutes = allRoutes.stream()
-                .filter(r -> !"llm".equals(r.name()))
+                .filter(r -> !LLM_ROUTE_NAME.equals(r.name()))
                 .toList();
 
         GatewayRateLimiter rateLimiter = GatewayRateLimiter.fromEnvironment(proxyRoutes);
 
         LlmTokenRateLimiter llmTokenRateLimiter = LlmTokenRateLimiter.fromEnvironment();
         LlmResponseCache llmResponseCache = LlmResponseCache.fromEnvironment();
-        int llmDefaultTokenEstimate = readIntEnv("LLM_DEFAULT_TOKEN_ESTIMATE", LlmProxyServlet.DEFAULT_TOKEN_ESTIMATE);
-        long llmMaxRetryWaitMs = readLongEnv("LLM_MAX_RETRY_WAIT_MS", LlmProxyServlet.DEFAULT_MAX_RETRY_WAIT_MS);
+        int llmDefaultTokenEstimate = EnvVars.readInt("LLM_DEFAULT_TOKEN_ESTIMATE", LlmProxyServlet.DEFAULT_TOKEN_ESTIMATE);
+        long llmMaxRetryWaitMs = EnvVars.readLong("LLM_MAX_RETRY_WAIT_MS", LlmProxyServlet.DEFAULT_MAX_RETRY_WAIT_MS);
 
         LlmProxyServlet llmProxyServlet = new LlmProxyServlet(
                 llmRoute,
                 llmHttpClient,
                 llmTimeout,
-                circuitBreakers.get("llm"),
+                circuitBreakers.get(LLM_ROUTE_NAME),
                 llmTokenRateLimiter,
                 llmResponseCache,
                 llmDefaultTokenEstimate,
@@ -112,30 +113,6 @@ public final class MicroserviceGatewayServer {
         }
         server.start();
         server.join();
-    }
-
-    private static int readIntEnv(String name, int defaultValue) {
-        String value = System.getenv(name);
-        if (value == null || value.isBlank()) {
-            return defaultValue;
-        }
-        try {
-            return Integer.parseInt(value.trim());
-        } catch (NumberFormatException e) {
-            throw new IllegalStateException("env var " + name + " is not a valid integer: " + value);
-        }
-    }
-
-    private static long readLongEnv(String name, long defaultValue) {
-        String value = System.getenv(name);
-        if (value == null || value.isBlank()) {
-            return defaultValue;
-        }
-        try {
-            return Long.parseLong(value.trim());
-        } catch (NumberFormatException e) {
-            throw new IllegalStateException("env var " + name + " is not a valid long: " + value);
-        }
     }
 
 }
