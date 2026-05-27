@@ -69,10 +69,24 @@ class OnlineJoinerTest {
         OnlineJoiner.JoinedSample impression = joiner.join(new LogCollector.UserBehaviorLog(
                 "evt-imp", 123, 9, "impression", 0L, null, 100L, "web", Map.of()),
                 Map.of(), Map.of(), Map.of());
+        OnlineJoiner.JoinedSample rating = joiner.join(new LogCollector.UserBehaviorLog(
+                "evt-rating", 123, 9, "rating", 0L, 0L, 5, 100L, "web", Map.of()),
+                Map.of(), Map.of(), Map.of());
+        OnlineJoiner.JoinedSample dwell = joiner.join(new LogCollector.UserBehaviorLog(
+                "evt-dwell", 123, 9, "dwell", 0L, 12_000L, null, 100L, "web", Map.of()),
+                Map.of(), Map.of(), Map.of());
+        OnlineJoiner.JoinedSample search = joiner.join(new LogCollector.UserBehaviorLog(
+                "evt-search", 123, 0, "search", 0L, 0L, null, 100L, "web",
+                Map.of("query", "space opera")),
+                Map.of(), Map.of(), Map.of());
 
         assertEquals(2, like.label());
         assertEquals(3, order.label());
         assertEquals(0, impression.label());
+        assertEquals(2, rating.label());
+        assertEquals(1, dwell.label());
+        assertEquals(1, search.label());
+        assertEquals(0, search.movieId());
     }
 
     @Test
@@ -105,6 +119,7 @@ class OnlineJoinerTest {
         assertEquals("home", sample.features().get("context.surface"));
         assertEquals("req-9", sample.features().get("event.requestId"));
         assertEquals("4", sample.features().get("event.rank"));
+        assertEquals("0", sample.features().get("event.dwellMs"));
         assertTrue(sample.features().keySet().stream().noneMatch(key -> key.contains(" ")));
         assertThrows(UnsupportedOperationException.class, () -> sample.features().put("x", "y"));
     }

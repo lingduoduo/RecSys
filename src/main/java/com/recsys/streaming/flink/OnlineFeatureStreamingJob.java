@@ -164,6 +164,9 @@ public final class OnlineFeatureStreamingJob {
     }
 
     private static String metricKind(MovieEvent event) {
+        if (event.movieId <= 0) {
+            return null;
+        }
         if (event.isImpression()) {
             return "impressions_1h";
         }
@@ -173,8 +176,14 @@ public final class OnlineFeatureStreamingJob {
         if (event.isLike()) {
             return "likes_1h";
         }
+        if (event.isRating()) {
+            return "ratings_1h";
+        }
         if (event.isClick()) {
             return "clicks_1h";
+        }
+        if (event.isDwell()) {
+            return "dwells_1h";
         }
         if (event.isView()) {
             return "views_1h";

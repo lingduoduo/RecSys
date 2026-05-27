@@ -20,6 +20,20 @@ class AsyncEventPublisherTest {
     }
 
     @Test
+    void publish_acceptsKafkaEventEnvelopeValue() {
+        try (var publisher = new AsyncEventPublisher(100, 10)) {
+            var event = new LogCollector.KafkaEvent(
+                    "movie_events",
+                    "user:123",
+                    "{\"eventType\":\"click\"}",
+                    java.util.Map.of("eventType", "click"));
+
+            assertThat(publisher.publish(event)).isTrue();
+            assertThat(publisher.snapshot().published()).isEqualTo(1L);
+        }
+    }
+
+    @Test
     void publish_dropsSilentlyWhenQueueFull() {
         // Capacity=1, batchSize=1000 so the drain thread won't flush quickly enough
         try (var publisher = new AsyncEventPublisher(1, 1_000)) {

@@ -2,6 +2,8 @@ package com.recsys.streaming.flink;
 
 import com.fasterxml.jackson.annotation.JsonIgnoreProperties;
 
+import java.util.Map;
+
 @JsonIgnoreProperties(ignoreUnknown = true)
 public class MovieEvent {
     private static final long MIN_VIEW_WATCH_MS = 30_000L;
@@ -11,9 +13,11 @@ public class MovieEvent {
     public int movieId;
     public String eventType;
     public long watchMs;
+    public long dwellMs;
     public Integer rating;
     public long eventTimeMillis;
     public String source;
+    public Map<String, String> features;
 
     public MovieEvent() {}
 
@@ -44,22 +48,45 @@ public class MovieEvent {
         return matches("like");
     }
 
+    public boolean isRating() {
+        return matches("rating");
+    }
+
+    public boolean isDwell() {
+        return matches("dwell");
+    }
+
+    public boolean isSearch() {
+        return matches("search");
+    }
+
     public boolean isOrder() {
         return matches("order") || matches("purchase");
     }
 
     public boolean updatesRecentHistory() {
-        return isClick() || isLike() || isOrder() || (isView() && watchMs >= MIN_VIEW_WATCH_MS);
+        if (movieId <= 0 || isSearch()) {
+            return false;
+        }
+        return isClick()
+                || isLike()
+                || isOrder()
+                || isRating()
+                || (isView() && watchMs >= MIN_VIEW_WATCH_MS)
+                || (isDwell() && dwellMs >= 10_000L);
     }
 
     public int trainingLabel() {
         if (isOrder()) {
             return 3;
         }
-        if (isLike() || rating != null && rating >= 4) {
+        if (isLike() || isRating() && rating != null && rating >= 4) {
             return 2;
         }
-        if (isClick() || isView() && watchMs >= MIN_VIEW_WATCH_MS) {
+        if (isClick()
+                || isSearch()
+                || isView() && watchMs >= MIN_VIEW_WATCH_MS
+                || isDwell() && dwellMs >= 10_000L) {
             return 1;
         }
         return 0;
@@ -72,10 +99,16 @@ public class MovieEvent {
         if (isLike()) {
             return 3L;
         }
+        if (isRating()) {
+            return rating != null && rating >= 4 ? 4L : 0L;
+        }
         if (isClick()) {
             return 2L;
         }
         if (isView() && watchMs >= MIN_VIEW_WATCH_MS) {
+            return 1L;
+        }
+        if (isDwell() && dwellMs >= 10_000L) {
             return 1L;
         }
         return 0L;

@@ -5,9 +5,10 @@ import java.util.Set;
 
 final class EventSemantics {
     private static final long MIN_VIEW_WATCH_MS = 30_000L;
+    private static final long MIN_DWELL_MS = 10_000L;
     private static final Set<String> SUPPORTED_EVENT_TYPES = Set.of(
             "impression", "exposure", "show",
-            "view", "watch", "click", "like",
+            "view", "watch", "click", "like", "rating", "dwell", "search",
             "order", "purchase"
     );
 
@@ -28,10 +29,13 @@ final class EventSemantics {
         if (isOrder(eventType)) {
             return 3;
         }
-        if (is(eventType, "like") || rating != null && rating >= 4) {
+        if (is(eventType, "like") || is(eventType, "rating") && rating != null && rating >= 4) {
             return 2;
         }
-        if (is(eventType, "click") || isView(eventType) && watchMs >= MIN_VIEW_WATCH_MS) {
+        if (is(eventType, "click")
+                || isSearch(eventType)
+                || isView(eventType) && watchMs >= MIN_VIEW_WATCH_MS
+                || isDwell(eventType) && watchMs >= MIN_DWELL_MS) {
             return 1;
         }
         return 0;
@@ -43,6 +47,18 @@ final class EventSemantics {
 
     static boolean isOrder(String eventType) {
         return is(eventType, "order") || is(eventType, "purchase");
+    }
+
+    static boolean isSearch(String eventType) {
+        return is(eventType, "search");
+    }
+
+    static boolean isDwell(String eventType) {
+        return is(eventType, "dwell");
+    }
+
+    static long minDwellMs() {
+        return MIN_DWELL_MS;
     }
 
     private static boolean is(String actual, String expected) {
