@@ -34,14 +34,32 @@ class AsyncEventPublisherTest {
     }
 
     @Test
-    void publish_dropsSilentlyWhenQueueFull() {
-        // Capacity=1, batchSize=1000 so the drain thread won't flush quickly enough
-        try (var publisher = new AsyncEventPublisher(1, 1_000)) {
-            publisher.publish("first");  // fills the queue
-            boolean accepted = publisher.publish("second"); // queue full → drop
+    void publish_dropsSilentlyWhenQueueFull() throws InterruptedException {
+        CountDownLatch drainStarted = new CountDownLatch(1);
+        CountDownLatch releaseDrain = new CountDownLatch(1);
+        AsyncEventPublisher publisher = new AsyncEventPublisher(1, 1) {
+            @Override
+            protected void sendBatch(List<String> events) {
+                drainStarted.countDown();
+                try {
+                    releaseDrain.await(1, TimeUnit.SECONDS);
+                } catch (InterruptedException e) {
+                    Thread.currentThread().interrupt();
+                }
+                super.sendBatch(events);
+            }
+        };
 
+        try {
+            assertThat(publisher.publish("first")).isTrue();
+            assertThat(drainStarted.await(1, TimeUnit.SECONDS)).isTrue();
+            assertThat(publisher.publish("second")).isTrue(); // fills queue while drain is blocked
+            boolean accepted = publisher.publish("third"); // queue full -> drop
             assertThat(accepted).isFalse();
             assertThat(publisher.snapshot().dropped()).isEqualTo(1L);
+        } finally {
+            releaseDrain.countDown();
+            publisher.close();
         }
     }
 
