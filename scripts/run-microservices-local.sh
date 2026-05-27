@@ -36,6 +36,14 @@ start_service online-serving env ONLINE_DEMO_PORT=7010 \
 sleep "${GATEWAY_START_DELAY_SECONDS:-10}"
 
 start_service api-gateway env GATEWAY_PORT=8010 \
+  USER_PROFILE_SERVICE_URL="${USER_PROFILE_SERVICE_URL:-http://localhost:6010}" \
+  MOVIE_METADATA_SERVICE_URL="${MOVIE_METADATA_SERVICE_URL:-http://localhost:6010}" \
+  FEATURE_SERVICE_URL="${FEATURE_SERVICE_URL:-http://localhost:7010}" \
+  RECOMMENDATION_RETRIEVAL_SERVICE_URL="${RECOMMENDATION_RETRIEVAL_SERVICE_URL:-http://localhost:8080}" \
+  RANKING_SERVICE_URL="${RANKING_SERVICE_URL:-http://localhost:8080}" \
+  LLM_EXPLANATION_SERVICE_URL="${LLM_EXPLANATION_SERVICE_URL:-${LLM_SERVICE_URL:-http://localhost:11434}}" \
+  AGENT_WORKFLOW_SERVICE_URL="${AGENT_WORKFLOW_SERVICE_URL:-http://localhost:8080}" \
+  OBSERVABILITY_SERVICE_URL="${OBSERVABILITY_SERVICE_URL:-http://localhost:8080}" \
   sh scripts/run-with-jvm-tuning.sh api-gateway -- \
   mvn exec:java -Dexec.mainClass=com.recsys.microservice.MicroserviceGatewayServer
 

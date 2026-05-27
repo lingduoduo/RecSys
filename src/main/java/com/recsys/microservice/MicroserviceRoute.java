@@ -12,6 +12,20 @@ record MicroserviceRoute(String name,
                          String healthPath) {
 
     private static final List<MicroserviceRoute> DEFAULTS = List.of(
+            // Domain-facing routes. These are the preferred API Gateway surface.
+            fromEnv("user-profile", "/api/users", "USER_PROFILE_SERVICE_URL", "http://localhost:6010", "/health"),
+            fromEnv("movie-metadata", "/api/movies", "MOVIE_METADATA_SERVICE_URL", "http://localhost:6010", "/health"),
+            fromEnv("feature", "/api/features", "FEATURE_SERVICE_URL", "http://localhost:7010", "/health"),
+            fromEnv("recommendation-retrieval", "/api/retrieval", "RECOMMENDATION_RETRIEVAL_SERVICE_URL",
+                    "http://localhost:8080", "/health/ready"),
+            fromEnv("ranking", "/api/ranking", "RANKING_SERVICE_URL", "http://localhost:8080", "/health/ready"),
+            fromEnv("llm-explanation", "/api/explanations", "LLM_EXPLANATION_SERVICE_URL",
+                    "http://localhost:11434", "/api/tags"),
+            fromEnv("agent-workflow", "/api/agents", "AGENT_WORKFLOW_SERVICE_URL",
+                    "http://localhost:8080", "/health/ready"),
+            fromEnv("observability", "/api/observability", "OBSERVABILITY_SERVICE_URL",
+                    "http://localhost:8080", "/health/ready"),
+            // Backward-compatible routes kept for existing clients and smoke tests.
             fromEnv("catalog", "/api/catalog", "CATALOG_SERVICE_URL", "http://localhost:6010", "/health"),
             fromEnv("model", "/api/model", "MODEL_SERVICE_URL", "http://localhost:8080", "/health/ready"),
             fromEnv("online", "/api/online", "ONLINE_SERVICE_URL", "http://localhost:7010", "/health"),

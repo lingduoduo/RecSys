@@ -340,10 +340,19 @@ docker compose -f docker-compose.streaming.yml down
 
 ## Microservice Gateway
 
-The repo can run as a small local microservice topology instead of one combined endpoint:
+The repo can run as a small local microservice topology instead of one combined endpoint.
+The API gateway is the public edge; domain-facing routes are preferred for new clients:
 
 | Service | Port | Gateway prefix | Entrypoint |
 |---|---:|---|---|
+| User Profile Service | `6010` | `/api/users` | currently backed by `com.recsys.serving.RecSysServer` |
+| Movie Metadata Service | `6010` | `/api/movies` | currently backed by `com.recsys.serving.RecSysServer` |
+| Feature Service | `7010` | `/api/features` | currently backed by `com.recsys.streaming.OnlinePredictionServer` |
+| Recommendation Retrieval Service | `8080` | `/api/retrieval` | currently backed by `com.recsys.modelbased.model.ModelApplication` |
+| Ranking Service | `8080` | `/api/ranking` | currently backed by `com.recsys.modelbased.model.ModelApplication` |
+| LLM Explanation Service | _(external)_ | `/api/explanations` | forwarded to `LLM_EXPLANATION_SERVICE_URL` |
+| Agent Workflow Service | `8080` | `/api/agents` | currently backed by model-serving placeholder |
+| Observability Service | `8080` | `/api/observability` | currently backed by model-serving health/metrics |
 | Catalog / classic recommendation | `6010` | `/api/catalog` | `com.recsys.serving.RecSysServer` |
 | Model recommendation | `8080` | `/api/model` | `com.recsys.modelbased.model.ModelApplication` |
 | Online recommendation | `7010` | `/api/online` | `com.recsys.streaming.OnlinePredictionServer` |
@@ -373,6 +382,8 @@ Gateway smoke tests:
 
 ```bash
 curl "http://localhost:8010/health"
+curl "http://localhost:8010/api/users/user?id=123"
+curl "http://localhost:8010/api/movies/item?id=1"
 curl "http://localhost:8010/api/catalog/item?id=1"
 curl "http://localhost:8010/api/catalog/getrecommendation?userId=123&mode=embedding&k=5"
 curl "http://localhost:8010/api/online/online/recommendation?userId=123&window=last_hour&k=5"
@@ -381,7 +392,7 @@ curl -X POST "http://localhost:8010/api/model/api/v1/recommend" \
   -d '{"userId":"123","k":5}'
 ```
 
-The gateway strips the service prefix before proxying, so `/api/catalog/item?id=1` becomes `/item?id=1` on the catalog service. `GET /health` aggregates downstream health checks and returns `503` with `status: DEGRADED` when any registered service is unavailable.
+The gateway strips the service prefix before proxying, so `/api/movies/item?id=1` becomes `/item?id=1` on the movie metadata service. `GET /health` aggregates downstream health checks and returns `503` with `status: DEGRADED` when any registered service is unavailable. See `docs/api-gateway-service-topology.md` for the route ownership map.
 
 ### Docker, Kubernetes, And EKS
 
@@ -499,7 +510,7 @@ All `recsys.ab-test.*` values are validated at startup. Override via `applicatio
 src/main/java/com/recsys/
 ├── models/                 Immutable API/domain records
 ├── features/               Data loading, indexed access, retrieval, vector math, Redis stores
-├── microservice/           Local API gateway and route health aggregation
+├── microservice/           API gateway, domain route map, LLM proxy, route health aggregation
 ├── serving/                Jetty server and servlet endpoints (port 6010)
 ├── streaming/              Online serving layer (port 7010)
 │   ├── flink/              Flink streaming job — writes online features to Redis
