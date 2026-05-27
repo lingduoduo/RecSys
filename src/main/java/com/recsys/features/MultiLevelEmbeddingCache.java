@@ -42,9 +42,11 @@ public final class MultiLevelEmbeddingCache implements EmbeddingStore {
     private static final Logger log = LoggerFactory.getLogger(MultiLevelEmbeddingCache.class);
 
     static final int DEFAULT_L1_CAPACITY = 10_000;
+    private static final long NULL_SENTINEL_TTL_MS = 30_000L;
 
     // L1: JVM ConcurrentHashMap, capped at l1Capacity entries.
     private final ConcurrentHashMap<Integer, float[]> l1;
+    private final ConcurrentHashMap<Integer, Long> nullSentinels = new ConcurrentHashMap<>();
     private final int l1Capacity;
 
     // L2: typically Redis-backed (may throw on connection failure)
@@ -76,6 +78,13 @@ public final class MultiLevelEmbeddingCache implements EmbeddingStore {
 
     @Override
     public float[] getEmbedding(int id) {
+        long now = System.currentTimeMillis();
+        Long nullExpiry = nullSentinels.get(id);
+        if (nullExpiry != null && nullExpiry > now) {
+            misses.incrementAndGet();
+            return null;
+        }
+
         // L1 — JVM hot-key cache (fastest, no network)
         float[] v = l1.get(id);
         if (v != null) { l1Hits.incrementAndGet(); return v; }
@@ -109,6 +118,7 @@ public final class MultiLevelEmbeddingCache implements EmbeddingStore {
         }
 
         misses.incrementAndGet();
+        nullSentinels.put(id, now + NULL_SENTINEL_TTL_MS);
         return null;
     }
 
@@ -118,9 +128,15 @@ public final class MultiLevelEmbeddingCache implements EmbeddingStore {
 
         Map<Integer, float[]> result = new HashMap<>(ids.size() * 4 / 3 + 1);
         Set<Integer> l1Misses = new LinkedHashSet<>();
+        long now = System.currentTimeMillis();
 
         // L1 batch check
         for (int id : ids) {
+            Long nullExpiry = nullSentinels.get(id);
+            if (nullExpiry != null && nullExpiry > now) {
+                misses.incrementAndGet();
+                continue;
+            }
             float[] v = l1.get(id);
             if (v != null) { l1Hits.incrementAndGet(); result.put(id, v); }
             else            { l1Misses.add(id); }
@@ -136,8 +152,14 @@ public final class MultiLevelEmbeddingCache implements EmbeddingStore {
             Map<Integer, float[]> l2Result = l2.getEmbeddings(l1Misses);
             for (int id : l1Misses) {
                 float[] v = l2Result.get(id);
-                if (v != null) { l2Hits.incrementAndGet(); promoteToL1IfEligible(id, v); result.put(id, v); }
-                else           { l2Misses.add(id); }
+                if (v != null) {
+                    l2Hits.incrementAndGet();
+                    nullSentinels.remove(id);
+                    promoteToL1IfEligible(id, v);
+                    result.put(id, v);
+                } else {
+                    l2Misses.add(id);
+                }
             }
         } catch (Exception e) {
             log.warn("MultiLevelCache: L2 batch error, falling through to L3: {}", e.toString());
@@ -151,8 +173,15 @@ public final class MultiLevelEmbeddingCache implements EmbeddingStore {
                 Map<Integer, float[]> l3Result = l3.getEmbeddings(l2Misses);
                 for (int id : l2Misses) {
                     float[] v = l3Result.get(id);
-                    if (v != null) { l3Hits.incrementAndGet(); promoteToL1IfEligible(id, v); result.put(id, v); }
-                    else           { misses.incrementAndGet(); }
+                    if (v != null) {
+                        l3Hits.incrementAndGet();
+                        nullSentinels.remove(id);
+                        promoteToL1IfEligible(id, v);
+                        result.put(id, v);
+                    } else {
+                        misses.incrementAndGet();
+                        nullSentinels.put(id, now + NULL_SENTINEL_TTL_MS);
+                    }
                 }
             } catch (Exception e) {
                 log.warn("MultiLevelCache: L3 batch error: {}", e.toString());
@@ -160,6 +189,9 @@ public final class MultiLevelEmbeddingCache implements EmbeddingStore {
             }
         } else {
             misses.addAndGet(l2Misses.size());
+            for (int id : l2Misses) {
+                nullSentinels.put(id, now + NULL_SENTINEL_TTL_MS);
+            }
         }
 
         return result;
@@ -169,6 +201,7 @@ public final class MultiLevelEmbeddingCache implements EmbeddingStore {
 
     @Override
     public void setEmbedding(int id, float[] vector, long ttlSeconds) {
+        nullSentinels.remove(id);
         l1.put(id, vector);                         // write-through to L1
         l2.setEmbedding(id, vector, ttlSeconds);    // write-through to L2
         if (l3 != null) {                           // best-effort write to L3
@@ -179,7 +212,12 @@ public final class MultiLevelEmbeddingCache implements EmbeddingStore {
     @Override
     public void setEmbeddings(Map<Integer, float[]> vectors, long ttlSeconds) {
         if (vectors == null || vectors.isEmpty()) return;
-        vectors.forEach((id, vec) -> { if (id != null && vec != null) l1.put(id, vec); });
+        vectors.forEach((id, vec) -> {
+            if (id != null && vec != null) {
+                nullSentinels.remove(id);
+                l1.put(id, vec);
+            }
+        });
         l2.setEmbeddings(vectors, ttlSeconds);
         if (l3 != null) {
             try { l3.setEmbeddings(vectors, ttlSeconds); } catch (Exception ignored) {}

@@ -2,7 +2,9 @@ package com.recsys.streaming;
 
 import org.junit.jupiter.api.Test;
 
+import java.util.Collections;
 import java.util.List;
+import java.util.Map;
 
 import static org.assertj.core.api.Assertions.assertThat;
 import static org.mockito.Mockito.*;
@@ -76,6 +78,56 @@ class OnlineFeatureStoreTest {
         store.getRecentMovieIds(3, 10);
 
         assertThat(store.cacheSize()).isLessThanOrEqualTo(2);
+    }
+
+    @Test
+    void getFeature_cachesNullSentinelWithinTtl() {
+        var stub = new RedisPoolStub();
+        when(stub.pool.getResource()).thenReturn(stub.jedis);
+        when(stub.jedis.get("user:9:embedding")).thenReturn(null);
+        var store = new OnlineFeatureStore(stub.pool, 5_000L);
+
+        assertThat(store.getFeature("user:9:embedding")).isNull();
+        assertThat(store.getFeature("user:9:embedding")).isNull();
+
+        verify(stub.jedis, times(1)).get("user:9:embedding");
+    }
+
+    @Test
+    void getFeatures_deduplicatesChunksAndCachesRedisMget() {
+        var stub = new RedisPoolStub();
+        when(stub.pool.getResource()).thenReturn(stub.jedis);
+        when(stub.jedis.mget("user:1:embedding", "movie:7:ctr")).thenReturn(List.of("0.1 0.2", "0.42"));
+        when(stub.jedis.mget("session:abc:features")).thenReturn(List.of("fresh"));
+        var store = new OnlineFeatureStore(stub.pool, 5_000L, 100, 2);
+
+        Map<String, String> first = store.getFeatures(List.of(
+                "user:1:embedding",
+                "user:1:embedding",
+                "movie:7:ctr",
+                "session:abc:features"
+        ));
+        Map<String, String> second = store.getFeatures(List.of("user:1:embedding", "movie:7:ctr", "session:abc:features"));
+
+        assertThat(first).containsEntry("user:1:embedding", "0.1 0.2")
+                .containsEntry("movie:7:ctr", "0.42")
+                .containsEntry("session:abc:features", "fresh");
+        assertThat(second).isEqualTo(first);
+        verify(stub.jedis, times(1)).mget("user:1:embedding", "movie:7:ctr");
+        verify(stub.jedis, times(1)).mget("session:abc:features");
+    }
+
+    @Test
+    void getFeatures_cachesMissingFeatureKeys() {
+        var stub = new RedisPoolStub();
+        when(stub.pool.getResource()).thenReturn(stub.jedis);
+        when(stub.jedis.mget("trend:hourly")).thenReturn(Collections.singletonList(null));
+        var store = new OnlineFeatureStore(stub.pool, 5_000L, 100, 10);
+
+        assertThat(store.getFeatures(List.of("trend:hourly"))).isEmpty();
+        assertThat(store.getFeatures(List.of("trend:hourly"))).isEmpty();
+
+        verify(stub.jedis, times(1)).mget("trend:hourly");
     }
 
     // ── minimal Jedis/JedisPool stub ──────────────────────────────────────

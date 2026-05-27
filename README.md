@@ -1163,7 +1163,9 @@ Online-serving environment knobs:
 | `ONLINE_DRAIN_UTILIZATION` | `0.90` | Utilization threshold where `/health` returns `503` for load-balancer drain |
 | `ONLINE_REDIS_RATE_LIMIT_QPS` | `0` | Optional Redis-backed cross-instance request limit; `0` disables distributed rate limiting |
 | `ONLINE_REDIS_RATE_LIMIT_WINDOW_SECONDS` | `1` | Redis rate-limit window size |
-| `ONLINE_FEATURE_CACHE_MAX_USERS` | `10000` | Max users kept in the short-TTL recent-history JVM cache |
+| `ONLINE_FEATURE_CACHE_MAX_USERS` | `10000` | Max Redis online feature keys kept in the short-TTL JVM cache |
+| `ONLINE_FEATURE_REDIS_MGET_BATCH_SIZE` | `500` | Max Redis feature keys per `MGET` batch for bulk online feature reads |
+| `REDIS_EMBEDDING_MGET_BATCH_SIZE` | `500` | Max embedding keys per Redis `MGET` batch for vector cache reads |
 | `ONLINE_METRICS_WINDOW_SECONDS` | `60` | Rolling metrics window for QPS, latency, failures, and rejected requests |
 | `ONLINE_TARGET_DAU` | `2000000` | Runtime capacity assumption for daily active users |
 | `ONLINE_PEAK_QPS` | `8000` | Runtime peak read-QPS target |
@@ -1381,7 +1383,7 @@ movie_embeddings.txt / user_embeddings.txt (classpath)
 - `OnlineJoiner` — joins behavior logs with user/item/context features, applies shared label semantics, and produces immutable labeled samples for online/offline model updates.
 - `ExperienceCollector` — groups joined samples by `userId + event.requestId`, orders items by displayed rank, compacts duplicate item feedback, and emits list-shaped recommendation experiences.
 - `OnlineLearner` — consumes recommendation experiences and updates per-item bias parameters used by `OnlineRecommendationService`. Biases are bounded by `maxItemCount` (default 10,000) with LRU-style eviction of the lowest-magnitude entries. `flushToRedis` / `loadFromRedis` persist the learned state across restarts.
-- `OnlineFeatureStore` — reads per-user recent history from Redis and keeps a bounded short-TTL JVM cache for hot users (`ONLINE_FEATURE_CACHE_MAX_USERS`).
+- `OnlineFeatureStore` — reads per-user history, user embeddings, movie/session/CTR/trend features, and other Redis online feature keys through `getFeature` / `getFeatures`. It keeps a bounded short-TTL JVM cache for hot keys (`ONLINE_FEATURE_CACHE_MAX_USERS`), caches null Redis misses briefly, and chunks bulk reads with `ONLINE_FEATURE_REDIS_MGET_BATCH_SIZE`.
 - `OnlineRecommendationEngine` — scores candidates from per-user recent-watch history (Redis) and trending Top-K (Redis sorted set). Accepts `window` (`last_hour`, `last_day`, `last_month`).
 - `OnlineRecommendationService` — orchestrates `OnlineRecommendationEngine` + `CandidateGenerator.byEmbedding`. Blends normalized rank scores (`ONLINE_WEIGHT=1.0`, `MODEL_WEIGHT=0.5`), excludes recently-watched movies, and falls back to online-only for cold-start users. Returns a `strategy` field in the result.
 - `OnlineFeatureStreamingJob` (profile `streaming-flink`) — Flink 1.18 job that reads `MovieEvent` records from Kafka or a local file, deduplicates by `eventId`, then writes per-user recent-movie lists, per-movie engagement metrics, and global top-K to Redis. Redis writes use companion `:updated_at` keys to keep old retries from overwriting newer feature snapshots.
@@ -1455,12 +1457,15 @@ Optimizations applied to the serving path targeting OOM, Full GC, thread blockin
 | `OnlineFeatureStore` | `ConcurrentHashMap.compute()` held a CHM bin lock during the Redis network call, stalling all threads hashing to the same segment | Replaced with `CompletableFuture` inflight map; Redis fetch runs entirely outside any lock |
 | `RecommendationCache.TtlLruCache` | `synchronized` + access-order `LinkedHashMap` serialised every cache read through an exclusive write lock | `ReentrantReadWriteLock` + insertion-order `LinkedHashMap`; concurrent reads now share a read lock |
 | `RedisEmbeddingStore.loadAll()` | Accumulated all key names then issued one unbounded `MGET` — OOM / Full GC risk on large stores | Batch-`MGET` per SCAN page (≤500 keys); peak heap is now O(page) not O(all embeddings) |
+| `RedisEmbeddingStore.getEmbeddings()` | Large or duplicate embedding requests could create oversized `MGET` calls and repeat the same key in Redis | Deduplicates IDs in request order and chunks Redis `MGET` calls with `REDIS_EMBEDDING_MGET_BATCH_SIZE` |
 | `LocalEmbeddingCache` | FIFO-style eviction could evict hot embeddings inserted early, and repeated IDs in a batch request were forwarded as duplicate misses | Access-order LRU keeps recently used vectors hot; batch misses are deduplicated before the backing-store fetch |
 | `HotKeyDetector` | Fixed-window hot-key counters reset abruptly at boundaries and can misclassify traffic spikes or post-boundary hot keys | Two-bucket sliding window blends current and previous bucket rates with alpha weighting; lock-free per-key counters keep request-path overhead low |
 | `ShardedTopKStore` | A single `topk:{window}` sorted-set key can become a Redis hot key when JVM caches expire across many instances | Replicates each logical window into N shard keys, reads a random shard on TTL refresh, and uses local 2 s cache + singleflight to collapse most reads |
 | `MultiLevelEmbeddingCache` | Redis hiccups or uneven embedding popularity can turn hot embedding reads into repeated network calls or hard misses | L1 JVM hot-key cache promotes L2/L3 hits, falls through from L2 to L3 on errors, and exposes per-tier hit rates for tuning |
+| `MultiLevelEmbeddingCache` | Missing embeddings for popular but unavailable movie IDs repeatedly hit Redis/L3 under high QPS | Adds a short-lived null sentinel so repeated misses are absorbed locally while writes clear the sentinel immediately |
 | `ModelArtifactService` | `Arrays.copyOf()` doubled live heap (two full copies of all embedding vectors) during startup | Removed defensive copy; vectors are read-only after load |
 | `OnlineFeatureStore.evictIfNeeded()` | O(N) `removeIf` over 10K entries ran on every cache-miss request at capacity | Rate-limited to once per 5 s; `Enumeration.nextElement()` replaced with `Iterator` (safe under concurrent modification) |
+| `OnlineFeatureStore.getFeatures()` | Request-time AI features such as user embeddings, CTR, session, and trend data were only readable one Redis key at a time | Adds a bulk online feature-store read path with dedupe, bounded local cache, null-miss caching, and chunked Redis `MGET` |
 | `OnlineLearner.evictIfNeeded()` | O(N log N) heap allocation ran on every `learn()` call past the item limit | Rate-limited to once per 5 s |
 | `UserTowerInferenceService.close()` | Closed `OrtEnvironment` (JVM-wide singleton), invalidating all other A/B-test variant sessions | Now only closes the per-variant `OrtSession`; environment is process-global |
 | `OnlineServingMetricsService` | `Instant.now()` allocation on every request's hot path | `System.currentTimeMillis() / 1000L` — no allocation |

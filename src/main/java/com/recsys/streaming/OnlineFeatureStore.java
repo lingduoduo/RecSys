@@ -4,8 +4,14 @@ import redis.clients.jedis.Jedis;
 import redis.clients.jedis.JedisPool;
 
 import java.util.ArrayList;
+import java.util.Collection;
+import java.util.HashMap;
 import java.util.Iterator;
+import java.util.LinkedHashMap;
+import java.util.LinkedHashSet;
 import java.util.List;
+import java.util.Map;
+import java.util.Set;
 import java.util.concurrent.CompletableFuture;
 import java.util.concurrent.ConcurrentHashMap;
 import java.util.concurrent.ExecutionException;
@@ -13,11 +19,11 @@ import java.util.concurrent.TimeUnit;
 import java.util.concurrent.TimeoutException;
 
 /**
- * Tier-2/Tier-3 bridge for recent user history.
+ * Tier-2/Tier-3 bridge for online recommendation features.
  *
- * Recent-history keys change on every user interaction (written by Flink) so they
+ * Online feature keys change on every user interaction (written by Flink) so they
  * must live in Redis (Tier 2). However, recommendation requests read the same key
- * many times per second for active users. A short-TTL JVM-heap cache (Tier 3) absorbs
+ * many times per second for active users or hot movies. A short-TTL JVM-heap cache (Tier 3) absorbs
  * those repeated reads without sacrificing meaningful freshness — a 5-second stale
  * window is imperceptible to recommendation quality.
  */
@@ -31,9 +37,10 @@ public final class OnlineFeatureStore implements RecentHistoryStore {
     private final JedisPool pool;
     private final long cacheTtlMs;
     private final int maxCacheUsers;
-    private final ConcurrentHashMap<Integer, CachedHistory> historyCache = new ConcurrentHashMap<>();
-    // Deduplicates concurrent cache misses for the same userId so only one thread fetches Redis.
-    private final ConcurrentHashMap<Integer, CompletableFuture<CachedHistory>> inflight = new ConcurrentHashMap<>();
+    private final int redisMgetBatchSize;
+    private final ConcurrentHashMap<String, CachedFeature> featureCache = new ConcurrentHashMap<>();
+    // Deduplicates concurrent cache misses for the same Redis feature key.
+    private final ConcurrentHashMap<String, CompletableFuture<CachedFeature>> inflight = new ConcurrentHashMap<>();
     private volatile long lastEvictMs = 0L;
 
     public OnlineFeatureStore(JedisPool pool) {
@@ -45,72 +52,133 @@ public final class OnlineFeatureStore implements RecentHistoryStore {
     }
 
     OnlineFeatureStore(JedisPool pool, long cacheTtlMs, int maxCacheUsers) {
+        this(pool, cacheTtlMs, maxCacheUsers, readIntEnv("ONLINE_FEATURE_REDIS_MGET_BATCH_SIZE", 500));
+    }
+
+    OnlineFeatureStore(JedisPool pool, long cacheTtlMs, int maxCacheUsers, int redisMgetBatchSize) {
         this.pool = pool;
         this.cacheTtlMs = cacheTtlMs;
         this.maxCacheUsers = Math.max(1, maxCacheUsers);
+        this.redisMgetBatchSize = Math.max(1, redisMgetBatchSize);
     }
 
     @Override
     public List<Integer> getRecentMovieIds(int userId, int limit) {
+        return applyLimit(parseMovieIds(getFeature("user:" + userId + ":recent_movies")), limit);
+    }
+
+    public String getFeature(String redisKey) {
+        CachedFeature feature = getCachedOrLoad(redisKey, System.currentTimeMillis());
+        return feature == null ? null : feature.value;
+    }
+
+    public Map<String, String> getFeatures(Collection<String> redisKeys) {
+        if (redisKeys == null || redisKeys.isEmpty()) {
+            return Map.of();
+        }
         long now = System.currentTimeMillis();
-        // Fast path: no lock needed.
-        CachedHistory cached = historyCache.get(userId);
-        if (cached != null && cached.expiresAtMs > now) {
-            return applyLimit(cached.ids, limit);
+        Map<String, String> result = new LinkedHashMap<>();
+        Set<String> misses = new LinkedHashSet<>();
+
+        for (String redisKey : redisKeys) {
+            if (redisKey == null || redisKey.isBlank()) {
+                continue;
+            }
+            String key = redisKey.trim();
+            CachedFeature cached = featureCache.get(key);
+            if (cached != null && cached.expiresAtMs > now) {
+                if (cached.value != null) {
+                    result.put(key, cached.value);
+                }
+            } else {
+                misses.add(key);
+            }
         }
 
-        // Slow path: use an in-flight future to deduplicate concurrent misses for the
-        // same userId WITHOUT holding a CHM bin lock across the Redis round-trip.
-        // (compute() would hold the bin lock during fetchFromRedis(), blocking ALL
-        // threads whose userId hashes to the same segment — the root cause of thread stalls.)
-        CompletableFuture<CachedHistory> myFuture = new CompletableFuture<>();
-        CompletableFuture<CachedHistory> existing = inflight.putIfAbsent(userId, myFuture);
+        if (misses.isEmpty()) {
+            return result;
+        }
 
+        evictIfNeeded(now);
+        Map<String, CachedFeature> fetched = fetchFeaturesFromRedis(misses, now);
+        fetched.forEach((key, feature) -> {
+            featureCache.put(key, feature);
+            if (feature.value != null) {
+                result.put(key, feature.value);
+            }
+        });
+        return result;
+    }
+
+    private CachedFeature getCachedOrLoad(String redisKey, long now) {
+        if (redisKey == null || redisKey.isBlank()) {
+            return null;
+        }
+        String key = redisKey.trim();
+        CachedFeature cached = featureCache.get(key);
+        if (cached != null && cached.expiresAtMs > now) {
+            return cached;
+        }
+
+        CompletableFuture<CachedFeature> myFuture = new CompletableFuture<>();
+        CompletableFuture<CachedFeature> existing = inflight.putIfAbsent(key, myFuture);
         if (existing == null) {
-            // This thread owns the fetch.
             try {
                 evictIfNeeded(now);
-                CachedHistory fresh = new CachedHistory(fetchFromRedis(userId), now + cacheTtlMs);
-                historyCache.put(userId, fresh);
+                CachedFeature fresh = fetchFeatureFromRedis(key, now);
+                featureCache.put(key, fresh);
                 myFuture.complete(fresh);
-                return applyLimit(fresh.ids, limit);
+                return fresh;
             } catch (RuntimeException ex) {
                 myFuture.completeExceptionally(ex);
                 throw ex;
             } finally {
-                inflight.remove(userId, myFuture);
+                inflight.remove(key, myFuture);
             }
         }
 
-        // Another thread is already fetching; wait briefly for its result.
         try {
-            return applyLimit(existing.get(REDIS_FETCH_TIMEOUT_MS, TimeUnit.MILLISECONDS).ids, limit);
+            return existing.get(REDIS_FETCH_TIMEOUT_MS, TimeUnit.MILLISECONDS);
         } catch (TimeoutException | InterruptedException | ExecutionException ex) {
             if (ex instanceof InterruptedException) Thread.currentThread().interrupt();
-            // Fail open: fetch independently rather than returning stale/empty data.
-            CachedHistory fresh = new CachedHistory(fetchFromRedis(userId), now + cacheTtlMs);
-            historyCache.put(userId, fresh);
-            return applyLimit(fresh.ids, limit);
+            return fetchFeatureFromRedis(key, now);
         }
     }
 
-    private List<Integer> fetchFromRedis(int userId) {
-        String key = "user:" + userId + ":recent_movies";
+    private CachedFeature fetchFeatureFromRedis(String redisKey, long now) {
         try (Jedis jedis = pool.getResource()) {
-            String value = jedis.get(key);
-            if (value == null || value.isBlank()) return List.of();
+            return new CachedFeature(jedis.get(redisKey), now + cacheTtlMs);
+        }
+    }
 
-            String[] tokens = value.trim().split("\\s+");
-            List<Integer> ids = new ArrayList<>(tokens.length);
-            for (String token : tokens) {
-                try {
-                    ids.add(Integer.parseInt(token));
-                } catch (NumberFormatException ignore) {
-                    // Ignore malformed feature values so one bad token does not break the demo.
+    private Map<String, CachedFeature> fetchFeaturesFromRedis(Collection<String> redisKeys, long now) {
+        List<String> keys = new ArrayList<>(new LinkedHashSet<>(redisKeys));
+        Map<String, CachedFeature> result = new HashMap<>(keys.size() * 2);
+        try (Jedis jedis = pool.getResource()) {
+            for (int start = 0; start < keys.size(); start += redisMgetBatchSize) {
+                int end = Math.min(keys.size(), start + redisMgetBatchSize);
+                String[] batch = keys.subList(start, end).toArray(new String[0]);
+                List<String> values = jedis.mget(batch);
+                for (int i = 0; i < values.size(); i++) {
+                    result.put(batch[i], new CachedFeature(values.get(i), now + cacheTtlMs));
                 }
             }
-            return List.copyOf(ids);
         }
+        return result;
+    }
+
+    private static List<Integer> parseMovieIds(String value) {
+        if (value == null || value.isBlank()) return List.of();
+        String[] tokens = value.trim().split("\\s+");
+        List<Integer> ids = new ArrayList<>(tokens.length);
+        for (String token : tokens) {
+            try {
+                ids.add(Integer.parseInt(token));
+            } catch (NumberFormatException ignore) {
+                // Ignore malformed feature values so one bad token does not break the demo.
+            }
+        }
+        return List.copyOf(ids);
     }
 
     private static List<Integer> applyLimit(List<Integer> ids, int limit) {
@@ -119,18 +187,18 @@ public final class OnlineFeatureStore implements RecentHistoryStore {
     }
 
     private void evictIfNeeded(long now) {
-        if (historyCache.size() < maxCacheUsers) return;
+        if (featureCache.size() < maxCacheUsers) return;
         // Rate-limit eviction scans: a full O(N) removeIf on every miss is too expensive.
         if (now - lastEvictMs < EVICT_INTERVAL_MS) return;
         lastEvictMs = now;
         // First pass: remove genuinely expired entries.
-        historyCache.entrySet().removeIf(entry -> entry.getValue().expiresAtMs <= now);
+        featureCache.entrySet().removeIf(entry -> entry.getValue().expiresAtMs <= now);
         // Second pass: if still over capacity, evict arbitrary live entries via an
         // iterator — safe under concurrent modification, avoids Enumeration.nextElement()
         // which can throw NoSuchElementException when the map is modified concurrently.
-        if (historyCache.size() >= maxCacheUsers) {
-            Iterator<Integer> it = historyCache.keySet().iterator();
-            while (historyCache.size() >= maxCacheUsers && it.hasNext()) {
+        if (featureCache.size() >= maxCacheUsers) {
+            Iterator<String> it = featureCache.keySet().iterator();
+            while (featureCache.size() >= maxCacheUsers && it.hasNext()) {
                 it.next();
                 it.remove();
             }
@@ -138,7 +206,7 @@ public final class OnlineFeatureStore implements RecentHistoryStore {
     }
 
     public int cacheSize() {
-        return historyCache.size();
+        return featureCache.size();
     }
 
     private static int readIntEnv(String envName, int defaultValue) {
@@ -151,5 +219,5 @@ public final class OnlineFeatureStore implements RecentHistoryStore {
         }
     }
 
-    private record CachedHistory(List<Integer> ids, long expiresAtMs) {}
+    private record CachedFeature(String value, long expiresAtMs) {}
 }
