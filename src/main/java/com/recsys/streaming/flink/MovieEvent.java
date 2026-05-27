@@ -64,6 +64,25 @@ public class MovieEvent {
         return matches("order") || matches("purchase");
     }
 
+    public boolean hasSessionIdentity() {
+        return sessionId() != null && !sessionId().isBlank();
+    }
+
+    public String sessionId() {
+        if (features == null || features.isEmpty()) {
+            return "";
+        }
+        String sessionId = firstNonBlank(features.get("sessionId"), features.get("session_id"));
+        if (sessionId != null) {
+            return sessionId;
+        }
+        return "";
+    }
+
+    public boolean contributesCtr() {
+        return isImpression() || isClick() || isView() || isDwell() || isLike() || isRating();
+    }
+
     public boolean updatesRecentHistory() {
         if (movieId <= 0 || isSearch()) {
             return false;
@@ -116,5 +135,15 @@ public class MovieEvent {
 
     private boolean matches(String expected) {
         return expected.equalsIgnoreCase(eventType);
+    }
+
+    private static String firstNonBlank(String first, String second) {
+        if (first != null && !first.isBlank()) {
+            return first.trim();
+        }
+        if (second != null && !second.isBlank()) {
+            return second.trim();
+        }
+        return null;
     }
 }

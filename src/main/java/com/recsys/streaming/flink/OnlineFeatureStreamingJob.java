@@ -61,6 +61,9 @@ public final class OnlineFeatureStreamingJob {
         String windowLabel = params.get("window-label", "last_hour");
         int userHistoryTtlSeconds = params.getInt("user-history-ttl-seconds", 86400);
         int metricTtlSeconds = params.getInt("metric-ttl-seconds", 3600);
+        int userEmbeddingTtlSeconds = params.getInt("user-embedding-ttl-seconds", 86400);
+        int userEmbeddingDimensions = params.getInt("user-embedding-dimensions", 16);
+        int sessionTtlSeconds = params.getInt("session-ttl-seconds", 1800);
         long idempotencyTtlSeconds = params.getLong("idempotency-ttl-seconds", 86400L);
 
         StreamExecutionEnvironment env = StreamExecutionEnvironment.getExecutionEnvironment();
@@ -84,6 +87,22 @@ public final class OnlineFeatureStreamingJob {
                 .name("redis-user-history-sink");
 
         events
+                .filter(MovieEvent::updatesRecentHistory)
+                .keyBy(event -> event.userId)
+                .process(new UserEmbeddingFunction(userEmbeddingDimensions, userEmbeddingTtlSeconds))
+                .name("user-embedding-feature")
+                .addSink(new RedisStringFeatureSink(redisHost, redisPort))
+                .name("redis-user-embedding-sink");
+
+        events
+                .filter(MovieEvent::hasSessionIdentity)
+                .keyBy(event -> event.userId + "|" + event.sessionId())
+                .process(new SessionFeatureFunction(sessionTtlSeconds))
+                .name("session-feature")
+                .addSink(new RedisStringFeatureSink(redisHost, redisPort))
+                .name("redis-session-feature-sink");
+
+        events
                 .filter(event -> metricKind(event) != null)
                 .keyBy(event -> event.movieId + "|" + metricKind(event))
                 .window(TumblingProcessingTimeWindows.of(Time.seconds(windowSeconds)))
@@ -93,12 +112,27 @@ public final class OnlineFeatureStreamingJob {
                 .name("redis-movie-metric-sink");
 
         events
+                .filter(event -> event.movieId > 0 && event.contributesCtr())
+                .keyBy(event -> event.movieId)
+                .window(TumblingProcessingTimeWindows.of(Time.seconds(windowSeconds)))
+                .aggregate(new CtrFeatureAggregate(), new CtrFeatureWindowFunction(windowLabel, metricTtlSeconds))
+                .name("ctr-feature-window")
+                .addSink(new RedisStringFeatureSink(redisHost, redisPort))
+                .name("redis-ctr-feature-sink");
+
+        DataStream<TopKSnapshot> topKSnapshots = events
                 .filter(event -> event.engagementWeight() > 0L)
                 .windowAll(TumblingProcessingTimeWindows.of(Time.seconds(windowSeconds)))
                 .apply(new TopKAllWindowFunction(topK, windowLabel, metricTtlSeconds))
-                .name("topk-window")
+                .name("topk-window");
+
+        topKSnapshots
                 .addSink(new RedisTopKSink(redisHost, redisPort))
                 .name("redis-topk-sink");
+
+        topKSnapshots
+                .addSink(new RedisTrendFeatureSink(redisHost, redisPort))
+                .name("redis-trend-feature-sink");
 
         env.execute("recsys-online-feature-streaming");
     }
@@ -236,6 +270,119 @@ public final class OnlineFeatureStreamingJob {
         }
     }
 
+    static final class UserEmbeddingFunction extends KeyedProcessFunction<Integer, MovieEvent, StringFeatureUpdate> {
+        private final int dimensions;
+        private final int ttlSeconds;
+        private transient ValueState<UserEmbeddingState> state;
+
+        UserEmbeddingFunction(int dimensions, int ttlSeconds) {
+            this.dimensions = Math.max(1, dimensions);
+            this.ttlSeconds = ttlSeconds;
+        }
+
+        @Override
+        public void open(Configuration parameters) {
+            state = getRuntimeContext().getState(
+                    new ValueStateDescriptor<>("user-embedding-feature", UserEmbeddingState.class));
+        }
+
+        @Override
+        public void processElement(MovieEvent event,
+                                   KeyedProcessFunction<Integer, MovieEvent, StringFeatureUpdate>.Context context,
+                                   Collector<StringFeatureUpdate> out) throws Exception {
+            UserEmbeddingState current = state.value();
+            double[] vector = current == null ? new double[dimensions] : parseVector(current.vector, dimensions);
+            int bucket = Math.floorMod(event.movieId, dimensions);
+            vector[bucket] += Math.max(1L, event.engagementWeight());
+            String encoded = encodeVector(vector);
+            UserEmbeddingState next = new UserEmbeddingState();
+            next.vector = encoded;
+            next.updatedAtMillis = event.eventTimeMillis;
+            state.update(next);
+            out.collect(new StringFeatureUpdate(
+                    "feature:user:" + event.userId + ":embedding",
+                    encoded,
+                    event.eventTimeMillis,
+                    ttlSeconds
+            ));
+        }
+
+        private static double[] parseVector(String encoded, int dimensions) {
+            double[] vector = new double[dimensions];
+            if (encoded == null || encoded.isBlank()) {
+                return vector;
+            }
+            String[] parts = encoded.split(",");
+            for (int i = 0; i < Math.min(parts.length, dimensions); i++) {
+                try {
+                    vector[i] = Double.parseDouble(parts[i]);
+                } catch (NumberFormatException ignore) {
+                    vector[i] = 0.0;
+                }
+            }
+            return vector;
+        }
+
+        private static String encodeVector(double[] vector) {
+            double norm = 0.0;
+            for (double v : vector) {
+                norm += v * v;
+            }
+            norm = Math.sqrt(norm);
+            StringBuilder builder = new StringBuilder(vector.length * 6);
+            for (int i = 0; i < vector.length; i++) {
+                if (i > 0) builder.append(',');
+                double value = norm > 0.0 ? vector[i] / norm : 0.0;
+                builder.append(String.format(java.util.Locale.ROOT, "%.6f", value));
+            }
+            return builder.toString();
+        }
+    }
+
+    static final class SessionFeatureFunction extends KeyedProcessFunction<String, MovieEvent, StringFeatureUpdate> {
+        private final int ttlSeconds;
+        private transient ValueState<SessionFeatureState> state;
+
+        SessionFeatureFunction(int ttlSeconds) {
+            this.ttlSeconds = ttlSeconds;
+        }
+
+        @Override
+        public void open(Configuration parameters) {
+            state = getRuntimeContext().getState(
+                    new ValueStateDescriptor<>("session-feature", SessionFeatureState.class));
+        }
+
+        @Override
+        public void processElement(MovieEvent event,
+                                   KeyedProcessFunction<String, MovieEvent, StringFeatureUpdate>.Context context,
+                                   Collector<StringFeatureUpdate> out) throws Exception {
+            SessionFeatureState current = state.value();
+            if (current == null) {
+                current = new SessionFeatureState();
+                current.userId = event.userId;
+                current.sessionId = event.sessionId();
+            }
+            current.eventCount++;
+            if (event.isClick()) current.clickCount++;
+            if (event.isView()) current.watchCount++;
+            if (event.isLike()) current.likeCount++;
+            if (event.isSearch()) current.searchCount++;
+            current.engagementScore += event.engagementWeight();
+            current.lastMovieId = event.movieId;
+            current.updatedAtMillis = event.eventTimeMillis;
+            current.lastEventType = event.eventType == null ? "" : event.eventType;
+            state.update(current);
+
+            out.collect(new StringFeatureUpdate(
+                    "feature:user:" + event.userId + ":session:" + current.sessionId,
+                    current.encode(),
+                    event.eventTimeMillis,
+                    ttlSeconds
+            ));
+        }
+    }
+
     static final class DeduplicateEventsFunction extends KeyedProcessFunction<String, MovieEvent, MovieEvent> {
         private final long ttlSeconds;
         private transient ValueState<Boolean> seen;
@@ -289,6 +436,70 @@ public final class OnlineFeatureStreamingJob {
         @Override
         public Long merge(Long a, Long b) {
             return a + b;
+        }
+    }
+
+    static final class CtrFeatureAggregate implements AggregateFunction<MovieEvent, CtrFeature, CtrFeature> {
+        @Override
+        public CtrFeature createAccumulator() {
+            return new CtrFeature();
+        }
+
+        @Override
+        public CtrFeature add(MovieEvent event, CtrFeature acc) {
+            acc.movieId = event.movieId;
+            if (event.isImpression()) acc.impressions++;
+            if (event.isClick()) acc.clicks++;
+            if (event.isView()) acc.watches++;
+            if (event.isDwell()) acc.dwells++;
+            if (event.isLike()) acc.likes++;
+            if (event.isRating()) acc.ratings++;
+            acc.engagementScore += event.engagementWeight();
+            return acc;
+        }
+
+        @Override
+        public CtrFeature getResult(CtrFeature accumulator) {
+            return accumulator;
+        }
+
+        @Override
+        public CtrFeature merge(CtrFeature a, CtrFeature b) {
+            a.impressions += b.impressions;
+            a.clicks += b.clicks;
+            a.watches += b.watches;
+            a.dwells += b.dwells;
+            a.likes += b.likes;
+            a.ratings += b.ratings;
+            a.engagementScore += b.engagementScore;
+            return a;
+        }
+    }
+
+    static final class CtrFeatureWindowFunction extends ProcessWindowFunction<CtrFeature, StringFeatureUpdate, Integer, TimeWindow> {
+        private final String windowLabel;
+        private final int ttlSeconds;
+
+        CtrFeatureWindowFunction(String windowLabel, int ttlSeconds) {
+            this.windowLabel = windowLabel;
+            this.ttlSeconds = ttlSeconds;
+        }
+
+        @Override
+        public void process(Integer movieId,
+                            ProcessWindowFunction<CtrFeature, StringFeatureUpdate, Integer, TimeWindow>.Context context,
+                            Iterable<CtrFeature> elements,
+                            Collector<StringFeatureUpdate> out) {
+            java.util.Iterator<CtrFeature> it = elements.iterator();
+            if (!it.hasNext()) return;
+            CtrFeature feature = it.next();
+            feature.movieId = movieId;
+            out.collect(new StringFeatureUpdate(
+                    "feature:movie:" + movieId + ":ctr:" + windowLabel,
+                    feature.encode(),
+                    context.window().getEnd(),
+                    ttlSeconds
+            ));
         }
     }
 
@@ -419,6 +630,17 @@ public final class OnlineFeatureStreamingJob {
         }
     }
 
+    static final class RedisStringFeatureSink extends AbstractRedisSink<StringFeatureUpdate> {
+        RedisStringFeatureSink(String host, int port) { super(host, port); }
+
+        @Override
+        public void invoke(StringFeatureUpdate value, Context context) {
+            try (Jedis jedis = pool.getResource()) {
+                setStringIfNewer(jedis, value.redisKey, value.value, value.updatedAtMillis, value.ttlSeconds);
+            }
+        }
+    }
+
     static final class RedisRecentMoviesSink extends AbstractRedisSink<UserRecentMoviesUpdate> {
         RedisRecentMoviesSink(String host, int port) { super(host, port); }
 
@@ -449,6 +671,19 @@ public final class OnlineFeatureStreamingJob {
         public void invoke(TopKSnapshot value, Context context) {
             try (Jedis jedis = pool.getResource()) {
                 setTopKIfNewer(jedis, value);
+                setTopKIfNewer(jedis, value.withRedisKey(value.redisKey.replace("topk:", "feature:hot_movies:")));
+            }
+        }
+    }
+
+    static final class RedisTrendFeatureSink extends AbstractRedisSink<TopKSnapshot> {
+        RedisTrendFeatureSink(String host, int port) { super(host, port); }
+
+        @Override
+        public void invoke(TopKSnapshot value, Context context) {
+            try (Jedis jedis = pool.getResource()) {
+                setStringIfNewer(jedis, value.redisKey.replace("topk:", "feature:trend:"),
+                        value.encodeTrend(), value.updatedAtMillis, value.ttlSeconds);
             }
         }
     }
@@ -483,6 +718,73 @@ public final class OnlineFeatureStreamingJob {
         }
     }
 
+    static final class StringFeatureUpdate {
+        final String redisKey;
+        final String value;
+        final long updatedAtMillis;
+        final int ttlSeconds;
+
+        StringFeatureUpdate(String redisKey, String value, long updatedAtMillis, int ttlSeconds) {
+            this.redisKey = redisKey;
+            this.value = value;
+            this.updatedAtMillis = updatedAtMillis;
+            this.ttlSeconds = ttlSeconds;
+        }
+    }
+
+    public static final class UserEmbeddingState {
+        public String vector = "";
+        public long updatedAtMillis;
+    }
+
+    public static final class SessionFeatureState {
+        public int userId;
+        public String sessionId = "";
+        public long eventCount;
+        public long clickCount;
+        public long watchCount;
+        public long likeCount;
+        public long searchCount;
+        public long engagementScore;
+        public int lastMovieId;
+        public String lastEventType = "";
+        public long updatedAtMillis;
+
+        String encode() {
+            return "eventCount=" + eventCount
+                    + ",clicks=" + clickCount
+                    + ",watches=" + watchCount
+                    + ",likes=" + likeCount
+                    + ",searches=" + searchCount
+                    + ",engagementScore=" + engagementScore
+                    + ",lastMovieId=" + lastMovieId
+                    + ",lastEventType=" + lastEventType;
+        }
+    }
+
+    public static final class CtrFeature {
+        public int movieId;
+        public long impressions;
+        public long clicks;
+        public long watches;
+        public long dwells;
+        public long likes;
+        public long ratings;
+        public long engagementScore;
+
+        String encode() {
+            double ctr = impressions > 0 ? (double) clicks / impressions : 0.0;
+            return "impressions=" + impressions
+                    + ",clicks=" + clicks
+                    + ",ctr=" + String.format(java.util.Locale.ROOT, "%.6f", ctr)
+                    + ",watches=" + watches
+                    + ",dwells=" + dwells
+                    + ",likes=" + likes
+                    + ",ratings=" + ratings
+                    + ",engagementScore=" + engagementScore;
+        }
+    }
+
     static final class ScoredMovie {
         final int movieId;
         final long score;
@@ -504,6 +806,16 @@ public final class OnlineFeatureStreamingJob {
             this.movies = movies;
             this.updatedAtMillis = updatedAtMillis;
             this.ttlSeconds = ttlSeconds;
+        }
+
+        TopKSnapshot withRedisKey(String nextRedisKey) {
+            return new TopKSnapshot(nextRedisKey, movies, updatedAtMillis, ttlSeconds);
+        }
+
+        String encodeTrend() {
+            return movies.stream()
+                    .map(movie -> movie.movieId + ":" + movie.score)
+                    .collect(Collectors.joining(","));
         }
     }
 }

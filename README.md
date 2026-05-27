@@ -1118,7 +1118,7 @@ See [streaming/online-serving/README.md](streaming/online-serving/README.md) for
 | `OnlineJoiner` | Joins behavior logs with user/item/context features and emits labeled samples for training streams |
 | `ExperienceCollector` | Groups joined point samples by request/list and emits ranked recommendation experiences for listwise training |
 | `OnlineLearner` | Consumes listwise experiences and updates lightweight serving parameters without retraining PyTorch/ONNX artifacts |
-| `OnlineFeatureStreamingJob` | Flink job: consumes Kafka events, deduplicates by `eventId`, writes `user:<id>:recent_movies`, engagement metrics, and `topk:<window>` to Redis |
+| `OnlineFeatureStreamingJob` | Flink job: consumes Kafka events, deduplicates by `eventId`, writes recent history, user embeddings, hot movies, CTR, session, and trend features to Redis |
 | `OnlineRecommendationEngine` | Scores candidates using per-user recent history + trending rank |
 | `CandidateGenerator.byEmbedding` | ANN recall on offline user-tower embeddings |
 | `OnlineRecommendationService` | Blends the two sources, excludes recently watched, falls back gracefully for cold-start users |
@@ -1177,6 +1177,17 @@ user embeddings (ANN recall) ─────────────────
 ```
 
 The bundled `events.txt` rows model the Kafka payloads produced by `LogCollector`. `OnlineJoiner` models the step that joins those logs with user, item, and context features to produce labeled samples. `ExperienceCollector` groups those point samples back into ranked recommendation-list experiences keyed by user and request/list ID, which is the shape used by listwise online and offline training. `OnlineLearner` is the online-training counterpart: it consumes those list experiences, updates lightweight item-bias parameters in the serving process, and lets `OnlineRecommendationService` apply those adjustments at ranking time. This is intentionally not PyTorch/ONNX retraining; it is real-time parameter learning from the stream. The `online_features.txt` rows model the low-latency aggregates the Flink job writes into Redis (`user:<id>:recent_movies`, engagement counters, `topk:last_hour`). `OnlineRecommendationService` blends these real-time signals with offline embedding-based recall at request time.
+
+**Redis Feature Store keys written by Flink:**
+
+| Feature family | Redis key | Value shape |
+|---|---|---|
+| Recent user history | `user:<userId>:recent_movies` | Space-delimited movie IDs, newest last |
+| User embedding | `feature:user:<userId>:embedding` | L2-normalized hashed embedding CSV |
+| Session feature | `feature:user:<userId>:session:<sessionId>` | Counts and last event fields |
+| Movie CTR feature | `feature:movie:<movieId>:ctr:<window>` | impressions, clicks, ctr, watches, dwells, likes, ratings, engagement score |
+| Hot movies | `topk:<window>` and `feature:hot_movies:<window>` | Redis ZSET movie ID → engagement score |
+| Trend feature | `feature:trend:<window>` | Compact `movieId:score` list |
 
 **Data processing contracts:**
 
