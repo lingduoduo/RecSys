@@ -13,3 +13,7 @@
 {"eventId":"evt-013","userId":127,"movieId":2,"eventType":"like","rating":4,"eventTimeMillis":1713503720000,"source":"web"}
 {"eventId":"evt-014","userId":126,"movieId":11,"eventType":"view","watchMs":420000,"eventTimeMillis":1713503780000,"source":"mobile"}
 {"eventId":"evt-015","userId":125,"movieId":12,"eventType":"like","rating":4,"eventTimeMillis":1713503840000,"source":"tv"}
+{"eventId":"evt-016","userId":123,"movieId":4,"eventType":"click","dwellMs":8000,"eventTimeMillis":1713503900000,"source":"web","features":{"requestId":"req-016","rank":"3"}}
+{"eventId":"evt-017","userId":123,"movieId":4,"eventType":"dwell","dwellMs":45000,"eventTimeMillis":1713503960000,"source":"web","features":{"requestId":"req-016"}}
+{"eventId":"evt-018","userId":124,"movieId":6,"eventType":"rating","rating":5,"eventTimeMillis":1713504020000,"source":"mobile"}
+{"eventId":"evt-019","userId":125,"movieId":0,"eventType":"search","eventTimeMillis":1713504080000,"source":"web","features":{"query":"space opera","resultCount":"12"}}

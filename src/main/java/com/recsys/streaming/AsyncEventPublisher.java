@@ -69,6 +69,10 @@ public class AsyncEventPublisher implements AutoCloseable {
         return false;
     }
 
+    public boolean publish(LogCollector.KafkaEvent event) {
+        return event != null && publish(event.value());
+    }
+
     public Snapshot snapshot() {
         return new Snapshot(queue.size(), publishedCount.get(), droppedCount.get(), drainedCount.get());
     }

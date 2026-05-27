@@ -33,14 +33,14 @@ public final class OnlineJoiner {
         if (log.userId() <= 0) {
             throw new IllegalArgumentException("userId must be positive");
         }
-        if (log.movieId() <= 0) {
-            throw new IllegalArgumentException("movieId must be positive");
-        }
         if (log.eventId() == null || log.eventId().isBlank()) {
             throw new IllegalArgumentException("eventId is required");
         }
 
         String eventType = EventSemantics.normalizeEventType(log.eventType());
+        if (!EventSemantics.isSearch(eventType) && log.movieId() <= 0) {
+            throw new IllegalArgumentException("movieId must be positive");
+        }
         Map<String, String> features = new LinkedHashMap<>();
         putAll(features, "user.", userFeatures);
         putAll(features, "item.", itemFeatures);
@@ -48,6 +48,7 @@ public final class OnlineJoiner {
         putAll(features, "event.", log.features());
         features.put("event.source", blankToDefault(log.source(), "unknown"));
         features.put("event.watchMs", Long.toString(Math.max(0L, log.watchMs())));
+        features.put("event.dwellMs", Long.toString(Math.max(0L, log.dwellMs())));
         if (log.rating() != null) {
             features.put("event.rating", Integer.toString(log.rating()));
         }
@@ -57,7 +58,7 @@ public final class OnlineJoiner {
                 log.userId(),
                 log.movieId(),
                 eventType,
-                EventSemantics.labelFor(eventType, log.watchMs(), log.rating()),
+                EventSemantics.labelFor(eventType, eventDurationMs(eventType, log), log.rating()),
                 Math.max(0L, log.eventTimeMillis()),
                 Collections.unmodifiableMap(new LinkedHashMap<>(features))
         );
@@ -77,6 +78,10 @@ public final class OnlineJoiner {
 
     private static String blankToDefault(String value, String defaultValue) {
         return value == null || value.isBlank() ? defaultValue : value.trim();
+    }
+
+    private static long eventDurationMs(String eventType, LogCollector.UserBehaviorLog log) {
+        return EventSemantics.isDwell(eventType) ? log.dwellMs() : log.watchMs();
     }
 
     public record JoinedSample(String eventId,

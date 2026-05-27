@@ -1114,7 +1114,7 @@ See [streaming/online-serving/README.md](streaming/online-serving/README.md) for
 
 | Component | What it does |
 |---|---|
-| `LogCollector` | App/API boundary for exposure, click, view, like, and order logs; validates and emits Kafka-ready JSON lines |
+| `LogCollector` | App/API boundary for exposure, click, watch, like, rating, dwell-time, search, and order logs; validates and emits Kafka-ready JSON lines or keyed Kafka envelopes |
 | `OnlineJoiner` | Joins behavior logs with user/item/context features and emits labeled samples for training streams |
 | `ExperienceCollector` | Groups joined point samples by request/list and emits ranked recommendation experiences for listwise training |
 | `OnlineLearner` | Consumes listwise experiences and updates lightweight serving parameters without retraining PyTorch/ONNX artifacts |
@@ -1180,8 +1180,11 @@ The bundled `events.txt` rows model the Kafka payloads produced by `LogCollector
 
 **Data processing contracts:**
 
-- `EventSemantics` is the shared normalization and label policy for `LogCollector` and `OnlineJoiner`: impressions/exposures label `0`, clicks or meaningful views label `1`, likes/high ratings label `2`, and orders/purchases label `3`.
-- `LogCollector` sanitizes feature maps before emitting Kafka-ready JSON: blank keys and null values are dropped, keys/values are trimmed, and output order is deterministic.
+- `EventSemantics` is the shared normalization and label policy for `LogCollector` and `OnlineJoiner`: impressions/exposures label `0`, clicks, searches, meaningful watch events, and meaningful dwell-time events label `1`, likes/high ratings label `2`, and orders/purchases label `3`.
+- `LogCollector` sanitizes feature maps before emitting Kafka-ready JSON: blank keys and null values are dropped, keys/values are trimmed, and output order is deterministic. `collectForKafka()` returns a keyed envelope with topic `movie_events`, key `user:<userId>` for per-user ordering, and headers for `schemaVersion`, `eventType`, and `source`.
+- Supported user event types are `impression`/`exposure`/`show`, `click`, `view`/`watch`, `like`, `rating`, `dwell`, `search`, and `order`/`purchase`. Item events require `movieId > 0`; `search` may use `movieId = 0` and put query text in `features.query`.
+- Use `watchMs` for video playback duration and `dwellMs` for page/card dwell time. Dwell events above 10 seconds contribute positive training intent and Redis engagement weight.
+- Kafka producers should use `LogCollector.KafkaEvent.key()` as the record key so all events for a user stay ordered within one partition. For high-volume click/watch/dwell streams, prefer `acks=all`, `enable.idempotence=true`, `compression.type=zstd` or `lz4`, `linger.ms=20`, and a larger `batch.size` so the producer batches bursty UI telemetry without blocking serving threads.
 - `OnlineJoiner` namespaces features as `user.*`, `item.*`, `context.*`, and `event.*`, then produces immutable joined samples.
 - `ExperienceCollector` groups by `userId + event.requestId`, sorts by `event.rank`, and compacts duplicate movie feedback within the same request by keeping the strongest label.
 - `OnlineLearner` performs bounded online updates over list experiences and exposes item-level score adjustments to serving.

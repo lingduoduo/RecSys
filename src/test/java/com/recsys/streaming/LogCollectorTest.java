@@ -40,6 +40,7 @@ class LogCollectorTest {
         assertEquals(9, node.get("movieId").asInt());
         assertEquals("click", node.get("eventType").asText());
         assertEquals(0L, node.get("watchMs").asLong());
+        assertEquals(0L, node.get("dwellMs").asLong());
         assertEquals(1713503000000L, node.get("eventTimeMillis").asLong());
         assertEquals("mobile", node.get("source").asText());
         assertEquals("4", node.get("features").get("rank").asText());
@@ -54,6 +55,36 @@ class LogCollectorTest {
                         null, 123, 9, "share", 0L, null, 0L, "web", Map.of())));
 
         assertFalse(ex.getMessage().isBlank());
+    }
+
+    @Test
+    void collectForKafkaBuildsUserPartitionedEnvelope() throws Exception {
+        LogCollector collector = new LogCollector(Clock.fixed(
+                Instant.ofEpochMilli(1713503000000L), ZoneOffset.UTC), "user_events");
+
+        LogCollector.KafkaEvent event = collector.collectForKafka(new LogCollector.UserBehaviorLog(
+                "evt-rating", 123, 9, "rating", 0L, 0L, 5, 0L, "web", Map.of()));
+
+        assertEquals("user_events", event.topic());
+        assertEquals("user:123", event.key());
+        assertEquals(LogCollector.SCHEMA_VERSION, event.headers().get("schemaVersion"));
+        assertEquals("rating", event.headers().get("eventType"));
+        assertEquals("rating", MAPPER.readTree(event.value()).get("eventType").asText());
+    }
+
+    @Test
+    void collectAllowsSearchEventsWithoutMovieId() throws Exception {
+        LogCollector collector = new LogCollector(Clock.fixed(
+                Instant.ofEpochMilli(1713503000000L), ZoneOffset.UTC));
+
+        String json = collector.collect(new LogCollector.UserBehaviorLog(
+                "evt-search", 123, 0, "search", 0L, 0L, null, 0L, "web",
+                Map.of("query", "space opera")));
+
+        JsonNode node = MAPPER.readTree(json);
+        assertEquals("search", node.get("eventType").asText());
+        assertEquals(0, node.get("movieId").asInt());
+        assertEquals("space opera", node.get("features").get("query").asText());
     }
 
     @Test
