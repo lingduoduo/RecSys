@@ -79,6 +79,34 @@ class MultiLevelEmbeddingCacheTest {
         assertThat(cache.tierStats().misses()).isEqualTo(1L);
     }
 
+    @Test
+    void getEmbedding_shortCircuitsRepeatedMissesWithNullSentinel() {
+        AtomicInteger l2Reads = new AtomicInteger();
+        MultiLevelEmbeddingCache cache = new MultiLevelEmbeddingCache.Builder(
+                countingStore(Map.of(), l2Reads)
+        ).build();
+
+        assertThat(cache.getEmbedding(404)).isNull();
+        assertThat(cache.getEmbedding(404)).isNull();
+
+        assertThat(l2Reads.get()).isEqualTo(1);
+    }
+
+    @Test
+    void setEmbeddingClearsNullSentinelForLaterHits() {
+        AtomicInteger l2Reads = new AtomicInteger();
+        Map<Integer, float[]> l2Data = new HashMap<>();
+        MultiLevelEmbeddingCache cache = new MultiLevelEmbeddingCache.Builder(
+                countingStore(l2Data, l2Reads)
+        ).build();
+
+        assertThat(cache.getEmbedding(9)).isNull();
+        cache.setEmbedding(9, new float[]{9f}, 300L);
+
+        assertThat(cache.getEmbedding(9)).containsExactly(9f);
+        assertThat(l2Reads.get()).isEqualTo(1);
+    }
+
     // ── L2 fallback when L1 cold ──────────────────────────────────────────────────
 
     @Test

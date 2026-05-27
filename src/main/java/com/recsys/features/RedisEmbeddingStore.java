@@ -13,6 +13,7 @@ import org.slf4j.LoggerFactory;
 import java.util.Collection;
 import java.util.HashMap;
 import java.util.HashSet;
+import java.util.LinkedHashSet;
 import java.util.List;
 import java.util.Map;
 import java.util.Set;
@@ -23,6 +24,7 @@ public class RedisEmbeddingStore implements EmbeddingStore {
     private static final Logger log = LoggerFactory.getLogger(RedisEmbeddingStore.class);
     private final JedisPool pool;
     private final String keyPrefix;
+    private final int mgetBatchSize;
     // 缓存雪崩 — random TTL jitter: staggers expiry across keys so a batch write does not
     // cause all entries to expire simultaneously and trigger a thundering herd on Redis.
     // jitterFraction=0.1 means 0..10% of baseTtl is added as a random offset.
@@ -33,9 +35,14 @@ public class RedisEmbeddingStore implements EmbeddingStore {
     }
 
     RedisEmbeddingStore(JedisPool pool, String keyPrefix, double jitterFraction) {
+        this(pool, keyPrefix, jitterFraction, readIntEnv("REDIS_EMBEDDING_MGET_BATCH_SIZE", 500));
+    }
+
+    RedisEmbeddingStore(JedisPool pool, String keyPrefix, double jitterFraction, int mgetBatchSize) {
         this.pool = pool;
         this.keyPrefix = keyPrefix;
         this.jitterFraction = Math.max(0.0, Math.min(0.5, jitterFraction));
+        this.mgetBatchSize = Math.max(1, mgetBatchSize);
     }
 
     // Adds uniform positive jitter in [0, jitter] to baseTtl to spread expiry times.
@@ -105,21 +112,24 @@ public class RedisEmbeddingStore implements EmbeddingStore {
         Map<Integer, float[]> embeddings = new HashMap<>();
         if (movieIds == null || movieIds.isEmpty()) return embeddings;
 
-        int i = 0;
-        int[] idArray = new int[movieIds.size()];
-        String[] keys = new String[movieIds.size()];
-        for (int id : movieIds) {
-            idArray[i] = id;
-            keys[i] = keyPrefix + ":" + id;
-            i++;
+        List<Integer> ids = new java.util.ArrayList<>(new LinkedHashSet<>(movieIds));
+        if (ids.isEmpty()) {
+            return embeddings;
         }
 
         try (Jedis jedis = pool.getResource()) {
-            List<String> values = jedis.mget(keys);
-            for (int j = 0; j < values.size(); j++) {
-                String value = values.get(j);
-                if (value == null || value.isBlank()) continue;
-                embeddings.put(idArray[j], VectorMath.parseVector(value));
+            for (int start = 0; start < ids.size(); start += mgetBatchSize) {
+                int end = Math.min(ids.size(), start + mgetBatchSize);
+                String[] keys = new String[end - start];
+                for (int i = start; i < end; i++) {
+                    keys[i - start] = keyPrefix + ":" + ids.get(i);
+                }
+                List<String> values = jedis.mget(keys);
+                for (int j = 0; j < values.size(); j++) {
+                    String value = values.get(j);
+                    if (value == null || value.isBlank()) continue;
+                    embeddings.put(ids.get(start + j), VectorMath.parseVector(value));
+                }
             }
         }
 
@@ -211,5 +221,15 @@ public class RedisEmbeddingStore implements EmbeddingStore {
             sb.append(vec[i]);
         }
         return sb.toString();
+    }
+
+    private static int readIntEnv(String envName, int defaultValue) {
+        String raw = System.getenv(envName);
+        if (raw == null || raw.isBlank()) return defaultValue;
+        try {
+            return Integer.parseInt(raw.trim());
+        } catch (NumberFormatException e) {
+            return defaultValue;
+        }
     }
 }
