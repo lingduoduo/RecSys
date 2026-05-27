@@ -10,6 +10,8 @@ import com.recsys.modelbased.model.service.InferenceMetricsService;
 import com.recsys.modelbased.model.service.LoadShedder;
 import com.recsys.modelbased.model.service.ModelRateLimiter;
 import com.recsys.modelbased.model.service.RecommendationService;
+import com.recsys.modelbased.model.service.SubmitTokenException;
+import com.recsys.modelbased.model.service.SubmitTokenService;
 
 import java.time.Duration;
 import org.junit.jupiter.api.BeforeEach;
@@ -24,8 +26,10 @@ import org.springframework.test.web.servlet.MockMvc;
 import java.util.List;
 
 import static org.mockito.ArgumentMatchers.any;
+import static org.mockito.Mockito.doThrow;
 import static org.mockito.Mockito.verify;
 import static org.mockito.Mockito.when;
+import static org.springframework.test.web.servlet.request.MockMvcRequestBuilders.get;
 import static org.springframework.test.web.servlet.request.MockMvcRequestBuilders.post;
 import static org.springframework.test.web.servlet.result.MockMvcResultMatchers.*;
 
@@ -40,6 +44,7 @@ class RecommendationControllerTest {
     @MockBean ABTestService abTestService;
     @MockBean LoadShedder loadShedder;
     @MockBean ModelRateLimiter modelRateLimiter;
+    @MockBean SubmitTokenService submitTokenService;
 
     @BeforeEach
     void allowRequest() {
@@ -51,6 +56,7 @@ class RecommendationControllerTest {
                 new LoadShedder.Snapshot(0, 64, 0.0, 0.95, 0L, 0L, 100, false));
         // Rate limiter allows all requests by default; individual tests override this.
         when(modelRateLimiter.tryAcquire(any())).thenReturn(ModelRateLimiter.Decision.unlimited());
+        when(submitTokenService.ttlSeconds()).thenReturn(300);
     }
 
     // --- happy path ---
@@ -75,6 +81,34 @@ class RecommendationControllerTest {
                 .andExpect(jsonPath("$.modelVersion").value("v1"))
                 .andExpect(jsonPath("$.recommendations[0].itemId").value("1"))
                 .andExpect(jsonPath("$.recommendations[1].score").value(0.72));
+    }
+
+    @Test
+    void getSubmitToken_returnsTokenAndExpiry() throws Exception {
+        when(submitTokenService.createToken()).thenReturn("tok-123");
+
+        mockMvc.perform(get("/api/v1/token"))
+                .andExpect(status().isOk())
+                .andExpect(jsonPath("$.token").value("tok-123"))
+                .andExpect(jsonPath("$.expiresInSeconds").value(300));
+    }
+
+    @Test
+    void recommend_invalidSubmitToken_returns409BeforeProcessing() throws Exception {
+        doThrow(new SubmitTokenException("submit token is invalid or already used; refresh and retry"))
+                .when(submitTokenService).validateAndConsume("used-token");
+
+        var req = new RecommendRequest();
+        req.setUserId("123");
+        req.setK(3);
+
+        mockMvc.perform(post("/api/v1/recommend")
+                        .contentType(MediaType.APPLICATION_JSON)
+                        .header(SubmitTokenService.HEADER_NAME, "used-token")
+                        .content(objectMapper.writeValueAsString(req)))
+                .andExpect(status().isConflict())
+                .andExpect(jsonPath("$.error")
+                        .value("submit token is invalid or already used; refresh and retry"));
     }
 
     // --- bean validation ---

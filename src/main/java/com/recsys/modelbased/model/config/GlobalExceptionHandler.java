@@ -3,6 +3,7 @@ package com.recsys.modelbased.model.config;
 import com.recsys.modelbased.model.dto.ApiError;
 import com.recsys.modelbased.model.service.RateLimitExceededException;
 import com.recsys.modelbased.model.service.ServiceOverloadedException;
+import com.recsys.modelbased.model.service.SubmitTokenException;
 import jakarta.servlet.http.HttpServletRequest;
 import org.slf4j.Logger;
 import org.slf4j.LoggerFactory;
@@ -65,6 +66,12 @@ public class GlobalExceptionHandler {
     public ResponseEntity<ApiError> handleOverloaded(ServiceOverloadedException ex) {
         return ResponseEntity.status(HttpStatus.SERVICE_UNAVAILABLE)
                 .header(HttpHeaders.RETRY_AFTER, Integer.toString(ex.getRetryAfterSeconds()))
+                .body(new ApiError(ex.getMessage(), List.of()));
+    }
+
+    @ExceptionHandler(SubmitTokenException.class)
+    public ResponseEntity<ApiError> handleSubmitToken(SubmitTokenException ex) {
+        return ResponseEntity.status(HttpStatus.CONFLICT)
                 .body(new ApiError(ex.getMessage(), List.of()));
     }
 

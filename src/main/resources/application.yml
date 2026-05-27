@@ -74,3 +74,11 @@ recsys:
     cold-start-max-k: ${RECSYS_RECOMMENDATION_CACHE_COLD_START_MAX_K:100}
     # Max time a duplicate request waits for another thread's in-flight cache miss.
     compute-wait-timeout-millis: ${RECSYS_RECOMMENDATION_CACHE_COMPUTE_WAIT_TIMEOUT_MILLIS:2000}
+  submit-token:
+    # Optional one-time token protection for POST /api/v1/recommend.
+    # When enabled, clients fetch GET /api/v1/token and send X-Submit-Token on submit.
+    enabled: ${RECSYS_SUBMIT_TOKEN_ENABLED:false}
+    ttl-seconds: ${RECSYS_SUBMIT_TOKEN_TTL_SECONDS:300}
+    key-prefix: ${RECSYS_SUBMIT_TOKEN_KEY_PREFIX:submit_token:}
+    redis-host: ${REDIS_HOST:localhost}
+    redis-port: ${REDIS_PORT:6379}
