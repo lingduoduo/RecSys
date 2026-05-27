@@ -6,6 +6,7 @@ import java.net.URI;
 import java.util.List;
 
 import static org.junit.jupiter.api.Assertions.assertEquals;
+import static org.junit.jupiter.api.Assertions.assertTrue;
 import static org.junit.jupiter.api.Assertions.assertNull;
 
 class MicroserviceRouteTest {
@@ -63,5 +64,27 @@ class MicroserviceRouteTest {
 
         assertEquals("http://catalog-serving.recsys.internal:6010/v1/health",
                 route.healthUri().toString());
+    }
+
+    @Test
+    void defaultsExposeGatewayDomainServicesAndLegacyRoutes() {
+        List<String> names = MicroserviceRoute.defaults().stream()
+                .map(MicroserviceRoute::name)
+                .toList();
+
+        assertTrue(names.containsAll(List.of(
+                "user-profile",
+                "movie-metadata",
+                "feature",
+                "recommendation-retrieval",
+                "ranking",
+                "llm-explanation",
+                "agent-workflow",
+                "observability",
+                "catalog",
+                "model",
+                "online",
+                "llm"
+        )));
     }
 }

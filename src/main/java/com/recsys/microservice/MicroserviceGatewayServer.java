@@ -11,13 +11,14 @@ import java.net.http.HttpClient;
 import java.time.Duration;
 import java.util.List;
 import java.util.Map;
+import java.util.Set;
 import java.util.stream.Collectors;
 
 public final class MicroserviceGatewayServer {
     private static final Logger log = LoggerFactory.getLogger(MicroserviceGatewayServer.class);
     private static final String DEFAULT_HOST = "0.0.0.0";
     private static final int DEFAULT_PORT = 8010;
-    private static final String LLM_ROUTE_NAME = "llm";
+    private static final Set<String> LLM_ROUTE_NAMES = Set.of("llm", "llm-explanation");
     // Cloud Map DNS TTL is 15–30 s. Cap the JVM cache so Blue/Green endpoint changes propagate.
     private static final String CLOUD_MAP_DNS_TTL_SECONDS = "30";
 
@@ -61,13 +62,15 @@ public final class MicroserviceGatewayServer {
                 .collect(Collectors.toUnmodifiableMap(MicroserviceRoute::name,
                         r -> new RouteCircuitBreaker(cbFailureThreshold, cbCooldownMs)));
 
-        // Split routes: LLM gets its own servlet; everything else uses the general proxy.
-        MicroserviceRoute llmRoute = allRoutes.stream()
-                .filter(r -> LLM_ROUTE_NAME.equals(r.name()))
-                .findFirst()
-                .orElseThrow(() -> new IllegalStateException("no llm route in defaults"));
+        // Split routes: LLM-backed routes get dedicated servlets with long timeouts and token budgets.
+        List<MicroserviceRoute> llmRoutes = allRoutes.stream()
+                .filter(r -> LLM_ROUTE_NAMES.contains(r.name()))
+                .toList();
+        if (llmRoutes.size() != LLM_ROUTE_NAMES.size()) {
+            throw new IllegalStateException("missing LLM routes in defaults: " + LLM_ROUTE_NAMES);
+        }
         List<MicroserviceRoute> proxyRoutes = allRoutes.stream()
-                .filter(r -> !LLM_ROUTE_NAME.equals(r.name()))
+                .filter(r -> !LLM_ROUTE_NAMES.contains(r.name()))
                 .toList();
 
         GatewayRateLimiter rateLimiter = GatewayRateLimiter.fromEnvironment(proxyRoutes);
@@ -77,23 +80,24 @@ public final class MicroserviceGatewayServer {
         int llmDefaultTokenEstimate = EnvVars.readInt("LLM_DEFAULT_TOKEN_ESTIMATE", LlmProxyServlet.DEFAULT_TOKEN_ESTIMATE);
         long llmMaxRetryWaitMs = EnvVars.readLong("LLM_MAX_RETRY_WAIT_MS", LlmProxyServlet.DEFAULT_MAX_RETRY_WAIT_MS);
 
-        LlmProxyServlet llmProxyServlet = new LlmProxyServlet(
-                llmRoute,
-                llmHttpClient,
-                llmTimeout,
-                circuitBreakers.get(LLM_ROUTE_NAME),
-                llmTokenRateLimiter,
-                llmResponseCache,
-                llmDefaultTokenEstimate,
-                llmMaxRetryWaitMs
-        );
-
         Server server = new Server(new InetSocketAddress(DEFAULT_HOST, port));
         ServletContextHandler context = new ServletContextHandler();
         context.setContextPath("/");
         context.addServlet(new ServletHolder(new GatewayHealthServlet(allRoutes, httpClient, timeout, circuitBreakers)), "/health");
-        // Register LLM servlet before the catch-all so Jetty's more-specific path wins.
-        context.addServlet(new ServletHolder(llmProxyServlet), "/api/llm/*");
+        // Register LLM servlets before the catch-all so Jetty's more-specific paths win.
+        for (MicroserviceRoute llmRoute : llmRoutes) {
+            LlmProxyServlet llmProxyServlet = new LlmProxyServlet(
+                    llmRoute,
+                    llmHttpClient,
+                    llmTimeout,
+                    circuitBreakers.get(llmRoute.name()),
+                    llmTokenRateLimiter,
+                    llmResponseCache,
+                    llmDefaultTokenEstimate,
+                    llmMaxRetryWaitMs
+            );
+            context.addServlet(new ServletHolder(llmProxyServlet), llmRoute.prefix() + "/*");
+        }
         context.addServlet(new ServletHolder(new GatewayProxyServlet(proxyRoutes, httpClient, timeout, circuitBreakers, rateLimiter)), "/*");
         server.setHandler(context);
         server.setStopAtShutdown(true);
