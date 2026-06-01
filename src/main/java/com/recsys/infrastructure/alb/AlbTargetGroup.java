@@ -51,8 +51,16 @@ public final class AlbTargetGroup {
         return List.copyOf(targets);
     }
 
+    public void deregisterTarget(String host, int port) {
+        targets.removeIf(t -> t.host().equals(host) && t.port() == port);
+    }
+
     public int healthyCount() {
         return (int) targets.stream().filter(AlbTarget::isRoutable).count();
+    }
+
+    public int totalCount() {
+        return targets.size();
     }
 
     public static Builder builder(String name) {
@@ -91,7 +99,6 @@ public final class AlbTargetGroup {
         }
 
         public AlbTargetGroup build() {
-            if (targets.isEmpty()) throw new IllegalStateException("target group must have at least one target");
             return new AlbTargetGroup(name, protocol, targets);
         }
     }
