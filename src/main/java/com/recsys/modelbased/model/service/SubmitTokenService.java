@@ -2,6 +2,7 @@ package com.recsys.modelbased.model.service;
 
 import com.recsys.modelbased.model.config.SubmitTokenProperties;
 import jakarta.annotation.PreDestroy;
+import org.springframework.beans.factory.annotation.Autowired;
 import org.springframework.stereotype.Service;
 import redis.clients.jedis.Jedis;
 import redis.clients.jedis.JedisPool;
@@ -27,6 +28,7 @@ public class SubmitTokenService {
     private final Supplier<JedisPool> poolFactory;
     private volatile JedisPool pool;
 
+    @Autowired
     public SubmitTokenService(SubmitTokenProperties properties) {
         this(properties, () -> new JedisPool(properties.getRedisHost(), properties.getRedisPort()));
     }

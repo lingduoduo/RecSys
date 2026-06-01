@@ -23,6 +23,7 @@ RecSys is a compact Maven workspace for experimenting with recommendation-system
 - [Capacity Planning](#capacity-planning)
 - [JVM Tuning](#jvm-tuning)
 - [Project Layout](#project-layout)
+- [Project Architecture](docs/project-architecture.md)
 - [API Reference](#api-reference)
 - [Model Serving Demo](#model-serving-demo)
 - [A/B Testing](#ab-testing)
