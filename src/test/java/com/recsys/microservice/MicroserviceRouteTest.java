@@ -28,6 +28,20 @@ class MicroserviceRouteTest {
     }
 
     @Test
+    void routeTableMatchesLongestPrefix() {
+        MicroserviceRoute catalog = new MicroserviceRoute(
+                "catalog", "/api/catalog", "CATALOG_SERVICE_URL", URI.create("http://catalog:6010"), "/health");
+        MicroserviceRoute catalogAdmin = new MicroserviceRoute(
+                "catalog-admin", "/api/catalog/admin", "CATALOG_ADMIN_SERVICE_URL",
+                URI.create("http://catalog-admin:6011"), "/health");
+        MicroserviceRouteTable table = new MicroserviceRouteTable(List.of(catalog, catalogAdmin));
+
+        assertEquals(catalogAdmin, table.match("/api/catalog/admin/cache"));
+        assertEquals(catalog, table.match("/api/catalog"));
+        assertNull(table.match("/api/catalog-admin"));
+    }
+
+    @Test
     void doesNotMatchPartialPathSegments() {
         MicroserviceRoute route = new MicroserviceRoute(
                 "model", "/api/model", "MODEL_SERVICE_URL", URI.create("http://model:8080"), "/health/ready");
