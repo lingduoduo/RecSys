@@ -1,8 +1,8 @@
 package com.recsys.streaming;
 
-import com.recsys.features.CandidateGenerator;
-import com.recsys.features.DataManager;
-import com.recsys.features.ShardedTopKStore;
+import com.recsys.infrastructure.vectordb.CandidateGenerator;
+import com.recsys.infrastructure.DataManager;
+import com.recsys.infrastructure.redis.ShardedTopKStore;
 import org.eclipse.jetty.server.Server;
 import org.eclipse.jetty.servlet.ServletContextHandler;
 import org.eclipse.jetty.servlet.ServletHolder;

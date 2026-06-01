@@ -1,7 +1,7 @@
 package com.recsys.streaming;
 
-import com.recsys.features.DataManager;
-import com.recsys.models.Movie;
+import com.recsys.infrastructure.DataManager;
+import com.recsys.model.Movie;
 import org.junit.jupiter.api.Test;
 
 import java.util.List;

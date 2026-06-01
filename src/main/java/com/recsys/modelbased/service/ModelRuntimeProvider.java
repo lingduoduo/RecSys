@@ -1,7 +1,7 @@
 package com.recsys.modelbased.service;
 
 import ai.onnxruntime.OrtException;
-import com.recsys.features.RedisEmbeddingStore;
+import com.recsys.infrastructure.redis.RedisEmbeddingStore;
 import com.recsys.modelbased.config.ABTestConfig;
 import jakarta.annotation.PostConstruct;
 import jakarta.annotation.PreDestroy;

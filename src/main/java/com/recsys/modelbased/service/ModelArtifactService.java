@@ -2,7 +2,7 @@ package com.recsys.modelbased.service;
 
 import com.fasterxml.jackson.core.type.TypeReference;
 import com.fasterxml.jackson.databind.ObjectMapper;
-import com.recsys.features.RedisEmbeddingStore;
+import com.recsys.infrastructure.redis.RedisEmbeddingStore;
 
 import java.io.IOException;
 import java.io.InputStream;

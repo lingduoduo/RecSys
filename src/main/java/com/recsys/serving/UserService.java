@@ -1,7 +1,7 @@
 package com.recsys.serving;
 
-import com.recsys.features.DataManager;
-import com.recsys.models.User;
+import com.recsys.infrastructure.DataManager;
+import com.recsys.model.User;
 import jakarta.servlet.http.HttpServletRequest;
 import jakarta.servlet.http.HttpServletResponse;
 

@@ -1,6 +1,6 @@
 package com.recsys.modelbased.service;
 
-import com.recsys.features.VectorMath;
+import com.recsys.infrastructure.vectordb.VectorMath;
 import com.recsys.modelbased.dto.ScoredItem;
 
 import java.util.HashSet;
