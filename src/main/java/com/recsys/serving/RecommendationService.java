@@ -1,11 +1,11 @@
 package com.recsys.serving;
 
-import com.recsys.features.CandidateGenerator;
-import com.recsys.features.DataManager;
+import com.recsys.infrastructure.vectordb.CandidateGenerator;
+import com.recsys.infrastructure.DataManager;
 import com.recsys.streaming.TrendingStore;
-import com.recsys.models.Movie;
-import com.recsys.models.RecommendationResponse;
-import com.recsys.models.User;
+import com.recsys.model.Movie;
+import com.recsys.model.RecommendationResponse;
+import com.recsys.model.User;
 import jakarta.servlet.http.HttpServletRequest;
 import jakarta.servlet.http.HttpServletResponse;
 

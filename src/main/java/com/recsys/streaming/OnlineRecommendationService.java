@@ -1,9 +1,9 @@
 package com.recsys.streaming;
 
-import com.recsys.features.CandidateGenerator;
-import com.recsys.features.DataManager;
-import com.recsys.models.Movie;
-import com.recsys.models.User;
+import com.recsys.infrastructure.vectordb.CandidateGenerator;
+import com.recsys.infrastructure.DataManager;
+import com.recsys.model.Movie;
+import com.recsys.model.User;
 
 import java.util.Comparator;
 import java.util.HashMap;

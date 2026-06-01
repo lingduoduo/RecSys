@@ -1,13 +1,13 @@
 package com.recsys.serving;
 
-import com.recsys.features.CandidateGenerator;
-import com.recsys.features.DataLoader;
-import com.recsys.features.DataManager;
-import com.recsys.features.EmbeddingStore;
-import com.recsys.features.LocalEmbeddingCache;
-import com.recsys.features.PairPredictionService;
-import com.recsys.features.RedisEmbeddingStore;
-import com.recsys.features.ShardedTopKStore;
+import com.recsys.infrastructure.vectordb.CandidateGenerator;
+import com.recsys.infrastructure.DataLoader;
+import com.recsys.infrastructure.DataManager;
+import com.recsys.infrastructure.vectordb.EmbeddingStore;
+import com.recsys.infrastructure.cache.LocalEmbeddingCache;
+import com.recsys.infrastructure.PairPredictionService;
+import com.recsys.infrastructure.redis.RedisEmbeddingStore;
+import com.recsys.infrastructure.redis.ShardedTopKStore;
 import com.recsys.streaming.TrendingStore;
 import org.eclipse.jetty.server.Server;
 import org.eclipse.jetty.servlet.ServletContextHandler;

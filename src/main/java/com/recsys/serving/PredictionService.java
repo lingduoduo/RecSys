@@ -1,8 +1,8 @@
 package com.recsys.serving;
 
-import com.recsys.features.PairPredictionService;
-import com.recsys.models.PredictRequest;
-import com.recsys.models.PredictResponse;
+import com.recsys.infrastructure.PairPredictionService;
+import com.recsys.model.PredictRequest;
+import com.recsys.model.PredictResponse;
 import jakarta.servlet.http.HttpServletRequest;
 import jakarta.servlet.http.HttpServletResponse;
 

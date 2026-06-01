@@ -1,6 +1,6 @@
 package com.recsys.modelbased.service;
 
-import com.recsys.features.RedisEmbeddingStore;
+import com.recsys.infrastructure.redis.RedisEmbeddingStore;
 import org.junit.jupiter.api.Test;
 import org.junit.jupiter.api.io.TempDir;
 

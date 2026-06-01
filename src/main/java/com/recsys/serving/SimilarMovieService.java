@@ -1,10 +1,10 @@
 package com.recsys.serving;
 
-import com.recsys.features.ExactVectorIndex;
-import com.recsys.features.DataManager;
-import com.recsys.features.EmbeddingStore;
-import com.recsys.features.SearchResult;
-import com.recsys.models.Movie;
+import com.recsys.infrastructure.vectordb.ExactVectorIndex;
+import com.recsys.infrastructure.DataManager;
+import com.recsys.infrastructure.vectordb.EmbeddingStore;
+import com.recsys.infrastructure.vectordb.SearchResult;
+import com.recsys.model.Movie;
 import jakarta.servlet.http.HttpServletRequest;
 import jakarta.servlet.http.HttpServletResponse;
 
