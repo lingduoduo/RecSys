@@ -66,6 +66,7 @@ final class LlmProxyServlet extends HttpServlet {
     private final LlmResponseCache responseCache;
     private final int defaultTokenEstimate;
     private final long maxRetryWaitMs;
+    private final GatewayAuthenticator authenticator;
 
     LlmProxyServlet(MicroserviceRoute route,
                     HttpClient httpClient,
@@ -75,6 +76,19 @@ final class LlmProxyServlet extends HttpServlet {
                     LlmResponseCache responseCache,
                     int defaultTokenEstimate,
                     long maxRetryWaitMs) {
+        this(route, httpClient, requestTimeout, circuitBreaker, tokenRateLimiter, responseCache,
+                defaultTokenEstimate, maxRetryWaitMs, GatewayAuthenticator.disabled());
+    }
+
+    LlmProxyServlet(MicroserviceRoute route,
+                    HttpClient httpClient,
+                    Duration requestTimeout,
+                    RouteCircuitBreaker circuitBreaker,
+                    LlmTokenRateLimiter tokenRateLimiter,
+                    LlmResponseCache responseCache,
+                    int defaultTokenEstimate,
+                    long maxRetryWaitMs,
+                    GatewayAuthenticator authenticator) {
         this.route = route;
         this.httpClient = httpClient;
         this.requestTimeout = requestTimeout;
@@ -83,6 +97,7 @@ final class LlmProxyServlet extends HttpServlet {
         this.responseCache = responseCache;
         this.defaultTokenEstimate = defaultTokenEstimate;
         this.maxRetryWaitMs = maxRetryWaitMs;
+        this.authenticator = authenticator == null ? GatewayAuthenticator.disabled() : authenticator;
     }
 
     @Override
@@ -90,6 +105,9 @@ final class LlmProxyServlet extends HttpServlet {
             throws ServletException, IOException {
 
         String path = requestPath(request);
+        if (!authenticator.authenticate(request, response, path)) {
+            return;
+        }
         URI target = route.rewrite(path, request.getQueryString());
 
         byte[] requestBody = shouldForwardBody(request)

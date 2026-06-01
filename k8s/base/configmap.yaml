@@ -19,6 +19,9 @@ data:
   AGENT_WORKFLOW_SERVICE_URL: "http://recsys-model-serving:8080"
   OBSERVABILITY_SERVICE_URL: "http://recsys-model-serving:8080"
   GATEWAY_TIMEOUT_MS: "3000"
+  # Optional API-key auth. Keep unset by default; inject via Secret in production:
+  # GATEWAY_API_KEYS: "replace-with-secret"
+  GATEWAY_PUBLIC_PATHS: "/health"
   SPRING_APPLICATION_NAME: "recsys-model-serving"
   RECSYS_RECOMMENDATION_CACHE_ENABLED: "true"
   RECSYS_RECOMMENDATION_CACHE_TTL_SECONDS: "300"

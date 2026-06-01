@@ -90,11 +90,11 @@ record MicroserviceRoute(String name,
         return new MicroserviceRoute(name, prefix, envVar, URI.create(raw), healthPath);
     }
 
-    private static boolean matchesPrefix(String path, String prefix) {
+    static boolean matchesPrefix(String path, String prefix) {
         return path.equals(prefix) || path.startsWith(prefix + "/");
     }
 
-    private static String normalizePath(String path) {
+    static String normalizePath(String path) {
         if (path == null || path.isBlank()) {
             return "/";
         }

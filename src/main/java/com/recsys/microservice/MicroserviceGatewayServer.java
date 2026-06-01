@@ -74,6 +74,7 @@ public final class MicroserviceGatewayServer {
                 .toList();
 
         GatewayRateLimiter rateLimiter = GatewayRateLimiter.fromEnvironment(proxyRoutes);
+        GatewayAuthenticator authenticator = GatewayAuthenticator.fromEnvironment();
 
         LlmTokenRateLimiter llmTokenRateLimiter = LlmTokenRateLimiter.fromEnvironment();
         LlmResponseCache llmResponseCache = LlmResponseCache.fromEnvironment();
@@ -94,11 +95,13 @@ public final class MicroserviceGatewayServer {
                     llmTokenRateLimiter,
                     llmResponseCache,
                     llmDefaultTokenEstimate,
-                    llmMaxRetryWaitMs
+                    llmMaxRetryWaitMs,
+                    authenticator
             );
             context.addServlet(new ServletHolder(llmProxyServlet), llmRoute.prefix() + "/*");
         }
-        context.addServlet(new ServletHolder(new GatewayProxyServlet(proxyRoutes, httpClient, timeout, circuitBreakers, rateLimiter)), "/*");
+        context.addServlet(new ServletHolder(new GatewayProxyServlet(
+                proxyRoutes, httpClient, timeout, circuitBreakers, rateLimiter, authenticator)), "/*");
         server.setHandler(context);
         server.setStopAtShutdown(true);
 
@@ -108,6 +111,9 @@ public final class MicroserviceGatewayServer {
         }
         if (rateLimiter.isEnabled()) {
             log.info("Gateway local rate limiting enabled");
+        }
+        if (authenticator.isEnabled()) {
+            log.info("Gateway API-key authentication enabled");
         }
         if (llmTokenRateLimiter.isEnabled()) {
             log.info("LLM token rate limiting enabled");

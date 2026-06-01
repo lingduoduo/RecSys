@@ -40,11 +40,12 @@ final class GatewayProxyServlet extends HttpServlet {
             "upgrade"
     );
 
-    private final List<MicroserviceRoute> routes;
+    private final MicroserviceRouteTable routeTable;
     private final HttpClient httpClient;
     private final Duration requestTimeout;
     private final Map<String, RouteCircuitBreaker> circuitBreakers;
     private final GatewayRateLimiter rateLimiter;
+    private final GatewayAuthenticator authenticator;
 
     GatewayProxyServlet(List<MicroserviceRoute> routes,
                         HttpClient httpClient,
@@ -58,18 +59,32 @@ final class GatewayProxyServlet extends HttpServlet {
                         Duration requestTimeout,
                         Map<String, RouteCircuitBreaker> circuitBreakers,
                         GatewayRateLimiter rateLimiter) {
-        this.routes = List.copyOf(routes);
+        this(routes, httpClient, requestTimeout, circuitBreakers, rateLimiter, GatewayAuthenticator.disabled());
+    }
+
+    GatewayProxyServlet(List<MicroserviceRoute> routes,
+                        HttpClient httpClient,
+                        Duration requestTimeout,
+                        Map<String, RouteCircuitBreaker> circuitBreakers,
+                        GatewayRateLimiter rateLimiter,
+                        GatewayAuthenticator authenticator) {
+        this.routeTable = new MicroserviceRouteTable(List.copyOf(routes));
         this.httpClient = httpClient;
         this.requestTimeout = requestTimeout;
         this.circuitBreakers = Map.copyOf(circuitBreakers);
         this.rateLimiter = rateLimiter == null ? GatewayRateLimiter.disabled() : rateLimiter;
+        this.authenticator = authenticator == null ? GatewayAuthenticator.disabled() : authenticator;
     }
 
     @Override
     protected void service(HttpServletRequest request, HttpServletResponse response)
             throws ServletException, IOException {
         String path = requestPath(request);
-        MicroserviceRoute route = MicroserviceRoute.match(routes, path);
+        if (!authenticator.authenticate(request, response, path)) {
+            return;
+        }
+
+        MicroserviceRoute route = routeTable.match(path);
         if (route == null) {
             writeGatewayError(response, HttpServletResponse.SC_NOT_FOUND,
                     "no microservice route matches " + path);
