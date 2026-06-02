@@ -1,6 +1,6 @@
 package com.recsys.mysql;
 
-import com.recsys.pagination.MillionScalePaginationSql;
+import com.recsys.service.pagination.MillionScalePaginationSql;
 import org.junit.jupiter.api.Test;
 
 import java.sql.Connection;
@@ -135,5 +135,56 @@ class MySqlClientTest {
         assertThat(result.rows()).hasSize(1);
         assertThat(result.hasMore()).isFalse();
         assertThat(result.nextCursor()).isNull();
+    }
+
+    @Test
+    void queryPage_returnsNullNextCursorWhenExtractorReturnsNull() throws Exception {
+        var m = mockQuery();
+        when(m.resultSet().next()).thenReturn(true, true, false);
+        when(m.resultSet().getInt("id")).thenReturn(1, 2);
+
+        var plan = new MillionScalePaginationSql.SqlPlan("SELECT id FROM movies LIMIT ?", List.of(2));
+
+        MySqlClient.PageResult<Integer> result = new MySqlClient(MySqlConnectionSettings.disabled())
+                .queryPage(m.connection(), plan, 2,
+                        row -> null,
+                        rs -> rs.getInt("id"));
+
+        assertThat(result.rows()).hasSize(2);
+        assertThat(result.hasMore()).isFalse();
+        assertThat(result.nextCursor()).isNull();
+    }
+
+    @Test
+    void queryPage_rejectsNonPositivePageSize() throws Exception {
+        var m = mockQuery();
+        var plan = new MillionScalePaginationSql.SqlPlan("SELECT 1", List.of());
+
+        assertThatThrownBy(() -> new MySqlClient(MySqlConnectionSettings.disabled())
+                .queryPage(m.connection(), plan, 0, row -> null, rs -> rs.getInt(1)))
+                .isInstanceOf(IllegalArgumentException.class)
+                .hasMessageContaining("pageSize");
+    }
+
+    @Test
+    void query_returnsEmptyListOnNoRows() throws Exception {
+        var m = mockQuery();
+        var plan = new MillionScalePaginationSql.SqlPlan("SELECT id FROM movies LIMIT ?", List.of(10));
+
+        List<Integer> rows = new MySqlClient(MySqlConnectionSettings.disabled())
+                .query(m.connection(), plan, rs -> rs.getInt("id"));
+
+        assertThat(rows).isEmpty();
+    }
+
+    @Test
+    void query_withTimeout_convenenceOverload_setsTimeout() throws Exception {
+        var m = mockQuery();
+        var plan = new MillionScalePaginationSql.SqlPlan("SELECT 1", List.of());
+
+        new MySqlClient(MySqlConnectionSettings.disabled())
+                .query(m.connection(), plan, rs -> rs.getInt(1), 3);
+
+        verify(m.statement()).setQueryTimeout(3);
     }
 }
