@@ -10,7 +10,8 @@ RecSys is a compact Maven workspace for experimenting with recommendation-system
 | Model-based offline training | PyTorch-exported ONNX models plus vocab/config artifacts generated offline |
 | Online learning | Streaming feedback updates lightweight serving parameters outside the PyTorch model |
 
-![Architecture](architecture.png)
+![Architecture](recsys-architecture.png)
+[Architecture Diagram (interactive)](https://htmlpreview.github.io/?https://github.com/lingduoduo/Recsys-Backend-Service/blob/main/recsys-architecture.html)
 
 ---
 
