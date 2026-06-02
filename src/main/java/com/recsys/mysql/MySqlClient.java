@@ -1,6 +1,6 @@
 package com.recsys.mysql;
 
-import com.recsys.pagination.MillionScalePaginationSql;
+import com.recsys.service.pagination.MillionScalePaginationSql;
 
 import java.sql.Connection;
 import java.sql.DriverManager;
@@ -72,10 +72,14 @@ public class MySqlClient {
     }
 
     public <T> List<T> query(MillionScalePaginationSql.SqlPlan plan, RowMapper<T> mapper) throws SQLException {
+        return query(plan, mapper, 0);
+    }
+
+    public <T> List<T> query(MillionScalePaginationSql.SqlPlan plan, RowMapper<T> mapper, int queryTimeoutSeconds) throws SQLException {
         Objects.requireNonNull(plan, "plan");
         Objects.requireNonNull(mapper, "mapper");
         try (Connection connection = openConnection()) {
-            return query(connection, plan, mapper, 0);
+            return query(connection, plan, mapper, queryTimeoutSeconds);
         }
     }
 
@@ -143,6 +147,9 @@ public class MySqlClient {
             RowMapper<T> mapper,
             int queryTimeoutSeconds
     ) throws SQLException {
+        if (pageSize <= 0) {
+            throw new IllegalArgumentException("pageSize must be >= 1");
+        }
         List<T> rows = query(connection, plan, mapper, queryTimeoutSeconds);
         String nextCursor = null;
         if (rows.size() == pageSize) {
@@ -152,6 +159,29 @@ public class MySqlClient {
             }
         }
         return new PageResult<>(rows, nextCursor);
+    }
+
+    public <T> PageResult<T> queryPage(
+            MillionScalePaginationSql.SqlPlan plan,
+            int pageSize,
+            Function<T, MillionScalePaginationSql.SeekCursor> cursorExtractor,
+            RowMapper<T> mapper
+    ) throws SQLException {
+        try (Connection connection = openConnection()) {
+            return queryPage(connection, plan, pageSize, cursorExtractor, mapper, 0);
+        }
+    }
+
+    public <T> PageResult<T> queryPage(
+            MillionScalePaginationSql.SqlPlan plan,
+            int pageSize,
+            Function<T, MillionScalePaginationSql.SeekCursor> cursorExtractor,
+            RowMapper<T> mapper,
+            int queryTimeoutSeconds
+    ) throws SQLException {
+        try (Connection connection = openConnection()) {
+            return queryPage(connection, plan, pageSize, cursorExtractor, mapper, queryTimeoutSeconds);
+        }
     }
 
     private static void bind(PreparedStatement statement, List<Object> bindValues) throws SQLException {
