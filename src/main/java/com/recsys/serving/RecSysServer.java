@@ -14,7 +14,9 @@ import org.eclipse.jetty.servlet.ServletContextHandler;
 import org.eclipse.jetty.servlet.ServletHolder;
 import org.slf4j.Logger;
 import org.slf4j.LoggerFactory;
-import redis.clients.jedis.JedisPool;
+import com.recsys.infrastructure.redis.RedisConnectionFactory;
+import redis.clients.jedis.Jedis;
+import redis.clients.jedis.util.Pool;
 
 import java.net.InetSocketAddress;
 
@@ -36,11 +38,9 @@ public class RecSysServer {
     }
 
     public void run() throws Exception {
-        String redisHost = System.getenv().getOrDefault("REDIS_HOST", "localhost");
-        int redisPort = readIntEnv("REDIS_PORT", 6379);
         int port = readIntEnv("PORT", DEFAULT_PORT);
 
-        try (JedisPool jedisPool = new JedisPool(redisHost, redisPort)) {
+        try (Pool<Jedis> jedisPool = RedisConnectionFactory.fromEnv()) {
             DataManager dataManager = DataManager.getInstance();
             PairPredictionService pairPredictionService = new PairPredictionService();
             RedisEmbeddingStore embStore     = new RedisEmbeddingStore(jedisPool, "i2vEmb");
