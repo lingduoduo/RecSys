@@ -1,12 +1,13 @@
 package com.recsys.modelbased.service;
 
+import com.recsys.infrastructure.redis.RedisConnectionFactory;
 import com.recsys.modelbased.config.SubmitTokenProperties;
 import jakarta.annotation.PreDestroy;
 import org.springframework.beans.factory.annotation.Autowired;
 import org.springframework.stereotype.Service;
 import redis.clients.jedis.Jedis;
-import redis.clients.jedis.JedisPool;
 import redis.clients.jedis.params.SetParams;
+import redis.clients.jedis.util.Pool;
 
 import java.util.List;
 import java.util.UUID;
@@ -25,15 +26,15 @@ public class SubmitTokenService {
             """;
 
     private final SubmitTokenProperties properties;
-    private final Supplier<JedisPool> poolFactory;
-    private volatile JedisPool pool;
+    private final Supplier<Pool<Jedis>> poolFactory;
+    private volatile Pool<Jedis> pool;
 
     @Autowired
     public SubmitTokenService(SubmitTokenProperties properties) {
-        this(properties, () -> new JedisPool(properties.getRedisHost(), properties.getRedisPort()));
+        this(properties, () -> RedisConnectionFactory.fromEnv());
     }
 
-    SubmitTokenService(SubmitTokenProperties properties, Supplier<JedisPool> poolFactory) {
+    SubmitTokenService(SubmitTokenProperties properties, Supplier<Pool<Jedis>> poolFactory) {
         this.properties = properties;
         this.poolFactory = poolFactory;
     }
@@ -79,14 +80,14 @@ public class SubmitTokenService {
 
     @PreDestroy
     public void close() {
-        JedisPool current = pool;
+        Pool<Jedis> current = pool;
         if (current != null) {
             current.close();
         }
     }
 
     private Jedis jedis() {
-        JedisPool current = pool;
+        Pool<Jedis> current = pool;
         if (current == null) {
             synchronized (this) {
                 current = pool;

@@ -1,6 +1,7 @@
 package com.recsys.modelbased.service;
 
 import ai.onnxruntime.OrtException;
+import com.recsys.infrastructure.redis.RedisConnectionFactory;
 import com.recsys.infrastructure.redis.RedisEmbeddingStore;
 import com.recsys.modelbased.config.ABTestConfig;
 import jakarta.annotation.PostConstruct;
@@ -10,7 +11,8 @@ import org.springframework.beans.factory.annotation.Value;
 import org.slf4j.Logger;
 import org.slf4j.LoggerFactory;
 import org.springframework.stereotype.Service;
-import redis.clients.jedis.JedisPool;
+import redis.clients.jedis.Jedis;
+import redis.clients.jedis.util.Pool;
 
 import java.io.IOException;
 import java.util.LinkedHashSet;
@@ -30,14 +32,12 @@ public class ModelRuntimeProvider {
     private final ABTestConfig abTestConfig;
     private final String modelFile;
     private final String itemEmbeddingsSource;
-    private final String redisHost;
-    private final int redisPort;
     private final String redisItemEmbeddingPrefix;
     private final Map<String, ModelRuntime> runtimes = new ConcurrentHashMap<>();
-    private JedisPool redisItemEmbeddingPool;
+    private Pool<Jedis> redisItemEmbeddingPool;
 
     public ModelRuntimeProvider(ModelArtifactLocator artifactLocator, ABTestConfig abTestConfig) {
-        this(artifactLocator, abTestConfig, "dssm_model.onnx", "classpath", "localhost", 6379, "i2vEmb");
+        this(artifactLocator, abTestConfig, "dssm_model.onnx", "classpath", "i2vEmb");
     }
 
     @Autowired
@@ -45,15 +45,11 @@ public class ModelRuntimeProvider {
                                 ABTestConfig abTestConfig,
                                 @Value("${recsys.model.file:dssm_model.onnx}") String modelFile,
                                 @Value("${recsys.model.item-embeddings-source:classpath}") String itemEmbeddingsSource,
-                                @Value("${recsys.model.redis.host:localhost}") String redisHost,
-                                @Value("${recsys.model.redis.port:6379}") int redisPort,
                                 @Value("${recsys.model.redis.item-embedding-prefix:i2vEmb}") String redisItemEmbeddingPrefix) {
         this.artifactLocator = artifactLocator;
         this.abTestConfig = abTestConfig;
         this.modelFile = modelFile == null || modelFile.isBlank() ? "dssm_model.onnx" : modelFile.trim();
         this.itemEmbeddingsSource = itemEmbeddingsSource == null ? "classpath" : itemEmbeddingsSource.trim();
-        this.redisHost = redisHost == null || redisHost.isBlank() ? "localhost" : redisHost.trim();
-        this.redisPort = redisPort;
         this.redisItemEmbeddingPrefix = redisItemEmbeddingPrefix == null || redisItemEmbeddingPrefix.isBlank()
                 ? "i2vEmb"
                 : redisItemEmbeddingPrefix.trim();
@@ -163,7 +159,7 @@ public class ModelRuntimeProvider {
             return null;
         }
         if (redisItemEmbeddingPool == null) {
-            redisItemEmbeddingPool = new JedisPool(redisHost, redisPort);
+            redisItemEmbeddingPool = RedisConnectionFactory.fromEnv();
         }
         return new RedisEmbeddingStore(redisItemEmbeddingPool, redisItemEmbeddingPrefix);
     }
