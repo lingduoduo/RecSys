@@ -500,31 +500,113 @@ curl -X POST "http://localhost:8010/api/llm/api/generate" \
 
 ## Microservice Gateway
 
-The gateway is the public edge for the local microservice topology. It routes, circuit-breaks, and rate-limits across all four backend services.
+`MicroserviceGatewayServer` is the single public edge for the local microservice topology. It strips the route prefix and proxies to the right backend, while adding circuit breaking, token-bucket rate limiting, API-key auth, and a dedicated LLM proxy with token budgets and response caching. All four services sit behind it — clients only need to know one hostname and port.
 
-Start all services including the gateway:
+### Route table
+
+| Gateway prefix | Backend port | Backing class | Notes |
+|---|---:|---|---|
+| `/api/users` | `6010` | `RecSysServer` | User profile lookup |
+| `/api/movies` | `6010` | `RecSysServer` | Movie metadata lookup |
+| `/api/catalog` | `6010` | `RecSysServer` | Recommendations, similar, pair prediction |
+| `/api/features` | `7010` | `OnlinePredictionServer` | Online feature snapshot |
+| `/api/online` | `7010` | `OnlinePredictionServer` | Real-time recommendations + ops |
+| `/api/retrieval` | `8080` | `ModelApplication` | ONNX-based retrieval |
+| `/api/ranking` | `8080` | `ModelApplication` | ONNX-based ranking |
+| `/api/model` | `8080` | `ModelApplication` | Full recommend endpoint |
+| `/api/agents` | `8080` | `ModelApplication` | Agent workflow placeholder |
+| `/api/observability` | `8080` | `ModelApplication` | Model health and metrics |
+| `/api/llm` | `11434` | Ollama / OpenAI-compat | Opt-in — set `LLM_SERVICE_URL` |
+| `/api/explanations` | `11434` | Ollama / OpenAI-compat | Opt-in — set `LLM_EXPLANATION_SERVICE_URL` |
+
+### Start
 
 ```bash
+# Start all services + gateway
 docker compose -f docker-compose.streaming.yml up -d
 sh scripts/run-microservices-local.sh
-```
 
-Start only the gateway when backends are already running:
-
-```bash
+# Start only the gateway (when backends are already running)
 sh scripts/run-with-jvm-tuning.sh api-gateway -- \
   mvn exec:java -Dexec.mainClass=com.recsys.microservice.MicroserviceGatewayServer
-```
 
-Enable LLM routes (requires Ollama):
-
-```bash
+# Enable LLM routes (requires Ollama)
 brew install ollama && ollama serve &
 export LLM_SERVICE_URL=http://localhost:11434
 sh scripts/run-microservices-local.sh
 ```
 
-`GET /health` aggregates downstream health checks and returns `503 DEGRADED` when any registered service is down. LLM routes (`/api/llm`, `/api/explanations`) are only registered when their env vars are explicitly set — without them the gateway reports `UP` with no LLM entries.
+### Health aggregation
+
+`GET /health` pings every registered downstream service and returns an aggregated status. `DEGRADED` means at least one service is down; individual `status` fields show which:
+
+```bash
+curl http://localhost:8010/health | jq '{status, services: (.services | to_entries | map({(.key): .value.status}) | add)}'
+# {"status":"UP","services":{"user-profile":"UP","movie-metadata":"UP",...}}
+```
+
+### Circuit breaker (`RouteCircuitBreaker`)
+
+Each route has an independent circuit breaker. After `GATEWAY_CB_FAILURE_THRESHOLD` consecutive failures the circuit opens and fast-fails with `503` during the cooldown window — protecting downstream services from traffic during an outage.
+
+```bash
+# Circuit state is visible in each service's health entry
+curl http://localhost:8010/health | jq '.services["model"].circuitState'
+# "CLOSED"   ← healthy
+# "OPEN"     ← tripped; fast-failing
+# "HALF_OPEN"← testing recovery
+```
+
+### Rate limiting (`GatewayRateLimiter`)
+
+Token-bucket rate limiting per route. Each bucket refills at `GATEWAY_RATE_LIMIT_RPS` tokens/second with a `GATEWAY_RATE_LIMIT_BURST` burst. Excess requests get `429 Too Many Requests`.
+
+```bash
+# Enable global rate limit (5 req/s, burst 10)
+GATEWAY_RATE_LIMIT_RPS=5 GATEWAY_RATE_LIMIT_BURST=10 \
+  mvn exec:java -Dexec.mainClass=com.recsys.microservice.MicroserviceGatewayServer
+
+# Per-route override — limit model endpoint more aggressively
+GATEWAY_RATE_LIMIT_MODEL_RPS=2 GATEWAY_RATE_LIMIT_MODEL_BURST=3 \
+  mvn exec:java -Dexec.mainClass=com.recsys.microservice.MicroserviceGatewayServer
+```
+
+### API-key authentication (`GatewayAuthenticator`)
+
+When `GATEWAY_API_KEYS` is set, requests must send a valid key via `X-API-Key` or `Authorization: Bearer`. Public paths (default: `/health`) bypass auth.
+
+```bash
+GATEWAY_API_KEYS=secret-key-1,secret-key-2 \
+  mvn exec:java -Dexec.mainClass=com.recsys.microservice.MicroserviceGatewayServer
+
+# Authenticated request
+curl -H "X-API-Key: secret-key-1" http://localhost:8010/api/catalog/item?id=1
+curl -H "Authorization: Bearer secret-key-1" http://localhost:8010/api/catalog/item?id=1
+
+# Health always works without auth
+curl http://localhost:8010/health
+```
+
+### LLM proxy (`LlmProxyServlet`)
+
+LLM routes use a dedicated `HttpClient` with a longer timeout (default 120 s). The proxy handles SSE streaming passthrough, retry-on-429, token-count-aware rate limiting, and SHA-256 response caching.
+
+```bash
+# Non-streaming
+curl -X POST http://localhost:8010/api/llm/api/generate \
+  -H "Content-Type: application/json" \
+  -d '{"model":"llama3","prompt":"Summarize: Inception","max_tokens":100}'
+
+# Streaming (SSE)
+curl -X POST http://localhost:8010/api/llm/api/generate \
+  -H "Content-Type: application/json" \
+  -d '{"model":"llama3","prompt":"Summarize: Inception","stream":true}'
+
+# Cache hit on repeated request returns X-Cache: HIT
+curl -v -X POST http://localhost:8010/api/llm/api/generate \
+  -H "Content-Type: application/json" \
+  -d '{"model":"llama3","prompt":"Summarize: Inception","max_tokens":100}' 2>&1 | grep X-Cache
+```
 
 ---
 
