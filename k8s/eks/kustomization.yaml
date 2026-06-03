@@ -2,13 +2,21 @@ apiVersion: kustomize.config.k8s.io/v1beta1
 kind: Kustomization
 resources:
   - ../base
-  - gateway-irsa.yaml       # IRSA ServiceAccount + gateway Deployment patch
+  - gateway-irsa-sa.yaml    # IRSA ServiceAccount for the API gateway
   - patches/irsa-model-serving.yaml
 
 images:
   - name: recsys-backend-service
     newName: 123456789012.dkr.ecr.us-east-1.amazonaws.com/recsys-backend-service
     newTag: latest
+
+replicas:
+  - name: redis-primary
+    count: 0
+  - name: redis-replica
+    count: 0
+  - name: redis-sentinel
+    count: 0
 
 patches:
   # Add Cloud Map registration annotations to every ClusterIP Service.
@@ -17,3 +25,7 @@ patches:
   - path: configmap-patch.yaml
   # Force Always pull policy so ECR tag reassignment is picked up on every rollout.
   - path: image-pull-policy-patch.yaml
+  # Override Redis config for ElastiCache (standalone mode, disable Sentinel env vars).
+  - path: redis-elasticache-patch.yaml
+  # Patch gateway Deployment to use the IRSA ServiceAccount.
+  - path: gateway-irsa.yaml

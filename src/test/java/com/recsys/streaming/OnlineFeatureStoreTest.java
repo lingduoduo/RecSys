@@ -134,7 +134,7 @@ class OnlineFeatureStoreTest {
 
     private static final class RedisPoolStub {
         final redis.clients.jedis.Jedis jedis = mock(redis.clients.jedis.Jedis.class);
-        final redis.clients.jedis.JedisPool pool = mock(redis.clients.jedis.JedisPool.class);
+        final redis.clients.jedis.util.Pool<redis.clients.jedis.Jedis> pool = mock(redis.clients.jedis.JedisPool.class);
 
         static RedisPoolStub withHistory(int userId, String value) {
             var stub = new RedisPoolStub();

@@ -1,0 +1,24 @@
+# ConfigMap patch: switch prod Redis to ElastiCache (standalone, DNS-based failover).
+#
+# Before deploying, set REDIS_HOST to your ElastiCache primary endpoint.
+# Required AWS-side configuration:
+#   - Engine mode: Redis (not Cluster Mode)
+#   - Multi-AZ: enabled
+#   - Automatic failover: enabled
+#   - Snapshot retention window: >= 1 day
+#   - Preferred snapshot window: set to an off-peak hour (e.g. 03:00-04:00 UTC)
+#
+# ElastiCache primary endpoint flips DNS within ~30s on failover.
+# JedisPool will throw JedisConnectionException during the failover window;
+# callers already handle this as a transient error.
+apiVersion: v1
+kind: ConfigMap
+metadata:
+  name: recsys-config
+  namespace: recsys
+data:
+  REDIS_MODE: "standalone"
+  REDIS_HOST: "<elasticache-primary-endpoint>.cache.amazonaws.com"
+  REDIS_PORT: "6379"
+  REDIS_SENTINEL_MASTER: ""
+  REDIS_SENTINEL_NODES: ""

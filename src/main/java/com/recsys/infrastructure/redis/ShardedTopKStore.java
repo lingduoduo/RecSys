@@ -5,7 +5,7 @@ import com.recsys.streaming.TrendingStore;
 import org.slf4j.Logger;
 import org.slf4j.LoggerFactory;
 import redis.clients.jedis.Jedis;
-import redis.clients.jedis.JedisPool;
+import redis.clients.jedis.util.Pool;
 
 import java.util.List;
 import java.util.Map;
@@ -47,7 +47,7 @@ public final class ShardedTopKStore implements TrendingStore {
     static final int  MAX_FULL_CACHE_SIZE      = 100;
     private static final long FETCH_WAIT_TIMEOUT_MS = 2_000L;
 
-    private final JedisPool pool;
+    private final Pool<Jedis> pool;
     private final String keyPrefix;   // e.g. "topk:"
     private final int shardCount;
     private final long cacheTtlMs;
@@ -64,11 +64,11 @@ public final class ShardedTopKStore implements TrendingStore {
 
     private final HotKeyDetector hotKeyDetector;
 
-    public ShardedTopKStore(JedisPool pool, String keyPrefix) {
+    public ShardedTopKStore(Pool<Jedis> pool, String keyPrefix) {
         this(pool, keyPrefix, DEFAULT_SHARD_COUNT, DEFAULT_CACHE_TTL_MS, new HotKeyDetector());
     }
 
-    ShardedTopKStore(JedisPool pool, String keyPrefix, int shardCount,
+    ShardedTopKStore(Pool<Jedis> pool, String keyPrefix, int shardCount,
                      long cacheTtlMs, HotKeyDetector hotKeyDetector) {
         this.pool           = pool;
         this.keyPrefix      = keyPrefix;

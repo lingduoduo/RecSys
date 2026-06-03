@@ -1,7 +1,7 @@
 package com.recsys.streaming;
 
 import redis.clients.jedis.Jedis;
-import redis.clients.jedis.JedisPool;
+import redis.clients.jedis.util.Pool;
 
 import java.util.ArrayList;
 import java.util.Collection;
@@ -34,7 +34,7 @@ public final class OnlineFeatureStore implements RecentHistoryStore {
     private static final long EVICT_INTERVAL_MS = 5_000L;
     private static final long REDIS_FETCH_TIMEOUT_MS = 2_000L;
 
-    private final JedisPool pool;
+    private final Pool<Jedis> pool;
     private final long cacheTtlMs;
     private final int maxCacheUsers;
     private final int redisMgetBatchSize;
@@ -43,19 +43,19 @@ public final class OnlineFeatureStore implements RecentHistoryStore {
     private final ConcurrentHashMap<String, CompletableFuture<CachedFeature>> inflight = new ConcurrentHashMap<>();
     private volatile long lastEvictMs = 0L;
 
-    public OnlineFeatureStore(JedisPool pool) {
+    public OnlineFeatureStore(Pool<Jedis> pool) {
         this(pool, DEFAULT_CACHE_TTL_MS, readIntEnv("ONLINE_FEATURE_CACHE_MAX_USERS", DEFAULT_MAX_CACHE_USERS));
     }
 
-    OnlineFeatureStore(JedisPool pool, long cacheTtlMs) {
+    OnlineFeatureStore(Pool<Jedis> pool, long cacheTtlMs) {
         this(pool, cacheTtlMs, DEFAULT_MAX_CACHE_USERS);
     }
 
-    OnlineFeatureStore(JedisPool pool, long cacheTtlMs, int maxCacheUsers) {
+    OnlineFeatureStore(Pool<Jedis> pool, long cacheTtlMs, int maxCacheUsers) {
         this(pool, cacheTtlMs, maxCacheUsers, readIntEnv("ONLINE_FEATURE_REDIS_MGET_BATCH_SIZE", 500));
     }
 
-    OnlineFeatureStore(JedisPool pool, long cacheTtlMs, int maxCacheUsers, int redisMgetBatchSize) {
+    OnlineFeatureStore(Pool<Jedis> pool, long cacheTtlMs, int maxCacheUsers, int redisMgetBatchSize) {
         this.pool = pool;
         this.cacheTtlMs = cacheTtlMs;
         this.maxCacheUsers = Math.max(1, maxCacheUsers);

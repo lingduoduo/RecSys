@@ -3,7 +3,7 @@ package com.recsys.infrastructure.redis;
 import com.recsys.streaming.TrendingStore;
 
 import redis.clients.jedis.Jedis;
-import redis.clients.jedis.JedisPool;
+import redis.clients.jedis.util.Pool;
 
 import java.util.List;
 import java.util.concurrent.CompletableFuture;
@@ -25,17 +25,17 @@ public final class RedisTopKStore implements TrendingStore {
     private static final long FETCH_WAIT_TIMEOUT_MS = 2_000L;
     private static final int MAX_FULL_CACHE_SIZE = 100;
 
-    private final JedisPool pool;
+    private final Pool<Jedis> pool;
     private final String keyPrefix;
     private final long cacheTtlMs;
     private final ConcurrentHashMap<String, CachedIds> hotTopKCache = new ConcurrentHashMap<>();
     private final ConcurrentHashMap<String, CompletableFuture<CachedIds>> inflight = new ConcurrentHashMap<>();
 
-    public RedisTopKStore(JedisPool pool, String keyPrefix) {
+    public RedisTopKStore(Pool<Jedis> pool, String keyPrefix) {
         this(pool, keyPrefix, DEFAULT_CACHE_TTL_MS);
     }
 
-    public RedisTopKStore(JedisPool pool, String keyPrefix, long cacheTtlMs) {
+    public RedisTopKStore(Pool<Jedis> pool, String keyPrefix, long cacheTtlMs) {
         this.pool = pool;
         this.keyPrefix = keyPrefix;
         this.cacheTtlMs = Math.max(0L, cacheTtlMs);

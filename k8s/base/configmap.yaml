@@ -6,6 +6,9 @@ metadata:
 data:
   REDIS_HOST: "redis"
   REDIS_PORT: "6379"
+  REDIS_MODE: "sentinel"
+  REDIS_SENTINEL_MASTER: "mymaster"
+  REDIS_SENTINEL_NODES: "redis-sentinel-0.redis-sentinel-headless.recsys.svc.cluster.local:26379,redis-sentinel-1.redis-sentinel-headless.recsys.svc.cluster.local:26379,redis-sentinel-2.redis-sentinel-headless.recsys.svc.cluster.local:26379"
   CATALOG_SERVICE_URL: "http://recsys-catalog-serving:6010"
   MODEL_SERVICE_URL: "http://recsys-model-serving:8080"
   ONLINE_SERVICE_URL: "http://recsys-online-serving:7010"

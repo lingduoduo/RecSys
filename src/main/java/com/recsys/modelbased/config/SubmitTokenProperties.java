@@ -17,12 +17,6 @@ public class SubmitTokenProperties {
 
     private String keyPrefix = "submit_token:";
 
-    private String redisHost = "localhost";
-
-    @Positive
-    @Max(65_535)
-    private int redisPort = 6379;
-
     public boolean isEnabled() {
         return enabled;
     }
@@ -47,19 +41,4 @@ public class SubmitTokenProperties {
         this.keyPrefix = keyPrefix == null || keyPrefix.isBlank() ? "submit_token:" : keyPrefix.trim();
     }
 
-    public String getRedisHost() {
-        return redisHost;
-    }
-
-    public void setRedisHost(String redisHost) {
-        this.redisHost = redisHost == null || redisHost.isBlank() ? "localhost" : redisHost.trim();
-    }
-
-    public int getRedisPort() {
-        return redisPort;
-    }
-
-    public void setRedisPort(int redisPort) {
-        this.redisPort = redisPort;
-    }
 }

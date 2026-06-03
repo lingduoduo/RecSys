@@ -35,8 +35,6 @@ recsys:
     # from the model package and loaded from Redis in production.
     item-embeddings-source: ${RECSYS_MODEL_ITEM_EMBEDDINGS_SOURCE:classpath}
     redis:
-      host: ${REDIS_HOST:localhost}
-      port: ${REDIS_PORT:6379}
       item-embedding-prefix: ${RECSYS_MODEL_REDIS_ITEM_EMBEDDING_PREFIX:i2vEmb}
   spark:
     # PySpark model artifacts output by the training pipeline (classpath:artifacts/pyspark/)
@@ -80,5 +78,3 @@ recsys:
     enabled: ${RECSYS_SUBMIT_TOKEN_ENABLED:false}
     ttl-seconds: ${RECSYS_SUBMIT_TOKEN_TTL_SECONDS:300}
     key-prefix: ${RECSYS_SUBMIT_TOKEN_KEY_PREFIX:submit_token:}
-    redis-host: ${REDIS_HOST:localhost}
-    redis-port: ${REDIS_PORT:6379}

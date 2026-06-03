@@ -1,0 +1,20 @@
+# IRSA ServiceAccount for the API gateway.
+#
+# The bound IAM role needs the following permissions so the gateway can call Cloud Map
+# APIs directly (e.g. for health-aware routing) and so external-dns can manage Route 53
+# records for the private recsys.internal namespace:
+#
+#   servicediscovery:GetService
+#   servicediscovery:ListInstances
+#   route53:ChangeResourceRecordSets
+#   route53:ListHostedZones
+#   route53:ListResourceRecordSets
+#
+# Replace the role ARN with your account-specific value before applying.
+apiVersion: v1
+kind: ServiceAccount
+metadata:
+  name: recsys-gateway
+  namespace: recsys
+  annotations:
+    eks.amazonaws.com/role-arn: arn:aws:iam::123456789012:role/recsys-gateway-irsa-role

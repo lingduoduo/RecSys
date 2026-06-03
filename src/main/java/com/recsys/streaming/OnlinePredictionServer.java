@@ -6,7 +6,9 @@ import com.recsys.infrastructure.redis.ShardedTopKStore;
 import org.eclipse.jetty.server.Server;
 import org.eclipse.jetty.servlet.ServletContextHandler;
 import org.eclipse.jetty.servlet.ServletHolder;
-import redis.clients.jedis.JedisPool;
+import com.recsys.infrastructure.redis.RedisConnectionFactory;
+import redis.clients.jedis.Jedis;
+import redis.clients.jedis.util.Pool;
 
 import java.net.InetSocketAddress;
 
@@ -17,11 +19,9 @@ public final class OnlinePredictionServer {
     private OnlinePredictionServer() {}
 
     public static void main(String[] args) throws Exception {
-        String redisHost = System.getenv().getOrDefault("REDIS_HOST", "localhost");
-        int redisPort = readIntEnv("REDIS_PORT", 6379);
         int port = readIntEnv("ONLINE_DEMO_PORT", DEFAULT_PORT);
 
-        try (JedisPool jedisPool = new JedisPool(redisHost, redisPort);
+        try (Pool<Jedis> jedisPool = RedisConnectionFactory.fromEnv();
              AsyncEventPublisher asyncEventPublisher = new AsyncEventPublisher()) {
 
             DataManager dataManager = DataManager.getInstance();

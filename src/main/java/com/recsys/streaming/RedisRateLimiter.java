@@ -3,7 +3,7 @@ package com.recsys.streaming;
 import org.slf4j.Logger;
 import org.slf4j.LoggerFactory;
 import redis.clients.jedis.Jedis;
-import redis.clients.jedis.JedisPool;
+import redis.clients.jedis.util.Pool;
 
 import java.util.List;
 import java.util.concurrent.atomic.AtomicBoolean;
@@ -43,7 +43,7 @@ public final class RedisRateLimiter {
     private static final int  DEFAULT_CIRCUIT_FAILURE_THRESHOLD = 5;
     private static final long DEFAULT_CIRCUIT_RESET_MS          = 30_000L;
 
-    private final JedisPool pool;
+    private final Pool<Jedis> pool;
     private final String keyPrefix;
     private final long limit;
     private final int windowSeconds;
@@ -64,7 +64,7 @@ public final class RedisRateLimiter {
 
     public enum CircuitState { CLOSED, OPEN, HALF_OPEN }
 
-    public RedisRateLimiter(JedisPool pool) {
+    public RedisRateLimiter(Pool<Jedis> pool) {
         this(
                 pool,
                 "rate:online:",
@@ -73,17 +73,17 @@ public final class RedisRateLimiter {
         );
     }
 
-    RedisRateLimiter(JedisPool pool, String keyPrefix, long limit, int windowSeconds) {
+    RedisRateLimiter(Pool<Jedis> pool, String keyPrefix, long limit, int windowSeconds) {
         this(pool, keyPrefix, limit, windowSeconds, 0.7);
     }
 
-    RedisRateLimiter(JedisPool pool, String keyPrefix, long limit, int windowSeconds,
+    RedisRateLimiter(Pool<Jedis> pool, String keyPrefix, long limit, int windowSeconds,
                      double localPassFraction) {
         this(pool, keyPrefix, limit, windowSeconds, localPassFraction,
                 DEFAULT_CIRCUIT_FAILURE_THRESHOLD, DEFAULT_CIRCUIT_RESET_MS);
     }
 
-    RedisRateLimiter(JedisPool pool, String keyPrefix, long limit, int windowSeconds,
+    RedisRateLimiter(Pool<Jedis> pool, String keyPrefix, long limit, int windowSeconds,
                      double localPassFraction, int circuitFailureThreshold, long circuitResetMs) {
         this.pool = pool;
         this.keyPrefix = keyPrefix;

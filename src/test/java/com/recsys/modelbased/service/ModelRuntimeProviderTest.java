@@ -53,8 +53,6 @@ class ModelRuntimeProviderTest {
                 new com.recsys.modelbased.config.ABTestConfig(),
                 "configured_model.onnx",
                 "classpath",
-                "localhost",
-                6379,
                 "i2vEmb");
         try {
             ModelRuntime training = provider.getRuntime("training");

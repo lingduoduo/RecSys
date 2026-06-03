@@ -3,7 +3,7 @@ kind: Kustomization
 resources:
   - namespace.yaml
   - configmap.yaml
-  - redis.yaml
+  - redis-cluster.yaml
   - catalog-serving.yaml
   - model-serving.yaml
   - online-serving.yaml
