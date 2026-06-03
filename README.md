@@ -1,14 +1,13 @@
 # RecSys
 
-A compact Maven workspace demonstrating recommendation-system serving, retrieval, ranking, and offline embedding pipelines.
+A compact Maven workspace demonstrating recommendation-system serving, retrieval, ranking, and offline embedding pipelines across four independently runnable services.
 
-| Area | What it shows |
-|---|---|
-| Recommendation Serving API | Jetty, Redis, multi-strategy retrieval, runtime embedding updates |
-| Model Serving | Spring Boot ONNX scoring with variant-aware model artifacts |
-| Online Serving | Real-time Redis-backed recommendations with load shedding |
-| API Gateway | Microservice edge: circuit breakers, rate limiting, LLM proxy |
-| Offline Embeddings | Spark Word2Vec item embeddings + PyTorch/ONNX two-tower model |
+| Service | Port | What it shows |
+|---|---:|---|
+| Catalog / Recommendation Serving | `6010` | Jetty, Redis embeddings, multi-strategy recall, runtime embedding updates |
+| Online Prediction Server | `7010` | Real-time Redis-backed recommendations, load shedding, ops metrics |
+| Model Serving (Spring Boot) | `8080` | ONNX two-tower DSSM inference, A/B testing, variant-aware artifacts |
+| API Gateway | `8010` | Microservice edge: circuit breakers, rate limiting, LLM proxy |
 
 ![Architecture](recsys-architecture.png)
 [Architecture Diagram (interactive)](https://htmlpreview.github.io/?https://github.com/lingduoduo/Recsys-Backend-Service/blob/main/recsys-architecture.html)
@@ -20,26 +19,26 @@ A compact Maven workspace demonstrating recommendation-system serving, retrieval
 **Requirements:** Java 17, Maven, Docker + Colima (Mac) or Docker Desktop.
 
 ```bash
-# 1. Start infrastructure (Zookeeper, Kafka, Redis Sentinel, Flink)
+# 1. Start infrastructure (Redis Sentinel, Kafka, Flink)
 colima start
 docker compose -f docker-compose.streaming.yml up -d
 
 # 2. Build
 mvn package -DskipTests
 
-# 3. Start all four services
+# 3. Start all four services (logs → logs/<service>.log)
 sh scripts/run-microservices-local.sh
 ```
 
-All four services start in the background with logs under `logs/`. The gateway at `:8010` becomes the single entry point.
-
-Verify everything is up:
+Check the full stack is healthy:
 
 ```bash
 curl http://localhost:8010/health
 ```
 
-To start services individually, see [Services & Ports](#services--ports).
+```json
+{"status":"UP","checkedAt":"...","services":{"user-profile":{"status":"UP"},...}}
+```
 
 ---
 
@@ -70,53 +69,51 @@ To start services individually, see [Services & Ports](#services--ports).
 - [LLM Gateway](#llm-gateway)
 - [Model Rate Limiting](#model-rate-limiting)
 - [AWS Saga Orchestration](#aws-saga-orchestration)
-- [LLM Integration Ideas](#llm-integration-ideas)
 
 ---
 
 ## Services & Ports
 
-| Service | Port | Start command | Entrypoint |
-|---|---:|---|---|
-| Catalog / Recommendation Serving | `6010` | `mvn exec:java -Dexec.mainClass=com.recsys.serving.RecSysServer` | `RecSysServer` |
-| Online Prediction Server | `7010` | `mvn exec:java -Dexec.mainClass=com.recsys.streaming.OnlinePredictionServer` | `OnlinePredictionServer` |
-| Model Serving (Spring Boot) | `8080` | `mvn spring-boot:run` | `ModelApplication` |
-| API Gateway | `8010` | `mvn exec:java -Dexec.mainClass=com.recsys.microservice.MicroserviceGatewayServer` | `MicroserviceGatewayServer` |
-
-With JVM tuning:
+Start each service individually with JVM tuning:
 
 ```bash
-env PORT=6010        sh scripts/run-with-jvm-tuning.sh recsys-serving  -- mvn exec:java -Dexec.mainClass=com.recsys.serving.RecSysServer
-env ONLINE_DEMO_PORT=7010 sh scripts/run-with-jvm-tuning.sh online-serving  -- mvn exec:java -Dexec.mainClass=com.recsys.streaming.OnlinePredictionServer
-env SERVER_PORT=8080 sh scripts/run-with-jvm-tuning.sh model-serving   -- mvn spring-boot:run
-env GATEWAY_PORT=8010 sh scripts/run-with-jvm-tuning.sh api-gateway    -- mvn exec:java -Dexec.mainClass=com.recsys.microservice.MicroserviceGatewayServer
+# Catalog / Recommendation Serving — port 6010
+env PORT=6010 sh scripts/run-with-jvm-tuning.sh recsys-serving -- \
+  mvn exec:java -Dexec.mainClass=com.recsys.serving.RecSysServer
+
+# Online Prediction Server — port 7010
+env ONLINE_DEMO_PORT=7010 sh scripts/run-with-jvm-tuning.sh online-serving -- \
+  mvn exec:java -Dexec.mainClass=com.recsys.streaming.OnlinePredictionServer
+
+# Model Serving (Spring Boot / ONNX) — port 8080
+env SERVER_PORT=8080 sh scripts/run-with-jvm-tuning.sh model-serving -- \
+  mvn spring-boot:run
+
+# API Gateway — port 8010
+env GATEWAY_PORT=8010 sh scripts/run-with-jvm-tuning.sh api-gateway -- \
+  mvn exec:java -Dexec.mainClass=com.recsys.microservice.MicroserviceGatewayServer
 ```
 
-Key env vars: `REDIS_HOST`, `REDIS_PORT`, `PORT` / `ONLINE_DEMO_PORT` / `SERVER_PORT` / `GATEWAY_PORT`.
+Key env vars: `REDIS_HOST` (default `localhost`), `REDIS_PORT` (default `6379`).
 
 ---
 
 ## Recommendation Flow
 
-The project demonstrates two recommendation paths that can run independently or together.
+Two independent recommendation paths — run one or both.
 
-**Offline / batch path (port 6010)**
+**Offline / batch path (port 6010)** — pre-trained embeddings in Redis, no streaming required.
 
-Recall narrows the catalog to a candidate set; ranking scores and orders those candidates.
+1. `CandidateGenerator.byUserHistory` — merges candidates from the user's genre history, global top-rated, and latest releases.
+2. `CandidateGenerator.byGenre` — expands from a seed movie's genres.
+3. `CandidateGenerator.byEmbedding` — ANN search on user/item embedding vectors.
+4. `SimilarMovieService` — ranks candidates by inner-product similarity and returns top-K.
 
-- **Single-strategy recall:** `CandidateGenerator.byGenre` expands from the genres of a seed movie.
-- **Multi-way recall:** `CandidateGenerator.byUserHistory` merges candidates from user-history genres, global top-rated movies, and latest releases.
-- **Embedding recall:** `CandidateGenerator.byEmbedding` retrieves items by ANN search on user and item embeddings.
-- **Ranking:** `SimilarMovieService` scores each candidate with inner-product similarity and returns the top-K results.
+**Online / real-time path (port 7010)** — live signals from Redis updated by the Flink job.
 
-**Online / real-time path (port 7010)**
-
-`OnlineRecommendationService` blends two live signals on every request:
-
-- **Behavioral signals** (`OnlineRecommendationEngine`): recent per-user watch history + windowed trending Top-K written by the Flink job into Redis.
-- **Embedding recall** (`CandidateGenerator.byEmbedding`): ANN search on offline-trained user-tower embeddings.
-
-A normalized rank score fuses the two lists. Cold-start users fall back to behavioral signals only. The response `strategy` field (`"online+model"` or `"online"`) shows which signals fired.
+1. `OnlineRecommendationEngine` — scores candidates from per-user recent watch history and windowed trending Top-K.
+2. `CandidateGenerator.byEmbedding` — ANN recall on offline user-tower embeddings.
+3. `OnlineRecommendationService` — normalizes and blends both lists; cold-start users fall back to behavioral signals. The response `strategy` field (`"online+model"` or `"online"`) shows which sources fired.
 
 ---
 
@@ -124,77 +121,101 @@ A normalized rank score fuses the two lists. Cold-start users fall back to behav
 
 ### Port 6010 — Catalog & Recommendation Serving
 
-Direct access to the Jetty serving API. All endpoints are also reachable through the gateway at `:8010` — see [Port 8010 — API Gateway](#port-8010--api-gateway).
+Jetty API backed by Redis embeddings and bundled movie/user data. Embeddings are seeded from classpath files at startup if Redis is empty.
 
-#### Health
+#### Health check
+
+Verify the service is running:
 
 ```bash
 curl http://localhost:6010/health
 # {"ok":true}
 ```
 
-#### User Lookup
+#### User lookup
+
+Fetch a user profile by `userId`:
 
 ```bash
 curl "http://localhost:6010/getuser?userId=123"
-# or REST alias:
-curl "http://localhost:6010/user?userId=123"
+curl "http://localhost:6010/user?userId=123"          # REST alias (gateway-friendly)
 # {"userId":123,"name":"Alice"}
 ```
 
-#### Item (Movie) Lookup
+#### Movie (item) lookup
+
+Fetch a movie by `id`:
 
 ```bash
 curl "http://localhost:6010/item?id=1"
-# or REST alias:
-curl "http://localhost:6010/movie?id=1"
+curl "http://localhost:6010/movie?id=1"               # REST alias
 # {"id":1,"title":"Inception","year":2010,"genres":["Sci-Fi","Thriller"]}
 ```
 
-#### Recommendations
+#### Recommendations — multi-strategy (default)
 
-Four retrieval modes. All require `userId`.
-
-**Default — multi-strategy by user history:**
+Blends genre history, global top-rated, and latest releases for the user:
 
 ```bash
 curl "http://localhost:6010/getrecommendation?userId=123"
-# or REST alias:
-curl "http://localhost:6010/recommendation?userId=123"
+curl "http://localhost:6010/recommendation?userId=123"   # REST alias
+
+# Limit results
+curl "http://localhost:6010/getrecommendation?userId=123&k=10"
 ```
 
-Merges three candidate pools via `CandidateGenerator.byUserHistory`: genre-based from the user's rating history (top 20 per genre), global top-100 by average rating, and latest 100 by release year.
+#### Recommendations — seed movie genre expansion
 
-**Seed movie — genre-based from seed:**
+Expands candidates from the genres of a specific seed movie:
 
 ```bash
 curl "http://localhost:6010/getrecommendation?userId=123&seedMovieId=2"
+curl "http://localhost:6010/getrecommendation?userId=123&seedMovieId=2&k=5"
 ```
 
-**Embedding-based recall:**
+#### Recommendations — embedding-based ANN recall
+
+Retrieves candidates by approximate nearest-neighbor search on user/item embeddings:
 
 ```bash
 curl "http://localhost:6010/getrecommendation?userId=123&mode=embedding&k=20"
 ```
 
-Uses `CandidateGenerator.byEmbedding`. Backend controlled by `RECSYS_VECTOR_BACKEND` (`lsh` or `exact`). Returns `404` if no user embedding is found. `k` capped at 200 (default 20).
+Returns `404` if no user embedding is found. `k` is capped at 200 (default 20). Backend controlled by `RECSYS_VECTOR_BACKEND`:
 
-**Trending (Redis sorted set):**
+```bash
+# Approximate (default) — SimHash random-projection + inner-product reranking
+RECSYS_VECTOR_BACKEND=lsh mvn exec:java -Dexec.mainClass=com.recsys.serving.RecSysServer
+
+# Exact — full-scan inner-product top-k (deterministic, slower)
+RECSYS_VECTOR_BACKEND=exact mvn exec:java -Dexec.mainClass=com.recsys.serving.RecSysServer
+```
+
+#### Recommendations — trending (Redis sorted set)
+
+Returns pre-scored trending movies from a Redis sorted set written by the Flink job:
 
 ```bash
 curl "http://localhost:6010/getrecommendation?userId=123&mode=topk&window=last_hour&k=5"
+curl "http://localhost:6010/getrecommendation?userId=123&mode=trending&window=last_day&k=10"
 ```
 
 Windows: `last_hour`, `last_day`, `last_month`.
 
-#### Similar Items
+#### Similar movies
+
+Computes inner-product similarity against Redis item embeddings and returns the closest movies:
 
 ```bash
 curl "http://localhost:6010/similar?movieId=1&k=5"
-# {"movieId":1,"similar":[{"movieId":4,"score":0.99}, ...]}
+# {"movieId":1,"similar":[{"movieId":4,"score":0.99},{"movieId":7,"score":0.97},...]}
+
+curl "http://localhost:6010/similar?movieId=3&k=10"
 ```
 
-#### Pair Prediction
+#### Pair prediction
+
+Scores explicit (userId, movieId) pairs using bundled user/movie embeddings and inner-product scoring:
 
 ```bash
 curl -X POST "http://localhost:6010/v1/models/recmodel:predict" \
@@ -203,7 +224,11 @@ curl -X POST "http://localhost:6010/v1/models/recmodel:predict" \
 # {"predictions":[[0.9231],[0.7412]]}
 ```
 
-#### Set Embedding
+Returns `400` when `instances` is empty, IDs are non-positive, or an embedding is missing.
+
+#### Set / update an embedding
+
+Stores or updates a movie embedding in Redis (default TTL 24 h; `ttl=0` for no expiry):
 
 ```bash
 # Raw body
@@ -214,30 +239,24 @@ curl -X POST "http://localhost:6010/setembedding?movieId=4" \
 curl -X POST "http://localhost:6010/setembedding?movieId=5" \
   --data-urlencode "vec=0.1 0.3 0.6"
 
-# Custom TTL (seconds; 0 = no expiry)
+# Query param with custom TTL (seconds)
 curl -X POST "http://localhost:6010/setembedding?movieId=6&ttl=3600&vec=0.5+0.5+0.0"
 ```
-
-#### Embedding backend
-
-```bash
-RECSYS_VECTOR_BACKEND=lsh   sh scripts/run-with-jvm-tuning.sh recsys-serving -- mvn exec:java -Dexec.mainClass=com.recsys.serving.RecSysServer
-RECSYS_VECTOR_BACKEND=exact sh scripts/run-with-jvm-tuning.sh recsys-serving -- mvn exec:java -Dexec.mainClass=com.recsys.serving.RecSysServer
-```
-
-`lsh` is the default approximate backend. `exact` is useful for deterministic recall checks.
 
 ---
 
 ### Port 7010 — Online Prediction Server
 
-Real-time recommendations driven by Redis behavioral features and offline embeddings.
+Real-time recommendations blending per-user Redis history with offline embedding recall. Responses populate once the Flink job is writing to Redis; without it the lists are empty but the API is healthy.
 
 #### Real-time recommendations
+
+Blends behavioral signals (recent watch history + trending) with embedding-based recall:
 
 ```bash
 curl "http://localhost:7010/online/recommendation?userId=123"
 curl "http://localhost:7010/online/recommendation?userId=123&window=last_day&k=10"
+curl "http://localhost:7010/online/recommendation?userId=456&window=last_month&k=5"
 ```
 
 | Param | Required | Default | Values |
@@ -246,50 +265,65 @@ curl "http://localhost:7010/online/recommendation?userId=123&window=last_day&k=1
 | `k` | no | 5 | 1–20 |
 | `window` | no | `last_hour` | `last_hour`, `last_day`, `last_month` |
 
-Example response:
-
 ```json
 {
   "user": {"userId": 123, "name": "Alice"},
   "window": "last_hour",
   "strategy": "online+model",
-  "recentMovies": [],
-  "trendingMovies": [],
-  "recommendations": []
+  "recentMovies": [4, 7],
+  "trendingMovies": [11, 1, 2],
+  "recommendations": [{"movieId": 4, "score": 0.91}, ...]
 }
 ```
 
-`recommendations` is populated once the Flink job writes user history and trending data to Redis.
+The `strategy` field is `"online+model"` when embedding recall fires, `"online"` for cold-start users.
 
 #### Feature snapshot
+
+Returns the raw Redis feature view for a user — useful for debugging what signals are available:
 
 ```bash
 curl "http://localhost:7010/online/features?userId=123"
 curl "http://localhost:7010/online/features?userId=123&window=last_hour"
+# {"user":{"userId":123,"name":"Alice"},"window":"last_hour","recentMovies":[4,7],"trendingMovies":[11,1,2]}
 ```
 
-Returns the raw feature view (recent history + trending movies) without running the recommendation blending.
+#### Ops and metrics
 
-#### Ops & metrics
+Returns QPS, latency, failure rate, load-shedder state, and capacity targets in one payload:
 
 ```bash
 curl "http://localhost:7010/online/ops"
 ```
 
-Returns QPS, latency, failure rate, load-shedder state, capacity targets, and a `servedAt` timestamp in one payload.
+```json
+{
+  "servedAt": "2026-06-03T12:00:00Z",
+  "metrics": {"totalRequests": 42, "recentAvgLatencyMs": 22.5, "recentFailureRate": 0.0},
+  "load": {"inFlightRequests": 0, "utilization": 0.0, "suggestedWeight": 100},
+  "capacity": {"targetDau": 2000000, "peakQps": 8000, "headroomQps": 7999.9, "overloaded": false}
+}
+```
 
 ---
 
 ### Port 8080 — Model Serving (Spring Boot)
 
-ONNX two-tower DSSM model serving with A/B testing and health probes.
+Spring Boot service running a PyTorch-exported DSSM ONNX model with A/B variant support.
 
 #### Recommend
+
+Runs ONNX inference to rank candidates for a user; returns `abTestVariant` so impressions can be attributed to the correct experiment bucket:
 
 ```bash
 curl -X POST http://localhost:8080/api/v1/recommend \
   -H "Content-Type: application/json" \
-  -d '{"userId": "123", "k": 5, "excludeItemIds": ["2"]}'
+  -d '{"userId": "123", "k": 5}'
+
+# Exclude already-seen items
+curl -X POST http://localhost:8080/api/v1/recommend \
+  -H "Content-Type: application/json" \
+  -d '{"userId": "123", "k": 10, "excludeItemIds": ["2", "3"]}'
 ```
 
 ```json
@@ -308,384 +342,31 @@ curl -X POST http://localhost:8080/api/v1/recommend \
 |---|---|---|---|
 | `userId` | string | yes | non-blank, max 50 chars |
 | `k` | integer | no | 1–100, default `5` |
-| `excludeItemIds` | string[] | no | max 500 entries, each max 50 chars |
+| `excludeItemIds` | string[] | no | max 500 entries |
 
 #### Model version management
 
+Preload a new model variant, activate it without downtime, or roll back:
+
 ```bash
+# List all loaded variants
 curl http://localhost:8080/api/v1/model/versions
 
+# Warm a new variant before sending it traffic
 curl -X POST http://localhost:8080/api/v1/model/versions/preload \
   -H "Content-Type: application/json" -d '{"variant": "candidate-v2"}'
 
+# Promote the warmed variant to default traffic
 curl -X POST http://localhost:8080/api/v1/model/versions/activate \
   -H "Content-Type: application/json" -d '{"variant": "candidate-v2"}'
 
+# Roll back to the previous active variant
 curl -X POST http://localhost:8080/api/v1/model/versions/rollback
 ```
 
-#### Health probes
+#### A/B comparison
 
-| Endpoint | Returns |
-|---|---|
-| `GET /health/live` | `200` if JVM responds — restart trigger |
-| `GET /health/ready` | `200` if fit for traffic; `503` when overloaded or model not ready |
-| `GET /health/load` | Concurrency snapshot + `suggestedWeight` |
-| `GET /health/metrics` | Rolling-window request counters and latency |
-| `GET /health/ab-tests` | Per-variant success rate and latency vs control |
-| `GET /health/jvm` | Heap / non-heap / metaspace / thread snapshot |
-| `GET /health/gc` | GC event histogram, STW pause stats, evacuation failures |
-
-```bash
-curl http://localhost:8080/health/ready
-curl http://localhost:8080/health/gc
-```
-
-Kubernetes probe config:
-
-```yaml
-livenessProbe:
-  httpGet: { path: /health/live, port: 8080 }
-  initialDelaySeconds: 30
-  periodSeconds: 10
-
-readinessProbe:
-  httpGet: { path: /health/ready, port: 8080 }
-  initialDelaySeconds: 15
-  periodSeconds: 5
-```
-
----
-
-### Port 8010 — API Gateway
-
-The gateway strips the route prefix and proxies to the appropriate backend. Use this as the primary entry point in local and K8s deployments.
-
-| Gateway prefix | Backend port | Example |
-|---|---|---|
-| `/api/users` | `6010` | `/api/users/user?userId=123` |
-| `/api/movies` | `6010` | `/api/movies/movie?id=1` |
-| `/api/catalog` | `6010` | `/api/catalog/item?id=1` |
-| `/api/features` | `7010` | `/api/features/online/features?userId=123` |
-| `/api/online` | `7010` | `/api/online/online/recommendation?userId=123` |
-| `/api/retrieval` | `8080` | `/api/retrieval/api/v1/recommend` |
-| `/api/ranking` | `8080` | `/api/ranking/api/v1/recommend` |
-| `/api/model` | `8080` | `/api/model/api/v1/recommend` |
-| `/api/agents` | `8080` | `/api/agents/...` |
-| `/api/observability` | `8080` | `/api/observability/health/ready` |
-| `/api/llm` | `11434` | opt-in — set `LLM_SERVICE_URL` |
-| `/api/explanations` | `11434` | opt-in — set `LLM_EXPLANATION_SERVICE_URL` |
-
-**LLM routes** (`/api/llm`, `/api/explanations`) are only registered when `LLM_SERVICE_URL` or `LLM_EXPLANATION_SERVICE_URL` are explicitly set (requires Ollama or a compatible endpoint). Without them, the gateway health reports `UP` with no LLM entries.
-
-#### Smoke tests
-
-```bash
-# Health (aggregates all downstream services)
-curl http://localhost:8010/health
-
-# User lookup
-curl "http://localhost:8010/api/users/user?userId=123"
-
-# Movie lookup
-curl "http://localhost:8010/api/movies/movie?id=1"
-curl "http://localhost:8010/api/catalog/item?id=1"
-
-# Offline recommendations
-curl "http://localhost:8010/api/catalog/getrecommendation?userId=123&mode=embedding&k=5"
-
-# Online recommendations (real-time)
-curl "http://localhost:8010/api/online/online/recommendation?userId=123&window=last_hour&k=5"
-
-# Model-based recommendations (ONNX)
-curl -X POST "http://localhost:8010/api/model/api/v1/recommend" \
-  -H "Content-Type: application/json" \
-  -d '{"userId":"123","k":5}'
-
-# LLM (requires Ollama running + LLM_SERVICE_URL set)
-curl -X POST "http://localhost:8010/api/llm/api/generate" \
-  -H "Content-Type: application/json" \
-  -d '{"model":"llama3","prompt":"Summarize: Inception","max_tokens":200}'
-```
-
-> **Hostname note:** `localhost:8010` is for local development. Inside a Kubernetes cluster use the ClusterIP service name (e.g. `recsys-api-gateway:8010`); on EKS with Cloud Map use the external DNS name (e.g. `api-gateway.recsys.internal:8010`).
-
----
-
-## Microservice Gateway
-
-The gateway is the public edge for the microservice topology.
-
-| Service | Port | Gateway prefix | Entrypoint |
-|---|---:|---|---|
-| User Profile Service | `6010` | `/api/users` | `com.recsys.serving.RecSysServer` |
-| Movie Metadata Service | `6010` | `/api/movies` | `com.recsys.serving.RecSysServer` |
-| Feature Service | `7010` | `/api/features` | `com.recsys.streaming.OnlinePredictionServer` |
-| Recommendation Retrieval | `8080` | `/api/retrieval` | `com.recsys.modelbased.ModelApplication` |
-| Ranking Service | `8080` | `/api/ranking` | `com.recsys.modelbased.ModelApplication` |
-| Agent Workflow | `8080` | `/api/agents` | model-serving placeholder |
-| Observability | `8080` | `/api/observability` | model-serving health/metrics |
-| Catalog (backward compat) | `6010` | `/api/catalog` | `com.recsys.serving.RecSysServer` |
-| Model recommendation | `8080` | `/api/model` | `com.recsys.modelbased.ModelApplication` |
-| Online recommendation | `7010` | `/api/online` | `com.recsys.streaming.OnlinePredictionServer` |
-| LLM proxy _(opt-in)_ | `11434` | `/api/llm` | set `LLM_SERVICE_URL` |
-| LLM explanation _(opt-in)_ | `11434` | `/api/explanations` | set `LLM_EXPLANATION_SERVICE_URL` |
-| API gateway | `8010` | `/` | `com.recsys.microservice.MicroserviceGatewayServer` |
-
-Start all services:
-
-```bash
-docker compose -f docker-compose.streaming.yml up -d
-sh scripts/run-microservices-local.sh
-```
-
-Start only the gateway (when downstream services are already running):
-
-```bash
-sh scripts/run-with-jvm-tuning.sh api-gateway -- \
-  mvn exec:java -Dexec.mainClass=com.recsys.microservice.MicroserviceGatewayServer
-```
-
-Enable LLM routes (requires Ollama):
-
-```bash
-brew install ollama && ollama serve
-export LLM_SERVICE_URL=http://localhost:11434
-sh scripts/run-microservices-local.sh
-```
-
-`GET /health` aggregates downstream health checks and returns `503` with `status: DEGRADED` when any registered service is unavailable. See `docs/api-gateway-service-topology.md` for the route ownership map.
-
----
-
-## Configuration
-
-### Recommendation Serving API (port 6010)
-
-| Env var | Default | Purpose |
-|---|---:|---|
-| `PORT` | `6010` | Server port |
-| `REDIS_HOST` | `localhost` | Redis host |
-| `REDIS_PORT` | `6379` | Redis port |
-| `LOCAL_EMBEDDING_CACHE_MAX_ENTRIES` | `100000` | Max embeddings in JVM read-through cache |
-| `RECSYS_VECTOR_BACKEND` | `lsh` | `lsh` or `exact` |
-
-On startup the server seeds Redis with bundled embeddings if the Redis keys are empty.
-
-### Online Prediction Server (port 7010)
-
-| Env var | Default | Purpose |
-|---|---:|---|
-| `ONLINE_DEMO_PORT` | `7010` | Server port |
-| `ONLINE_MAX_CONCURRENT_REQUESTS` | `512` | In-flight cap before `429` |
-| `ONLINE_DRAIN_UTILIZATION` | `0.90` | `/health` → `503` threshold for load-balancer drain |
-| `ONLINE_REDIS_RATE_LIMIT_QPS` | `0` | Cross-instance Redis rate limit; `0` = disabled |
-| `ONLINE_FEATURE_CACHE_MAX_USERS` | `10000` | Max Redis online feature keys in JVM cache |
-| `ONLINE_FEATURE_REDIS_MGET_BATCH_SIZE` | `500` | Redis `MGET` batch size for feature reads |
-| `REDIS_EMBEDDING_MGET_BATCH_SIZE` | `500` | Redis `MGET` batch size for embedding reads |
-| `ONLINE_METRICS_WINDOW_SECONDS` | `60` | Rolling metrics window |
-| `ONLINE_TARGET_DAU` | `2000000` | Capacity sizing assumption |
-| `ONLINE_PEAK_QPS` | `8000` | Peak read-QPS target |
-| `ONLINE_PEAK_TPS` | `20000` | Peak event-TPS target |
-
-### API Gateway (port 8010)
-
-| Env var | Default | Purpose |
-|---|---:|---|
-| `GATEWAY_PORT` | `8010` | Gateway port |
-| `GATEWAY_TIMEOUT_MS` | `3000` | Upstream connect/request timeout |
-| `CATALOG_SERVICE_URL` | `http://localhost:6010` | Base URL for `/api/catalog` |
-| `MODEL_SERVICE_URL` | `http://localhost:8080` | Base URL for `/api/model` |
-| `ONLINE_SERVICE_URL` | `http://localhost:7010` | Base URL for `/api/online` |
-| `LLM_SERVICE_URL` | _(unset)_ | Enables `/api/llm` — default Ollama `11434` |
-| `LLM_EXPLANATION_SERVICE_URL` | _(unset)_ | Enables `/api/explanations` |
-| `GATEWAY_API_KEYS` | _(unset)_ | Comma-separated API keys; enables `X-API-Key` / `Authorization: Bearer` auth |
-| `GATEWAY_PUBLIC_PATHS` | `/health` | Paths that bypass API-key auth |
-| `GATEWAY_RATE_LIMIT_RPS` | `0` | Global token-bucket rate; `0` = disabled |
-| `GATEWAY_RATE_LIMIT_BURST` | `0` | Global burst capacity |
-| `GATEWAY_RATE_LIMIT_<ROUTE>_RPS` | _(unset)_ | Per-route override, e.g. `GATEWAY_RATE_LIMIT_MODEL_RPS` |
-| `GATEWAY_RATE_LIMIT_<ROUTE>_BURST` | _(unset)_ | Per-route burst override |
-
-### Model Serving (Spring Boot, port 8080)
-
-| Env var / property | Default | Purpose |
-|---|---:|---|
-| `SERVER_PORT` | `8080` | Server port |
-| `RECSYS_MODEL_ARTIFACTS_DIR` | _(classpath)_ | Model artifact directory; resolves `<dir>/<variant>/...` |
-| `RECSYS_MODEL_ITEM_EMBEDDINGS_SOURCE` | `classpath` | `classpath` or `redis` |
-| `RECSYS_MODEL_REDIS_ITEM_EMBEDDING_PREFIX` | `i2vEmb` | Redis key prefix for item embeddings |
-| `RECSYS_SPARK_ARTIFACTS_DIR` | _(classpath)_ | PySpark artifact directory |
-| `recsys.health.window-seconds` | `60` | Rolling window for metrics |
-| `recsys.health.min-sample-size` | `5` | Min requests before readiness thresholds apply |
-| `recsys.health.max-failure-rate` | `0.5` | Failure rate above which `/health/ready` → `503` |
-| `recsys.health.max-avg-latency-ms` | `2000` | Avg latency above which `/health/ready` → `503` |
-| `recsys.health.max-concurrent-requests` | `64` | Per-instance in-flight cap |
-| `recsys.health.max-in-flight-utilization` | `0.95` | Utilization above which `/health/ready` → `503` |
-| `MYSQL_ENABLED` | `false` | Optional MySQL switch |
-| `MYSQL_URL` | `jdbc:mysql://localhost:3306/recsys?...` | JDBC URL |
-| `MYSQL_USER` | `recsys` | MySQL username |
-| `MYSQL_PASSWORD` | _(empty)_ | MySQL password |
-
-### A/B test configuration (Model Serving)
-
-| Property | Default | Purpose |
-|---|---:|---|
-| `recsys.ab-test.enabled` | `false` | Enable bucketing |
-| `recsys.ab-test.layer-name` | `default` | Experiment name mixed into the hash key |
-| `recsys.ab-test.traffic-split-number` | `5` | Modulus for the hash bucket (20% A, 20% B, 60% control) |
-| `recsys.ab-test.bucket-a-variant` | `test` | Variant for bucket 0 |
-| `recsys.ab-test.bucket-b-variant` | `training` | Variant for bucket 1 |
-| `recsys.ab-test.default-variant` | `training` | Control variant |
-
----
-
-## Project Layout
-
-```text
-src/main/java/com/recsys/
-├── models/                 Immutable API/domain records
-├── features/               Data loading, indexed access, retrieval, vector math, Redis stores
-├── microservice/           API gateway, domain route map, LLM proxy, route health aggregation
-├── serving/                Jetty server and servlet endpoints (port 6010)
-├── streaming/              Online serving layer (port 7010)
-│   ├── flink/              Flink streaming job — writes online features to Redis
-│   ├── OnlineRecommendationService.java   Blends behavioral + embedding signals
-│   ├── OnlineRecommendationEngine.java    Real-time scoring: recent history + trending
-│   ├── OnlinePredictionServer.java        Jetty entry point
-│   └── ...
-├── mysql/                  Optional JDBC helper and connection settings
-├── pagination/             SQL templates for million-row pagination
-├── saga/                   AWS saga orchestration (SagaOrchestrator, TCC variant, Step Functions ASL)
-├── training/
-│   ├── rulebased/          Spark Word2Vec offline item embeddings
-│   └── modelbased/
-│       └── model/          Spring Boot ONNX model serving
-│           ├── ModelApplication.java
-│           ├── config/     Model artifact + A/B test configuration
-│           ├── controller/ Recommendation and health APIs
-│           ├── dto/        Request / response payloads
-│           └── service/    Candidate selection, recall, ranking, ONNX inference, A/B bucketing
-└── data/                   Bundled sample data and seed embeddings
-
-src/main/resources/artifacts/model/
-├── training/               Bundled sample artifacts (feature_config.json, dssm_model.onnx)
-└── test/
-
-docker-compose.streaming.yml              Local Redis/Kafka/Flink infrastructure
-streaming/online-serving/                 Canonical Kafka + Flink + Redis online-serving path
-k8s/base/                                 Kustomize manifests for all four services
-k8s/eks/                                  EKS-specific patches (IRSA, Cloud Map, ECR)
-```
-
----
-
-## Model Serving Demo
-
-A Spring Boot service on port `8080` serving ONNX-based retrieval and ranking.
-
-**Demonstrates:**
-
-- DSSM ONNX inference in Java
-- Offline model artifacts from a PyTorch/ONNX training pipeline
-- A/B variant-aware runtime pre-warming — all variants loaded before the first request
-- Per-variant latency and success-rate metrics via `GET /health/ab-tests`
-- Rolling-window inference metrics and config-driven probe thresholds
-
-### Artifact contract
-
-```text
-feature_config.json        User vocab and feature metadata
-item_embeddings.json       Optional pretrained item embeddings (item_id → float[])
-item_embeddings.faiss      Optional FAISS IndexFlatIP index
-item_ids.json              Optional FAISS row-to-item-id mapping
-metadata.json              Model version and training metadata
-dssm_model.onnx            Exported DSSM model for runtime pair scoring
-```
-
-Organize variants as `<artifacts-dir>/<variant>/feature_config.json`. Leave the model file on the classpath for local demos. `RECSYS_MODEL_FILE` defaults to `dssm_model.onnx`.
-
-### Start
-
-```bash
-# Bundled classpath artifacts
-sh scripts/run-with-jvm-tuning.sh model-serving -- mvn spring-boot:run
-
-# External modeling pipeline artifacts
-RECSYS_MODEL_ARTIFACTS_DIR=/path/to/model/artifacts \
-  sh scripts/run-with-jvm-tuning.sh model-serving -- mvn spring-boot:run
-```
-
-### Generate item embeddings offline
-
-```bash
-# Train and write to file
-sh scripts/run-with-jvm-tuning.sh offline-embedding -- \
-  mvn -Poffline-embedding exec:java \
-  -Dexec.mainClass=com.recsys.training.rulebased.ItemEmbeddingJob \
-  -Dexec.args="--output=output/item_embeddings"
-
-# Train and write directly to Redis
-sh scripts/run-with-jvm-tuning.sh offline-embedding -- \
-  mvn -Poffline-embedding exec:java \
-  -Dexec.mainClass=com.recsys.training.rulebased.ItemEmbeddingJob \
-  -Dexec.args="--output=output/item_embeddings --save-to-redis=true --redis-host=localhost --redis-port=6379"
-```
-
-Then run model serving with Redis-backed item embeddings:
-
-```bash
-RECSYS_MODEL_ITEM_EMBEDDINGS_SOURCE=redis \
-RECSYS_MODEL_REDIS_ITEM_EMBEDDING_PREFIX=i2vEmb \
-RECSYS_MODEL_ARTIFACTS_DIR=/path/to/model/artifacts \
-  sh scripts/run-with-jvm-tuning.sh model-serving -- mvn spring-boot:run
-```
-
----
-
-## A/B Testing
-
-`ABTestService` assigns each user to a variant deterministically by hashing `userId:layerName` modulo `trafficSplitNumber`.
-
-### Bucketing logic
-
-```
-bucket = (userId + ":" + layerName).hashCode() & Integer.MAX_VALUE
-         % trafficSplitNumber
-
-bucket == 0  →  bucketAVariant  (treatment A)
-bucket == 1  →  bucketBVariant  (treatment B)
-otherwise    →  defaultVariant  (control)
-```
-
-With `trafficSplitNumber = 5`: 20% A, 20% B, 60% control.
-
-### Layer isolation
-
-**Within the same layer** — users are mutually exclusive across buckets.  
-**Across different layers** — bucket indices are independent; same user can be in bucket 0 of two independent experiments simultaneously.
-
-### Enable
-
-```yaml
-recsys:
-  ab-test:
-    enabled: true
-    layer-name: model-arch-test-2024q2
-    traffic-split-number: 5
-    bucket-a-variant: test
-    bucket-b-variant: training
-    default-variant: training
-```
-
-Or via env vars:
-
-```bash
-RECSYS_AB_TEST_ENABLED=true \
-RECSYS_AB_TEST_LAYER_NAME=model-arch-test-2024q2 \
-  sh scripts/run-with-jvm-tuning.sh model-serving -- mvn spring-boot:run
-```
-
-### Compare variants
+Compare per-variant request volume, failure rate, and latency against the control:
 
 ```bash
 curl http://localhost:8080/health/ab-tests
@@ -701,264 +382,32 @@ curl http://localhost:8080/health/ab-tests
 }
 ```
 
----
+#### Health probes
 
-## Testing
-
-```bash
-# Unit and integration tests
-mvn test
-
-# Load tests only
-mvn test -DexcludedGroups="" -Dgroups=load
-
-# Single test class
-mvn test -Dtest=RecommendationServiceTest
-```
-
-| Test class | What it covers |
-|---|---|
-| `ModelArtifactLocatorTest` | Classpath and external-dir resolution for model and spark artifact groups |
-| `ModelArtifactServiceTest` | Loads bundled `feature_config.json`; asserts model version, vocab, item vocab |
-| `ModelRuntimeProviderTest` | Loads independent `training` and `test` runtimes; asserts distinct model versions |
-| `FeatureEncoderTest` | Known user IDs map to vocab indices; unknown IDs fall back to `__UNK__` |
-| `RankingServiceTest` | Items re-ordered by inner-product score; k-truncation and missing-embedding skip |
-| `RetrievalServiceTest` | Embedding recall returns top-K ordered descending; null embedding and unknown items handled |
-| `ABTestServiceTest` | Disabled flag, null userId, per-bucket assignment, determinism, same-layer disjoint buckets, cross-layer independence |
-| `RecommendationServiceTest` | Service-level guards reject blank `userId` and out-of-range `k`; full response shape including `abTestVariant` |
-| `RecommendationControllerTest` | Bean-validation rejections, malformed JSON, wrong content-type → stable `ApiError` shape |
-| `PredictionIntegrationTest` | End-to-end service pipeline against bundled artifacts: ranked results, score ordering, excludeItemIds |
-| `RecommendationEndToEndTest` | Full HTTP chain (`@SpringBootTest`): controller → inference → metrics; verifies counters and `/health/ready` |
-| `InferenceLoadTest` _(tag: load)_ | 100 concurrent requests, 10 threads; asserts P95 ≤ 2000 ms, success rate ≥ 99% |
-| `OnlineRecommendationEngineTest` | Blends recent-history and trending; rejects unknown window values |
-| `OnlineRecommendationServiceTest` | Blended scoring, online-only fallback, recently-watched exclusion, unknown user 404 |
-| `JvmMemoryMonitorTest` | Heap/non-heap positive used bytes, usedFraction in [0,1], metaspace pool presence |
-| `GcEventTrackerTest` | Zero initial counters, histogram key presence, `GcType.stw` flag, `avgPauseMs`, destroy idempotence |
-| `RedisConnectionFactoryTest` | Standalone pool creation, sentinel code path, `parseSentinelNodes`, `parsePort` edge cases |
-
----
-
-## Redis Test Data
-
-Seed trending data manually:
-
-```bash
-docker exec -it redis-primary redis-cli DEL topk:last_hour
-docker exec -it redis-primary redis-cli ZADD topk:last_hour \
-  2 11 1 1 1 2 1 3 1 4 1 5 1 7 1 8 1 9 1 12
-docker exec -it redis-primary redis-cli ZREVRANGE topk:last_hour 0 9 WITHSCORES
-```
-
-Inspect seeded embeddings:
-
-```bash
-docker exec -it redis-primary redis-cli SCAN 0 MATCH 'i2vEmb:*' COUNT 20
-docker exec -it redis-primary redis-cli GET i2vEmb:1
-```
-
-Redis key conventions:
-
-| Key pattern | Purpose |
-|---|---|
-| `i2vEmb:<id>` | Item (movie) embedding |
-| `u2vEmb:<id>` | User embedding |
-| `topk:<window>` | Sharded trending top-K sorted set (`last_hour`, `last_day`, `last_month`) |
-| `user:<id>:recent_movies` | Per-user recent watch history (written by Flink) |
-| `feature:user:<id>:embedding` | User embedding from Flink (online path) |
-
----
-
-## Online Serving
-
-The Kafka/Flink/Redis streaming path blends real-time behavioral signals with offline embedding recall.
-
-See [streaming/online-serving/README.md](streaming/online-serving/README.md) for full setup. Quick reference:
-
-```bash
-# 1. Start infra
-docker compose -f streaming/online-serving/docker-compose.yml up -d
-# 2. Load sample features (no Flink required)
-sh streaming/online-serving/scripts/load_online_features.sh
-# 3. Start the server
-sh scripts/run-with-jvm-tuning.sh online-serving -- \
-  mvn exec:java -Dexec.mainClass=com.recsys.streaming.OnlinePredictionServer
-# 4. Try it
-curl "http://localhost:7010/online/recommendation?userId=123&window=last_hour&k=5"
-curl "http://localhost:7010/online/ops"
-```
-
-| Component | What it does |
-|---|---|
-| `LogCollector` | Validates and emits Kafka-ready behavior logs (exposure, click, watch, like, rating, dwell, search, order) |
-| `OnlineJoiner` | Joins behavior logs with user/item/context features; produces labeled samples |
-| `ExperienceCollector` | Groups samples by request into ranked list experiences for listwise training |
-| `OnlineLearner` | Consumes list experiences; updates lightweight item-bias parameters in Redis |
-| `OnlineFeatureStreamingJob` | Flink job: reads Kafka events, deduplicates by `eventId`, writes history + embeddings + trending to Redis |
-| `OnlineRecommendationEngine` | Scores candidates from per-user history + trending Top-K |
-| `OnlineRecommendationService` | Blends behavioral + embedding signals; falls back to behavioral-only for cold-start |
-| `OnlineServingMetricsService` | Rolling QPS, latency, failures, per-strategy `failureRate` and `share` |
-| `OnlineLoadShedder` | Caps in-flight requests; sheds overload with `429` + `Retry-After` |
-| `OnlineCapacityService` | DAU/QPS/TPS sizing assumptions, remaining `headroomQps`, `overloaded` flag |
-| `OnlinePredictionServer` | Jetty entry point on port `7010`: `/health`, `/online/features`, `/online/recommendation`, `/online/ops` |
-
----
-
-## Offline Item Embeddings
-
-**Online prediction pipeline:**
-
-```text
-LogCollector → Kafka → OnlineJoiner → ExperienceCollector ──► OnlineLearner ──► serving parameters
-                                             │
-                                             └───────────────► training streams / HDFS
-                         │
-                         └─► Flink → Redis (behavioral features) ─┐
-                                                                  ├─> OnlineRecommendationService
-user embeddings (ANN recall) ─────────────────────────────────────┘
-```
-
-**Offline embedding pipeline:**
-
-```text
-Kafka / HDFS → Spark → Word2Vec → model registry / vector store → RecSysServer
-```
-
-Train Word2Vec from bundled ratings:
-
-```bash
-mvn -Poffline-embedding exec:java \
-  -Dexec.mainClass=com.recsys.training.rulebased.ItemEmbeddingJob \
-  -Dexec.args="--output=output/item_embeddings"
-```
-
-Options: `--ratings`, `--vector-size`, `--window-size`, `--min-count`, `--max-iter`, `--step-size`, `--min-rating`, `--synonym-movie-id`.
-
-Write embeddings to Redis:
-
-```bash
-mvn -Poffline-embedding exec:java \
-  -Dexec.mainClass=com.recsys.training.rulebased.ItemEmbeddingJob \
-  -Dexec.args="--output=output/item_embeddings --save-to-redis=true --redis-host=localhost --redis-port=6379"
-```
-
-Redis options: `--redis-key-prefix=i2vEmb` · `--redis-ttl=86400`.
-
-### Redis Feature Store keys (written by Flink)
-
-| Feature family | Redis key | Value shape |
+| Endpoint | Returns | When to use |
 |---|---|---|
-| Recent user history | `user:<userId>:recent_movies` | Space-delimited movie IDs, newest last |
-| User embedding | `feature:user:<userId>:embedding` | L2-normalized hashed embedding CSV |
-| Session feature | `feature:user:<userId>:session:<sessionId>` | Counts and last event fields |
-| Movie CTR feature | `feature:movie:<movieId>:ctr:<window>` | impressions, clicks, ctr, watches, dwells, engagement score |
-| Hot movies | `topk:<window>` | Redis ZSET movie ID → engagement score |
-| Trend feature | `feature:trend:<window>` | Compact `movieId:score` list |
-
----
-
-## Embedding Storage Paths
-
-### Rule-based → Redis
-
-`ItemEmbeddingJob` → Jedis pipeline → `i2vEmb:{movieId}` → `SimilarMovieService` (MGET → inner-product top-k)
-
-### Model-based → offline artifacts + Redis
-
-PyTorch/ONNX pipeline exports compact ONNX + `feature_config.json`; item embeddings go to Redis `i2vEmb:{movieId}`. `ModelRuntimeProvider` pre-loads all configured variants at startup.
+| `GET /health/live` | `200` if JVM responds | Liveness — restart trigger |
+| `GET /health/ready` | `200` fit for traffic; `503` overloaded | Readiness — load-balancer drain |
+| `GET /health/load` | Concurrency snapshot + `suggestedWeight` | Dynamic load-balancer weight |
+| `GET /health/metrics` | Rolling-window request counters and latency | Dashboards |
+| `GET /health/ab-tests` | Per-variant stats vs control | A/B experiment monitoring |
+| `GET /health/jvm` | Heap / non-heap / metaspace / thread snapshot | Memory pressure investigation |
+| `GET /health/gc` | GC event histogram, STW pause stats | GC tuning and incident response |
 
 ```bash
-RECSYS_MODEL_ITEM_EMBEDDINGS_SOURCE=redis \
-RECSYS_MODEL_REDIS_ITEM_EMBEDDING_PREFIX=i2vEmb \
-  sh scripts/run-with-jvm-tuning.sh model-serving -- mvn spring-boot:run
-```
+curl http://localhost:8080/health/ready
+# 200: {"status":"UP","recentRequests":42,"recentFailureRate":0.02,"inFlightRequests":7,"suggestedWeight":89}
+# 503: {"status":"DOWN","reason":"high failure rate","recentFailureRate":0.6,"threshold":0.5}
 
-### Serving API → classpath
+curl http://localhost:8080/health/load
+# {"inFlightRequests":7,"maxConcurrentRequests":64,"utilization":0.109,"suggestedWeight":89}
 
-`DataLoader` reads `movie_embeddings.txt` / `user_embeddings.txt` from the classpath at startup for the `mode=embedding` path.
+curl http://localhost:8080/health/metrics
+# {"totalRequests":1042,"successCount":1038,"recentAvgLatencyMs":55.7,"throughputPerSecond":0.3}
 
-### Comparison
+curl http://localhost:8080/health/jvm
+# heap/non-heap pools, thread counts, GC collector breakdown
 
-| | Rule-based (Redis) | Model-based (ONNX) | Serving API (classpath) |
-|---|---|---|---|
-| Written by | Spark → Jedis pipeline | External PyTorch/ONNX pipeline | Bundled text resources |
-| Stored in | Redis (`i2vEmb:{id}`) | ONNX + config artifacts; item embeddings in Redis | Classpath + JVM heap |
-| Retrieval | Redis MGET → exact inner-product | DSSM ONNX pair scoring | `VectorIndex`: `lsh` or `exact` |
-| TTL | 86400 s default | Redis-configurable | Reloads on restart |
-
----
-
-## Kubernetes & EKS
-
-The same image runs every service by setting `RECSYS_MAIN_CLASS`.
-
-```bash
-# Build
-docker build -t recsys-backend-service:local .
-
-# Deploy base manifests
-kubectl apply -k k8s/base
-kubectl -n recsys rollout status deployment/recsys-api-gateway
-```
-
-Inside the cluster, the gateway receives service URLs from `k8s/base/configmap.yaml`:
-
-```text
-CATALOG_SERVICE_URL=http://recsys-catalog-serving:6010
-MODEL_SERVICE_URL=http://recsys-model-serving:8080
-ONLINE_SERVICE_URL=http://recsys-online-serving:7010
-```
-
-For EKS with Cloud Map, service URLs follow the pattern `http://<service>.recsys.internal:<port>`.
-
-```bash
-# Deploy EKS overlay
-kubectl apply -k k8s/eks
-kubectl -n recsys get svc recsys-api-gateway
-```
-
-See [docs/aws/eks-deployment.md](docs/aws/eks-deployment.md) for ECR and EKS commands.
-
----
-
-## JVM Tuning
-
-Three GC profiles at the repo root:
-
-| File | Collector | Pause target | When to use |
-|---|---|---|---|
-| `jvm.options` | G1GC | 100 ms | Default — balanced throughput and latency |
-| `jvm-g1.options` | G1GC (enhanced) | 100 ms | Adaptive IHOP, reserve percent, mixed-GC count, phase logging |
-| `jvm-zgc.options` | ZGC (generational) | < 1 ms | Latency-critical inference; requires Java 21+ |
-
-```bash
-java $(cat jvm-g1.options) -jar recsys-api-*.jar
-java $(cat jvm-zgc.options) -jar recsys-api-*.jar   # Java 21+
-```
-
-Per-service profiles under `config/jvm/`:
-
-| Profile | JVM file | Target |
-|---|---|---|
-| `recsys-serving` | `config/jvm/recsys-serving.jvmopts` | Jetty port `6010` |
-| `model-serving` | `config/jvm/model-serving.jvmopts` | Spring Boot port `8080` |
-| `online-serving` | `config/jvm/online-serving.jvmopts` | Jetty port `7010` |
-| `offline-embedding` | `config/jvm/offline-embedding.jvmopts` | Spark driver runs |
-| `*-zgc` variants | `config/jvm/*-zgc.jvmopts` | ZGC low-pause alternatives |
-
-Heap profiles:
-
-| Profile | `-Xms` | `-Xmx` | GC pause target |
-|---|---:|---:|---:|
-| `recsys-serving` | `1g` | `2g` | `100 ms` |
-| `model-serving` | `2g` | `2g` | `100 ms` |
-| `online-serving` | `1g` | `2g` | `100 ms` |
-| `offline-embedding` | `4g` | `8g` | `200 ms` |
-
-Serving profiles use fixed heaps (`-Xms == -Xmx`) to remove heap-resize pauses during traffic ramps.
-
-### GC observability (model serving)
-
-```bash
 curl http://localhost:8080/health/gc
 ```
 
@@ -969,13 +418,527 @@ curl http://localhost:8080/health/gc
     "FULL_GC":  {"events": 0,  "totalPauseMs": 0,   "avgPauseMs": 0.0}
   },
   "stwLongestPauseMs": 28,
-  "stwPauseHistogram": {"<1ms":0,"1-10ms":5,"10-50ms":37,"50-200ms":0},
+  "stwPauseHistogram": {"<1ms":0,"1-10ms":5,"10-50ms":37,"50-200ms":0,">500ms":0},
   "evacuationFailures": 0,
   "allocationStalls": 0
 }
 ```
 
-Alarms to set: `evacuationFailures > 0`, `allocationStalls > 0`, `stwLongestPauseMs` above request SLO, any `FULL_GC` events.
+Kubernetes probe config:
+
+```yaml
+livenessProbe:
+  httpGet: { path: /health/live, port: 8080 }
+  initialDelaySeconds: 30
+  periodSeconds: 10
+readinessProbe:
+  httpGet: { path: /health/ready, port: 8080 }
+  initialDelaySeconds: 15
+  periodSeconds: 5
+```
+
+---
+
+### Port 8010 — API Gateway
+
+The gateway strips its route prefix and proxies to the backend. Use it as the single entry point — it handles circuit breaking, rate limiting, and auth.
+
+| Gateway prefix | Backend | Direct equivalent |
+|---|---|---|
+| `/api/users` | `:6010` | `GET /user?userId=123` |
+| `/api/movies` | `:6010` | `GET /movie?id=1` |
+| `/api/catalog` | `:6010` | `GET /item?id=1`, `GET /getrecommendation?...` |
+| `/api/features` | `:7010` | `GET /online/features?userId=123` |
+| `/api/online` | `:7010` | `GET /online/recommendation?userId=123` |
+| `/api/retrieval` | `:8080` | `POST /api/v1/recommend` |
+| `/api/ranking` | `:8080` | `POST /api/v1/recommend` |
+| `/api/model` | `:8080` | `POST /api/v1/recommend` |
+| `/api/observability` | `:8080` | `GET /health/ready` |
+| `/api/llm` | `:11434` | opt-in — set `LLM_SERVICE_URL` |
+| `/api/explanations` | `:11434` | opt-in — set `LLM_EXPLANATION_SERVICE_URL` |
+
+#### Smoke tests
+
+```bash
+# Stack health — shows status of all registered services
+curl http://localhost:8010/health
+
+# User lookup via gateway
+curl "http://localhost:8010/api/users/user?userId=123"
+# {"userId":123,"name":"Alice"}
+
+# Movie lookup via gateway
+curl "http://localhost:8010/api/movies/movie?id=1"
+curl "http://localhost:8010/api/catalog/item?id=1"
+# {"id":1,"title":"Inception","year":2010,"genres":["Sci-Fi","Thriller"]}
+
+# Offline recommendations via gateway
+curl "http://localhost:8010/api/catalog/getrecommendation?userId=123&mode=embedding&k=5"
+curl "http://localhost:8010/api/catalog/getrecommendation?userId=123&mode=topk&window=last_hour&k=5"
+
+# Similar movies via gateway
+curl "http://localhost:8010/api/catalog/similar?movieId=1&k=5"
+
+# Online (real-time) recommendations via gateway
+curl "http://localhost:8010/api/online/online/recommendation?userId=123&window=last_hour&k=5"
+curl "http://localhost:8010/api/online/online/features?userId=123"
+
+# ONNX model recommendations via gateway
+curl -X POST "http://localhost:8010/api/model/api/v1/recommend" \
+  -H "Content-Type: application/json" \
+  -d '{"userId":"123","k":5}'
+
+# LLM (requires Ollama + LLM_SERVICE_URL set)
+curl -X POST "http://localhost:8010/api/llm/api/generate" \
+  -H "Content-Type: application/json" \
+  -d '{"model":"llama3","prompt":"Summarize this movie: Inception","max_tokens":200}'
+```
+
+> **Hostname note:** `localhost:8010` is for local dev. In Kubernetes use the ClusterIP name (e.g. `recsys-api-gateway:8010`); on EKS with Cloud Map use `api-gateway.recsys.internal:8010`.
+
+---
+
+## Microservice Gateway
+
+The gateway is the public edge for the local microservice topology. It routes, circuit-breaks, and rate-limits across all four backend services.
+
+Start all services including the gateway:
+
+```bash
+docker compose -f docker-compose.streaming.yml up -d
+sh scripts/run-microservices-local.sh
+```
+
+Start only the gateway when backends are already running:
+
+```bash
+sh scripts/run-with-jvm-tuning.sh api-gateway -- \
+  mvn exec:java -Dexec.mainClass=com.recsys.microservice.MicroserviceGatewayServer
+```
+
+Enable LLM routes (requires Ollama):
+
+```bash
+brew install ollama && ollama serve &
+export LLM_SERVICE_URL=http://localhost:11434
+sh scripts/run-microservices-local.sh
+```
+
+`GET /health` aggregates downstream health checks and returns `503 DEGRADED` when any registered service is down. LLM routes (`/api/llm`, `/api/explanations`) are only registered when their env vars are explicitly set — without them the gateway reports `UP` with no LLM entries.
+
+---
+
+## Configuration
+
+### Catalog / Recommendation Serving (port 6010)
+
+| Env var | Default | Purpose |
+|---|---:|---|
+| `PORT` | `6010` | Server port |
+| `REDIS_HOST` | `localhost` | Redis host |
+| `REDIS_PORT` | `6379` | Redis port |
+| `LOCAL_EMBEDDING_CACHE_MAX_ENTRIES` | `100000` | Max embeddings in JVM LRU cache |
+| `RECSYS_VECTOR_BACKEND` | `lsh` | `lsh` (approximate) or `exact` |
+
+### Online Prediction Server (port 7010)
+
+| Env var | Default | Purpose |
+|---|---:|---|
+| `ONLINE_DEMO_PORT` | `7010` | Server port |
+| `ONLINE_MAX_CONCURRENT_REQUESTS` | `512` | In-flight cap before `429` |
+| `ONLINE_DRAIN_UTILIZATION` | `0.90` | Utilization where `/health` → `503` for drain |
+| `ONLINE_REDIS_RATE_LIMIT_QPS` | `0` | Cross-instance Redis rate limit; `0` = disabled |
+| `ONLINE_FEATURE_CACHE_MAX_USERS` | `10000` | Max Redis feature keys in JVM cache |
+| `ONLINE_FEATURE_REDIS_MGET_BATCH_SIZE` | `500` | Redis `MGET` batch size |
+| `ONLINE_METRICS_WINDOW_SECONDS` | `60` | Rolling metrics window |
+| `ONLINE_TARGET_DAU` | `2000000` | Capacity sizing assumption |
+| `ONLINE_PEAK_QPS` | `8000` | Peak read-QPS target |
+
+### API Gateway (port 8010)
+
+| Env var | Default | Purpose |
+|---|---:|---|
+| `GATEWAY_PORT` | `8010` | Gateway port |
+| `GATEWAY_TIMEOUT_MS` | `3000` | Upstream connect/request timeout |
+| `LLM_SERVICE_URL` | _(unset)_ | Enables `/api/llm` — set to Ollama URL to activate |
+| `LLM_EXPLANATION_SERVICE_URL` | _(unset)_ | Enables `/api/explanations` |
+| `GATEWAY_API_KEYS` | _(unset)_ | Comma-separated API keys; enables `X-API-Key` / `Authorization: Bearer` auth |
+| `GATEWAY_PUBLIC_PATHS` | `/health` | Paths that bypass API-key auth |
+| `GATEWAY_RATE_LIMIT_RPS` | `0` | Global token-bucket rate; `0` = disabled |
+| `GATEWAY_RATE_LIMIT_<ROUTE>_RPS` | _(unset)_ | Per-route override, e.g. `GATEWAY_RATE_LIMIT_MODEL_RPS` |
+
+### Model Serving — Spring Boot (port 8080)
+
+| Env var / property | Default | Purpose |
+|---|---:|---|
+| `SERVER_PORT` | `8080` | Server port |
+| `RECSYS_MODEL_ARTIFACTS_DIR` | _(classpath)_ | External artifact directory; resolves `<dir>/<variant>/...` |
+| `RECSYS_MODEL_ITEM_EMBEDDINGS_SOURCE` | `classpath` | `classpath` or `redis` |
+| `RECSYS_MODEL_REDIS_ITEM_EMBEDDING_PREFIX` | `i2vEmb` | Redis key prefix for item embeddings |
+| `recsys.health.max-failure-rate` | `0.5` | Failure rate above which `/health/ready` → `503` |
+| `recsys.health.max-avg-latency-ms` | `2000` | Avg latency above which `/health/ready` → `503` |
+| `recsys.health.max-concurrent-requests` | `64` | Per-instance in-flight cap |
+| `MYSQL_ENABLED` | `false` | Optional MySQL switch |
+
+---
+
+## Project Layout
+
+```text
+src/main/java/com/recsys/
+├── models/         Immutable API/domain records (Movie, User, Rating)
+├── features/       Data loading, vector math, Redis stores, LSH/exact index, candidate generation
+├── microservice/   API gateway: routing, circuit breakers, rate limiting, LLM proxy
+├── serving/        Jetty servlets for port 6010 (RecSysServer)
+├── streaming/      Online serving layer for port 7010 (OnlinePredictionServer)
+│   └── flink/      Flink job — writes history + embeddings + trending to Redis
+├── training/
+│   ├── rulebased/  Spark Word2Vec item embedding job
+│   └── modelbased/ Spring Boot ONNX model serving (port 8080)
+├── mysql/          Thin JDBC wrapper (opt-in)
+├── pagination/     SQL helpers for million-row cursor pagination
+└── saga/           AWS Step Functions saga orchestration
+
+src/main/resources/
+├── dssm_model.onnx                    Bundled DSSM demo model
+└── artifacts/model/training/          Bundled feature_config.json + model artifacts
+
+k8s/base/     Kustomize base manifests for all four services
+k8s/eks/      EKS overlays (IRSA, Cloud Map, ECR image)
+```
+
+---
+
+## Model Serving Demo
+
+The Spring Boot service on port `8080` runs a PyTorch-exported DSSM ONNX model. All variants are pre-warmed at startup so no user pays cold-start cost.
+
+Start with bundled classpath artifacts:
+
+```bash
+sh scripts/run-with-jvm-tuning.sh model-serving -- mvn spring-boot:run
+```
+
+Start with external artifacts from your modeling pipeline:
+
+```bash
+RECSYS_MODEL_ARTIFACTS_DIR=/path/to/model/artifacts \
+  sh scripts/run-with-jvm-tuning.sh model-serving -- mvn spring-boot:run
+```
+
+Start with Redis-backed item embeddings (stripped-embedding deployment):
+
+```bash
+RECSYS_MODEL_ITEM_EMBEDDINGS_SOURCE=redis \
+RECSYS_MODEL_REDIS_ITEM_EMBEDDING_PREFIX=i2vEmb \
+RECSYS_MODEL_ARTIFACTS_DIR=/path/to/model/artifacts \
+  sh scripts/run-with-jvm-tuning.sh model-serving -- mvn spring-boot:run
+```
+
+### Expected artifact layout
+
+```text
+<artifacts-dir>/
+├── training/
+│   ├── feature_config.json   user vocab, feature metadata
+│   ├── dssm_model.onnx       exported DSSM model
+│   └── item_embeddings.json  optional pretrained item embeddings
+└── test/
+    ├── feature_config.json
+    └── dssm_model.onnx
+```
+
+### Generate item embeddings with Spark Word2Vec
+
+Train from bundled ratings and write to file:
+
+```bash
+mvn -Poffline-embedding exec:java \
+  -Dexec.mainClass=com.recsys.training.rulebased.ItemEmbeddingJob \
+  -Dexec.args="--output=output/item_embeddings"
+```
+
+Or write directly to Redis (`i2vEmb:{movieId}`):
+
+```bash
+mvn -Poffline-embedding exec:java \
+  -Dexec.mainClass=com.recsys.training.rulebased.ItemEmbeddingJob \
+  -Dexec.args="--output=output/item_embeddings --save-to-redis=true --redis-host=localhost --redis-port=6379"
+```
+
+Options: `--vector-size=16`, `--window-size=5`, `--min-count=1`, `--max-iter=10`, `--min-rating=3.5`, `--redis-key-prefix=i2vEmb`, `--redis-ttl=86400`.
+
+---
+
+## A/B Testing
+
+`ABTestService` assigns users to variants deterministically by hashing `userId:layerName` modulo `trafficSplitNumber`. The assigned variant is returned in every response so impressions can be attributed to the right bucket.
+
+**Bucketing:**
+
+```
+bucket = hash(userId + ":" + layerName) % trafficSplitNumber
+bucket == 0  →  bucketAVariant  (20%)
+bucket == 1  →  bucketBVariant  (20%)
+otherwise    →  defaultVariant  (60% control)
+```
+
+**Layer isolation:** within the same layer, a user is in exactly one bucket. Across different layers, assignments are independent — useful for running multiple experiments simultaneously.
+
+Enable via `application.yml`:
+
+```yaml
+recsys:
+  ab-test:
+    enabled: true
+    layer-name: model-arch-test-2024q2
+    traffic-split-number: 5
+    bucket-a-variant: test
+    bucket-b-variant: training
+    default-variant: training
+```
+
+Or env vars:
+
+```bash
+RECSYS_AB_TEST_ENABLED=true \
+RECSYS_AB_TEST_LAYER_NAME=model-arch-test-2024q2 \
+  sh scripts/run-with-jvm-tuning.sh model-serving -- mvn spring-boot:run
+```
+
+Check which variant a specific user gets:
+
+```bash
+curl -X POST http://localhost:8080/api/v1/recommend \
+  -H "Content-Type: application/json" \
+  -d '{"userId":"42","k":1}'
+# "abTestVariant": "test"   ← bucket assignment is in every response
+```
+
+Compare live variant performance:
+
+```bash
+curl http://localhost:8080/health/ab-tests
+```
+
+---
+
+## Testing
+
+Run all unit and integration tests (load tests excluded by default):
+
+```bash
+mvn test
+
+# Run a single test class
+mvn test -Dtest=RecommendationServiceTest
+
+# Load tests only (100 concurrent requests, asserts P95 ≤ 2000 ms)
+mvn test -DexcludedGroups="" -Dgroups=load
+```
+
+| Test class | What it covers |
+|---|---|
+| `ModelArtifactLocatorTest` | Classpath and external-dir resolution for model and spark artifact groups |
+| `ModelArtifactServiceTest` | Loads bundled `feature_config.json`; asserts model version, vocab, item vocab |
+| `ModelRuntimeProviderTest` | Loads `training` and `test` runtimes; asserts distinct model versions |
+| `FeatureEncoderTest` | Known user IDs → vocab indices; unknown IDs → `__UNK__` |
+| `RankingServiceTest` | Re-ordering by score, k-truncation, missing-embedding skip |
+| `RetrievalServiceTest` | Top-K by inner-product, null embedding, empty candidates |
+| `ABTestServiceTest` | Bucketing determinism, same-layer exclusivity, cross-layer independence |
+| `RecommendationServiceTest` | Guards reject blank `userId` and out-of-range `k`; full response shape |
+| `RecommendationControllerTest` | Bean-validation rejections, malformed JSON, wrong content-type → stable `ApiError` |
+| `PredictionIntegrationTest` | End-to-end pipeline: ranked results, score ordering, excludeItemIds |
+| `RecommendationEndToEndTest` | Full HTTP chain; verifies metrics counters and `/health/ready` state |
+| `InferenceLoadTest` _(tag: load)_ | P95 ≤ 2000 ms, success rate ≥ 99% under 100 concurrent requests |
+| `OnlineRecommendationEngineTest` | Blends history + trending; rejects unknown window values |
+| `OnlineRecommendationServiceTest` | Blended scoring, online-only fallback, recently-watched exclusion |
+| `JvmMemoryMonitorTest` | Heap/non-heap positive bytes, usedFraction in [0,1], metaspace pool |
+| `GcEventTrackerTest` | Zero initial counters, histogram keys, `GcType.stw`, `avgPauseMs`, destroy idempotence |
+| `RedisConnectionFactoryTest` | Standalone pool, sentinel code path, `parseSentinelNodes`, `parsePort` |
+
+---
+
+## Redis Test Data
+
+Seed trending data so `mode=topk` and online recommendations return results:
+
+```bash
+# Seed last_hour trending
+docker exec -it redis-primary redis-cli DEL topk:last_hour
+docker exec -it redis-primary redis-cli ZADD topk:last_hour \
+  2 11 1 1 1 2 1 3 1 4 1 5 1 7 1 8 1 9 1 12
+
+# Verify
+docker exec -it redis-primary redis-cli ZREVRANGE topk:last_hour 0 9 WITHSCORES
+```
+
+Inspect seeded embeddings:
+
+```bash
+docker exec -it redis-primary redis-cli SCAN 0 MATCH 'i2vEmb:*' COUNT 20
+docker exec -it redis-primary redis-cli GET i2vEmb:1
+```
+
+Then try a trending recommendation:
+
+```bash
+curl "http://localhost:6010/getrecommendation?userId=123&mode=topk&window=last_hour&k=5"
+curl "http://localhost:7010/online/recommendation?userId=123&window=last_hour"
+```
+
+Redis key conventions:
+
+| Key | Purpose |
+|---|---|
+| `i2vEmb:<id>` | Item (movie) embedding |
+| `u2vEmb:<id>` | User embedding |
+| `topk:<window>` | Trending sorted set (`last_hour`, `last_day`, `last_month`) |
+| `user:<id>:recent_movies` | Per-user recent watch history (written by Flink) |
+| `feature:user:<id>:embedding` | User embedding from online Flink job |
+| `feature:movie:<id>:ctr:<window>` | Movie CTR and engagement metrics |
+
+---
+
+## Online Serving
+
+The Kafka/Flink/Redis pipeline provides the real-time signals consumed by port `7010`. See [streaming/online-serving/README.md](streaming/online-serving/README.md) for full setup.
+
+Quick start (loads sample features without Flink):
+
+```bash
+docker compose -f streaming/online-serving/docker-compose.yml up -d
+sh streaming/online-serving/scripts/load_online_features.sh
+
+sh scripts/run-with-jvm-tuning.sh online-serving -- \
+  mvn exec:java -Dexec.mainClass=com.recsys.streaming.OnlinePredictionServer
+
+# Verify
+curl "http://localhost:7010/online/recommendation?userId=123&window=last_hour&k=5"
+curl "http://localhost:7010/online/ops"
+```
+
+With full Flink pipeline (produces live events to Kafka):
+
+```bash
+sh streaming/online-serving/scripts/produce_movie_events.sh
+# Flink job writes to Redis → online serving sees live history and trending
+```
+
+| Component | Responsibility |
+|---|---|
+| `LogCollector` | Validates and emits Kafka-ready behavior logs (exposure, click, watch, like, rating, dwell, search, order) |
+| `OnlineJoiner` | Joins behavior logs with user/item/context features; produces labeled samples |
+| `ExperienceCollector` | Groups samples by request into ranked list experiences for listwise training |
+| `OnlineLearner` | Updates per-item bias parameters from list experiences; persists to Redis |
+| `OnlineFeatureStreamingJob` | Flink job: reads Kafka, writes history + embeddings + trending + CTR to Redis |
+| `OnlineRecommendationEngine` | Scores candidates from per-user history + windowed trending |
+| `OnlineRecommendationService` | Blends behavioral + embedding signals; cold-start fallback |
+| `OnlineLoadShedder` | Caps in-flight requests; returns `429` + `Retry-After` when overloaded |
+| `OnlineCapacityService` | Exposes DAU/QPS/TPS targets, `headroomQps`, and `overloaded` flag |
+
+---
+
+## Offline Item Embeddings
+
+**Rule-based path (Spark Word2Vec → Redis):**
+
+```bash
+# Train and push to Redis
+mvn -Poffline-embedding exec:java \
+  -Dexec.mainClass=com.recsys.training.rulebased.ItemEmbeddingJob \
+  -Dexec.args="--output=output/item_embeddings --save-to-redis=true"
+
+# Verify
+docker exec -it redis-primary redis-cli GET i2vEmb:1
+
+# Try embedding recall
+curl "http://localhost:6010/getrecommendation?userId=123&mode=embedding&k=5"
+```
+
+**Model-based path (PyTorch/ONNX → Redis item embeddings):**
+
+```bash
+# Start model serving with Redis-backed item embeddings
+RECSYS_MODEL_ITEM_EMBEDDINGS_SOURCE=redis \
+RECSYS_MODEL_REDIS_ITEM_EMBEDDING_PREFIX=i2vEmb \
+  sh scripts/run-with-jvm-tuning.sh model-serving -- mvn spring-boot:run
+
+# Verify the model serves correctly
+curl -X POST http://localhost:8080/api/v1/recommend \
+  -H "Content-Type: application/json" -d '{"userId":"123","k":5}'
+```
+
+| | Rule-based (Spark) | Model-based (ONNX) | Serving API (classpath) |
+|---|---|---|---|
+| Written by | Spark → Jedis pipeline | External PyTorch/ONNX pipeline | Bundled text resources |
+| Stored in | Redis `i2vEmb:{id}` | ONNX + config artifacts; item embeddings in Redis | Classpath + JVM heap |
+| Retrieval | Redis MGET → exact inner-product | DSSM ONNX pair scoring | `VectorIndex`: `lsh` or `exact` |
+| TTL | 86400 s default | Redis-configurable | Reloads on restart |
+
+---
+
+## Kubernetes & EKS
+
+The same image runs every service by setting `RECSYS_MAIN_CLASS`.
+
+```bash
+# Build image
+docker build -t recsys-backend-service:local .
+
+# Deploy base manifests
+kubectl apply -k k8s/base
+kubectl -n recsys rollout status deployment/recsys-api-gateway
+
+# Check gateway service
+kubectl -n recsys get svc recsys-api-gateway
+
+# Port-forward for local testing
+kubectl -n recsys port-forward svc/recsys-api-gateway 8010:8010
+curl http://localhost:8010/health
+```
+
+Inside the cluster, service URLs come from `k8s/base/configmap.yaml`:
+
+```
+CATALOG_SERVICE_URL=http://recsys-catalog-serving:6010
+MODEL_SERVICE_URL=http://recsys-model-serving:8080
+ONLINE_SERVICE_URL=http://recsys-online-serving:7010
+```
+
+On EKS with Cloud Map, DNS names follow the pattern `http://<service>.recsys.internal:<port>`.
+
+```bash
+# Deploy EKS overlay (ECR image, IRSA, Cloud Map)
+kubectl apply -k k8s/eks
+```
+
+See [docs/aws/eks-deployment.md](docs/aws/eks-deployment.md) for ECR push and EKS commands.
+
+---
+
+## JVM Tuning
+
+Three GC profiles at the repo root:
+
+```bash
+# G1 (default — balanced throughput and latency)
+java $(cat jvm-g1.options) -jar recsys-api-*.jar
+
+# ZGC (sub-ms pauses — Java 21+)
+java $(cat jvm-zgc.options) -jar recsys-api-*.jar
+```
+
+Per-service JVM profiles under `config/jvm/`:
+
+| Profile | Heap | GC target | Use case |
+|---|---:|---:|---|
+| `recsys-serving` | `1–2 g` | `100 ms` | Jetty port 6010 |
+| `model-serving` | `2 g` (fixed) | `100 ms` | Spring Boot + ONNX port 8080 |
+| `online-serving` | `1–2 g` | `100 ms` | Jetty port 7010 |
+| `offline-embedding` | `4–8 g` | `200 ms` | Spark driver |
+
+Serving profiles use fixed heaps (`-Xms == -Xmx`) to eliminate heap-resize pauses during traffic ramps.
 
 Summarize GC logs:
 
@@ -983,80 +946,96 @@ Summarize GC logs:
 sh scripts/summarize-gc-logs.sh logs/gc-online-serving-*.log
 ```
 
-### Arthas runtime diagnostics
+Arthas for live JVM diagnostics:
 
 ```bash
 mkdir -p tools/arthas
 curl -L -o tools/arthas/arthas-boot.jar https://arthas.aliyun.com/arthas-boot.jar
 
-jps -lv
-sh scripts/arthas-diagnostics.sh <pid> thread
-sh scripts/arthas-diagnostics.sh <pid> cpu 60
-sh scripts/arthas-diagnostics.sh <pid> watch com.recsys.modelbased.model.service.RankingService rank
-sh scripts/arthas-diagnostics.sh <pid> trace com.recsys.modelbased.model.service.RecommendationService recommend
+jps -lv                                                     # find the PID
+sh scripts/arthas-diagnostics.sh <pid> thread               # CPU threads + deadlock
+sh scripts/arthas-diagnostics.sh <pid> cpu 60               # flame graph (60 s)
+sh scripts/arthas-diagnostics.sh <pid> watch \
+  com.recsys.modelbased.model.service.RankingService rank   # inspect params/return/cost
+sh scripts/arthas-diagnostics.sh <pid> trace \
+  com.recsys.modelbased.model.service.RecommendationService recommend  # call path cost
 ```
 
-### MAT heap analysis
+MAT heap analysis:
 
 ```bash
-sh scripts/mat-heap-analysis.sh dump <pid>
-sh scripts/mat-heap-analysis.sh histogram <pid>
-MAT_PARSE_HEAP_DUMP=/path/to/mat/ParseHeapDump \
-  sh scripts/mat-heap-analysis.sh report logs/heap-dumps/heap-<pid>-<timestamp>.hprof
+sh scripts/mat-heap-analysis.sh dump <pid>              # live heap dump
+sh scripts/mat-heap-analysis.sh histogram <pid>         # top classes
+MAT_PARSE_HEAP_DUMP=/path/to/ParseHeapDump \
+  sh scripts/mat-heap-analysis.sh report logs/heap-dumps/heap-<pid>-<ts>.hprof
 ```
 
 ---
 
 ## Capacity Planning
 
-Sizing for 200w+ DAU and 8k peak QPS:
+Sizing for 200 w+ DAU and 8 k peak QPS:
 
-| Dimension | Target | Design implication |
+| Dimension | Target | Design decision |
 |---|---:|---|
-| DAU | `200w+` | Compact per-user online state: history lists, counters, small learned params |
+| DAU | `200w+` | Compact per-user Redis state: history list + counters + learned params |
 | Peak read QPS | `8k` | JVM local cache first, Redis second; bound candidate count |
-| Event TPS | > read QPS during bursts | Write to Kafka first; Flink aggregates asynchronously |
-| Machine scale | Stateless API + partitioned Flink + Redis Sentinel | Scale API on QPS/CPU; Flink on lag; Redis on memory/ops |
+| Event TPS | > read QPS during bursts | Write to Kafka; Flink aggregates asynchronously |
+| Machine scale | Stateless API + partitioned Flink + Redis Sentinel | Scale API on QPS/CPU; Flink on consumer lag; Redis on memory/ops |
 
-Production concerns:
+Check current capacity headroom:
 
-- **Latency SLO:** track p50/p95/p99 for recall, Redis reads, ranking, and serialization separately.
-- **Cache hit rate:** watch JVM local-cache hit rate and Redis MGET latency.
-- **Backpressure:** monitor Kafka consumer lag, Flink checkpoint duration, Redis write latency.
-- **Degradation:** fall back to cached Top-K/trending when Redis or inference is slow.
-- **Consistency:** at-least-once MQ delivery, `eventId` idempotency, Redis last-write-wins timestamps.
+```bash
+curl http://localhost:7010/online/ops | jq '.capacity'
+# {"targetDau":2000000,"peakQps":8000,"headroomQps":7999.9,"overloaded":false}
+```
+
+Production alarms to set:
+- `evacuationFailures > 0` or any `FULL_GC` events — GC pressure
+- `stwLongestPauseMs` above request SLO
+- `allocationStalls > 0` — ZGC needs more heap
+- `overloaded: true` at `/online/ops`
+- Kafka consumer lag growing — Flink falling behind
 
 ---
 
 ## Developer Notes
 
-**Data loading:**
-- `DataLoader` loads bundled text resources from `com/recsys/data`.
-- `DataManager` is a read-only singleton with immutable maps and precomputed sorted lists.
+### Data loading
 
-**Retrieval strategies (`CandidateGenerator`):**
-- `byGenre` — seed-movie genre recall.
-- `byUserHistory` — multi-way recall from user-history genres, global top-rated, and latest.
-- `byEmbedding` — ANN search through the `VectorIndex` interface (`lsh` or `exact`).
+`DataLoader` loads bundled text resources from `com/recsys/data`. `DataManager` is a read-only singleton with immutable maps, precomputed sorted lists (`topRatedMovies`, `latestMovies`), and genre indexes.
 
-**Redis-backed embeddings:**
-- `RedisEmbeddingStore` — generic key-prefix store for item and user embeddings.
-- `LocalEmbeddingCache` — bounded LRU JVM read-through layer in front of Redis; batch reads deduplicate misses.
+### Retrieval strategies
 
-**Hot-key and multi-level cache controls:**
-- `HotKeyDetector` — sliding-window hot-key detection; two-bucket alpha-weighted blending; lock-free per-key counters.
-- `ShardedTopKStore` — key sharding + local cache for Top-K windows; reduces per-key Redis QPS by N.
-- `MultiLevelEmbeddingCache` — L1 (JVM hot-key) → L2 (Redis) → L3 (fallback snapshot); per-tier hit rates exposed.
+- `CandidateGenerator.byGenre` — expands from seed movie's genres; top-100 per genre by average rating.
+- `CandidateGenerator.byUserHistory` — multi-way: user's genre history + global top-100 + latest 100.
+- `CandidateGenerator.byEmbedding` — ANN search through `VectorIndex` (`lsh` or `exact`).
 
-**Model serving:**
-- `ModelRuntimeProvider` — owns lifecycle of every per-variant runtime; `@PostConstruct warmUp()` pre-loads all configured variants.
-- `ModelArtifactLocator` — resolves model and spark artifact groups from classpath or external directory.
-- `ABTestService` — deterministic hash-based bucketing; same layer → mutually exclusive; different layers → independent.
-- `InferenceMetricsService` — per-variant rolling counters; `abTestSnapshot(controlVariant)` computes deltas vs control.
-- `GcEventTracker` — JMX notification listener per `GarbageCollectorMXBean`; fires on every GC event.
+### Hot-key and cache controls
 
-**Servlet base:**
-- `BaseApiServlet` — centralizes JSON headers, Jackson serialization, error responses, and parameter parsing.
+`HotKeyDetector` — sliding two-bucket window with alpha-weighted blending; lock-free per-key counters. Detects which movie/user keys are hot and gates eviction.
+
+```bash
+# Observe hot-key detection indirectly via cache hit rates in online ops
+curl http://localhost:7010/online/ops | jq '.metrics'
+```
+
+`ShardedTopKStore` — replicates each `topk:{window}` sorted set across N Redis shard keys. On local-cache TTL refresh, reads a random shard — reducing per-key Redis QPS by N. `seedAllShards()` fan-out keeps shards consistent.
+
+`MultiLevelEmbeddingCache` — L1 (JVM hot-key) → L2 (Redis) → L3 (fallback snapshot). L2/L3 hits promote to L1; null sentinels absorb repeated misses for missing IDs.
+
+### Online learner
+
+`OnlineLearner` updates per-item bias parameters from `ExperienceCollector` output without retraining the ONNX model. Biases are bounded by `maxItemCount` (default 10,000) with LRU eviction. State is persisted to Redis between restarts:
+
+```bash
+# Observe learning indirectly: recommendations shift as biases update
+curl "http://localhost:7010/online/recommendation?userId=123"
+```
+
+### Model runtime provider
+
+`ModelRuntimeProvider` owns the lifecycle of every per-variant ONNX runtime. `@PostConstruct warmUp()` pre-loads all configured variants so no user pays cold-start cost. `areVariantsReady()` gates `/health/ready`.
 
 ---
 
@@ -1065,67 +1044,76 @@ Production concerns:
 | Component | Problem | Fix |
 |---|---|---|
 | `OnlineFeatureStore` | `ConcurrentHashMap.compute()` held a bin lock during Redis network call | `CompletableFuture` inflight map; Redis fetch runs outside any lock |
-| `RecommendationCache.TtlLruCache` | `synchronized` + access-order `LinkedHashMap` serialised every read | `ReentrantReadWriteLock` + insertion-order map |
-| `RedisEmbeddingStore.loadAll()` | One unbounded `MGET` on large stores → OOM / Full GC | Batch-MGET per SCAN page (≤500 keys) |
-| `RedisEmbeddingStore.getEmbeddings()` | Oversized MGET; duplicate keys in same request | Deduplicate IDs and chunk with `REDIS_EMBEDDING_MGET_BATCH_SIZE` |
-| `LocalEmbeddingCache` | FIFO eviction could evict hot embeddings; duplicate misses forwarded | Access-order LRU; batch misses deduplicated before backing-store fetch |
-| `HotKeyDetector` | Fixed-window counters reset abruptly | Two-bucket alpha-weighted sliding window; lock-free per-key counters |
-| `ShardedTopKStore` | Single `topk:{window}` key → Redis hot key at scale | N shard replicas; random shard read on TTL refresh; 2 s local cache + singleflight |
-| `MultiLevelEmbeddingCache` | Redis hiccups → repeated network calls | L1→L2→L3 promotion; null sentinel for missing hot IDs |
-| `ModelArtifactService` | `Arrays.copyOf()` doubled live heap during startup | Removed defensive copy; read-only after load |
+| `RecommendationCache` | `synchronized` + access-order map serialised every cache read | `ReentrantReadWriteLock` + insertion-order map |
+| `RedisEmbeddingStore.loadAll()` | One unbounded `MGET` → OOM on large stores | Batch-MGET per SCAN page (≤ 500 keys) |
+| `RedisEmbeddingStore.getEmbeddings()` | Oversized or duplicate-key MGET | Deduplicate IDs and chunk with `REDIS_EMBEDDING_MGET_BATCH_SIZE` |
+| `LocalEmbeddingCache` | FIFO eviction could evict hot embeddings; duplicate batch misses | Access-order LRU; batch misses deduplicated before backing-store fetch |
+| `HotKeyDetector` | Fixed-window counters reset abruptly at boundaries | Two-bucket alpha-weighted sliding window; lock-free per-key counters |
+| `ShardedTopKStore` | Single `topk:{window}` → Redis hot key under load | N shard replicas; random shard read on TTL refresh; local 2 s cache + singleflight |
+| `MultiLevelEmbeddingCache` | Redis hiccups → repeated network calls for popular IDs | L1→L2→L3 promotion; null sentinel for missing hot IDs |
+| `ModelArtifactService` | `Arrays.copyOf()` doubled live heap at startup | Removed defensive copy; read-only after load |
 | `OnlineFeatureStore.evictIfNeeded()` | O(N) `removeIf` on every cache-miss request | Rate-limited to once per 5 s |
-| `OnlineFeatureStore.getFeatures()` | Feature reads one Redis key at a time | Bulk path: dedup + bounded local cache + null-miss caching + chunked MGET |
-| `OnlineLearner.evictIfNeeded()` | O(N log N) heap allocation on every `learn()` call past limit | Rate-limited to once per 5 s |
-| `UserTowerInferenceService.close()` | Closed `OrtEnvironment` (JVM-wide singleton), invalidating other variant sessions | Now closes only the per-variant `OrtSession` |
-| `OnlineServingMetricsService` | `Instant.now()` allocation on hot path | `System.currentTimeMillis() / 1000L` — no allocation |
+| `OnlineLearner.evictIfNeeded()` | O(N log N) heap allocation on every `learn()` call | Rate-limited to once per 5 s |
+| `UserTowerInferenceService.close()` | Closed `OrtEnvironment` (JVM-wide singleton) → invalidated all variant sessions | Now closes only the per-variant `OrtSession` |
+| `OnlineServingMetricsService` | `Instant.now()` allocation on hot request path | `System.currentTimeMillis() / 1000L` — zero allocation |
 
 ---
 
 ## LLM Gateway
 
-The gateway includes an LLM-optimized reverse proxy at `/api/llm/*` (opt-in — set `LLM_SERVICE_URL`).
+The gateway includes an LLM-optimized proxy at `/api/llm/*`. Enable it by setting `LLM_SERVICE_URL`:
 
-| Feature | Behaviour |
-|---|---|
-| Streaming passthrough | Detects `"stream":true` and pipes SSE/chunked response byte-by-byte |
-| Retry-on-429 | Reads upstream `Retry-After` and retries once (buffered mode only) |
-| Token-based rate limiting | Pre-checks `max_tokens` against a local token-bucket |
-| Response caching | Non-streaming `200` responses cached by SHA-256 of request body |
-| Circuit breaker | Shared with health endpoint; fast-fails `503` during cooldown |
+```bash
+export LLM_SERVICE_URL=http://localhost:11434   # Ollama
+sh scripts/run-microservices-local.sh
+```
 
-Default target: Ollama (`http://localhost:11434`). Override via `LLM_SERVICE_URL` for any OpenAI-compatible endpoint.
+Features: SSE streaming passthrough, retry-on-429, token-count-aware rate limiting, SHA-256 response caching, circuit breaker.
 
-### LLM environment variables
+```bash
+# Non-streaming generation
+curl -X POST "http://localhost:8010/api/llm/api/generate" \
+  -H "Content-Type: application/json" \
+  -d '{"model":"llama3","prompt":"Summarize this movie: Inception","max_tokens":200}'
+
+# Streaming generation (SSE)
+curl -X POST "http://localhost:8010/api/llm/api/generate" \
+  -H "Content-Type: application/json" \
+  -d '{"model":"llama3","prompt":"Recommend 3 movies similar to Inception","stream":true}'
+
+# Check if LLM routes are registered
+curl http://localhost:8010/health | jq '.services | with_entries(select(.key | test("llm")))'
+```
 
 | Env var | Default | Purpose |
 |---|---:|---|
-| `LLM_SERVICE_URL` | _(unset)_ | Enables LLM routes; base URL for the LLM backend |
-| `LLM_TIMEOUT_MS` | `120000` | Per-request timeout in ms |
-| `LLM_MAX_RETRY_WAIT_MS` | `30000` | Max `Retry-After` wait before abandoning 429 retry |
-| `LLM_DEFAULT_TOKEN_ESTIMATE` | `1000` | Token estimate when `max_tokens` is absent |
-| `LLM_TOKEN_RATE_LIMIT_TPS` | `0` | Refill rate in LLM-tokens/second (`0` = disabled) |
-| `LLM_TOKEN_RATE_LIMIT_BURST` | `0` | Burst capacity in LLM-tokens (`0` = disabled) |
-| `LLM_CACHE_MAX_SIZE` | `500` | Max cached responses (`0` = disabled) |
-| `LLM_CACHE_TTL_SECONDS` | `300` | Cache entry TTL (`0` = disabled) |
+| `LLM_SERVICE_URL` | _(unset)_ | Enables LLM routes; set to Ollama or any OpenAI-compatible URL |
+| `LLM_TIMEOUT_MS` | `120000` | Per-request timeout |
+| `LLM_TOKEN_RATE_LIMIT_TPS` | `0` | Tokens/second refill rate; `0` = disabled |
+| `LLM_TOKEN_RATE_LIMIT_BURST` | `0` | Burst token capacity |
+| `LLM_CACHE_MAX_SIZE` | `500` | Max cached non-streaming responses |
+| `LLM_CACHE_TTL_SECONDS` | `300` | Cache TTL |
 
 ---
 
 ## Model Rate Limiting
 
-`ModelRateLimiter` applies a per-user token-bucket rate limit to `POST /api/v1/recommend`. The check runs before the global concurrency semaphore.
-
-| Property | Default | Purpose |
-|---|---:|---|
-| `recsys.model.rate-limit.rps` | `0.0` | Per-user requests/second (`0` = disabled) |
-| `recsys.model.rate-limit.burst` | `0` | Burst capacity per user |
-| `recsys.model.rate-limit.max-users` | `10000` | Max tracked users (LRU eviction) |
-
-Example — 5 req/s per user, burst 10:
+`ModelRateLimiter` applies a per-user token-bucket limit to `POST /api/v1/recommend` before the global concurrency semaphore — preventing one high-traffic user from monopolising ONNX inference slots.
 
 ```bash
+# Enable: 5 req/s per user, burst 10
 RECSYS_MODEL_RATE_LIMIT_RPS=5.0 \
 RECSYS_MODEL_RATE_LIMIT_BURST=10 \
   sh scripts/run-with-jvm-tuning.sh model-serving -- mvn spring-boot:run
+
+# Trigger the limit (run rapidly)
+for i in $(seq 1 15); do
+  curl -s -o /dev/null -w "%{http_code}\n" \
+    -X POST http://localhost:8080/api/v1/recommend \
+    -H "Content-Type: application/json" \
+    -d '{"userId":"1","k":1}'
+done
+# 200 200 200 ... 429 429 429
 ```
 
 `429` response:
@@ -1134,36 +1122,39 @@ RECSYS_MODEL_RATE_LIMIT_BURST=10 \
 {"error": "request rate limit exceeded — retry after 1s", "violations": []}
 ```
 
+| Property | Default | Purpose |
+|---|---:|---|
+| `recsys.model.rate-limit.rps` | `0.0` | Per-user req/s (`0` = disabled) |
+| `recsys.model.rate-limit.burst` | `0` | Burst capacity |
+| `recsys.model.rate-limit.max-users` | `10000` | Max tracked users (LRU eviction) |
+
 ---
 
 ## AWS Saga Orchestration
 
-`com.recsys.saga` provides durable multi-step orchestration backed by AWS Step Functions.
+`com.recsys.saga` provides durable multi-step orchestration for eventual-consistency workflows, backed by AWS Step Functions.
 
-| Class | Pattern | When to use |
+| Class | Pattern | Use when |
 |---|---|---|
 | `SagaOrchestrator` | Compensating transaction | Sequential steps with best-effort rollback |
 | `TccSagaOrchestrator` | Try / Confirm / Cancel | Stronger consistency — Try reserves, Confirm commits, Cancel releases |
 
-Both use full-jitter exponential backoff (`MaxDelaySeconds: 30`, `JitterStrategy: FULL`).
-
-`AwsStepFunctionsSagaDefinition.render()` produces ready-to-deploy Step Functions JSON with per-step retry policies, catch routing to compensating states, and terminal `SagaCompleted` / `SagaCancelled` states.
+Both use full-jitter exponential backoff (matching `MaxDelaySeconds: 30`, `JitterStrategy: FULL` in generated ASL).
 
 ```java
+// Run a saga with charge + reserve steps
 SagaInstance result = orchestrator.execute(
     sagaId, correlationId, payloadJson, definition,
-    Map.of("charge-payment", (saga, step) -> paymentService.charge(...)),
-    Map.of("charge-payment", (saga, step) -> paymentService.refund(...))
+    Map.of(
+        "charge-payment", (saga, step) -> paymentService.charge(...),
+        "reserve-model",  (saga, step) -> modelSlotService.reserve(...)
+    ),
+    Map.of(
+        "charge-payment", (saga, step) -> paymentService.refund(...),
+        "reserve-model",  (saga, step) -> modelSlotService.release(...)
+    )
 );
+// result.status() == SagaStatus.COMPLETED or FAILED
 ```
 
-Use `sagaId + stepName` as the idempotency key for participant commands.
-
----
-
-## LLM Integration Ideas
-
-- Use text embeddings as item/user features for retrieval.
-- Use an LLM as a zero-shot ranker or reranker for diversity, freshness, and domain-specific constraints.
-- Fine-tune for direct item generation when supervised recommendation data is available.
-- Add conversational recommendation on top of the existing serving layer.
+`AwsStepFunctionsSagaDefinition.render(definition)` produces ready-to-deploy Step Functions JSON with per-step retry policies and compensating-state routing. Use `sagaId + stepName` as the idempotency key.
