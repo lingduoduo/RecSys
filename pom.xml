@@ -147,6 +147,8 @@
   </dependencies>
 
   <dependencyManagement>
+    <!-- Pin Jackson to Spring Boot's version so Testcontainers/docker-java
+         cannot downgrade jackson-annotations to 2.10.x (which lacks JsonIncludeProperties). -->
     <dependencies>
       <dependency>
         <groupId>org.testcontainers</groupId>
@@ -154,6 +156,21 @@
         <version>1.20.4</version>
         <type>pom</type>
         <scope>import</scope>
+      </dependency>
+      <dependency>
+        <groupId>com.fasterxml.jackson.core</groupId>
+        <artifactId>jackson-annotations</artifactId>
+        <version>2.17.2</version>
+      </dependency>
+      <dependency>
+        <groupId>com.fasterxml.jackson.core</groupId>
+        <artifactId>jackson-databind</artifactId>
+        <version>2.17.2</version>
+      </dependency>
+      <dependency>
+        <groupId>com.fasterxml.jackson.core</groupId>
+        <artifactId>jackson-core</artifactId>
+        <version>2.17.2</version>
       </dependency>
     </dependencies>
   </dependencyManagement>

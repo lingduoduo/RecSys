@@ -7,6 +7,7 @@ import java.util.List;
 
 import static org.junit.jupiter.api.Assertions.assertEquals;
 import static org.junit.jupiter.api.Assertions.assertTrue;
+import static org.junit.jupiter.api.Assertions.assertFalse;
 import static org.junit.jupiter.api.Assertions.assertNull;
 
 class MicroserviceRouteTest {
@@ -86,19 +87,21 @@ class MicroserviceRouteTest {
                 .map(MicroserviceRoute::name)
                 .toList();
 
+        // LLM routes are opt-in (only registered when LLM_SERVICE_URL / LLM_EXPLANATION_SERVICE_URL
+        // env vars are set), so they are not asserted here.
         assertTrue(names.containsAll(List.of(
                 "user-profile",
                 "movie-metadata",
                 "feature",
                 "recommendation-retrieval",
                 "ranking",
-                "llm-explanation",
                 "agent-workflow",
                 "observability",
                 "catalog",
                 "model",
-                "online",
-                "llm"
+                "online"
         )));
+        assertFalse(names.contains("llm"),             "llm route must not appear without LLM_SERVICE_URL");
+        assertFalse(names.contains("llm-explanation"), "llm-explanation must not appear without LLM_EXPLANATION_SERVICE_URL");
     }
 }
