@@ -1,0 +1,276 @@
+# Sentinel config template (read-only mount; init container copies to writable emptyDir)
+apiVersion: v1
+kind: ConfigMap
+metadata:
+  name: redis-sentinel-config
+  namespace: recsys
+data:
+  sentinel-template.conf: |
+    sentinel monitor mymaster redis-primary 6379 2
+    sentinel down-after-milliseconds mymaster 5000
+    sentinel failover-timeout mymaster 30000
+    sentinel parallel-syncs mymaster 1
+---
+# Primary StatefulSet — 1 replica with RDB snapshots and a PVC for /data
+apiVersion: apps/v1
+kind: StatefulSet
+metadata:
+  name: redis-primary
+  namespace: recsys
+spec:
+  serviceName: redis-primary
+  replicas: 1
+  selector:
+    matchLabels:
+      app: redis
+      role: primary
+  template:
+    metadata:
+      labels:
+        app: redis
+        role: primary
+    spec:
+      securityContext:
+        runAsNonRoot: true
+        runAsUser: 999
+        fsGroup: 999
+        seccompProfile:
+          type: RuntimeDefault
+      affinity:
+        podAntiAffinity:
+          preferredDuringSchedulingIgnoredDuringExecution:
+            - weight: 100
+              podAffinityTerm:
+                labelSelector:
+                  matchLabels:
+                    app: redis
+                topologyKey: topology.kubernetes.io/zone
+      containers:
+        - name: redis
+          image: redis:7-alpine
+          args:
+            - "--save"
+            - "900 1"
+            - "--save"
+            - "300 10"
+            - "--save"
+            - "60 10000"
+            - "--maxmemory"
+            - "200mb"
+            - "--maxmemory-policy"
+            - "allkeys-lru"
+            - "--dir"
+            - "/data"
+          ports:
+            - containerPort: 6379
+          volumeMounts:
+            - name: redis-primary-data
+              mountPath: /data
+          readinessProbe:
+            exec:
+              command: ["redis-cli", "ping"]
+            initialDelaySeconds: 5
+            periodSeconds: 10
+          livenessProbe:
+            exec:
+              command: ["redis-cli", "ping"]
+            initialDelaySeconds: 15
+            periodSeconds: 20
+          resources:
+            requests:
+              cpu: 100m
+              memory: 256Mi
+            limits:
+              cpu: 300m
+              memory: 384Mi
+  volumeClaimTemplates:
+    - metadata:
+        name: redis-primary-data
+      spec:
+        accessModes: ["ReadWriteOnce"]
+        resources:
+          requests:
+            storage: 1Gi
+---
+apiVersion: v1
+kind: Service
+metadata:
+  name: redis-primary
+  namespace: recsys
+spec:
+  type: ClusterIP
+  selector:
+    app: redis
+    role: primary
+  ports:
+    - name: redis
+      port: 6379
+      targetPort: 6379
+---
+# Replica StatefulSet — 2 replicas spread across AZs; no PVC (rebuilt from primary)
+apiVersion: apps/v1
+kind: StatefulSet
+metadata:
+  name: redis-replica
+  namespace: recsys
+spec:
+  serviceName: redis-replica
+  replicas: 2
+  selector:
+    matchLabels:
+      app: redis
+      role: replica
+  template:
+    metadata:
+      labels:
+        app: redis
+        role: replica
+    spec:
+      securityContext:
+        runAsNonRoot: true
+        runAsUser: 999
+        seccompProfile:
+          type: RuntimeDefault
+      affinity:
+        podAntiAffinity:
+          preferredDuringSchedulingIgnoredDuringExecution:
+            - weight: 100
+              podAffinityTerm:
+                labelSelector:
+                  matchLabels:
+                    app: redis
+                topologyKey: topology.kubernetes.io/zone
+      containers:
+        - name: redis
+          image: redis:7-alpine
+          args:
+            - "--replicaof"
+            - "redis-primary"
+            - "6379"
+            - "--maxmemory"
+            - "200mb"
+            - "--maxmemory-policy"
+            - "allkeys-lru"
+          ports:
+            - containerPort: 6379
+          readinessProbe:
+            exec:
+              command: ["redis-cli", "ping"]
+            initialDelaySeconds: 5
+            periodSeconds: 10
+          livenessProbe:
+            exec:
+              command: ["redis-cli", "ping"]
+            initialDelaySeconds: 15
+            periodSeconds: 20
+          resources:
+            requests:
+              cpu: 100m
+              memory: 256Mi
+            limits:
+              cpu: 300m
+              memory: 384Mi
+---
+apiVersion: v1
+kind: Service
+metadata:
+  name: redis-replica
+  namespace: recsys
+spec:
+  type: ClusterIP
+  selector:
+    app: redis
+    role: replica
+  ports:
+    - name: redis
+      port: 6379
+      targetPort: 6379
+---
+# Sentinel Deployment — 3 replicas; init container copies config to writable emptyDir
+apiVersion: apps/v1
+kind: Deployment
+metadata:
+  name: redis-sentinel
+  namespace: recsys
+spec:
+  replicas: 3
+  selector:
+    matchLabels:
+      app: redis-sentinel
+  template:
+    metadata:
+      labels:
+        app: redis-sentinel
+    spec:
+      securityContext:
+        runAsNonRoot: true
+        runAsUser: 999
+        seccompProfile:
+          type: RuntimeDefault
+      affinity:
+        podAntiAffinity:
+          preferredDuringSchedulingIgnoredDuringExecution:
+            - weight: 100
+              podAffinityTerm:
+                labelSelector:
+                  matchLabels:
+                    app: redis-sentinel
+                topologyKey: topology.kubernetes.io/zone
+      initContainers:
+        - name: copy-sentinel-config
+          image: redis:7-alpine
+          command:
+            - sh
+            - -c
+            - cp /etc/redis/sentinel-template.conf /data/sentinel.conf
+          volumeMounts:
+            - name: sentinel-config-template
+              mountPath: /etc/redis
+            - name: sentinel-data
+              mountPath: /data
+      containers:
+        - name: sentinel
+          image: redis:7-alpine
+          command: ["redis-sentinel", "/data/sentinel.conf"]
+          ports:
+            - containerPort: 26379
+          volumeMounts:
+            - name: sentinel-data
+              mountPath: /data
+          readinessProbe:
+            exec:
+              command: ["redis-cli", "-p", "26379", "ping"]
+            initialDelaySeconds: 5
+            periodSeconds: 10
+          livenessProbe:
+            exec:
+              command: ["redis-cli", "-p", "26379", "ping"]
+            initialDelaySeconds: 15
+            periodSeconds: 20
+          resources:
+            requests:
+              cpu: 50m
+              memory: 64Mi
+            limits:
+              cpu: 100m
+              memory: 128Mi
+      volumes:
+        - name: sentinel-config-template
+          configMap:
+            name: redis-sentinel-config
+        - name: sentinel-data
+          emptyDir: {}
+---
+apiVersion: v1
+kind: Service
+metadata:
+  name: redis-sentinel
+  namespace: recsys
+spec:
+  type: ClusterIP
+  selector:
+    app: redis-sentinel
+  ports:
+    - name: sentinel
+      port: 26379
+      targetPort: 26379
