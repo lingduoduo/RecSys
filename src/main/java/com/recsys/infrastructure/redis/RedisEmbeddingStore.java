@@ -3,7 +3,7 @@ package com.recsys.infrastructure.redis;
 import com.recsys.infrastructure.vectordb.EmbeddingStore;
 import com.recsys.infrastructure.vectordb.VectorMath;
 import redis.clients.jedis.Jedis;
-import redis.clients.jedis.JedisPool;
+import redis.clients.jedis.util.Pool;
 import redis.clients.jedis.Pipeline;
 import redis.clients.jedis.params.ScanParams;
 import redis.clients.jedis.params.SetParams;
@@ -24,7 +24,7 @@ import java.util.concurrent.TimeUnit;
 
 public class RedisEmbeddingStore implements EmbeddingStore {
     private static final Logger log = LoggerFactory.getLogger(RedisEmbeddingStore.class);
-    private final JedisPool pool;
+    private final Pool<Jedis> pool;
     private final String keyPrefix;
     private final int mgetBatchSize;
     // 缓存雪崩 — random TTL jitter: staggers expiry across keys so a batch write does not
@@ -32,15 +32,15 @@ public class RedisEmbeddingStore implements EmbeddingStore {
     // jitterFraction=0.1 means 0..10% of baseTtl is added as a random offset.
     private final double jitterFraction;
 
-    public RedisEmbeddingStore(JedisPool pool, String keyPrefix) {
+    public RedisEmbeddingStore(Pool<Jedis> pool, String keyPrefix) {
         this(pool, keyPrefix, 0.1);
     }
 
-    RedisEmbeddingStore(JedisPool pool, String keyPrefix, double jitterFraction) {
+    RedisEmbeddingStore(Pool<Jedis> pool, String keyPrefix, double jitterFraction) {
         this(pool, keyPrefix, jitterFraction, readIntEnv("REDIS_EMBEDDING_MGET_BATCH_SIZE", 500));
     }
 
-    RedisEmbeddingStore(JedisPool pool, String keyPrefix, double jitterFraction, int mgetBatchSize) {
+    RedisEmbeddingStore(Pool<Jedis> pool, String keyPrefix, double jitterFraction, int mgetBatchSize) {
         this.pool = pool;
         this.keyPrefix = keyPrefix;
         this.jitterFraction = Math.max(0.0, Math.min(0.5, jitterFraction));
