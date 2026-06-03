@@ -64,11 +64,11 @@ curl http://localhost:8010/health
 - [Kubernetes & EKS](#kubernetes--eks)
 - [Capacity Planning](#capacity-planning)
 - [JVM Tuning](#jvm-tuning)
-- [Developer Notes](#developer-notes)
 - [Pipeline Optimizations](#pipeline-optimizations)
 - [LLM Gateway](#llm-gateway)
 - [Model Rate Limiting](#model-rate-limiting)
 - [AWS Saga Orchestration](#aws-saga-orchestration)
+- [Developer Notes](#developer-notes)
 
 ---
 
@@ -1089,48 +1089,6 @@ MAT_PARSE_HEAP_DUMP=/path/to/ParseHeapDump \
   sh scripts/mat-heap-analysis.sh report logs/heap-dumps/heap-<pid>-<ts>.hprof
 ```
 
----
-
-## Developer Notes
-
-### Data loading
-
-`DataLoader` loads bundled text resources from `com/recsys/data`. `DataManager` is a read-only singleton with immutable maps, precomputed sorted lists (`topRatedMovies`, `latestMovies`), and genre indexes.
-
-### Retrieval strategies
-
-- `CandidateGenerator.byGenre` — expands from seed movie's genres; top-100 per genre by average rating.
-- `CandidateGenerator.byUserHistory` — multi-way: user's genre history + global top-100 + latest 100.
-- `CandidateGenerator.byEmbedding` — ANN search through `VectorIndex` (`lsh` or `exact`).
-
-### Hot-key and cache controls
-
-`HotKeyDetector` — sliding two-bucket window with alpha-weighted blending; lock-free per-key counters. Detects which movie/user keys are hot and gates eviction.
-
-```bash
-# Observe hot-key detection indirectly via cache hit rates in online ops
-curl http://localhost:7010/online/ops | jq '.metrics'
-```
-
-`ShardedTopKStore` — replicates each `topk:{window}` sorted set across N Redis shard keys. On local-cache TTL refresh, reads a random shard — reducing per-key Redis QPS by N. `seedAllShards()` fan-out keeps shards consistent.
-
-`MultiLevelEmbeddingCache` — L1 (JVM hot-key) → L2 (Redis) → L3 (fallback snapshot). L2/L3 hits promote to L1; null sentinels absorb repeated misses for missing IDs.
-
-### Online learner
-
-`OnlineLearner` updates per-item bias parameters from `ExperienceCollector` output without retraining the ONNX model. Biases are bounded by `maxItemCount` (default 10,000) with LRU eviction. State is persisted to Redis between restarts:
-
-```bash
-# Observe learning indirectly: recommendations shift as biases update
-curl "http://localhost:7010/online/recommendation?userId=123"
-```
-
-### Model runtime provider
-
-`ModelRuntimeProvider` owns the lifecycle of every per-variant ONNX runtime. `@PostConstruct warmUp()` pre-loads all configured variants so no user pays cold-start cost. `areVariantsReady()` gates `/health/ready`.
-
----
-
 ## Pipeline Optimizations
 
 A log of specific fixes applied to the serving path, targeting OOM, Full GC, thread blocking, and CPU spikes.
@@ -1252,3 +1210,45 @@ SagaInstance result = orchestrator.execute(
 ```
 
 `AwsStepFunctionsSagaDefinition.render(definition)` produces ready-to-deploy Step Functions JSON with per-step retry policies and compensating-state routing. Use `sagaId + stepName` as the idempotency key.
+
+---
+
+## Developer Notes
+
+Reference for contributors navigating the internals.
+
+### Data loading
+
+`DataLoader` loads bundled text resources from `com/recsys/data`. `DataManager` is a read-only singleton with immutable maps, precomputed sorted lists (`topRatedMovies`, `latestMovies`), and genre indexes.
+
+### Retrieval strategies
+
+- `CandidateGenerator.byGenre` — expands from seed movie's genres; top-100 per genre by average rating.
+- `CandidateGenerator.byUserHistory` — multi-way: user's genre history + global top-100 + latest 100.
+- `CandidateGenerator.byEmbedding` — ANN search through `VectorIndex` (`lsh` or `exact`).
+
+### Hot-key and cache controls
+
+`HotKeyDetector` — sliding two-bucket window with alpha-weighted blending; lock-free per-key counters. Detects which movie/user keys are hot and gates eviction.
+
+```bash
+# Observe hot-key detection indirectly via cache hit rates in online ops
+curl http://localhost:7010/online/ops | jq '.metrics'
+```
+
+`ShardedTopKStore` — replicates each `topk:{window}` sorted set across N Redis shard keys. On local-cache TTL refresh, reads a random shard — reducing per-key Redis QPS by N. `seedAllShards()` fan-out keeps shards consistent.
+
+`MultiLevelEmbeddingCache` — L1 (JVM hot-key) → L2 (Redis) → L3 (fallback snapshot). L2/L3 hits promote to L1; null sentinels absorb repeated misses for missing IDs.
+
+### Online learner
+
+`OnlineLearner` updates per-item bias parameters from `ExperienceCollector` output without retraining the ONNX model. Biases are bounded by `maxItemCount` (default 10,000) with LRU eviction. State is persisted to Redis between restarts:
+
+```bash
+# Observe learning indirectly: recommendations shift as biases update
+curl "http://localhost:7010/online/recommendation?userId=123"
+```
+
+### Model runtime provider
+
+`ModelRuntimeProvider` owns the lifecycle of every per-variant ONNX runtime. `@PostConstruct warmUp()` pre-loads all configured variants so no user pays cold-start cost. `areVariantsReady()` gates `/health/ready`.
