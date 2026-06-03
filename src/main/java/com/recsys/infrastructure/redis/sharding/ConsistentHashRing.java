@@ -11,7 +11,7 @@ import java.util.TreeMap;
  *
  * Uses FNV-1a (64-bit) for hashing and virtual nodes for uniform distribution.
  * Each physical shard gets {@code virtualNodesPerShard} virtual nodes spread
- * across the hash space by hashing "{shardIndex}:v{i}" strings.
+ * across the hash space by hashing "v{i}:{shardIndex}" strings.
  *
  * Thread-safe after construction — all state is final.
  */
