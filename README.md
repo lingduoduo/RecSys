@@ -62,10 +62,10 @@ curl http://localhost:8010/health
 - [Offline Item Embeddings](#offline-item-embeddings)
 - [Embedding Storage Paths](#embedding-storage-paths)
 - [Kubernetes & EKS](#kubernetes--eks)
+- [Capacity Planning](#capacity-planning)
 - [JVM Tuning](#jvm-tuning)
 - [Developer Notes](#developer-notes)
 - [Pipeline Optimizations](#pipeline-optimizations)
-- [Capacity Planning](#capacity-planning)
 - [LLM Gateway](#llm-gateway)
 - [Model Rate Limiting](#model-rate-limiting)
 - [AWS Saga Orchestration](#aws-saga-orchestration)
@@ -999,6 +999,43 @@ See [docs/aws/eks-deployment.md](docs/aws/eks-deployment.md) for ECR push and EK
 
 ---
 
+## Capacity Planning
+
+Each architectural decision in this repo was made with a specific production scale in mind. The table below maps that target to the design choice it drives — useful context when adapting the system to a different load profile.
+
+| Dimension | Target | Design decision |
+|---|---:|---|
+| DAU | `200w+` | Compact per-user Redis state: history list + counters + small learned params rather than large mutable profiles |
+| Peak read QPS | `8k` | JVM local cache first, Redis second; keep request-time ranking bounded by candidate count |
+| Event TPS | > read QPS during bursts | Write to Kafka first; Flink aggregates asynchronously so bursty TPS don't stall serving reads |
+| Machine scale | Stateless API + partitioned Flink + Redis Sentinel | Scale API on QPS/CPU; Flink on consumer lag; Redis on memory, ops/s, and hot-key pressure |
+
+Check live capacity headroom:
+
+```bash
+curl http://localhost:7010/online/ops | jq '.capacity'
+# {"targetDau":2000000,"peakQps":8000,"headroomQps":7999.9,"overloaded":false}
+```
+
+Alarms to set in production:
+
+| Signal | Source | Meaning |
+|---|---|---|
+| `evacuationFailures > 0` | `GET /health/gc` | G1 heap fragmentation — cap caches or increase heap |
+| `FULL_GC events > 0` | `GET /health/gc` | Treat as an incident |
+| `allocationStalls > 0` | `GET /health/gc` | ZGC needs more heap or more GC threads |
+| `stwLongestPauseMs` > SLO | `GET /health/gc` | GC pauses exceeding request latency budget |
+| `overloaded: true` | `GET /online/ops` | Online serving load-shedder is active |
+| Kafka consumer lag rising | Flink metrics | Flink falling behind; online features will go stale |
+
+```bash
+# Quick alarm check
+curl -s http://localhost:8080/health/gc | jq '{evacuationFailures, allocationStalls, stwLongestPauseMs}'
+curl -s http://localhost:7010/online/ops | jq '{overloaded: .capacity.overloaded, headroomQps: .capacity.headroomQps}'
+```
+
+---
+
 ## JVM Tuning
 
 Three GC profiles at the repo root:
@@ -1096,6 +1133,8 @@ curl "http://localhost:7010/online/recommendation?userId=123"
 
 ## Pipeline Optimizations
 
+A log of specific fixes applied to the serving path, targeting OOM, Full GC, thread blocking, and CPU spikes.
+
 | Component | Problem | Fix |
 |---|---|---|
 | `OnlineFeatureStore` | `ConcurrentHashMap.compute()` held a bin lock during Redis network call | `CompletableFuture` inflight map; Redis fetch runs outside any lock |
@@ -1111,43 +1150,6 @@ curl "http://localhost:7010/online/recommendation?userId=123"
 | `OnlineLearner.evictIfNeeded()` | O(N log N) heap allocation on every `learn()` call | Rate-limited to once per 5 s |
 | `UserTowerInferenceService.close()` | Closed `OrtEnvironment` (JVM-wide singleton) → invalidated all variant sessions | Now closes only the per-variant `OrtSession` |
 | `OnlineServingMetricsService` | `Instant.now()` allocation on hot request path | `System.currentTimeMillis() / 1000L` — zero allocation |
-
----
-
-## Capacity Planning
-
-Each architectural decision in this repo was made with a specific production scale in mind. The table below maps that target to the design choice it drives — useful context when adapting the system to a different load profile.
-
-| Dimension | Target | Design decision |
-|---|---:|---|
-| DAU | `200w+` | Compact per-user Redis state: history list + counters + small learned params rather than large mutable profiles |
-| Peak read QPS | `8k` | JVM local cache first, Redis second; keep request-time ranking bounded by candidate count |
-| Event TPS | > read QPS during bursts | Write to Kafka first; Flink aggregates asynchronously so bursty TPS doesn't stall serving reads |
-| Machine scale | Stateless API + partitioned Flink + Redis Sentinel | Scale API instances on QPS/CPU; Flink on consumer lag; Redis on memory, ops/s, and hot-key pressure |
-
-Check live capacity headroom from the running online server:
-
-```bash
-curl http://localhost:7010/online/ops | jq '.capacity'
-# {"targetDau":2000000,"peakQps":8000,"headroomQps":7999.9,"overloaded":false}
-```
-
-Alarms to set in production:
-
-| Signal | Source | Meaning |
-|---|---|---|
-| `evacuationFailures > 0` | `GET /health/gc` | G1 heap fragmentation — cap caches or increase heap |
-| `FULL_GC events > 0` | `GET /health/gc` | Treat as an incident |
-| `allocationStalls > 0` | `GET /health/gc` | ZGC needs more heap or more GC threads |
-| `stwLongestPauseMs` > SLO | `GET /health/gc` | GC pauses exceeding request latency budget |
-| `overloaded: true` | `GET /online/ops` | Online serving load-shedder is active |
-| Kafka consumer lag rising | Flink metrics | Flink falling behind; online features will go stale |
-
-```bash
-# Quick alarm check
-curl -s http://localhost:8080/health/gc | jq '{evacuationFailures, allocationStalls, stwLongestPauseMs}'
-curl -s http://localhost:7010/online/ops | jq '{overloaded: .capacity.overloaded, headroomQps: .capacity.headroomQps}'
-```
 
 ---
 
