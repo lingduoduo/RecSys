@@ -62,7 +62,7 @@
         <artifactId>spring-boot-maven-plugin</artifactId>
         <version>${spring-boot.version}</version>
         <configuration>
-          <mainClass>com.recsys.modelbased.model.ModelApplication</mainClass>
+          <mainClass>com.recsys.modelbased.ModelApplication</mainClass>
         </configuration>
       </plugin>
     </plugins>

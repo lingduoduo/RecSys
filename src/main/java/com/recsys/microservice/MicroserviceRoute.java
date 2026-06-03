@@ -11,27 +11,28 @@ record MicroserviceRoute(String name,
                          URI baseUri,
                          String healthPath) {
 
-    private static final List<MicroserviceRoute> DEFAULTS = List.of(
-            // Domain-facing routes. These are the preferred API Gateway surface.
-            fromEnv("user-profile", "/api/users", "USER_PROFILE_SERVICE_URL", "http://localhost:6010", "/health"),
-            fromEnv("movie-metadata", "/api/movies", "MOVIE_METADATA_SERVICE_URL", "http://localhost:6010", "/health"),
-            fromEnv("feature", "/api/features", "FEATURE_SERVICE_URL", "http://localhost:7010", "/health"),
-            fromEnv("recommendation-retrieval", "/api/retrieval", "RECOMMENDATION_RETRIEVAL_SERVICE_URL",
-                    "http://localhost:8080", "/health/ready"),
-            fromEnv("ranking", "/api/ranking", "RANKING_SERVICE_URL", "http://localhost:8080", "/health/ready"),
-            fromEnv("llm-explanation", "/api/explanations", "LLM_EXPLANATION_SERVICE_URL",
-                    "http://localhost:11434", "/api/tags"),
-            fromEnv("agent-workflow", "/api/agents", "AGENT_WORKFLOW_SERVICE_URL",
-                    "http://localhost:8080", "/health/ready"),
-            fromEnv("observability", "/api/observability", "OBSERVABILITY_SERVICE_URL",
-                    "http://localhost:8080", "/health/ready"),
-            // Backward-compatible routes kept for existing clients and smoke tests.
-            fromEnv("catalog", "/api/catalog", "CATALOG_SERVICE_URL", "http://localhost:6010", "/health"),
-            fromEnv("model", "/api/model", "MODEL_SERVICE_URL", "http://localhost:8080", "/health/ready"),
-            fromEnv("online", "/api/online", "ONLINE_SERVICE_URL", "http://localhost:7010", "/health"),
-            // Default to Ollama; override via LLM_SERVICE_URL for any OpenAI-compatible endpoint.
-            fromEnv("llm", "/api/llm", "LLM_SERVICE_URL", "http://localhost:11434", "/api/tags")
-    );
+    private static final List<MicroserviceRoute> DEFAULTS = buildDefaults();
+
+    private static List<MicroserviceRoute> buildDefaults() {
+        List<MicroserviceRoute> routes = new java.util.ArrayList<>();
+        // Domain-facing routes. These are the preferred API Gateway surface.
+        routes.add(fromEnv("user-profile", "/api/users", "USER_PROFILE_SERVICE_URL", "http://localhost:6010", "/health"));
+        routes.add(fromEnv("movie-metadata", "/api/movies", "MOVIE_METADATA_SERVICE_URL", "http://localhost:6010", "/health"));
+        routes.add(fromEnv("feature", "/api/features", "FEATURE_SERVICE_URL", "http://localhost:7010", "/health"));
+        routes.add(fromEnv("recommendation-retrieval", "/api/retrieval", "RECOMMENDATION_RETRIEVAL_SERVICE_URL", "http://localhost:8080", "/health/ready"));
+        routes.add(fromEnv("ranking", "/api/ranking", "RANKING_SERVICE_URL", "http://localhost:8080", "/health/ready"));
+        routes.add(fromEnv("agent-workflow", "/api/agents", "AGENT_WORKFLOW_SERVICE_URL", "http://localhost:8080", "/health/ready"));
+        routes.add(fromEnv("observability", "/api/observability", "OBSERVABILITY_SERVICE_URL", "http://localhost:8080", "/health/ready"));
+        // Backward-compatible routes kept for existing clients and smoke tests.
+        routes.add(fromEnv("catalog", "/api/catalog", "CATALOG_SERVICE_URL", "http://localhost:6010", "/health"));
+        routes.add(fromEnv("model", "/api/model", "MODEL_SERVICE_URL", "http://localhost:8080", "/health/ready"));
+        routes.add(fromEnv("online", "/api/online", "ONLINE_SERVICE_URL", "http://localhost:7010", "/health"));
+        // LLM routes are optional — only registered when the env var is explicitly set.
+        // To enable: export LLM_SERVICE_URL=http://localhost:11434 (requires Ollama or compatible endpoint).
+        fromEnvOptional("llm-explanation", "/api/explanations", "LLM_EXPLANATION_SERVICE_URL", "/api/tags").ifPresent(routes::add);
+        fromEnvOptional("llm", "/api/llm", "LLM_SERVICE_URL", "/api/tags").ifPresent(routes::add);
+        return List.copyOf(routes);
+    }
 
     MicroserviceRoute {
         Objects.requireNonNull(name, "name");
@@ -88,6 +89,15 @@ record MicroserviceRoute(String name,
                                              String healthPath) {
         String raw = System.getenv().getOrDefault(envVar, defaultBaseUri);
         return new MicroserviceRoute(name, prefix, envVar, URI.create(raw), healthPath);
+    }
+
+    private static java.util.Optional<MicroserviceRoute> fromEnvOptional(String name,
+                                                                          String prefix,
+                                                                          String envVar,
+                                                                          String healthPath) {
+        String raw = System.getenv(envVar);
+        if (raw == null || raw.isBlank()) return java.util.Optional.empty();
+        return java.util.Optional.of(new MicroserviceRoute(name, prefix, envVar, URI.create(raw), healthPath));
     }
 
     static boolean matchesPrefix(String path, String prefix) {
