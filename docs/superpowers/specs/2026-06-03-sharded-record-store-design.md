@@ -8,7 +8,22 @@
 
 ## Problem
 
-The existing `ShardedTopKStore` does *read-replica* sharding — all N shards hold identical data and a random shard is picked on cache miss. There is no *data-partitioning* layer: event records, feature records, and general log records have no shared structure, no sequence numbers, and no stable device → shard mapping. This makes incremental consumption (Flink, batch export) and per-device targeted reads impossible without a full Redis scan.
+The existing `ShardedTopKStore` does *read-replica* sharding — all N shards hold identical data and a random shard is picked on cache miss. There is no *data-partitioning* layer: event records, behavioral feature records, and general log records have no shared structure, no sequence numbers, and no stable device → shard mapping. This makes incremental consumption (Flink, batch export) and per-device targeted reads impossible without a full Redis scan.
+
+---
+
+## Boundary: What This Design Does NOT Cover
+
+Several existing components handle adjacent concerns and are **unchanged**:
+
+| Component | What it handles | Why excluded |
+|---|---|---|
+| `RedisEmbeddingStore` | Item/user embeddings (`float[]`) as `{prefix}:{id}` → float string | Write-once per training cycle; no ordering, dedup, or cursor reads needed |
+| `OnlineFeatureStore` | Pure reader — loads arbitrary Redis keys (history, CTR, session, embeddings) with JVM cache | No write path; delegates to Flink-written keys |
+| `ShardedTopKStore` | Trending Top-K sorted sets as read replicas | Read-replica pattern, not data partitioning |
+| `EmbeddingLSH` | SimHash of `float[]` vectors for ANN similarity search | Similarity hashing — orthogonal to consistent-hash partitioning |
+
+The `ConsistentHashRing` maps a **device/user ID string → shard index** for data partitioning. This is completely separate from `EmbeddingLSH`, which maps a **float[] vector → similarity bucket**. The two hashing schemes solve different problems and coexist without conflict.
 
 ---
 
@@ -17,7 +32,10 @@ The existing `ShardedTopKStore` does *read-replica* sharding — all N shards ho
 - Map any device/user ID to a stable shard via consistent hashing
 - Assign a shard-scoped monotonic sequence number to every record
 - Use that sequence number for: deduplication, ordering, optimistic versioning, and cursor-based reads
-- Support three record types: EVENT, FEATURE, LOG
+- Cover three record types with clear boundaries:
+  - **EVENT** — click, watch, rating, dwell, search events (new; no existing handler)
+  - **FEATURE** — Flink-written behavioral features only: recent history updates, CTR events, session data (streaming writes that need ordering and dedup; raw embeddings remain in `RedisEmbeddingStore`)
+  - **LOG** — general audit/debug log entries (new; no existing handler)
 - Expose two read modes: per-device cursor and shard-level stream scan
 
 ---
@@ -102,7 +120,12 @@ record ShardedRecord(
     long       timestamp     // epoch-ms at write time
 )
 
-enum RecordType { EVENT, FEATURE, LOG }
+enum RecordType {
+    EVENT,    // click, watch, rating, dwell, search — from LogCollector / Kafka
+    FEATURE,  // Flink-written behavioral features: recent history, CTR, session data
+              // NOT raw embeddings (float[]) — those stay in RedisEmbeddingStore
+    LOG       // general audit / debug log entries
+}
 ```
 
 **`ShardCursor`:**
@@ -254,7 +277,7 @@ record ShardedRecord(String deviceId, long seqNum, RecordType type,
 record WriteResult(long seqNum, int shardIndex, WriteStatus status)
 record Page<T>(List<T> records, ShardCursor next) { boolean hasMore() }
 record ShardCursor(String value) { static ShardCursor start(); boolean isStart() }
-enum RecordType { EVENT, FEATURE, LOG }
+enum RecordType { EVENT, FEATURE, LOG }  // FEATURE = behavioral only; embeddings → RedisEmbeddingStore
 enum WriteStatus { OK, DUPLICATE }
 ```
 
