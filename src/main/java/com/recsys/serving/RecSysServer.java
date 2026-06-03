@@ -32,6 +32,11 @@ public class RecSysServer {
     private static final String ROUTE_SET_EMBEDDING = "/setembedding";
     private static final String ROUTE_HEALTH = "/health";
     private static final String ROUTE_PREDICT = "/v1/models/recmodel:predict";
+    // REST-style aliases used when requests arrive via the API gateway
+    // (gateway strips /api/users, /api/movies, etc., leaving these suffixes).
+    private static final String ROUTE_USER_ALIAS = "/user";
+    private static final String ROUTE_ITEM_ALIAS = "/movie";
+    private static final String ROUTE_RECOMMENDATION_ALIAS = "/recommendation";
 
     public static void main(String[] args) throws Exception {
         new RecSysServer().run();
@@ -88,10 +93,17 @@ public class RecSysServer {
                                        EmbeddingStore embStore,
                                        TrendingStore topkStore,
                                        PairPredictionService pairPredictionService) {
-        context.addServlet(new ServletHolder(new MovieService(dataManager)), ROUTE_ITEM);
-        context.addServlet(new ServletHolder(new UserService(dataManager)), ROUTE_USER);
+        MovieService movieService = new MovieService(dataManager);
+        UserService userService = new UserService(dataManager);
+        RecommendationService recommendationService = new RecommendationService(dataManager, candidateGenerator, topkStore);
+
+        context.addServlet(new ServletHolder(movieService), ROUTE_ITEM);
+        context.addServlet(new ServletHolder(movieService), ROUTE_ITEM_ALIAS);
+        context.addServlet(new ServletHolder(userService), ROUTE_USER);
+        context.addServlet(new ServletHolder(userService), ROUTE_USER_ALIAS);
         context.addServlet(new ServletHolder(new SimilarMovieService(embStore)), ROUTE_SIMILAR);
-        context.addServlet(new ServletHolder(new RecommendationService(dataManager, candidateGenerator, topkStore)), ROUTE_RECOMMENDATION);
+        context.addServlet(new ServletHolder(recommendationService), ROUTE_RECOMMENDATION);
+        context.addServlet(new ServletHolder(recommendationService), ROUTE_RECOMMENDATION_ALIAS);
         context.addServlet(new ServletHolder(new SetEmbeddingService(embStore)), ROUTE_SET_EMBEDDING);
         context.addServlet(new ServletHolder(new HealthService()), ROUTE_HEALTH);
         context.addServlet(new ServletHolder(new PredictionService(pairPredictionService)), ROUTE_PREDICT);
