@@ -64,6 +64,12 @@ class ConsistentHashRingTest {
     }
 
     @Test
+    void invalidVirtualNodeCount_throwsIllegalArgumentException() {
+        assertThatThrownBy(() -> new ConsistentHashRing(1, 0))
+                .isInstanceOf(IllegalArgumentException.class);
+    }
+
+    @Test
     void shardCount_returnsConfiguredValue() {
         assertThat(new ConsistentHashRing(3, 150).shardCount()).isEqualTo(3);
     }
