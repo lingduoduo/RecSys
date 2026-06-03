@@ -3,6 +3,9 @@ package com.recsys.streaming;
 import com.recsys.infrastructure.vectordb.CandidateGenerator;
 import com.recsys.infrastructure.DataManager;
 import com.recsys.infrastructure.redis.ShardedTopKStore;
+import com.recsys.infrastructure.redis.sharding.ConsistentHashRing;
+import com.recsys.infrastructure.redis.sharding.SequenceGenerator;
+import com.recsys.infrastructure.redis.sharding.ShardedRecordStore;
 import org.eclipse.jetty.server.Server;
 import org.eclipse.jetty.servlet.ServletContextHandler;
 import org.eclipse.jetty.servlet.ServletHolder;
@@ -36,6 +39,13 @@ public final class OnlinePredictionServer {
             OnlineCapacityService capacityService = new OnlineCapacityService();
             RedisRateLimiter redisRateLimiter = new RedisRateLimiter(jedisPool);
 
+            int shardCount = readIntEnv("SHARDED_RECORD_SHARD_COUNT", 2);
+            ShardedRecordStore shardedRecordStore = new ShardedRecordStore(
+                    jedisPool,
+                    new ConsistentHashRing(shardCount, 150),
+                    new SequenceGenerator(jedisPool, "sr:"),
+                    "sr:");
+
             Server server = new Server(new InetSocketAddress(DEFAULT_HOST, port));
             ServletContextHandler context = new ServletContextHandler();
             context.setContextPath("/");
@@ -49,6 +59,8 @@ public final class OnlinePredictionServer {
             context.addServlet(new ServletHolder(new OnlineOpsServlet(
                     metricsService, loadShedder, capacityService, redisRateLimiter,
                     asyncEventPublisher)), "/online/ops");
+            context.addServlet(new ServletHolder(new ShardedRecordServlet(shardedRecordStore)),
+                    "/shards/*");
             server.setHandler(context);
             server.setStopAtShutdown(true);
             server.start();
