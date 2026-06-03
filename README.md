@@ -63,9 +63,9 @@ curl http://localhost:8010/health
 - [Embedding Storage Paths](#embedding-storage-paths)
 - [Kubernetes & EKS](#kubernetes--eks)
 - [JVM Tuning](#jvm-tuning)
-- [Capacity Planning](#capacity-planning)
 - [Developer Notes](#developer-notes)
 - [Pipeline Optimizations](#pipeline-optimizations)
+- [Capacity Planning](#capacity-planning)
 - [LLM Gateway](#llm-gateway)
 - [Model Rate Limiting](#model-rate-limiting)
 - [AWS Saga Orchestration](#aws-saga-orchestration)
@@ -1054,33 +1054,6 @@ MAT_PARSE_HEAP_DUMP=/path/to/ParseHeapDump \
 
 ---
 
-## Capacity Planning
-
-Sizing for 200 w+ DAU and 8 k peak QPS:
-
-| Dimension | Target | Design decision |
-|---|---:|---|
-| DAU | `200w+` | Compact per-user Redis state: history list + counters + learned params |
-| Peak read QPS | `8k` | JVM local cache first, Redis second; bound candidate count |
-| Event TPS | > read QPS during bursts | Write to Kafka; Flink aggregates asynchronously |
-| Machine scale | Stateless API + partitioned Flink + Redis Sentinel | Scale API on QPS/CPU; Flink on consumer lag; Redis on memory/ops |
-
-Check current capacity headroom:
-
-```bash
-curl http://localhost:7010/online/ops | jq '.capacity'
-# {"targetDau":2000000,"peakQps":8000,"headroomQps":7999.9,"overloaded":false}
-```
-
-Production alarms to set:
-- `evacuationFailures > 0` or any `FULL_GC` events — GC pressure
-- `stwLongestPauseMs` above request SLO
-- `allocationStalls > 0` — ZGC needs more heap
-- `overloaded: true` at `/online/ops`
-- Kafka consumer lag growing — Flink falling behind
-
----
-
 ## Developer Notes
 
 ### Data loading
@@ -1138,6 +1111,43 @@ curl "http://localhost:7010/online/recommendation?userId=123"
 | `OnlineLearner.evictIfNeeded()` | O(N log N) heap allocation on every `learn()` call | Rate-limited to once per 5 s |
 | `UserTowerInferenceService.close()` | Closed `OrtEnvironment` (JVM-wide singleton) → invalidated all variant sessions | Now closes only the per-variant `OrtSession` |
 | `OnlineServingMetricsService` | `Instant.now()` allocation on hot request path | `System.currentTimeMillis() / 1000L` — zero allocation |
+
+---
+
+## Capacity Planning
+
+Each architectural decision in this repo was made with a specific production scale in mind. The table below maps that target to the design choice it drives — useful context when adapting the system to a different load profile.
+
+| Dimension | Target | Design decision |
+|---|---:|---|
+| DAU | `200w+` | Compact per-user Redis state: history list + counters + small learned params rather than large mutable profiles |
+| Peak read QPS | `8k` | JVM local cache first, Redis second; keep request-time ranking bounded by candidate count |
+| Event TPS | > read QPS during bursts | Write to Kafka first; Flink aggregates asynchronously so bursty TPS doesn't stall serving reads |
+| Machine scale | Stateless API + partitioned Flink + Redis Sentinel | Scale API instances on QPS/CPU; Flink on consumer lag; Redis on memory, ops/s, and hot-key pressure |
+
+Check live capacity headroom from the running online server:
+
+```bash
+curl http://localhost:7010/online/ops | jq '.capacity'
+# {"targetDau":2000000,"peakQps":8000,"headroomQps":7999.9,"overloaded":false}
+```
+
+Alarms to set in production:
+
+| Signal | Source | Meaning |
+|---|---|---|
+| `evacuationFailures > 0` | `GET /health/gc` | G1 heap fragmentation — cap caches or increase heap |
+| `FULL_GC events > 0` | `GET /health/gc` | Treat as an incident |
+| `allocationStalls > 0` | `GET /health/gc` | ZGC needs more heap or more GC threads |
+| `stwLongestPauseMs` > SLO | `GET /health/gc` | GC pauses exceeding request latency budget |
+| `overloaded: true` | `GET /online/ops` | Online serving load-shedder is active |
+| Kafka consumer lag rising | Flink metrics | Flink falling behind; online features will go stale |
+
+```bash
+# Quick alarm check
+curl -s http://localhost:8080/health/gc | jq '{evacuationFailures, allocationStalls, stwLongestPauseMs}'
+curl -s http://localhost:7010/online/ops | jq '{overloaded: .capacity.overloaded, headroomQps: .capacity.headroomQps}'
+```
 
 ---
 
