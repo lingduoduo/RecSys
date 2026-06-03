@@ -3,6 +3,7 @@ package com.recsys.infrastructure.redis;
 import org.junit.jupiter.api.Test;
 import redis.clients.jedis.Jedis;
 import redis.clients.jedis.JedisPool;
+import redis.clients.jedis.util.Pool;
 
 import java.util.List;
 import java.util.Map;
@@ -42,7 +43,7 @@ class RedisEmbeddingStoreTest {
 
     @Test
     void getEmbeddings_deduplicatesAndChunksRedisMget() {
-        JedisPool pool = mock(JedisPool.class);
+        Pool<Jedis> pool = mock(JedisPool.class);
         Jedis jedis = mock(Jedis.class);
         when(pool.getResource()).thenReturn(jedis);
         when(jedis.mget("emb:1", "emb:2")).thenReturn(List.of("1.0 0.0", "0.0 1.0"));

@@ -5,6 +5,7 @@ import org.junit.jupiter.api.BeforeEach;
 import org.junit.jupiter.api.Test;
 import redis.clients.jedis.Jedis;
 import redis.clients.jedis.JedisPool;
+import redis.clients.jedis.util.Pool;
 
 import java.util.List;
 import java.util.Map;
@@ -16,7 +17,7 @@ import static org.mockito.Mockito.*;
 class ShardedTopKStoreTest {
 
     private Jedis jedis;
-    private JedisPool pool;
+    private Pool<Jedis> pool;
 
     @BeforeEach
     void setUp() {
