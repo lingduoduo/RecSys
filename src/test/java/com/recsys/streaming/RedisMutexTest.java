@@ -3,6 +3,7 @@ package com.recsys.streaming;
 import org.junit.jupiter.api.Test;
 import redis.clients.jedis.Jedis;
 import redis.clients.jedis.JedisPool;
+import redis.clients.jedis.util.Pool;
 import redis.clients.jedis.params.SetParams;
 
 import java.util.concurrent.atomic.AtomicBoolean;
@@ -16,7 +17,7 @@ class RedisMutexTest {
     @Test
     void tryAcquire_returnsTokenWhenLockIsFree() {
         Jedis jedis = mock(Jedis.class);
-        JedisPool pool = mock(JedisPool.class);
+        Pool<Jedis> pool = mock(JedisPool.class);
         when(pool.getResource()).thenReturn(jedis);
         when(jedis.set(anyString(), anyString(), any(SetParams.class))).thenReturn("OK");
 
@@ -29,7 +30,7 @@ class RedisMutexTest {
     @Test
     void tryAcquire_returnsNullWhenLockIsHeld() {
         Jedis jedis = mock(Jedis.class);
-        JedisPool pool = mock(JedisPool.class);
+        Pool<Jedis> pool = mock(JedisPool.class);
         when(pool.getResource()).thenReturn(jedis);
         // Redis SET NX returns null when the key already exists.
         when(jedis.set(anyString(), anyString(), any(SetParams.class))).thenReturn(null);
@@ -43,7 +44,7 @@ class RedisMutexTest {
     @Test
     void release_returnsTrueWhenTokenMatches() {
         Jedis jedis = mock(Jedis.class);
-        JedisPool pool = mock(JedisPool.class);
+        Pool<Jedis> pool = mock(JedisPool.class);
         when(pool.getResource()).thenReturn(jedis);
         // Lua script returns 1 when key was deleted.
         when(jedis.eval(anyString(), anyList(), anyList())).thenReturn(1L);
@@ -57,7 +58,7 @@ class RedisMutexTest {
     @Test
     void release_returnsFalseWhenTokenDoesNotMatch() {
         Jedis jedis = mock(Jedis.class);
-        JedisPool pool = mock(JedisPool.class);
+        Pool<Jedis> pool = mock(JedisPool.class);
         when(pool.getResource()).thenReturn(jedis);
         // Lua script returns 0 when token didn't match (already expired or wrong holder).
         when(jedis.eval(anyString(), anyList(), anyList())).thenReturn(0L);
@@ -71,7 +72,7 @@ class RedisMutexTest {
     @Test
     void withLock_executesActionWhenLockAcquired() {
         Jedis jedis = mock(Jedis.class);
-        JedisPool pool = mock(JedisPool.class);
+        Pool<Jedis> pool = mock(JedisPool.class);
         when(pool.getResource()).thenReturn(jedis);
         when(jedis.set(anyString(), anyString(), any(SetParams.class))).thenReturn("OK");
         when(jedis.eval(anyString(), anyList(), anyList())).thenReturn(1L);
@@ -91,7 +92,7 @@ class RedisMutexTest {
     @Test
     void withLock_executesFallbackWhenLockNotAcquired() {
         Jedis jedis = mock(Jedis.class);
-        JedisPool pool = mock(JedisPool.class);
+        Pool<Jedis> pool = mock(JedisPool.class);
         when(pool.getResource()).thenReturn(jedis);
         when(jedis.set(anyString(), anyString(), any(SetParams.class))).thenReturn(null);
 
@@ -113,7 +114,7 @@ class RedisMutexTest {
     @Test
     void tryAcquire_usesSingleAtomicSetNxExCommand() {
         Jedis jedis = mock(Jedis.class);
-        JedisPool pool = mock(JedisPool.class);
+        Pool<Jedis> pool = mock(JedisPool.class);
         when(pool.getResource()).thenReturn(jedis);
         when(jedis.set(anyString(), anyString(), any(SetParams.class))).thenReturn("OK");
 
@@ -129,7 +130,7 @@ class RedisMutexTest {
     @Test
     void tryAcquire_producesUniqueTokensOnEachCall() {
         Jedis jedis = mock(Jedis.class);
-        JedisPool pool = mock(JedisPool.class);
+        Pool<Jedis> pool = mock(JedisPool.class);
         when(pool.getResource()).thenReturn(jedis);
         when(jedis.set(anyString(), anyString(), any(SetParams.class))).thenReturn("OK");
         RedisMutex mutex = new RedisMutex(pool, "mutex:", 5L);
@@ -143,7 +144,7 @@ class RedisMutexTest {
     @Test
     void release_usesLuaFencingTokenScript() {
         Jedis jedis = mock(Jedis.class);
-        JedisPool pool = mock(JedisPool.class);
+        Pool<Jedis> pool = mock(JedisPool.class);
         when(pool.getResource()).thenReturn(jedis);
         when(jedis.eval(anyString(), anyList(), anyList())).thenReturn(1L);
 
@@ -158,7 +159,7 @@ class RedisMutexTest {
     @Test
     void withLock_releasesLockEvenWhenActionThrows() {
         Jedis jedis = mock(Jedis.class);
-        JedisPool pool = mock(JedisPool.class);
+        Pool<Jedis> pool = mock(JedisPool.class);
         when(pool.getResource()).thenReturn(jedis);
         when(jedis.set(anyString(), anyString(), any(SetParams.class))).thenReturn("OK");
         when(jedis.eval(anyString(), anyList(), anyList())).thenReturn(1L);

@@ -1,8 +1,8 @@
 package com.recsys.streaming;
 
 import redis.clients.jedis.Jedis;
-import redis.clients.jedis.JedisPool;
 import redis.clients.jedis.params.SetParams;
+import redis.clients.jedis.util.Pool;
 
 import java.util.List;
 import java.util.UUID;
@@ -55,16 +55,16 @@ public final class RedisDistributedLock {
             return 0
             """;
 
-    private final JedisPool pool;
+    private final Pool<Jedis> pool;
     private final String keyPrefix;
     private final long defaultTtlSeconds;
     private final long defaultTtlMillis;
 
-    public RedisDistributedLock(JedisPool pool) {
+    public RedisDistributedLock(Pool<Jedis> pool) {
         this(pool, "dlock:", 30L);
     }
 
-    RedisDistributedLock(JedisPool pool, String keyPrefix, long defaultTtlSeconds) {
+    RedisDistributedLock(Pool<Jedis> pool, String keyPrefix, long defaultTtlSeconds) {
         this.pool = pool;
         this.keyPrefix = keyPrefix;
         this.defaultTtlSeconds = Math.max(1L, defaultTtlSeconds);

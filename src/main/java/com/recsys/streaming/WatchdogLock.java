@@ -3,8 +3,8 @@ package com.recsys.streaming;
 import org.slf4j.Logger;
 import org.slf4j.LoggerFactory;
 import redis.clients.jedis.Jedis;
-import redis.clients.jedis.JedisPool;
 import redis.clients.jedis.params.SetParams;
+import redis.clients.jedis.util.Pool;
 
 import java.util.List;
 import java.util.UUID;
@@ -68,7 +68,7 @@ public final class WatchdogLock implements AutoCloseable {
             return 0
             """;
 
-    private final JedisPool pool;
+    private final Pool<Jedis> pool;
     private final String lockKey;
     private final String token;
     private final long leaseTtlSeconds;
@@ -78,7 +78,7 @@ public final class WatchdogLock implements AutoCloseable {
     private final AtomicBoolean lostOwnership = new AtomicBoolean(false);
     private volatile long leaseDeadlineMillis;
 
-    private WatchdogLock(JedisPool pool, String lockKey, String token,
+    private WatchdogLock(Pool<Jedis> pool, String lockKey, String token,
                          long leaseTtlSeconds, long leaseDeadlineMillis,
                          ScheduledExecutorService watchdog) {
         this.pool = pool;
@@ -96,11 +96,11 @@ public final class WatchdogLock implements AutoCloseable {
      * @return a {@link WatchdogLock} with a running renewal watchdog on success,
      *         or {@code null} if another client currently holds the lock
      */
-    public static WatchdogLock tryAcquire(JedisPool pool, String resource) {
+    public static WatchdogLock tryAcquire(Pool<Jedis> pool, String resource) {
         return tryAcquire(pool, "wdlock:", resource, DEFAULT_LEASE_TTL_SECONDS);
     }
 
-    static WatchdogLock tryAcquire(JedisPool pool, String keyPrefix, String resource,
+    static WatchdogLock tryAcquire(Pool<Jedis> pool, String keyPrefix, String resource,
                                    long leaseTtlSeconds) {
         String lockKey = keyPrefix + resource;
         String token = UUID.randomUUID().toString();

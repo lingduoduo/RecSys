@@ -1,8 +1,8 @@
 package com.recsys.streaming;
 
 import redis.clients.jedis.Jedis;
-import redis.clients.jedis.JedisPool;
 import redis.clients.jedis.params.SetParams;
+import redis.clients.jedis.util.Pool;
 
 import java.util.List;
 import java.util.UUID;
@@ -52,15 +52,15 @@ public final class RedisMutex {
             return 0
             """;
 
-    private final JedisPool pool;
+    private final Pool<Jedis> pool;
     private final String keyPrefix;
     private final long lockTtlSeconds;
 
-    public RedisMutex(JedisPool pool) {
+    public RedisMutex(Pool<Jedis> pool) {
         this(pool, "mutex:", 5L);
     }
 
-    RedisMutex(JedisPool pool, String keyPrefix, long lockTtlSeconds) {
+    RedisMutex(Pool<Jedis> pool, String keyPrefix, long lockTtlSeconds) {
         this.pool = pool;
         this.keyPrefix = keyPrefix;
         this.lockTtlSeconds = Math.max(1L, lockTtlSeconds);
