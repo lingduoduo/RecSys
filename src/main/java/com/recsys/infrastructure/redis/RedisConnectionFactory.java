@@ -64,6 +64,7 @@ public final class RedisConnectionFactory {
         cfg.setMinIdle(DEFAULT_MIN_IDLE);
         cfg.setTestOnBorrow(true);
         cfg.setBlockWhenExhausted(true);
+        cfg.setMaxWait(java.time.Duration.ofSeconds(2));
         return cfg;
     }
 }
