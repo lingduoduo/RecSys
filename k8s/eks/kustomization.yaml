@@ -2,7 +2,7 @@ apiVersion: kustomize.config.k8s.io/v1beta1
 kind: Kustomization
 resources:
   - ../base
-  - gateway-irsa.yaml       # IRSA ServiceAccount + gateway Deployment patch
+  - gateway-irsa-sa.yaml    # IRSA ServiceAccount for the API gateway
   - patches/irsa-model-serving.yaml
 
 images:
@@ -27,3 +27,5 @@ patches:
   - path: image-pull-policy-patch.yaml
   # Override Redis config for ElastiCache (standalone mode, disable Sentinel env vars).
   - path: redis-elasticache-patch.yaml
+  # Patch gateway Deployment to use the IRSA ServiceAccount.
+  - path: gateway-irsa.yaml
