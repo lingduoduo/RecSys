@@ -66,6 +66,19 @@ class RedisConnectionFactoryTest {
     }
 
     @Test
+    void standaloneWithPasswordUsesPasswordConstructor() {
+        Map<String, String> env = Map.of(
+            "REDIS_MODE", "standalone",
+            "REDIS_HOST", "localhost",
+            "REDIS_PORT", "6379",
+            "REDIS_PASSWORD", "secret"
+        );
+        try (Pool<Jedis> pool = RedisConnectionFactory.create(env, noIdleConfig())) {
+            assertInstanceOf(JedisPool.class, pool);
+        }
+    }
+
+    @Test
     void sentinelModeCreatesJedisSentinelPool() {
         Map<String, String> env = Map.of(
             "REDIS_MODE", "sentinel",

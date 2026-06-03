@@ -4,6 +4,7 @@ import redis.clients.jedis.Jedis;
 import redis.clients.jedis.JedisPool;
 import redis.clients.jedis.JedisPoolConfig;
 import redis.clients.jedis.JedisSentinelPool;
+import redis.clients.jedis.Protocol;
 import redis.clients.jedis.util.Pool;
 
 import java.util.Arrays;
@@ -24,15 +25,20 @@ public final class RedisConnectionFactory {
     }
 
     static Pool<Jedis> create(Map<String, String> env, JedisPoolConfig config) {
-        String mode = env.getOrDefault("REDIS_MODE", "standalone");
+        String mode     = env.getOrDefault("REDIS_MODE", "standalone");
+        String password = env.getOrDefault("REDIS_PASSWORD", "");
         if ("sentinel".equalsIgnoreCase(mode)) {
             String master = env.getOrDefault("REDIS_SENTINEL_MASTER", "mymaster");
             String nodes  = env.getOrDefault("REDIS_SENTINEL_NODES", "");
-            return new JedisSentinelPool(master, parseSentinelNodes(nodes), config);
+            return password.isEmpty()
+                ? new JedisSentinelPool(master, parseSentinelNodes(nodes), config)
+                : new JedisSentinelPool(master, parseSentinelNodes(nodes), config, password);
         }
         String host = env.getOrDefault("REDIS_HOST", "localhost");
         int    port = parsePort(env.getOrDefault("REDIS_PORT", "6379"));
-        return new JedisPool(config, host, port);
+        return password.isEmpty()
+            ? new JedisPool(config, host, port)
+            : new JedisPool(config, host, port, Protocol.DEFAULT_TIMEOUT, password);
     }
 
     static Set<String> parseSentinelNodes(String nodes) {

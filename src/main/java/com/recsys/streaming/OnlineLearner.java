@@ -1,8 +1,8 @@
 package com.recsys.streaming;
 
 import redis.clients.jedis.Jedis;
-import redis.clients.jedis.JedisPool;
 import redis.clients.jedis.Pipeline;
+import redis.clients.jedis.util.Pool;
 import redis.clients.jedis.params.ScanParams;
 import redis.clients.jedis.resps.ScanResult;
 
@@ -102,7 +102,7 @@ public final class OnlineLearner {
      * Writes all item biases to Redis using a pipeline for a single round-trip.
      * Call periodically (e.g. every N experiences) so biases survive process restarts.
      */
-    public void flushToRedis(JedisPool pool, String keyPrefix) {
+    public void flushToRedis(Pool<Jedis> pool, String keyPrefix) {
         Map<Integer, Double> snapshot = new HashMap<>(itemBias);
         if (snapshot.isEmpty()) return;
         try (Jedis jedis = pool.getResource()) {
@@ -117,7 +117,7 @@ public final class OnlineLearner {
     /**
      * Populates item biases from Redis on startup to resume learning after a restart.
      */
-    public void loadFromRedis(JedisPool pool, String keyPrefix) {
+    public void loadFromRedis(Pool<Jedis> pool, String keyPrefix) {
         ScanParams scanParams = new ScanParams().match(keyPrefix + ":*").count(500);
         try (Jedis jedis = pool.getResource()) {
             String cursor = "0";

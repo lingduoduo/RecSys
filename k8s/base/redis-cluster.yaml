@@ -11,6 +11,21 @@ data:
     sentinel failover-timeout mymaster 30000
     sentinel parallel-syncs mymaster 1
 ---
+apiVersion: v1
+kind: Service
+metadata:
+  name: redis-primary-headless
+  namespace: recsys
+spec:
+  clusterIP: None
+  selector:
+    app: redis
+    role: primary
+  ports:
+    - name: redis
+      port: 6379
+      targetPort: 6379
+---
 # Primary StatefulSet — 1 replica with RDB snapshots and a PVC for /data
 apiVersion: apps/v1
 kind: StatefulSet
@@ -18,7 +33,7 @@ metadata:
   name: redis-primary
   namespace: recsys
 spec:
-  serviceName: redis-primary
+  serviceName: redis-primary-headless
   replicas: 1
   selector:
     matchLabels:
@@ -107,6 +122,21 @@ spec:
       port: 6379
       targetPort: 6379
 ---
+apiVersion: v1
+kind: Service
+metadata:
+  name: redis-replica-headless
+  namespace: recsys
+spec:
+  clusterIP: None
+  selector:
+    app: redis
+    role: replica
+  ports:
+    - name: redis
+      port: 6379
+      targetPort: 6379
+---
 # Replica StatefulSet — 2 replicas spread across AZs; no PVC (rebuilt from primary)
 apiVersion: apps/v1
 kind: StatefulSet
@@ -114,7 +144,7 @@ metadata:
   name: redis-replica
   namespace: recsys
 spec:
-  serviceName: redis-replica
+  serviceName: redis-replica-headless
   replicas: 2
   selector:
     matchLabels:
@@ -186,13 +216,28 @@ spec:
       port: 6379
       targetPort: 6379
 ---
-# Sentinel Deployment — 3 replicas; init container copies config to writable emptyDir
+apiVersion: v1
+kind: Service
+metadata:
+  name: redis-sentinel-headless
+  namespace: recsys
+spec:
+  clusterIP: None
+  selector:
+    app: redis-sentinel
+  ports:
+    - name: sentinel
+      port: 26379
+      targetPort: 26379
+---
+# Sentinel StatefulSet — 3 replicas; init container copies config to writable emptyDir
 apiVersion: apps/v1
-kind: Deployment
+kind: StatefulSet
 metadata:
   name: redis-sentinel
   namespace: recsys
 spec:
+  serviceName: redis-sentinel-headless
   replicas: 3
   selector:
     matchLabels:
