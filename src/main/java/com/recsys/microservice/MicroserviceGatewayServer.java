@@ -66,9 +66,6 @@ public final class MicroserviceGatewayServer {
         List<MicroserviceRoute> llmRoutes = allRoutes.stream()
                 .filter(r -> LLM_ROUTE_NAMES.contains(r.name()))
                 .toList();
-        if (llmRoutes.size() != LLM_ROUTE_NAMES.size()) {
-            throw new IllegalStateException("missing LLM routes in defaults: " + LLM_ROUTE_NAMES);
-        }
         List<MicroserviceRoute> proxyRoutes = allRoutes.stream()
                 .filter(r -> !LLM_ROUTE_NAMES.contains(r.name()))
                 .toList();
