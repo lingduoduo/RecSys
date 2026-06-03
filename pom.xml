@@ -51,10 +51,17 @@
         <configuration>
           <!-- ONNX Runtime appends to the bootstrap classpath, which disables CDS and triggers this warning.
                Disabling CDS upfront suppresses it cleanly. -->
-          <argLine>-Xshare:off</argLine>
+          <argLine>-Xshare:off -Dapi.version=1.44</argLine>
           <!-- Load tests are opt-in: mvn test -Dgroups=load
                Normal test runs skip them to keep CI fast. -->
           <excludedGroups>${excludedGroups}</excludedGroups>
+          <!-- Colima (macOS) exposes the Docker daemon at a non-standard socket path.
+               Testcontainers needs the socket override to mount it correctly, and Ryuk
+               must be disabled because Colima's VM cannot bind-mount the host socket path. -->
+          <environmentVariables>
+            <TESTCONTAINERS_RYUK_DISABLED>true</TESTCONTAINERS_RYUK_DISABLED>
+            <TESTCONTAINERS_DOCKER_SOCKET_OVERRIDE>/var/run/docker.sock</TESTCONTAINERS_DOCKER_SOCKET_OVERRIDE>
+          </environmentVariables>
         </configuration>
       </plugin>
       <plugin>
@@ -125,7 +132,48 @@
       <scope>runtime</scope>
     </dependency>
 
+    <!-- Testcontainers for Redis integration tests. -->
+    <dependency>
+      <groupId>org.testcontainers</groupId>
+      <artifactId>testcontainers</artifactId>
+      <scope>test</scope>
+    </dependency>
+    <dependency>
+      <groupId>org.testcontainers</groupId>
+      <artifactId>junit-jupiter</artifactId>
+      <scope>test</scope>
+    </dependency>
+
   </dependencies>
+
+  <dependencyManagement>
+    <!-- Pin Jackson to Spring Boot's version so Testcontainers/docker-java
+         cannot downgrade jackson-annotations to 2.10.x (which lacks JsonIncludeProperties). -->
+    <dependencies>
+      <dependency>
+        <groupId>org.testcontainers</groupId>
+        <artifactId>testcontainers-bom</artifactId>
+        <version>1.20.4</version>
+        <type>pom</type>
+        <scope>import</scope>
+      </dependency>
+      <dependency>
+        <groupId>com.fasterxml.jackson.core</groupId>
+        <artifactId>jackson-annotations</artifactId>
+        <version>2.17.2</version>
+      </dependency>
+      <dependency>
+        <groupId>com.fasterxml.jackson.core</groupId>
+        <artifactId>jackson-databind</artifactId>
+        <version>2.17.2</version>
+      </dependency>
+      <dependency>
+        <groupId>com.fasterxml.jackson.core</groupId>
+        <artifactId>jackson-core</artifactId>
+        <version>2.17.2</version>
+      </dependency>
+    </dependencies>
+  </dependencyManagement>
 
   <profiles>
     <profile>
