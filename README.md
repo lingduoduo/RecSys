@@ -1215,7 +1215,9 @@ SagaInstance result = orchestrator.execute(
 
 ## Developer Notes
 
-Reference for contributors navigating the internals.
+The sections above cover the system from the outside in — capacity targets that set scale requirements, JVM profiles that bound GC pauses, pipeline fixes that removed lock contention and OOM paths, LLM and model rate limits that protect shared inference slots, and saga orchestration for durable multi-step workflows. This section maps those operational constraints to the specific classes that implement them, as a guide for contributors reading or modifying the code.
+
+The key design thread running through all of it: **keep the request path allocation-free and lock-free wherever possible**. Hot-key detection, sharded Top-K, multi-level caches, batched Redis reads, and concurrency-limited inference slots all exist because the capacity targets (8 k QPS, 200 w+ DAU) leave no room for per-request blocking, unbounded allocations, or single-key Redis hotspots.
 
 ### Data loading
 
