@@ -208,9 +208,92 @@ if (corsOrigin != null && !corsOrigin.isBlank()) {
 
 ## Testing
 
-- Existing unit tests for business logic (`RecommendationServiceTest`, `ShardedRecordStoreIntegrationTest`, etc.) are unaffected — they don't touch the HTTP layer.
-- `GatewayAuthenticatorTest` and `MicroserviceRouteTest` test pure logic; unaffected.
-- New integration tests for the Armeria servers can use Armeria's `ServerExtension` JUnit 5 rule to spin up the full server in-process.
+### Framework additions
+
+| Action | Artifact |
+|---|---|
+| Add (test scope) | `com.linecorp.armeria:armeria-junit5:1.28.4` — provides `ServerExtension` |
+
+No other new test frameworks. Mockito and JUnit 5 are already in use.
+
+### Existing tests — no changes
+
+There are no existing `*Servlet` test files; every existing test targets pure business logic. All 70+ existing test classes compile and pass unchanged:
+
+- `GatewayAuthenticatorTest`, `GatewayRateLimiterTest`, `LlmResponseCacheTest`, `LlmTokenRateLimiterTest`, `MicroserviceRouteTest`, `RouteCircuitBreakerTest` — gateway logic, unaffected
+- `OnlineRecommendationServiceTest`, `OnlineLoadShedderTest`, `RedisRateLimiterTest`, etc. — streaming logic, unaffected
+- `ShardedRecordStoreIntegrationTest`, `ShardedRecordStoreWriteTest`, `ShardedRecordStoreReadTest`, `ShardedRecordStoreTtlTest` — store logic, unaffected
+- All `modelbased/` tests — Spring Boot service, out of scope
+
+### New integration tests
+
+Three new test classes, one per server. Each uses `@RegisterExtension ServerExtension` to spin up the full Armeria server in-process on a random port, with Mockito stubs for Redis-dependent collaborators.
+
+---
+
+#### `RecSysServerIntegrationTest`
+`src/test/java/com/recsys/serving/RecSysServerIntegrationTest.java`
+
+Stubs: `DataManager`, `CandidateGenerator`, `ShardedTopKStore` (Mockito)
+
+| Test | Route | Expected |
+|---|---|---|
+| health check | `GET /health` | 200 `{"status":"ok"}` |
+| get movie by id | `GET /item?id=1` | 200 JSON movie object |
+| get movie — unknown id | `GET /item?id=999` | 404 JSON error |
+| get recommendation | `GET /getrecommendation?userId=1&k=5` | 200 JSON list |
+| get recommendation — missing userId | `GET /getrecommendation` | 400 JSON error |
+| similar movies | `GET /similar?id=1&k=3` | 200 JSON list |
+| set embedding — valid body | `POST /setembedding` with JSON | 200 |
+| set embedding — empty body | `POST /setembedding` empty | 400 JSON error |
+| compat predict route | `POST /v1/models/recmodel:predict` | 200 |
+| unknown route | `GET /unknown` | 404 |
+| REST alias — movie | `GET /movie?id=1` | 200 (same as `/item`) |
+| REST alias — recommendation | `GET /recommendation?userId=1&k=3` | 200 |
+
+---
+
+#### `OnlinePredictionServerIntegrationTest`
+`src/test/java/com/recsys/streaming/OnlinePredictionServerIntegrationTest.java`
+
+Stubs: `OnlineRecommendationService`, `OnlineServingMetricsService`, `ShardedRecordStore` (Mockito)
+
+| Test | Route | Expected |
+|---|---|---|
+| health check | `GET /health` | 200 JSON metrics snapshot |
+| online recommendation | `GET /online/recommendation?userId=1&k=5` | 200 JSON |
+| online recommendation — missing userId | `GET /online/recommendation` | 400 JSON error |
+| online features | `GET /online/features?userId=1` | 200 JSON |
+| ops snapshot | `GET /online/ops` | 200 JSON |
+| write shard record — valid | `POST /shards/records` with `{deviceId, type, eventId}` | 200 JSON with `seqNum`, `shardIndex` |
+| write shard record — missing deviceId | `POST /shards/records` | 400 JSON error |
+| write shard record — bad type | `POST /shards/records` with `type:"INVALID"` | 400 JSON error |
+| read by device | `GET /shards/device?deviceId=user-1` | 200 JSON with records + cursor |
+| read by shard | `GET /shards/shard?index=0` | 200 JSON |
+| load shed | `GET /online/recommendation?userId=1` when load shedder saturated | 429 with `Retry-After` header |
+| rate limit | excess requests to `/online/recommendation` | 429 with `Retry-After` header |
+
+---
+
+#### `GatewayServerIntegrationTest`
+`src/test/java/com/recsys/microservice/GatewayServerIntegrationTest.java`
+
+Two `ServerExtension` instances: one for the gateway, one acting as a fake upstream (returns canned JSON). `MicroserviceRoute.defaults()` is overridden to point all base URIs at the fake upstream's port.
+
+| Test | Input | Expected |
+|---|---|---|
+| route to backend | `GET /api/recsys/health` | 200 forwarded from fake upstream |
+| unmatched path | `GET /no-such-route` | 404 `{"error":"..."}` |
+| circuit breaker open | request when `RouteCircuitBreaker` forced open | 503 `{"error":"..."}` |
+| rate limited | excess requests beyond token bucket | 429 with `Retry-After` |
+| auth required — missing key | `GET /api/recsys/health` without `X-Api-Key` when auth enabled | 401 |
+| auth required — wrong key | wrong key value | 403 |
+| gateway header injected | any proxied request | upstream receives `X-Gateway-Service: recsys-api-gateway` |
+| hop-by-hop stripped | request with `Connection`, `Transfer-Encoding` headers | upstream does NOT receive those headers |
+| SSE streaming | upstream returns `text/event-stream` chunked body | client receives stream chunks in order |
+| LLM route proxied | `POST /llm/v1/chat/completions` | forwarded to LLM fake upstream |
+| LLM token budget exceeded | `POST /llm/...` when token limiter exhausted | 429 |
+| LLM cache hit | same request body sent twice | second response has `X-Cache: HIT`, upstream called only once |
 
 ---
 
@@ -246,8 +329,6 @@ if (corsOrigin != null && !corsOrigin.isBlank()) {
 `HealthService`, `MovieService`, `UserService`, `RecommendationService`, `SimilarMovieService`, `SetEmbeddingService`, `PredictionService` — names unchanged, superclass and handler signatures updated.
 
 Server entry points (`RecSysServer`, `OnlinePredictionServer`, `MicroserviceGatewayServer`) — `main()` bootstrap rewritten, business logic unchanged.
-
-Server entry points (`RecSysServer`, `OnlinePredictionServer`, `MicroserviceGatewayServer`) are modified in-place.
 
 ---
 
