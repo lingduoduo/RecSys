@@ -123,8 +123,10 @@ public final class ShardedRecordStore {
                 .toList();
         List<ShardedRecord> records = fetchRecords(shardIndex, seqNums);
 
+        // Use tuples.size() (pre-TTL-filter) to decide hasMore: if Redis returned a full
+        // page of ZSet entries, more may exist even if some HGETALL results were expired.
         long lastSeq = (long) tuples.get(tuples.size() - 1).getScore();
-        ShardCursor next = records.size() < limit ? null : ShardCursor.of(String.valueOf(lastSeq));
+        ShardCursor next = tuples.size() < limit ? null : ShardCursor.of(String.valueOf(lastSeq));
         return new Page<>(records, next);
     }
 
