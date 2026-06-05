@@ -40,6 +40,34 @@ curl http://localhost:8010/health
 {"status":"UP","checkedAt":"...","services":{"user-profile":{"status":"UP"},...}}
 ```
 
+### Start individual services
+
+Run each service in its own terminal. Redis must be running first (step 1 above).
+
+```bash
+# Port 6010 — Catalog & Recommendation Serving
+mvn exec:java -Dexec.mainClass=com.recsys.serving.RecSysServer
+curl http://localhost:6010/health
+# {"ok":true}
+
+# Port 7010 — Online Prediction Server
+mvn exec:java -Dexec.mainClass=com.recsys.streaming.OnlinePredictionServer
+curl http://localhost:7010/online/ops
+# {"servedAt":"...","metrics":{...},"load":{...},"capacity":{...}}
+
+# Port 8080 — Model Serving (Spring Boot / ONNX)
+mvn spring-boot:run
+curl http://localhost:8080/health/ready
+# {"status":"UP",...}
+
+# Port 8010 — API Gateway
+mvn exec:java -Dexec.mainClass=com.recsys.microservice.MicroserviceGatewayServer
+curl http://localhost:8010/health
+# {"status":"UP","services":{...}}
+```
+
+> The gateway (8010) proxies the other three services — start 6010, 7010, and 8080 first if you want all gateway routes healthy.
+
 ---
 
 ## Contents
