@@ -284,7 +284,7 @@ Blends behavioral signals (recent watch history + trending) with embedding-based
 ```bash
 curl "http://localhost:7010/online/recommendation?userId=123"
 curl "http://localhost:7010/online/recommendation?userId=123&window=last_day&k=10"
-curl "http://localhost:7010/online/recommendation?userId=456&window=last_month&k=5"
+curl "http://localhost:7010/online/recommendation?userId=124&window=last_month&k=5"
 ```
 
 | Param | Required | Default | Values |
