@@ -1,16 +1,15 @@
 package com.recsys.serving;
 
-import jakarta.servlet.http.HttpServletRequest;
-import jakarta.servlet.http.HttpServletResponse;
+import com.linecorp.armeria.common.HttpRequest;
+import com.linecorp.armeria.common.HttpResponse;
+import com.linecorp.armeria.common.HttpStatus;
+import com.linecorp.armeria.server.ServiceRequestContext;
 
-import java.io.IOException;
 import java.util.Map;
 
-public class HealthService extends BaseApiServlet {
-
+public class HealthService extends BaseApiService {
     @Override
-    protected void doGet(HttpServletRequest request, HttpServletResponse response) throws IOException {
-        prepareJson(response);
-        writeJson(response, HttpServletResponse.SC_OK, Map.of("ok", true));
+    protected HttpResponse doGet(ServiceRequestContext ctx, HttpRequest req) {
+        return writeJson(HttpStatus.OK, Map.of("ok", true));
     }
 }

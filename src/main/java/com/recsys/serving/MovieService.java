@@ -1,13 +1,15 @@
 package com.recsys.serving;
 
+import com.linecorp.armeria.common.HttpRequest;
+import com.linecorp.armeria.common.HttpResponse;
+import com.linecorp.armeria.common.HttpStatus;
+import com.linecorp.armeria.server.ServiceRequestContext;
 import com.recsys.infrastructure.DataManager;
 import com.recsys.model.Movie;
-import jakarta.servlet.http.HttpServletRequest;
-import jakarta.servlet.http.HttpServletResponse;
 
-import java.io.IOException;
+import java.util.concurrent.CompletableFuture;
 
-public class MovieService extends BaseApiServlet {
+public class MovieService extends BaseApiService {
 
     private final DataManager dataManager;
 
@@ -16,24 +18,19 @@ public class MovieService extends BaseApiServlet {
     }
 
     @Override
-    protected void doGet(HttpServletRequest request, HttpServletResponse response) throws IOException {
-        prepareJson(response);
-        try {
-            int movieId = requiredIntParam(request, "id");
-            Movie movie = dataManager.getMovieById(movieId);
-
-            if (movie == null) {
-                writeError(response, HttpServletResponse.SC_NOT_FOUND, "movie not found", "id", movieId);
-                return;
+    protected HttpResponse doGet(ServiceRequestContext ctx, HttpRequest req) {
+        return HttpResponse.of(CompletableFuture.supplyAsync(() -> {
+            try {
+                int movieId = requiredIntParam(ctx, "id");
+                Movie movie = dataManager.getMovieById(movieId);
+                if (movie == null) return writeError(HttpStatus.NOT_FOUND, "movie not found", "id", movieId);
+                return writeJson(HttpStatus.OK, movie);
+            } catch (BadRequestException e) {
+                return writeError(HttpStatus.BAD_REQUEST, e.getMessage());
+            } catch (Exception e) {
+                log.error("Unexpected error in MovieService", e);
+                return writeError(HttpStatus.INTERNAL_SERVER_ERROR, "internal server error");
             }
-
-            writeJson(response, HttpServletResponse.SC_OK, movie);
-
-        } catch (BadRequestException e) {
-            writeError(response, HttpServletResponse.SC_BAD_REQUEST, e.getMessage());
-        } catch (Exception e) {
-            log.error("Unexpected error in MovieService", e);
-            writeError(response, HttpServletResponse.SC_INTERNAL_SERVER_ERROR, "internal server error");
-        }
+        }, ctx.blockingTaskExecutor()));
     }
 }

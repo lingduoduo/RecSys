@@ -1,14 +1,14 @@
 package com.recsys.serving;
 
+import com.linecorp.armeria.common.HttpRequest;
+import com.linecorp.armeria.common.HttpResponse;
+import com.linecorp.armeria.common.HttpStatus;
+import com.linecorp.armeria.server.ServiceRequestContext;
 import com.recsys.infrastructure.PairPredictionService;
 import com.recsys.model.PredictRequest;
 import com.recsys.model.PredictResponse;
-import jakarta.servlet.http.HttpServletRequest;
-import jakarta.servlet.http.HttpServletResponse;
 
-import java.io.IOException;
-
-public class PredictionService extends BaseApiServlet {
+public class PredictionService extends BaseApiService {
 
     private final PairPredictionService predictionService;
 
@@ -17,25 +17,19 @@ public class PredictionService extends BaseApiServlet {
     }
 
     @Override
-    protected void doPost(HttpServletRequest request, HttpServletResponse response) throws IOException {
-        prepareJson(response);
-        try {
-            PredictRequest predictRequest = readJsonBody(request, PredictRequest.class);
-            if (predictRequest.getInstances() == null || predictRequest.getInstances().isEmpty()) {
-                writeError(response, HttpServletResponse.SC_BAD_REQUEST, "instances must not be empty");
-                return;
+    protected HttpResponse doPost(ServiceRequestContext ctx, HttpRequest req) {
+        return HttpResponse.of(req.aggregate().thenApplyAsync(agg -> {
+            try {
+                PredictRequest pr = readJsonBody(agg, PredictRequest.class);
+                if (pr.getInstances() == null || pr.getInstances().isEmpty())
+                    return writeError(HttpStatus.BAD_REQUEST, "instances must not be empty");
+                return writeJson(HttpStatus.OK, new PredictResponse(predictionService.predict(pr.getInstances())));
+            } catch (BadRequestException | IllegalArgumentException e) {
+                return writeError(HttpStatus.BAD_REQUEST, e.getMessage());
+            } catch (Exception e) {
+                log.error("Unexpected error in PredictionService", e);
+                return writeError(HttpStatus.INTERNAL_SERVER_ERROR, "internal server error");
             }
-
-            writeJson(
-                    response,
-                    HttpServletResponse.SC_OK,
-                    new PredictResponse(predictionService.predict(predictRequest.getInstances()))
-            );
-        } catch (BadRequestException | IllegalArgumentException e) {
-            writeError(response, HttpServletResponse.SC_BAD_REQUEST, e.getMessage());
-        } catch (Exception e) {
-            log.error("Unexpected error in PredictionService", e);
-            writeError(response, HttpServletResponse.SC_INTERNAL_SERVER_ERROR, "internal server error");
-        }
+        }, ctx.blockingTaskExecutor()));
     }
 }
