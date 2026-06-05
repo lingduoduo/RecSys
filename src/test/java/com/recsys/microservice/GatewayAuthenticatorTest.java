@@ -1,82 +1,55 @@
 package com.recsys.microservice;
 
-import jakarta.servlet.http.HttpServletRequest;
-import jakarta.servlet.http.HttpServletResponse;
+import com.linecorp.armeria.common.HttpMethod;
+import com.linecorp.armeria.common.HttpStatus;
+import com.linecorp.armeria.common.RequestHeaders;
 import org.junit.jupiter.api.Test;
 
-import java.io.PrintWriter;
-import java.io.StringWriter;
 import java.util.Map;
 
-import static org.junit.jupiter.api.Assertions.assertFalse;
-import static org.junit.jupiter.api.Assertions.assertTrue;
-import static org.mockito.Mockito.mock;
-import static org.mockito.Mockito.never;
-import static org.mockito.Mockito.verify;
-import static org.mockito.Mockito.when;
+import static org.assertj.core.api.Assertions.assertThat;
 
 class GatewayAuthenticatorTest {
 
     @Test
-    void disabledWhenNoApiKeysConfigured() throws Exception {
-        GatewayAuthenticator authenticator = GatewayAuthenticator.fromEnvironment(Map.<String, String>of()::get);
-        HttpServletRequest request = mock(HttpServletRequest.class);
-        HttpServletResponse response = mock(HttpServletResponse.class);
-
-        assertFalse(authenticator.isEnabled());
-        assertTrue(authenticator.authenticate(request, response, "/api/model/recommend"));
-        verify(response, never()).setStatus(HttpServletResponse.SC_UNAUTHORIZED);
+    void disabledWhenNoApiKeysConfigured() {
+        GatewayAuthenticator auth = GatewayAuthenticator.fromEnvironment(Map.<String, String>of()::get);
+        assertThat(auth.isEnabled()).isFalse();
+        assertThat(auth.check(RequestHeaders.of(HttpMethod.GET, "/api/model/recommend"), "/api/model/recommend")).isNull();
     }
 
     @Test
-    void acceptsApiKeyHeader() throws Exception {
-        GatewayAuthenticator authenticator = GatewayAuthenticator.fromEnvironment(Map.of(
-                "GATEWAY_API_KEYS", "alpha,beta"
-        )::get);
-        HttpServletRequest request = mock(HttpServletRequest.class);
-        HttpServletResponse response = mock(HttpServletResponse.class);
-        when(request.getHeader("X-API-Key")).thenReturn(" beta ");
-
-        assertTrue(authenticator.isEnabled());
-        assertTrue(authenticator.authenticate(request, response, "/api/model/recommend"));
-        verify(response, never()).setStatus(HttpServletResponse.SC_UNAUTHORIZED);
+    void acceptsApiKeyHeader() {
+        GatewayAuthenticator auth = GatewayAuthenticator.fromEnvironment(Map.of("GATEWAY_API_KEYS", "alpha,beta")::get);
+        RequestHeaders headers = RequestHeaders.builder(HttpMethod.GET, "/api/model/recommend")
+                .add("x-api-key", " beta ")
+                .build();
+        assertThat(auth.isEnabled()).isTrue();
+        assertThat(auth.check(headers, "/api/model/recommend")).isNull();
     }
 
     @Test
-    void acceptsBearerToken() throws Exception {
-        GatewayAuthenticator authenticator = GatewayAuthenticator.fromEnvironment(Map.of(
-                "GATEWAY_API_KEYS", "alpha"
-        )::get);
-        HttpServletRequest request = mock(HttpServletRequest.class);
-        HttpServletResponse response = mock(HttpServletResponse.class);
-        when(request.getHeader("Authorization")).thenReturn("Bearer alpha");
-
-        assertTrue(authenticator.authenticate(request, response, "/api/model/recommend"));
+    void acceptsBearerToken() {
+        GatewayAuthenticator auth = GatewayAuthenticator.fromEnvironment(Map.of("GATEWAY_API_KEYS", "alpha")::get);
+        RequestHeaders headers = RequestHeaders.builder(HttpMethod.GET, "/api/model/recommend")
+                .add("authorization", "Bearer alpha")
+                .build();
+        assertThat(auth.check(headers, "/api/model/recommend")).isNull();
     }
 
     @Test
-    void rejectsMissingCredential() throws Exception {
-        GatewayAuthenticator authenticator = GatewayAuthenticator.fromEnvironment(Map.of(
-                "GATEWAY_API_KEYS", "alpha"
-        )::get);
-        HttpServletRequest request = mock(HttpServletRequest.class);
-        HttpServletResponse response = mock(HttpServletResponse.class);
-        when(response.getWriter()).thenReturn(new PrintWriter(new StringWriter()));
-
-        assertFalse(authenticator.authenticate(request, response, "/api/model/recommend"));
-        verify(response).setStatus(HttpServletResponse.SC_UNAUTHORIZED);
+    void rejectsMissingCredential() {
+        GatewayAuthenticator auth = GatewayAuthenticator.fromEnvironment(Map.of("GATEWAY_API_KEYS", "alpha")::get);
+        RequestHeaders headers = RequestHeaders.of(HttpMethod.GET, "/api/model/recommend");
+        var rejection = auth.check(headers, "/api/model/recommend");
+        assertThat(rejection).isNotNull();
+        assertThat(rejection.aggregate().join().status()).isEqualTo(HttpStatus.UNAUTHORIZED);
     }
 
     @Test
-    void allowsConfiguredPublicPath() throws Exception {
-        GatewayAuthenticator authenticator = GatewayAuthenticator.fromEnvironment(Map.of(
-                "GATEWAY_API_KEYS", "alpha",
-                "GATEWAY_PUBLIC_PATHS", "/health,/metrics"
-        )::get);
-        HttpServletRequest request = mock(HttpServletRequest.class);
-        HttpServletResponse response = mock(HttpServletResponse.class);
-
-        assertTrue(authenticator.authenticate(request, response, "/metrics/prometheus"));
-        verify(response, never()).setStatus(HttpServletResponse.SC_UNAUTHORIZED);
+    void publicPathBypassesAuth() {
+        GatewayAuthenticator auth = GatewayAuthenticator.fromEnvironment(Map.of("GATEWAY_API_KEYS", "alpha")::get);
+        RequestHeaders headers = RequestHeaders.of(HttpMethod.GET, "/health");
+        assertThat(auth.check(headers, "/health")).isNull();
     }
 }
