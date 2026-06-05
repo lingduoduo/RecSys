@@ -104,6 +104,7 @@ public class RecSysServer {
             }, "recsys-shutdown"));
             log.info("Starting RecSys serving API on port {}", port);
             server.start().join();
+            server.blockUntilShutdown();
         } catch (Exception e) {
             jedisPool.close();
             throw e;

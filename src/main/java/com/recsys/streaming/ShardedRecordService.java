@@ -77,7 +77,7 @@ public final class ShardedRecordService extends ApiService {
                 }
             }, ctx.blockingTaskExecutor()));
         }
-        return writeError(HttpStatus.NOT_FOUND, "unknown path: " + path);
+        return writeError(HttpStatus.NOT_FOUND, "unknown path");
     }
 
     // ── GET /shards/device and /shards/shard ─────────────────────────────────
@@ -91,7 +91,7 @@ public final class ShardedRecordService extends ApiService {
         } else if (path.equals("/shards/shard")) {
             return handleReadShard(ctx);
         }
-        return writeError(HttpStatus.NOT_FOUND, "unknown path: " + path);
+        return writeError(HttpStatus.NOT_FOUND, "unknown path");
     }
 
     // ── GET helpers ──────────────────────────────────────────────────────────

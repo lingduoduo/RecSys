@@ -81,7 +81,7 @@ final class GatewayProxyService implements HttpService {
 
         MicroserviceRoute route = routeTable.match(path);
         if (route == null) {
-            return gatewayError(HttpStatus.NOT_FOUND, "no microservice route matches " + path);
+            return gatewayError(HttpStatus.NOT_FOUND, "no route found");
         }
 
         TokenBucket.Decision rateDecision = rateLimiter.tryAcquire(route.name());

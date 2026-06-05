@@ -111,9 +111,14 @@ final class LlmProxyService implements HttpService {
         // and forward it. Must happen before any further dispatching.
         return HttpResponse.of(
                 req.aggregate().thenCompose(aggReq -> {
-                    byte[] requestBody = shouldForwardBody(req.method().name(), aggReq.content().length())
-                            ? aggReq.content().array()
-                            : null;
+                    byte[] requestBody;
+                    try {
+                        requestBody = shouldForwardBody(req.method().name(), aggReq.content().length())
+                                ? aggReq.content().toInputStream().readAllBytes()
+                                : null;
+                    } catch (java.io.IOException e) {
+                        throw new RuntimeException(e);
+                    }
 
                     BodyMeta meta = requestBody != null
                             ? parseBodyMeta(requestBody, defaultTokenEstimate)
@@ -217,6 +222,7 @@ final class LlmProxyService implements HttpService {
     // ── Buffered path ───────────────────────────────────────────────────────────────────────────
 
     private HttpResponse forwardBuffered(HttpRequest upstreamReq, byte[] requestBody) {
+        RequestHeaders upstreamHeaders = upstreamReq.headers();
         return HttpResponse.of(
                 webClient.execute(upstreamReq).aggregate()
                         .thenCompose(agg -> {
@@ -225,11 +231,16 @@ final class LlmProxyService implements HttpService {
                                 if (waitMs > 0 && waitMs <= maxRetryWaitMs) {
                                     // Non-blocking delay: schedule retry on the common pool
                                     // after waitMs without blocking the Netty event loop.
+                                    // Rebuild a fresh HttpRequest — the original publisher is
+                                    // single-subscription and already consumed.
+                                    HttpRequest retryReq = HttpRequest.of(
+                                            upstreamHeaders,
+                                            HttpData.wrap(requestBody != null ? requestBody : new byte[0]));
                                     return CompletableFuture.supplyAsync(
                                             () -> null,
                                             CompletableFuture.delayedExecutor(waitMs, TimeUnit.MILLISECONDS))
                                             .thenCompose(ignored ->
-                                                    webClient.execute(upstreamReq).aggregate());
+                                                    webClient.execute(retryReq).aggregate());
                                 }
                             }
                             return CompletableFuture.completedFuture(agg);
@@ -241,7 +252,12 @@ final class LlmProxyService implements HttpService {
                                 circuitBreaker.recordSuccess();
                             }
 
-                            byte[] responseBytes = agg.content().array();
+                            byte[] responseBytes;
+                            try {
+                                responseBytes = agg.content().toInputStream().readAllBytes();
+                            } catch (java.io.IOException e) {
+                                throw new RuntimeException(e);
+                            }
 
                             // Cache successful 200 responses
                             if (agg.status().code() == 200 && requestBody != null) {
