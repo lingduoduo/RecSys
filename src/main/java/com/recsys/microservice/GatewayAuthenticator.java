@@ -1,9 +1,13 @@
 package com.recsys.microservice;
 
-import jakarta.servlet.http.HttpServletRequest;
-import jakarta.servlet.http.HttpServletResponse;
+import com.linecorp.armeria.common.HttpData;
+import com.linecorp.armeria.common.HttpHeaderNames;
+import com.linecorp.armeria.common.HttpResponse;
+import com.linecorp.armeria.common.HttpStatus;
+import com.linecorp.armeria.common.MediaType;
+import com.linecorp.armeria.common.RequestHeaders;
+import com.linecorp.armeria.common.ResponseHeaders;
 
-import java.io.IOException;
 import java.nio.charset.StandardCharsets;
 import java.security.MessageDigest;
 import java.util.Arrays;
@@ -12,7 +16,6 @@ import java.util.stream.Collectors;
 
 final class GatewayAuthenticator {
     private static final GatewayAuthenticator DISABLED = new GatewayAuthenticator(Set.of(), Set.of("/health"));
-    private static final String API_KEY_HEADER = "X-API-Key";
     private static final String AUTHORIZATION_PREFIX = "Bearer ";
 
     private final Set<String> apiKeys;
@@ -47,21 +50,32 @@ final class GatewayAuthenticator {
         return !apiKeys.isEmpty();
     }
 
-    boolean authenticate(HttpServletRequest request, HttpServletResponse response, String path)
-            throws IOException {
-        if (!isEnabled() || isPublic(path)) {
-            return true;
+    /**
+     * Check whether the request is authorized. Returns {@code null} if the request
+     * is allowed through; returns a non-null {@link HttpResponse} (401) if it must
+     * be rejected.
+     */
+    HttpResponse check(RequestHeaders headers, String path) {
+        if (!isEnabled() || isPublic(path)) return null;
+
+        String provided = firstNonBlank(
+                headers.get(HttpHeaderNames.of("x-api-key")),
+                bearerToken(headers.get(HttpHeaderNames.AUTHORIZATION)));
+
+        if (provided != null) {
+            boolean matched = false;
+            for (String key : apiKeys) {
+                matched |= constantTimeEquals(key, provided);
+            }
+            if (matched) return null;
         }
 
-        String provided = firstNonBlank(request.getHeader(API_KEY_HEADER), bearerToken(request.getHeader("Authorization")));
-        if (provided != null && apiKeys.stream().anyMatch(key -> constantTimeEquals(key, provided))) {
-            return true;
-        }
-
-        response.setHeader("WWW-Authenticate", "Bearer");
-        GatewayProxyServlet.writeGatewayError(response, HttpServletResponse.SC_UNAUTHORIZED,
-                "missing or invalid gateway API key");
-        return false;
+        return HttpResponse.of(
+                ResponseHeaders.builder(HttpStatus.UNAUTHORIZED)
+                        .set(HttpHeaderNames.WWW_AUTHENTICATE, "Bearer")
+                        .contentType(MediaType.JSON_UTF_8)
+                        .build(),
+                HttpData.ofUtf8("{\"error\":\"missing or invalid gateway API key\"}"));
     }
 
     private boolean isPublic(String path) {

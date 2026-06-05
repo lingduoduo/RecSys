@@ -1,30 +1,28 @@
 package com.recsys.serving;
 
-import com.recsys.infrastructure.vectordb.CandidateGenerator;
+import com.linecorp.armeria.common.HttpMethod;
+import com.linecorp.armeria.server.Route;
+import com.linecorp.armeria.server.Server;
+import com.linecorp.armeria.server.ServerBuilder;
+import com.linecorp.armeria.server.cors.CorsService;
 import com.recsys.infrastructure.DataLoader;
 import com.recsys.infrastructure.DataManager;
-import com.recsys.infrastructure.vectordb.EmbeddingStore;
-import com.recsys.infrastructure.cache.LocalEmbeddingCache;
 import com.recsys.infrastructure.PairPredictionService;
+import com.recsys.infrastructure.cache.LocalEmbeddingCache;
+import com.recsys.infrastructure.redis.RedisConnectionFactory;
 import com.recsys.infrastructure.redis.RedisEmbeddingStore;
 import com.recsys.infrastructure.redis.ShardedTopKStore;
+import com.recsys.infrastructure.vectordb.CandidateGenerator;
 import com.recsys.streaming.TrendingStore;
-import org.eclipse.jetty.server.Server;
-import org.eclipse.jetty.servlet.ServletContextHandler;
-import org.eclipse.jetty.servlet.ServletHolder;
 import org.slf4j.Logger;
 import org.slf4j.LoggerFactory;
-import com.recsys.infrastructure.redis.RedisConnectionFactory;
 import redis.clients.jedis.Jedis;
 import redis.clients.jedis.util.Pool;
-
-import java.net.InetSocketAddress;
 
 public class RecSysServer {
 
     private static final Logger log = LoggerFactory.getLogger(RecSysServer.class);
     private static final int DEFAULT_PORT = 6010;
-    private static final String DEFAULT_HOST = "0.0.0.0";
     private static final String ROUTE_ITEM = "/item";
     private static final String ROUTE_USER = "/getuser";
     private static final String ROUTE_SIMILAR = "/similar";
@@ -44,8 +42,8 @@ public class RecSysServer {
 
     public void run() throws Exception {
         int port = readIntEnv("PORT", DEFAULT_PORT);
-
-        try (Pool<Jedis> jedisPool = RedisConnectionFactory.fromEnv()) {
+        Pool<Jedis> jedisPool = RedisConnectionFactory.fromEnv();
+        try {
             DataManager dataManager = DataManager.getInstance();
             PairPredictionService pairPredictionService = new PairPredictionService();
             RedisEmbeddingStore embStore     = new RedisEmbeddingStore(jedisPool, "i2vEmb");
@@ -67,46 +65,50 @@ public class RecSysServer {
 
             CandidateGenerator candidateGenerator = new CandidateGenerator(dataManager, userEmbCache);
 
-            InetSocketAddress inetAddress = new InetSocketAddress(DEFAULT_HOST, port);
-            Server server = new Server(inetAddress);
+            MovieService movieService = new MovieService(dataManager);
+            UserService userService = new UserService(dataManager);
+            RecommendationService recommendationService =
+                    new RecommendationService(dataManager, candidateGenerator, topkStore);
 
-            ServletContextHandler context = createContext();
-            registerRoutes(context, dataManager, candidateGenerator, embCache, topkStore, pairPredictionService);
+            String corsOrigin = System.getenv("CORS_ALLOWED_ORIGIN");
 
-            server.setHandler(context);
-            server.setStopAtShutdown(true);
-            server.start();
-            server.join();
+            ServerBuilder sb = Server.builder()
+                    .http(port)
+                    .service(ROUTE_ITEM, movieService)
+                    .service(ROUTE_ITEM_ALIAS, movieService)
+                    .service(ROUTE_USER, userService)
+                    .service(ROUTE_USER_ALIAS, userService)
+                    .service(ROUTE_SIMILAR, new SimilarMovieService(embCache))
+                    .service(ROUTE_RECOMMENDATION, recommendationService)
+                    .service(ROUTE_RECOMMENDATION_ALIAS, recommendationService)
+                    .service(ROUTE_SET_EMBEDDING, new SetEmbeddingService(embCache))
+                    .service(ROUTE_HEALTH, new HealthService())
+                    // Colon in path requires exact-match routing to avoid Armeria
+                    // interpreting ":predict" as a path variable.
+                    .service(Route.builder().exact(ROUTE_PREDICT).build(),
+                             new PredictionService(pairPredictionService));
+
+            if (corsOrigin != null && !corsOrigin.isBlank()) {
+                sb.decorator(CorsService.builder(corsOrigin)
+                        .allowAllRequestHeaders(true)
+                        .allowRequestMethods(
+                                HttpMethod.GET, HttpMethod.POST, HttpMethod.PUT,
+                                HttpMethod.PATCH, HttpMethod.DELETE, HttpMethod.OPTIONS, HttpMethod.HEAD)
+                        .newDecorator());
+            }
+
+            Server server = sb.build();
+            Runtime.getRuntime().addShutdownHook(new Thread(() -> {
+                server.stop().join();
+                jedisPool.close();
+            }, "recsys-shutdown"));
+            log.info("Starting RecSys serving API on port {}", port);
+            server.start().join();
+            server.blockUntilShutdown();
+        } catch (Exception e) {
+            jedisPool.close();
+            throw e;
         }
-    }
-
-    private static ServletContextHandler createContext() {
-        ServletContextHandler context = new ServletContextHandler();
-        context.setContextPath("/");
-        context.setWelcomeFiles(new String[]{"index.html"});
-        return context;
-    }
-
-    private static void registerRoutes(ServletContextHandler context,
-                                       DataManager dataManager,
-                                       CandidateGenerator candidateGenerator,
-                                       EmbeddingStore embStore,
-                                       TrendingStore topkStore,
-                                       PairPredictionService pairPredictionService) {
-        MovieService movieService = new MovieService(dataManager);
-        UserService userService = new UserService(dataManager);
-        RecommendationService recommendationService = new RecommendationService(dataManager, candidateGenerator, topkStore);
-
-        context.addServlet(new ServletHolder(movieService), ROUTE_ITEM);
-        context.addServlet(new ServletHolder(movieService), ROUTE_ITEM_ALIAS);
-        context.addServlet(new ServletHolder(userService), ROUTE_USER);
-        context.addServlet(new ServletHolder(userService), ROUTE_USER_ALIAS);
-        context.addServlet(new ServletHolder(new SimilarMovieService(embStore)), ROUTE_SIMILAR);
-        context.addServlet(new ServletHolder(recommendationService), ROUTE_RECOMMENDATION);
-        context.addServlet(new ServletHolder(recommendationService), ROUTE_RECOMMENDATION_ALIAS);
-        context.addServlet(new ServletHolder(new SetEmbeddingService(embStore)), ROUTE_SET_EMBEDDING);
-        context.addServlet(new ServletHolder(new HealthService()), ROUTE_HEALTH);
-        context.addServlet(new ServletHolder(new PredictionService(pairPredictionService)), ROUTE_PREDICT);
     }
 
     // Seeds Redis with sample embeddings only if not already present.

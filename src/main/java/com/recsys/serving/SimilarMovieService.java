@@ -1,99 +1,80 @@
 package com.recsys.serving;
 
-import com.recsys.infrastructure.vectordb.ExactVectorIndex;
+import com.linecorp.armeria.common.HttpRequest;
+import com.linecorp.armeria.common.HttpResponse;
+import com.linecorp.armeria.common.HttpStatus;
+import com.linecorp.armeria.server.ServiceRequestContext;
 import com.recsys.infrastructure.DataManager;
 import com.recsys.infrastructure.vectordb.EmbeddingStore;
-import com.recsys.infrastructure.vectordb.SearchResult;
+import com.recsys.infrastructure.vectordb.ExactVectorIndex;
 import com.recsys.model.Movie;
-import jakarta.servlet.http.HttpServletRequest;
-import jakarta.servlet.http.HttpServletResponse;
 
-import java.io.IOException;
 import java.util.LinkedHashSet;
 import java.util.List;
 import java.util.Map;
 import java.util.Set;
+import java.util.concurrent.CompletableFuture;
 
-public class SimilarMovieService extends BaseApiServlet {
+public class SimilarMovieService extends BaseApiService {
 
     private static final int LIMIT_PER_GENRE = 50;
     private static final int RECALL_MULTIPLIER = 5;
 
     private final EmbeddingStore store;
-    private final DataManager dataManager = DataManager.getInstance();
+    private final DataManager dataManager;
 
     public SimilarMovieService(EmbeddingStore store) {
+        this(store, DataManager.getInstance());
+    }
+
+    public SimilarMovieService(EmbeddingStore store, DataManager dataManager) {
         this.store = store;
+        this.dataManager = dataManager;
     }
 
     @Override
-    protected void doGet(HttpServletRequest request, HttpServletResponse response) throws IOException {
-        prepareJson(response);
-        try {
-            int movieId = requiredIntParam(request, "movieId");
-            int k = optionalIntParam(request, "k", 10, 1, 200);
-
-            float[] queryVec = store.getEmbedding(movieId);
-            if (queryVec == null) {
-                writeError(response, HttpServletResponse.SC_NOT_FOUND, "embedding not found for movieId", "movieId", movieId);
-                return;
+    protected HttpResponse doGet(ServiceRequestContext ctx, HttpRequest req) {
+        return HttpResponse.of(CompletableFuture.supplyAsync(() -> {
+            try {
+                int movieId = requiredIntParam(ctx, "movieId");
+                int k = optionalIntParam(ctx, "k", 10, 1, 200);
+                float[] queryVec = store.getEmbedding(movieId);
+                if (queryVec == null)
+                    return writeError(HttpStatus.NOT_FOUND, "embedding not found for movieId", "movieId", movieId);
+                Set<Integer> candidateIds = selectCandidates(movieId, k);
+                Map<Integer, float[]> embeddings = store.getEmbeddings(candidateIds);
+                List<ScoredMovie> scored = ExactVectorIndex.search(embeddings, queryVec, k, Set.of(movieId))
+                        .stream().map(r -> new ScoredMovie(r.id(), r.score())).toList();
+                return writeJson(HttpStatus.OK, new SimilarMoviesResult(movieId, scored));
+            } catch (BadRequestException e) {
+                return writeError(HttpStatus.BAD_REQUEST, e.getMessage());
+            } catch (Exception e) {
+                log.error("Unexpected error in SimilarMovieService", e);
+                return writeError(HttpStatus.INTERNAL_SERVER_ERROR, "internal server error");
             }
-
-            Set<Integer> candidateIds = selectCandidates(movieId, k);
-            Map<Integer, float[]> embeddings = store.getEmbeddings(candidateIds);
-            List<ScoredMovie> scored = ExactVectorIndex.search(embeddings, queryVec, k, Set.of(movieId))
-                    .stream()
-                    .map(SimilarMovieService::toScoredMovie)
-                    .toList();
-
-            writeJson(response, HttpServletResponse.SC_OK, new SimilarMoviesResult(movieId, scored));
-
-        } catch (BadRequestException e) {
-            writeError(response, HttpServletResponse.SC_BAD_REQUEST, e.getMessage());
-        } catch (Exception e) {
-            log.error("Unexpected error in SimilarMovieService", e);
-            writeError(response, HttpServletResponse.SC_INTERNAL_SERVER_ERROR, "internal server error");
-        }
-    }
-
-    private static ScoredMovie toScoredMovie(SearchResult result) {
-        return new ScoredMovie(result.id(), result.score());
+        }, ctx.blockingTaskExecutor()));
     }
 
     private Set<Integer> selectCandidates(int movieId, int k) {
         Set<Integer> candidates = new LinkedHashSet<>();
-        int maxCandidates = k * RECALL_MULTIPLIER;
-
-        for (Movie movie : dataManager.getSimilarMovies(movieId)) {
-            candidates.add(movie.id());
-            if (candidates.size() >= maxCandidates) {
-                return candidates;
-            }
+        int max = k * RECALL_MULTIPLIER;
+        for (Movie m : dataManager.getSimilarMovies(movieId)) {
+            candidates.add(m.id());
+            if (candidates.size() >= max) return candidates;
         }
-
         Movie seed = dataManager.getMovieById(movieId);
         if (seed != null) {
             for (String genre : seed.genres()) {
-                for (Movie movie : dataManager.getMoviesByGenre(genre, LIMIT_PER_GENRE)) {
-                    if (movie.id() != movieId) {
-                        candidates.add(movie.id());
-                    }
-                    if (candidates.size() >= maxCandidates) {
-                        return candidates;
-                    }
+                for (Movie m : dataManager.getMoviesByGenre(genre, LIMIT_PER_GENRE)) {
+                    if (m.id() != movieId) candidates.add(m.id());
+                    if (candidates.size() >= max) return candidates;
                 }
             }
         }
-
-        for (Movie movie : dataManager.getTopRatedMovies(maxCandidates)) {
-            if (movie.id() != movieId) {
-                candidates.add(movie.id());
-            }
-            if (candidates.size() >= maxCandidates) {
-                return candidates;
-            }
+        for (Movie m : dataManager.getTopRatedMovies(max)) {
+            if (m.id() != movieId) candidates.add(m.id());
+            if (candidates.size() >= max) return candidates;
         }
-
         return candidates;
     }
 

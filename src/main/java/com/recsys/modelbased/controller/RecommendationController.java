@@ -12,9 +12,10 @@ import com.recsys.modelbased.service.RateLimitExceededException;
 import com.recsys.modelbased.service.RecommendationService;
 import com.recsys.modelbased.service.ServiceOverloadedException;
 import com.recsys.modelbased.service.SubmitTokenService;
-import jakarta.servlet.http.HttpServletResponse;
 import jakarta.validation.Valid;
+import org.springframework.http.HttpHeaders;
 import org.springframework.http.MediaType;
+import org.springframework.http.ResponseEntity;
 import org.springframework.web.bind.annotation.*;
 
 @RestController
@@ -55,10 +56,9 @@ public class RecommendationController {
             consumes = MediaType.APPLICATION_JSON_VALUE,
             produces = MediaType.APPLICATION_JSON_VALUE
     )
-    public RecommendResponse recommend(@Valid @RequestBody RecommendRequest request,
-                                       @RequestHeader(value = SubmitTokenService.HEADER_NAME, required = false)
-                                       String submitToken,
-                                       HttpServletResponse httpResponse) {
+    public ResponseEntity<RecommendResponse> recommend(@Valid @RequestBody RecommendRequest request,
+                                                       @RequestHeader(value = SubmitTokenService.HEADER_NAME, required = false)
+                                                       String submitToken) {
         long startNs = System.nanoTime();
         // Per-user rate check runs before the global semaphore so a single user can't burn
         // concurrency slots that other users need.
@@ -75,8 +75,9 @@ public class RecommendationController {
             // Degradation (降级): serve stale cache or cold-start popular items before failing.
             Optional<RecommendResponse> fallback = recommendationService.tryServeFromCache(request, assignment);
             if (fallback.isPresent()) {
-                httpResponse.setHeader("X-Served-From", "degraded-cache");
-                return fallback.get();
+                HttpHeaders headers = new HttpHeaders();
+                headers.set("X-Served-From", "degraded-cache");
+                return ResponseEntity.ok().headers(headers).body(fallback.get());
             }
             metricsService.recordFailure(0L, assignment.variant());
             throw new ServiceOverloadedException(retryAfterSeconds(metricsService.snapshot()));
@@ -86,8 +87,9 @@ public class RecommendationController {
             metricsService.recordSuccess(elapsedMs(startNs), response.abTestVariant(), response.modelVersion());
             // Advertise current capacity so load balancers can adjust routing weight in real time
             // without waiting for the next /health/ready poll (e.g. Envoy, Consul, NGINX Plus).
-            httpResponse.setIntHeader("X-Capacity-Weight", loadShedder.snapshot().suggestedWeight());
-            return response;
+            HttpHeaders headers = new HttpHeaders();
+            headers.set("X-Capacity-Weight", String.valueOf(loadShedder.snapshot().suggestedWeight()));
+            return ResponseEntity.ok().headers(headers).body(response);
         } catch (IllegalArgumentException e) {
             // service-level guard — not an inference failure
             throw e;
