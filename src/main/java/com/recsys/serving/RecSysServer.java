@@ -91,7 +91,9 @@ public class RecSysServer {
             if (corsOrigin != null && !corsOrigin.isBlank()) {
                 sb.decorator(CorsService.builder(corsOrigin)
                         .allowAllRequestHeaders(true)
-                        .allowRequestMethods(HttpMethod.values())
+                        .allowRequestMethods(
+                                HttpMethod.GET, HttpMethod.POST, HttpMethod.PUT,
+                                HttpMethod.PATCH, HttpMethod.DELETE, HttpMethod.OPTIONS, HttpMethod.HEAD)
                         .newDecorator());
             }
 

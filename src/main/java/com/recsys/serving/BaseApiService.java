@@ -20,7 +20,7 @@ import java.util.Map;
 public abstract class BaseApiService extends AbstractHttpService {
 
     protected static final ObjectMapper MAPPER = new ObjectMapper();
-    protected static final Logger log = LoggerFactory.getLogger(BaseApiService.class);
+    protected final Logger log = LoggerFactory.getLogger(getClass());
 
     protected static HttpResponse writeJson(HttpStatus status, Object payload) {
         try {
