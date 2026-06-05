@@ -8,10 +8,6 @@ import com.linecorp.armeria.common.MediaType;
 import com.linecorp.armeria.common.RequestHeaders;
 import com.linecorp.armeria.common.ResponseHeaders;
 
-import jakarta.servlet.http.HttpServletRequest;
-import jakarta.servlet.http.HttpServletResponse;
-
-import java.io.IOException;
 import java.nio.charset.StandardCharsets;
 import java.security.MessageDigest;
 import java.util.Arrays;
@@ -80,36 +76,6 @@ final class GatewayAuthenticator {
                         .contentType(MediaType.JSON_UTF_8)
                         .build(),
                 HttpData.ofUtf8("{\"error\":\"missing or invalid gateway API key\"}"));
-    }
-
-    /**
-     * @deprecated Servlet-based shim kept for callers ({@link GatewayProxyServlet},
-     *             {@link LlmProxyServlet}) that will be migrated to Armeria in Task 8.
-     *             Use {@link #check(RequestHeaders, String)} instead.
-     */
-    @Deprecated
-    boolean authenticate(HttpServletRequest request, HttpServletResponse response, String path)
-            throws IOException {
-        if (!isEnabled() || isPublic(path)) {
-            return true;
-        }
-
-        String provided = firstNonBlank(
-                request.getHeader("X-API-Key"),
-                bearerToken(request.getHeader("Authorization")));
-
-        if (provided != null) {
-            boolean matched = false;
-            for (String key : apiKeys) {
-                matched |= constantTimeEquals(key, provided);
-            }
-            if (matched) return true;
-        }
-
-        response.setHeader("WWW-Authenticate", "Bearer");
-        GatewayProxyServlet.writeGatewayError(response, HttpServletResponse.SC_UNAUTHORIZED,
-                "missing or invalid gateway API key");
-        return false;
     }
 
     private boolean isPublic(String path) {
