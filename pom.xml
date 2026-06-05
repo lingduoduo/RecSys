@@ -14,6 +14,7 @@
     <project.build.sourceEncoding>UTF-8</project.build.sourceEncoding>
     <spring-boot.version>3.3.4</spring-boot.version>
     <onnxruntime.version>1.18.0</onnxruntime.version>
+    <armeria.version>1.28.4</armeria.version>
     <!-- Default: skip @Tag("load") tests. Override to run them:
          mvn test -DexcludedGroups="" -Dgroups=load -->
     <excludedGroups>load</excludedGroups>
@@ -94,12 +95,12 @@
     <dependency>
       <groupId>com.linecorp.armeria</groupId>
       <artifactId>armeria</artifactId>
-      <version>1.28.4</version>
+      <version>${armeria.version}</version>
     </dependency>
     <dependency>
       <groupId>com.linecorp.armeria</groupId>
       <artifactId>armeria-junit5</artifactId>
-      <version>1.28.4</version>
+      <version>${armeria.version}</version>
       <scope>test</scope>
     </dependency>
 
