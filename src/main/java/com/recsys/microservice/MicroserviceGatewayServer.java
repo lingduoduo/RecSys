@@ -110,7 +110,7 @@ public final class MicroserviceGatewayServer {
             log.info("LLM token rate limiting enabled");
         }
         if (llmResponseCache.isEnabled()) {
-            log.info("LLM response cache enabled (timeout={}ms)", llmTimeoutMs);
+            log.info("LLM response cache enabled");
         }
 
         server.start().join();
