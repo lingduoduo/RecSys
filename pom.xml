@@ -77,21 +77,7 @@
   </build>
 
   <dependencies>
-    <!-- Jetty Server -->
-    <dependency>
-      <groupId>org.eclipse.jetty</groupId>
-      <artifactId>jetty-server</artifactId>
-      <version>11.0.18</version>
-    </dependency>
-
-    <!-- Servlet support -->
-    <dependency>
-      <groupId>org.eclipse.jetty</groupId>
-      <artifactId>jetty-servlet</artifactId>
-      <version>11.0.18</version>
-    </dependency>
-
-    <!-- Armeria HTTP/2 server (migrating from Jetty; Jetty stays until migration is complete). -->
+    <!-- Armeria HTTP/2 server. -->
     <dependency>
       <groupId>com.linecorp.armeria</groupId>
       <artifactId>armeria</artifactId>
@@ -162,7 +148,8 @@
 
   <dependencyManagement>
     <!-- Pin Jackson to Spring Boot's version so Testcontainers/docker-java
-         cannot downgrade jackson-annotations to 2.10.x (which lacks JsonIncludeProperties). -->
+         cannot downgrade jackson-annotations to 2.10.x (which lacks JsonIncludeProperties).
+         Pin slf4j-api to 2.x so Armeria's transitive 1.7.36 cannot override Spring Boot 3/Logback 1.5. -->
     <dependencies>
       <dependency>
         <groupId>org.testcontainers</groupId>
@@ -185,6 +172,11 @@
         <groupId>com.fasterxml.jackson.core</groupId>
         <artifactId>jackson-core</artifactId>
         <version>2.17.2</version>
+      </dependency>
+      <dependency>
+        <groupId>org.slf4j</groupId>
+        <artifactId>slf4j-api</artifactId>
+        <version>2.0.16</version>
       </dependency>
     </dependencies>
   </dependencyManagement>

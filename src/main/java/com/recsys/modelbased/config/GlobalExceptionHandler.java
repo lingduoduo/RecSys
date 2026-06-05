@@ -4,7 +4,6 @@ import com.recsys.modelbased.dto.ApiError;
 import com.recsys.modelbased.service.RateLimitExceededException;
 import com.recsys.modelbased.service.ServiceOverloadedException;
 import com.recsys.modelbased.service.SubmitTokenException;
-import jakarta.servlet.http.HttpServletRequest;
 import org.slf4j.Logger;
 import org.slf4j.LoggerFactory;
 import org.springframework.http.HttpHeaders;
@@ -16,6 +15,7 @@ import org.springframework.web.bind.MethodArgumentNotValidException;
 import org.springframework.web.bind.annotation.ExceptionHandler;
 import org.springframework.web.bind.annotation.ResponseStatus;
 import org.springframework.web.bind.annotation.RestControllerAdvice;
+import org.springframework.web.context.request.WebRequest;
 
 import java.util.List;
 
@@ -78,8 +78,8 @@ public class GlobalExceptionHandler {
     // Catch-all: unexpected inference or runtime errors
     @ExceptionHandler(Exception.class)
     @ResponseStatus(HttpStatus.INTERNAL_SERVER_ERROR)
-    public ApiError handleUnexpected(Exception ex, HttpServletRequest request) {
-        log.error("Unexpected error handling request {}", request.getRequestURI(), ex);
+    public ApiError handleUnexpected(Exception ex, WebRequest request) {
+        log.error("Unexpected error handling request {}", request.getDescription(false), ex);
         return new ApiError("internal server error", List.of());
     }
 }
