@@ -101,6 +101,6 @@ public abstract class BaseApiService extends AbstractHttpService {
     }
 
     protected static final class BadRequestException extends RuntimeException {
-        BadRequestException(String message) { super(message); }
+        protected BadRequestException(String message) { super(message); }
     }
 }
