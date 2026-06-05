@@ -319,3 +319,28 @@ src/test/java/com/recsys/infrastructure/redis/sharding/
 ├── ShardedRecordStoreTtlTest.java
 └── ShardedRecordStoreIntegrationTest.java
 ```
+
+
+```
+# Write — EVENT, FEATURE, or LOG
+curl -X POST http://localhost:7010/shards/records \
+  -H "Content-Type: application/json" \
+  -d '{"deviceId":"user:42","type":"EVENT","eventId":"click-001","payload":"{\"movieId\":7}"}'
+
+# Duplicate write → returns DUPLICATE, not an error
+curl -X POST http://localhost:7010/shards/records \
+  -H "Content-Type: application/json" \
+  -d '{"deviceId":"user:42","type":"EVENT","eventId":"click-001","payload":"retry"}'
+
+# Read per-device (cursor-based pagination)
+curl "http://localhost:7010/shards/device?deviceId=user:42&limit=5"
+curl "http://localhost:7010/shards/device?deviceId=user:42&cursor=<nextCursor>&limit=5"
+
+# Read full shard stream (all devices, ordered by seq)
+curl "http://localhost:7010/shards/shard?index=0&limit=10"
+
+# Via gateway (if running)
+curl -X POST http://localhost:8010/api/online/shards/records ...
+curl "http://localhost:8010/api/online/shards/device?deviceId=user:42"
+
+```
