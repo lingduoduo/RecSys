@@ -47,7 +47,8 @@ public final class ShardedTopKStore implements TrendingStore {
     static final int  MAX_FULL_CACHE_SIZE      = 100;
     private static final long FETCH_WAIT_TIMEOUT_MS = 2_000L;
 
-    private final Pool<Jedis> pool;
+    private final Pool<Jedis> writePool;
+    private final Pool<Jedis> readPool;
     private final String keyPrefix;   // e.g. "topk:"
     private final int shardCount;
     private final long cacheTtlMs;
@@ -64,13 +65,26 @@ public final class ShardedTopKStore implements TrendingStore {
 
     private final HotKeyDetector hotKeyDetector;
 
+    /**
+     * Single-pool constructor — reads and writes use the same Redis connection.
+     * Preserved for backwards compatibility and non-replicated deployments.
+     */
     public ShardedTopKStore(Pool<Jedis> pool, String keyPrefix) {
-        this(pool, keyPrefix, DEFAULT_SHARD_COUNT, DEFAULT_CACHE_TTL_MS, new HotKeyDetector());
+        this(pool, pool, keyPrefix, DEFAULT_SHARD_COUNT, DEFAULT_CACHE_TTL_MS, new HotKeyDetector());
     }
 
-    ShardedTopKStore(Pool<Jedis> pool, String keyPrefix, int shardCount,
-                     long cacheTtlMs, HotKeyDetector hotKeyDetector) {
-        this.pool           = pool;
+    /**
+     * AZ-aware constructor — writes (seedAllShards) go to {@code writePool}
+     * (primary), reads (getTopKIds) go to {@code readPool} (AZ-local replica).
+     */
+    public ShardedTopKStore(Pool<Jedis> writePool, Pool<Jedis> readPool, String keyPrefix) {
+        this(writePool, readPool, keyPrefix, DEFAULT_SHARD_COUNT, DEFAULT_CACHE_TTL_MS, new HotKeyDetector());
+    }
+
+    ShardedTopKStore(Pool<Jedis> writePool, Pool<Jedis> readPool, String keyPrefix,
+                     int shardCount, long cacheTtlMs, HotKeyDetector hotKeyDetector) {
+        this.writePool      = writePool;
+        this.readPool       = readPool;
         this.keyPrefix      = keyPrefix;
         this.shardCount     = Math.max(1, shardCount);
         this.cacheTtlMs     = Math.max(0L, cacheTtlMs);
@@ -127,7 +141,7 @@ public final class ShardedTopKStore implements TrendingStore {
         String key = shardKey(window, shard);
         int fetchSize = Math.max(k, MAX_FULL_CACHE_SIZE);
 
-        try (Jedis jedis = pool.getResource()) {
+        try (Jedis jedis = readPool.getResource()) {
             List<String> ids = List.copyOf(jedis.zrevrange(key, 0, fetchSize - 1));
             if (ids.isEmpty()) {
                 List<String> legacyIds = List.copyOf(jedis.zrevrange(legacyKey(window), 0, fetchSize - 1));
@@ -159,13 +173,13 @@ public final class ShardedTopKStore implements TrendingStore {
         if (memberScores == null || memberScores.isEmpty()) return;
         for (int shard = 0; shard < shardCount; shard++) {
             String key = shardKey(window, shard);
-            try (Jedis jedis = pool.getResource()) {
+            try (Jedis jedis = writePool.getResource()) {
                 jedis.zadd(key, memberScores);
             } catch (Exception e) {
                 log.warn("Failed to seed shard {} for window {}: {}", shard, window, e.toString());
             }
         }
-        try (Jedis jedis = pool.getResource()) {
+        try (Jedis jedis = writePool.getResource()) {
             jedis.zadd(legacyKey(window), memberScores);
         } catch (Exception e) {
             log.warn("Failed to seed legacy top-K key for window {}: {}", window, e.toString());
