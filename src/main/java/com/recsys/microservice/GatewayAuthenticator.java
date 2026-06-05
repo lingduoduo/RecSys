@@ -66,7 +66,13 @@ final class GatewayAuthenticator {
                 headers.get(HttpHeaderNames.of("x-api-key")),
                 bearerToken(headers.get(HttpHeaderNames.AUTHORIZATION)));
 
-        if (provided != null && apiKeys.stream().anyMatch(key -> constantTimeEquals(key, provided))) return null;
+        if (provided != null) {
+            boolean matched = false;
+            for (String key : apiKeys) {
+                matched |= constantTimeEquals(key, provided);
+            }
+            if (matched) return null;
+        }
 
         return HttpResponse.of(
                 ResponseHeaders.builder(HttpStatus.UNAUTHORIZED)
@@ -92,8 +98,12 @@ final class GatewayAuthenticator {
                 request.getHeader("X-API-Key"),
                 bearerToken(request.getHeader("Authorization")));
 
-        if (provided != null && apiKeys.stream().anyMatch(key -> constantTimeEquals(key, provided))) {
-            return true;
+        if (provided != null) {
+            boolean matched = false;
+            for (String key : apiKeys) {
+                matched |= constantTimeEquals(key, provided);
+            }
+            if (matched) return true;
         }
 
         response.setHeader("WWW-Authenticate", "Bearer");
