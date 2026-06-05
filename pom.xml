@@ -90,6 +90,19 @@
       <version>11.0.18</version>
     </dependency>
 
+    <!-- Armeria HTTP/2 server (migrating from Jetty; Jetty stays until migration is complete). -->
+    <dependency>
+      <groupId>com.linecorp.armeria</groupId>
+      <artifactId>armeria</artifactId>
+      <version>1.28.4</version>
+    </dependency>
+    <dependency>
+      <groupId>com.linecorp.armeria</groupId>
+      <artifactId>armeria-junit5</artifactId>
+      <version>1.28.4</version>
+      <scope>test</scope>
+    </dependency>
+
     <!-- Spring Boot service for the two-tower ONNX serving demo. -->
     <dependency>
       <groupId>org.springframework.boot</groupId>
