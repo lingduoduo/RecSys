@@ -83,9 +83,12 @@ public class RecSysServer {
                     .service(ROUTE_RECOMMENDATION_ALIAS, recommendationService)
                     .service(ROUTE_SET_EMBEDDING, new SetEmbeddingService(embCache))
                     .service(ROUTE_HEALTH, new HealthService())
-                    // Colon in path requires exact-match routing to avoid Armeria
-                    // interpreting ":predict" as a path variable.
-                    .service(Route.builder().exact(ROUTE_PREDICT).build(),
+                    // exact() encodes ':' as '%3A' so the literal path never matches;
+                    // regex routing matches against the decoded path.
+                    .service(Route.builder()
+                                     .regex("^" + ROUTE_PREDICT + "$")
+                                     .methods(HttpMethod.POST)
+                                     .build(),
                              new PredictionService(pairPredictionService));
 
             if (corsOrigin != null && !corsOrigin.isBlank()) {
