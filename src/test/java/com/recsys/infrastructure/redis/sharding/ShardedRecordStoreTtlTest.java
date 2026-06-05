@@ -48,6 +48,29 @@ class ShardedRecordStoreTtlTest extends RedisShardingTestBase {
     }
 
     @Test
+    void readDevice_hasMore_notAffectedByExpiredRecords() throws InterruptedException {
+        // Write 3 records: first two expire quickly, third does not.
+        // With limit=2, Redis ZSet returns 2 entries (a full page), so hasMore must be true
+        // even though the 2 HGETALL results are empty after expiry.
+        for (int i = 1; i <= 3; i++) {
+            ShardedRecord r = new ShardedRecord("dev-hm", 0, RecordType.EVENT,
+                    "e" + i, "v" + i, System.currentTimeMillis());
+            store.write(r, i <= 2 ? 1 : 0);
+        }
+
+        Thread.sleep(1100);
+
+        Page<ShardedRecord> page1 = store.readDevice("dev-hm", ShardCursor.start(), 2);
+        assertThat(page1.hasMore()).isTrue(); // ZSet had 2 entries → full page → more may exist
+        assertThat(page1.records()).isEmpty(); // both expired
+
+        Page<ShardedRecord> page2 = store.readDevice("dev-hm", page1.next(), 2);
+        assertThat(page2.records()).hasSize(1);
+        assertThat(page2.records().get(0).eventId()).isEqualTo("e3");
+        assertThat(page2.hasMore()).isFalse();
+    }
+
+    @Test
     void readDevice_skipsExpiredRecords() throws InterruptedException {
         ShardedRecord r1 = new ShardedRecord("dev-ttl3", 0, RecordType.EVENT,
                 "short", "v1", System.currentTimeMillis());
