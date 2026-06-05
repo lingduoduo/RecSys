@@ -15,6 +15,7 @@ import com.linecorp.armeria.server.ServiceRequestContext;
 import java.util.LinkedHashMap;
 import java.util.List;
 import java.util.Map;
+import java.util.concurrent.CompletableFuture;
 
 /**
  * HTTP façade over ShardedRecordStore.
@@ -85,55 +86,65 @@ public final class ShardedRecordService extends ApiService {
     protected HttpResponse doGet(ServiceRequestContext ctx, HttpRequest req) {
         String path = ctx.path();
 
-        if (path.contains("/device")) {
-            return HttpResponse.of(req.aggregate().thenApplyAsync(agg -> {
-                try {
-                    String deviceId = ctx.queryParam("deviceId");
-                    if (deviceId == null || deviceId.isBlank()) {
-                        return writeError(HttpStatus.BAD_REQUEST, "missing required param: deviceId");
-                    }
-                    int limit        = optionalIntParam(ctx, "limit", 10, 1, 100);
-                    String cursorVal = ctx.queryParam("cursor");
-                    ShardCursor cursor = (cursorVal == null || cursorVal.isBlank())
-                            ? ShardCursor.start() : ShardCursor.of(cursorVal);
-
-                    Page<ShardedRecord> page = store.readDevice(deviceId, cursor, limit);
-                    return writeJson(HttpStatus.OK, Map.of(
-                            "deviceId", deviceId,
-                            "cursor",   page.hasMore() ? page.next().value() : "",
-                            "hasMore",  page.hasMore(),
-                            "count",    page.records().size(),
-                            "records",  toMaps(page.records())
-                    ));
-                } catch (Exception e) {
-                    log.error("Unexpected error in ShardedRecordService GET /device", e);
-                    return writeError(HttpStatus.INTERNAL_SERVER_ERROR, "internal server error");
-                }
-            }, ctx.blockingTaskExecutor()));
-        } else if (path.contains("/shard")) {
-            return HttpResponse.of(req.aggregate().thenApplyAsync(agg -> {
-                try {
-                    int shardIndex   = optionalIntParam(ctx, "index", 0, 0, Integer.MAX_VALUE);
-                    int limit        = optionalIntParam(ctx, "limit", 10, 1, 100);
-                    String cursorVal = ctx.queryParam("cursor");
-                    ShardCursor cursor = (cursorVal == null || cursorVal.isBlank())
-                            ? ShardCursor.start() : ShardCursor.of(cursorVal);
-
-                    Page<ShardedRecord> page = store.readShard(shardIndex, cursor, limit);
-                    return writeJson(HttpStatus.OK, Map.of(
-                            "shardIndex", shardIndex,
-                            "cursor",     page.hasMore() ? page.next().value() : "",
-                            "hasMore",    page.hasMore(),
-                            "count",      page.records().size(),
-                            "records",    toMaps(page.records())
-                    ));
-                } catch (Exception e) {
-                    log.error("Unexpected error in ShardedRecordService GET /shard", e);
-                    return writeError(HttpStatus.INTERNAL_SERVER_ERROR, "internal server error");
-                }
-            }, ctx.blockingTaskExecutor()));
+        if (path.equals("/shards/device")) {
+            return handleReadDevice(ctx);
+        } else if (path.equals("/shards/shard")) {
+            return handleReadShard(ctx);
         }
         return writeError(HttpStatus.NOT_FOUND, "unknown path: " + path);
+    }
+
+    // ── GET helpers ──────────────────────────────────────────────────────────
+
+    private HttpResponse handleReadDevice(ServiceRequestContext ctx) {
+        return HttpResponse.of(CompletableFuture.supplyAsync(() -> {
+            try {
+                String deviceId = ctx.queryParam("deviceId");
+                if (deviceId == null || deviceId.isBlank()) {
+                    return writeError(HttpStatus.BAD_REQUEST, "missing required param: deviceId");
+                }
+                int limit        = optionalIntParam(ctx, "limit", 10, 1, 100);
+                String cursorVal = ctx.queryParam("cursor");
+                ShardCursor cursor = (cursorVal == null || cursorVal.isBlank())
+                        ? ShardCursor.start() : ShardCursor.of(cursorVal);
+
+                Page<ShardedRecord> page = store.readDevice(deviceId, cursor, limit);
+                return writeJson(HttpStatus.OK, Map.of(
+                        "deviceId", deviceId,
+                        "cursor",   page.hasMore() ? page.next().value() : "",
+                        "hasMore",  page.hasMore(),
+                        "count",    page.records().size(),
+                        "records",  toMaps(page.records())
+                ));
+            } catch (Exception e) {
+                log.error("Unexpected error in ShardedRecordService GET /device", e);
+                return writeError(HttpStatus.INTERNAL_SERVER_ERROR, "internal server error");
+            }
+        }, ctx.blockingTaskExecutor()));
+    }
+
+    private HttpResponse handleReadShard(ServiceRequestContext ctx) {
+        return HttpResponse.of(CompletableFuture.supplyAsync(() -> {
+            try {
+                int shardIndex   = optionalIntParam(ctx, "index", 0, 0, Integer.MAX_VALUE);
+                int limit        = optionalIntParam(ctx, "limit", 10, 1, 100);
+                String cursorVal = ctx.queryParam("cursor");
+                ShardCursor cursor = (cursorVal == null || cursorVal.isBlank())
+                        ? ShardCursor.start() : ShardCursor.of(cursorVal);
+
+                Page<ShardedRecord> page = store.readShard(shardIndex, cursor, limit);
+                return writeJson(HttpStatus.OK, Map.of(
+                        "shardIndex", shardIndex,
+                        "cursor",     page.hasMore() ? page.next().value() : "",
+                        "hasMore",    page.hasMore(),
+                        "count",      page.records().size(),
+                        "records",    toMaps(page.records())
+                ));
+            } catch (Exception e) {
+                log.error("Unexpected error in ShardedRecordService GET /shard", e);
+                return writeError(HttpStatus.INTERNAL_SERVER_ERROR, "internal server error");
+            }
+        }, ctx.blockingTaskExecutor()));
     }
 
     // ── Helpers ──────────────────────────────────────────────────────────────
