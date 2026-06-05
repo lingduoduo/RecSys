@@ -24,6 +24,7 @@ import java.util.Locale;
 import java.util.Map;
 import java.util.Set;
 import java.util.concurrent.CompletableFuture;
+import java.util.concurrent.TimeUnit;
 import java.util.stream.Collectors;
 
 /**
@@ -168,7 +169,7 @@ final class LlmProxyService implements HttpService {
                                 forwardStreaming(webClient.execute(upstreamReq)));
                     } else {
                         return CompletableFuture.completedFuture(
-                                forwardBuffered(webClient.execute(upstreamReq), requestBody));
+                                forwardBuffered(upstreamReq, requestBody));
                     }
                 }));
     }
@@ -215,21 +216,20 @@ final class LlmProxyService implements HttpService {
 
     // ── Buffered path ───────────────────────────────────────────────────────────────────────────
 
-    private HttpResponse forwardBuffered(HttpResponse upstream, byte[] requestBody) {
+    private HttpResponse forwardBuffered(HttpRequest upstreamReq, byte[] requestBody) {
         return HttpResponse.of(
-                upstream.aggregate()
+                webClient.execute(upstreamReq).aggregate()
                         .thenCompose(agg -> {
                             if (agg.status().code() == SC_TOO_MANY_REQUESTS) {
                                 long waitMs = parseRetryAfterMs(agg.headers());
                                 if (waitMs > 0 && waitMs <= maxRetryWaitMs) {
-                                    try {
-                                        Thread.sleep(waitMs);
-                                    } catch (InterruptedException e) {
-                                        Thread.currentThread().interrupt();
-                                    }
-                                    // upstreamReq is not available here; fall through and
-                                    // return the 429 as-is (retry is best-effort in buffered mode).
-                                    return CompletableFuture.completedFuture(agg);
+                                    // Non-blocking delay: schedule retry on the common pool
+                                    // after waitMs without blocking the Netty event loop.
+                                    return CompletableFuture.supplyAsync(
+                                            () -> null,
+                                            CompletableFuture.delayedExecutor(waitMs, TimeUnit.MILLISECONDS))
+                                            .thenCompose(ignored ->
+                                                    webClient.execute(upstreamReq).aggregate());
                                 }
                             }
                             return CompletableFuture.completedFuture(agg);
