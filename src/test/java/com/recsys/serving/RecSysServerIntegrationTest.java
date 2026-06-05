@@ -66,7 +66,10 @@ class RecSysServerIntegrationTest {
               .service("/recommendation", rec)
               .service("/setembedding", new SetEmbeddingService(mockEmb))
               .service("/health", new HealthService())
-              .service(Route.builder().exact("/v1/models/recmodel:predict").build(),
+              .service(Route.builder()
+                               .regex("^/v1/models/recmodel:predict$")
+                               .methods(com.linecorp.armeria.common.HttpMethod.POST)
+                               .build(),
                        new PredictionService(mockPrediction));
         }
     };
@@ -132,5 +135,27 @@ class RecSysServerIntegrationTest {
     @Test void restAliasMovie() {
         AggregatedHttpResponse r = server.blockingWebClient().get("/movie?id=1");
         assertThat(r.status()).isEqualTo(HttpStatus.OK);
+    }
+
+    @Test void predictReturns200() {
+        when(mockPrediction.predict(any())).thenReturn(List.of(List.of(0.9)));
+        AggregatedHttpResponse r = server.blockingWebClient().post(
+                "/v1/models/recmodel:predict",
+                "{\"instances\":[{\"userId\":1,\"movieId\":1}]}");
+        assertThat(r.status()).isEqualTo(HttpStatus.OK);
+        assertThat(r.contentUtf8()).contains("predictions");
+    }
+
+    @Test void predictEmptyInstancesReturns400() {
+        AggregatedHttpResponse r = server.blockingWebClient().post(
+                "/v1/models/recmodel:predict",
+                "{\"instances\":[]}");
+        assertThat(r.status()).isEqualTo(HttpStatus.BAD_REQUEST);
+    }
+
+    @Test void predictEmptyBodyReturns400() {
+        AggregatedHttpResponse r = server.blockingWebClient().post(
+                "/v1/models/recmodel:predict", "");
+        assertThat(r.status()).isEqualTo(HttpStatus.BAD_REQUEST);
     }
 }

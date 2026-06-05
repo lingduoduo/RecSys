@@ -4,7 +4,7 @@ A compact Maven workspace demonstrating recommendation-system serving, retrieval
 
 | Service | Port | What it shows |
 |---|---:|---|
-| Catalog / Recommendation Serving | `6010` | Jetty, Redis embeddings, multi-strategy recall, runtime embedding updates |
+| Catalog / Recommendation Serving | `6010` | Armeria, Redis embeddings, multi-strategy recall, runtime embedding updates |
 | Online Prediction Server | `7010` | Real-time Redis-backed recommendations, load shedding, ops metrics |
 | Model Serving (Spring Boot) | `8080` | ONNX two-tower DSSM inference, A/B testing, variant-aware artifacts |
 | API Gateway | `8010` | Microservice edge: circuit breakers, rate limiting, LLM proxy |
@@ -39,6 +39,34 @@ curl http://localhost:8010/health
 ```json
 {"status":"UP","checkedAt":"...","services":{"user-profile":{"status":"UP"},...}}
 ```
+
+### Start individual services
+
+Run each service in its own terminal. Redis must be running first (step 1 above).
+
+```bash
+# Port 6010 — Catalog & Recommendation Serving
+mvn exec:java -Dexec.mainClass=com.recsys.serving.RecSysServer
+curl http://localhost:6010/health
+# {"ok":true}
+
+# Port 7010 — Online Prediction Server
+mvn exec:java -Dexec.mainClass=com.recsys.streaming.OnlinePredictionServer
+curl http://localhost:7010/online/ops
+# {"servedAt":"...","metrics":{...},"load":{...},"capacity":{...}}
+
+# Port 8080 — Model Serving (Spring Boot / ONNX)
+mvn spring-boot:run
+curl http://localhost:8080/health/ready
+# {"status":"UP",...}
+
+# Port 8010 — API Gateway
+mvn exec:java -Dexec.mainClass=com.recsys.microservice.MicroserviceGatewayServer
+curl http://localhost:8010/health
+# {"status":"UP","services":{...}}
+```
+
+> The gateway (8010) proxies the other three services — start 6010, 7010, and 8080 first if you want all gateway routes healthy.
 
 ---
 
@@ -121,7 +149,7 @@ Two independent recommendation paths — run one or both.
 
 ### Port 6010 — Catalog & Recommendation Serving
 
-Jetty API backed by Redis embeddings and bundled movie/user data. Embeddings are seeded from classpath files at startup if Redis is empty.
+Armeria API backed by Redis embeddings and bundled movie/user data. Embeddings are seeded from classpath files at startup if Redis is empty.
 
 #### Health check
 
@@ -256,7 +284,7 @@ Blends behavioral signals (recent watch history + trending) with embedding-based
 ```bash
 curl "http://localhost:7010/online/recommendation?userId=123"
 curl "http://localhost:7010/online/recommendation?userId=123&window=last_day&k=10"
-curl "http://localhost:7010/online/recommendation?userId=456&window=last_month&k=5"
+curl "http://localhost:7010/online/recommendation?userId=124&window=last_month&k=5"
 ```
 
 | Param | Required | Default | Values |
@@ -671,7 +699,7 @@ src/main/java/com/recsys/
 ├── models/         Immutable API/domain records (Movie, User, Rating)
 ├── features/       Data loading, vector math, Redis stores, LSH/exact index, candidate generation
 ├── microservice/   API gateway: routing, circuit breakers, rate limiting, LLM proxy
-├── serving/        Jetty servlets for port 6010 (RecSysServer)
+├── serving/        Armeria servlets for port 6010 (RecSysServer)
 ├── streaming/      Online serving layer for port 7010 (OnlinePredictionServer)
 │   └── flink/      Flink job — writes history + embeddings + trending to Redis
 ├── training/
@@ -1052,9 +1080,9 @@ Per-service JVM profiles under `config/jvm/`:
 
 | Profile | Heap | GC target | Use case |
 |---|---:|---:|---|
-| `recsys-serving` | `1–2 g` | `100 ms` | Jetty port 6010 |
+| `recsys-serving` | `1–2 g` | `100 ms` | Armeria port 6010 |
 | `model-serving` | `2 g` (fixed) | `100 ms` | Spring Boot + ONNX port 8080 |
-| `online-serving` | `1–2 g` | `100 ms` | Jetty port 7010 |
+| `online-serving` | `1–2 g` | `100 ms` | Armeria port 7010 |
 | `offline-embedding` | `4–8 g` | `200 ms` | Spark driver |
 
 Serving profiles use fixed heaps (`-Xms == -Xmx`) to eliminate heap-resize pauses during traffic ramps.
