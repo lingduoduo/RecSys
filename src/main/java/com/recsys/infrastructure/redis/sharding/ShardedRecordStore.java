@@ -29,17 +29,34 @@ public final class ShardedRecordStore {
 
     private static final long STREAM_MAXLEN = 1_000_000L;
 
-    private final Pool<Jedis> pool;
+    private final Pool<Jedis> writePool;
+    private final Pool<Jedis> readPool;
     private final ConsistentHashRing ring;
     private final SequenceGenerator seqGen;
     private final String prefix;
 
+    /**
+     * Single-pool constructor — reads and writes use the same Redis connection.
+     * Preserved for backwards compatibility and non-replicated deployments.
+     */
     public ShardedRecordStore(Pool<Jedis> pool, ConsistentHashRing ring,
                                SequenceGenerator seqGen, String prefix) {
-        this.pool   = Objects.requireNonNull(pool,   "pool");
-        this.ring   = Objects.requireNonNull(ring,   "ring");
-        this.seqGen = Objects.requireNonNull(seqGen, "seqGen");
-        this.prefix = Objects.requireNonNull(prefix, "prefix");
+        this(pool, pool, ring, seqGen, prefix);
+    }
+
+    /**
+     * AZ-aware constructor — writes go to {@code writePool} (primary), reads
+     * go to {@code readPool} (AZ-local replica).  Pass the same pool for both
+     * when running without replicas.
+     */
+    public ShardedRecordStore(Pool<Jedis> writePool, Pool<Jedis> readPool,
+                               ConsistentHashRing ring,
+                               SequenceGenerator seqGen, String prefix) {
+        this.writePool = Objects.requireNonNull(writePool, "writePool");
+        this.readPool  = Objects.requireNonNull(readPool,  "readPool");
+        this.ring      = Objects.requireNonNull(ring,      "ring");
+        this.seqGen    = Objects.requireNonNull(seqGen,    "seqGen");
+        this.prefix    = Objects.requireNonNull(prefix,    "prefix");
     }
 
     // ── Write ────────────────────────────────────────────────────────────────────
@@ -65,7 +82,7 @@ public final class ShardedRecordStore {
         String streamKey = streamKey(shardIndex);
 
         long zaddResult;
-        try (Jedis jedis = pool.getResource()) {
+        try (Jedis jedis = writePool.getResource()) {
             Pipeline pipe = jedis.pipelined();
 
             pipe.hset(recKey, Map.of(
@@ -113,7 +130,7 @@ public final class ShardedRecordStore {
                                            : Double.parseDouble(cursor.value()) + 1;
 
         List<Tuple> tuples;
-        try (Jedis jedis = pool.getResource()) {
+        try (Jedis jedis = readPool.getResource()) {
             tuples = jedis.zrangeByScoreWithScores(devKey, minScore, Double.POSITIVE_INFINITY, 0, limit);
         }
         if (tuples.isEmpty()) return Page.empty();
@@ -135,7 +152,7 @@ public final class ShardedRecordStore {
 
         // Fetch limit+1 to detect whether more entries exist beyond this page.
         List<StreamEntry> entries;
-        try (Jedis jedis = pool.getResource()) {
+        try (Jedis jedis = readPool.getResource()) {
             StreamEntryID fromId = new StreamEntryID(cursor.value());
             List<Map.Entry<String, List<StreamEntry>>> result = jedis.xread(
                     XReadParams.xReadParams().count(limit + 1),
@@ -180,7 +197,7 @@ public final class ShardedRecordStore {
     private List<ShardedRecord> fetchRecords(int shardIndex, List<Long> seqNums) {
         if (seqNums.isEmpty()) return List.of();
         List<Response<Map<String, String>>> responses = new ArrayList<>();
-        try (Jedis jedis = pool.getResource(); Pipeline pipe = jedis.pipelined()) {
+        try (Jedis jedis = readPool.getResource(); Pipeline pipe = jedis.pipelined()) {
             for (long seq : seqNums) responses.add(pipe.hgetAll(recKey(shardIndex, seq)));
             pipe.sync();
         }

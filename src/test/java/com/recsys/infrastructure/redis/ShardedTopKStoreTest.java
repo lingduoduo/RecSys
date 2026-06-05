@@ -30,7 +30,7 @@ class ShardedTopKStoreTest {
 
     @Test
     void shardKey_producesExpectedPattern() {
-        ShardedTopKStore store = new ShardedTopKStore(pool, "topk:", 4, 5_000L, new HotKeyDetector());
+        ShardedTopKStore store = new ShardedTopKStore(pool, pool, "topk:", 4, 5_000L, new HotKeyDetector());
         assertThat(store.shardKey("last_hour", 0)).isEqualTo("topk:last_hour:s0");
         assertThat(store.shardKey("last_hour", 3)).isEqualTo("topk:last_hour:s3");
     }
@@ -41,7 +41,7 @@ class ShardedTopKStoreTest {
     void getTopKIds_servesFromLocalCacheWithinTtl() {
         when(jedis.zrevrange(anyString(), anyLong(), anyLong()))
                 .thenReturn(List.of("1", "2", "3"));
-        ShardedTopKStore store = new ShardedTopKStore(pool, "topk:", 2, 5_000L, new HotKeyDetector());
+        ShardedTopKStore store = new ShardedTopKStore(pool, pool, "topk:", 2, 5_000L, new HotKeyDetector());
 
         store.getTopKIds("last_hour", 3); // cold fetch → Redis
         store.getTopKIds("last_hour", 3); // warm hit → local cache
@@ -57,7 +57,7 @@ class ShardedTopKStoreTest {
         when(jedis.zrevrange(anyString(), anyLong(), anyLong()))
                 .thenReturn(List.of("1", "2"));
         // 1 ms TTL expires immediately.
-        ShardedTopKStore store = new ShardedTopKStore(pool, "topk:", 2, 1L, new HotKeyDetector());
+        ShardedTopKStore store = new ShardedTopKStore(pool, pool, "topk:", 2, 1L, new HotKeyDetector());
 
         store.getTopKIds("last_hour", 2);
         Thread.sleep(5);
@@ -70,7 +70,7 @@ class ShardedTopKStoreTest {
     void getTopKIds_slicesResultToRequestedK() {
         when(jedis.zrevrange(anyString(), anyLong(), anyLong()))
                 .thenReturn(List.of("1", "2", "3", "4", "5"));
-        ShardedTopKStore store = new ShardedTopKStore(pool, "topk:", 1, 5_000L, new HotKeyDetector());
+        ShardedTopKStore store = new ShardedTopKStore(pool, pool, "topk:", 1, 5_000L, new HotKeyDetector());
 
         assertThat(store.getTopKIds("last_hour", 3)).containsExactly("1", "2", "3");
         assertThat(store.getTopKIds("last_hour", 5)).containsExactly("1", "2", "3", "4", "5");
@@ -78,7 +78,7 @@ class ShardedTopKStoreTest {
 
     @Test
     void getTopKIds_returnsEmptyForNonPositiveK() {
-        ShardedTopKStore store = new ShardedTopKStore(pool, "topk:", 2, 5_000L, new HotKeyDetector());
+        ShardedTopKStore store = new ShardedTopKStore(pool, pool, "topk:", 2, 5_000L, new HotKeyDetector());
         assertThat(store.getTopKIds("last_hour", 0)).isEmpty();
         assertThat(store.getTopKIds("last_hour", -1)).isEmpty();
         verifyNoInteractions(jedis);
@@ -91,7 +91,7 @@ class ShardedTopKStoreTest {
         when(jedis.zrevrange(anyString(), anyLong(), anyLong()))
                 .thenReturn(List.of("10", "20"));
         // 4 shards; cache TTL = 0 so every call hits Redis.
-        ShardedTopKStore store = new ShardedTopKStore(pool, "topk:", 4, 0L, new HotKeyDetector());
+        ShardedTopKStore store = new ShardedTopKStore(pool, pool, "topk:", 4, 0L, new HotKeyDetector());
 
         for (int i = 0; i < 20; i++) store.getTopKIds("last_hour", 2);
 
@@ -106,7 +106,7 @@ class ShardedTopKStoreTest {
                 .thenReturn(List.of());
         when(jedis.zrevrange("topk:last_hour", 0, 99))
                 .thenReturn(List.of("10", "20"));
-        ShardedTopKStore store = new ShardedTopKStore(pool, "topk:", 4, 5_000L, new HotKeyDetector());
+        ShardedTopKStore store = new ShardedTopKStore(pool, pool, "topk:", 4, 5_000L, new HotKeyDetector());
 
         assertThat(store.getTopKIds("last_hour", 2)).containsExactly("10", "20");
         assertThat(store.legacyFallbackFetches()).isEqualTo(1L);
@@ -116,7 +116,7 @@ class ShardedTopKStoreTest {
 
     @Test
     void seedAllShards_writesToEveryShardKey() {
-        ShardedTopKStore store = new ShardedTopKStore(pool, "topk:", 3, 5_000L, new HotKeyDetector());
+        ShardedTopKStore store = new ShardedTopKStore(pool, pool, "topk:", 3, 5_000L, new HotKeyDetector());
         Map<String, Double> scores = Map.of("movie:1", 10.0, "movie:2", 8.0);
 
         store.seedAllShards("last_hour", scores);
@@ -131,7 +131,7 @@ class ShardedTopKStoreTest {
     void seedAllShards_invalidatesLocalCache() {
         when(jedis.zrevrange(anyString(), anyLong(), anyLong()))
                 .thenReturn(List.of("old"));
-        ShardedTopKStore store = new ShardedTopKStore(pool, "topk:", 2, 60_000L, new HotKeyDetector());
+        ShardedTopKStore store = new ShardedTopKStore(pool, pool, "topk:", 2, 60_000L, new HotKeyDetector());
         store.getTopKIds("last_hour", 1); // populates local cache
 
         when(jedis.zrevrange(anyString(), anyLong(), anyLong()))
@@ -144,7 +144,7 @@ class ShardedTopKStoreTest {
 
     @Test
     void seedAllShards_noopsForNullOrEmptyScores() {
-        ShardedTopKStore store = new ShardedTopKStore(pool, "topk:", 2, 5_000L, new HotKeyDetector());
+        ShardedTopKStore store = new ShardedTopKStore(pool, pool, "topk:", 2, 5_000L, new HotKeyDetector());
         store.seedAllShards("last_hour", null);
         store.seedAllShards("last_hour", Map.of());
         verifyNoInteractions(jedis);
@@ -154,7 +154,7 @@ class ShardedTopKStoreTest {
 
     @Test
     void localHitRate_isZeroOnColdStart() {
-        ShardedTopKStore store = new ShardedTopKStore(pool, "topk:", 2, 5_000L, new HotKeyDetector());
+        ShardedTopKStore store = new ShardedTopKStore(pool, pool, "topk:", 2, 5_000L, new HotKeyDetector());
         assertThat(store.localHitRate()).isEqualTo(0.0);
     }
 
@@ -162,7 +162,7 @@ class ShardedTopKStoreTest {
     void localHitRate_improvesAfterFirstCacheFill() {
         when(jedis.zrevrange(anyString(), anyLong(), anyLong()))
                 .thenReturn(List.of("1"));
-        ShardedTopKStore store = new ShardedTopKStore(pool, "topk:", 1, 5_000L, new HotKeyDetector());
+        ShardedTopKStore store = new ShardedTopKStore(pool, pool, "topk:", 1, 5_000L, new HotKeyDetector());
 
         store.getTopKIds("last_hour", 1); // Redis fetch
         store.getTopKIds("last_hour", 1); // local hit
@@ -178,7 +178,7 @@ class ShardedTopKStoreTest {
         when(jedis.zrevrange(anyString(), anyLong(), anyLong()))
                 .thenReturn(List.of("1"));
         HotKeyDetector detector = new HotKeyDetector(10, 1L);
-        ShardedTopKStore store = new ShardedTopKStore(pool, "topk:", 1, 0L, detector);
+        ShardedTopKStore store = new ShardedTopKStore(pool, pool, "topk:", 1, 0L, detector);
 
         for (int i = 0; i < 100; i++) store.getTopKIds("last_hour", 1);
 

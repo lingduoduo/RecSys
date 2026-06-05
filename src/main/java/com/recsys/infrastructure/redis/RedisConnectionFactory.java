@@ -7,8 +7,10 @@ import redis.clients.jedis.JedisSentinelPool;
 import redis.clients.jedis.Protocol;
 import redis.clients.jedis.util.Pool;
 
+import java.util.ArrayList;
 import java.util.Arrays;
 import java.util.LinkedHashSet;
+import java.util.List;
 import java.util.Map;
 import java.util.Set;
 
@@ -22,6 +24,42 @@ public final class RedisConnectionFactory {
 
     public static Pool<Jedis> fromEnv() {
         return create(System.getenv(), defaultPoolConfig());
+    }
+
+    /**
+     * Builds an AZ-aware {@link RedisReadReplicaRouter} from environment variables.
+     *
+     * <ul>
+     *   <li>{@code REDIS_REPLICA_NODES} — comma-separated replica specs in
+     *       {@code host:port@az} format (e.g.
+     *       {@code redis-b:6379@us-east-1b,redis-c:6379@us-east-1c}).
+     *       When absent, the router's read and write pools both point to the
+     *       primary, preserving backwards-compatible behaviour.</li>
+     *   <li>{@code AWS_AZ} (or {@code AVAILABILITY_ZONE}) — AZ of this service
+     *       instance, injected by ECS/EKS task metadata.</li>
+     * </ul>
+     */
+    public static RedisReadReplicaRouter routerFromEnv() {
+        return routerFromEnv(System.getenv(), defaultPoolConfig());
+    }
+
+    static RedisReadReplicaRouter routerFromEnv(Map<String, String> env, JedisPoolConfig config) {
+        Pool<Jedis> primary = create(env, config);
+        String localAz = env.getOrDefault("AWS_AZ",
+                env.getOrDefault("AVAILABILITY_ZONE", "unknown"));
+        String replicasSpec = env.getOrDefault("REDIS_REPLICA_NODES", "");
+
+        List<RedisReadReplicaRouter.AzPool> replicas = new ArrayList<>();
+        if (!replicasSpec.isBlank()) {
+            for (String spec : replicasSpec.split(",")) {
+                spec = spec.strip();
+                if (spec.isEmpty()) continue;
+                ReplicaConfig cfg = ReplicaConfig.parse(spec);
+                JedisPool pool = new JedisPool(config, cfg.host(), cfg.port());
+                replicas.add(new RedisReadReplicaRouter.AzPool(pool, cfg.az()));
+            }
+        }
+        return new RedisReadReplicaRouter(primary, replicas, localAz);
     }
 
     static Pool<Jedis> create(Map<String, String> env, JedisPoolConfig config) {
