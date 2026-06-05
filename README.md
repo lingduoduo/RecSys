@@ -4,7 +4,7 @@ A compact Maven workspace demonstrating recommendation-system serving, retrieval
 
 | Service | Port | What it shows |
 |---|---:|---|
-| Catalog / Recommendation Serving | `6010` | Jetty, Redis embeddings, multi-strategy recall, runtime embedding updates |
+| Catalog / Recommendation Serving | `6010` | Armeria, Redis embeddings, multi-strategy recall, runtime embedding updates |
 | Online Prediction Server | `7010` | Real-time Redis-backed recommendations, load shedding, ops metrics |
 | Model Serving (Spring Boot) | `8080` | ONNX two-tower DSSM inference, A/B testing, variant-aware artifacts |
 | API Gateway | `8010` | Microservice edge: circuit breakers, rate limiting, LLM proxy |
@@ -149,7 +149,7 @@ Two independent recommendation paths — run one or both.
 
 ### Port 6010 — Catalog & Recommendation Serving
 
-Jetty API backed by Redis embeddings and bundled movie/user data. Embeddings are seeded from classpath files at startup if Redis is empty.
+Armeria API backed by Redis embeddings and bundled movie/user data. Embeddings are seeded from classpath files at startup if Redis is empty.
 
 #### Health check
 
@@ -699,7 +699,7 @@ src/main/java/com/recsys/
 ├── models/         Immutable API/domain records (Movie, User, Rating)
 ├── features/       Data loading, vector math, Redis stores, LSH/exact index, candidate generation
 ├── microservice/   API gateway: routing, circuit breakers, rate limiting, LLM proxy
-├── serving/        Jetty servlets for port 6010 (RecSysServer)
+├── serving/        Armeria servlets for port 6010 (RecSysServer)
 ├── streaming/      Online serving layer for port 7010 (OnlinePredictionServer)
 │   └── flink/      Flink job — writes history + embeddings + trending to Redis
 ├── training/
@@ -1080,9 +1080,9 @@ Per-service JVM profiles under `config/jvm/`:
 
 | Profile | Heap | GC target | Use case |
 |---|---:|---:|---|
-| `recsys-serving` | `1–2 g` | `100 ms` | Jetty port 6010 |
+| `recsys-serving` | `1–2 g` | `100 ms` | Armeria port 6010 |
 | `model-serving` | `2 g` (fixed) | `100 ms` | Spring Boot + ONNX port 8080 |
-| `online-serving` | `1–2 g` | `100 ms` | Jetty port 7010 |
+| `online-serving` | `1–2 g` | `100 ms` | Armeria port 7010 |
 | `offline-embedding` | `4–8 g` | `200 ms` | Spark driver |
 
 Serving profiles use fixed heaps (`-Xms == -Xmx`) to eliminate heap-resize pauses during traffic ramps.
