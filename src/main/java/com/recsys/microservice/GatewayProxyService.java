@@ -113,20 +113,26 @@ final class GatewayProxyService implements HttpService {
         // The RetryingClient decorator also needs a buffered body for retry attempts.
         return HttpResponse.of(
                 req.aggregate().thenCompose(aggReq -> {
-                    RequestHeaders upstreamHeaders = buildUpstreamHeaders(aggReq.headers(), targetPath);
+                    RequestHeaders upstreamHeaders = buildUpstreamHeaders(aggReq.headers(), targetPath, ctx);
                     HttpRequest upstreamReq = HttpRequest.of(upstreamHeaders, aggReq.content());
                     HttpResponse upstream = client.execute(upstreamReq);
-                    return upstream.aggregate().thenApply(aggResp -> {
-                        if (cb != null) {
-                            if (aggResp.status().isServerError()) cb.recordFailure();
-                            else cb.recordSuccess();
-                        }
-                        return aggResp.toHttpResponse();
-                    });
+                    return upstream.aggregate()
+                            .thenApply(aggResp -> {
+                                if (cb != null) {
+                                    if (aggResp.status().isServerError()) cb.recordFailure();
+                                    else cb.recordSuccess();
+                                }
+                                return aggResp.toHttpResponse();
+                            })
+                            .exceptionally(t -> {
+                                if (cb != null) cb.recordFailure();
+                                return gatewayError(HttpStatus.BAD_GATEWAY, "upstream unreachable");
+                            });
                 }));
     }
 
-    private static RequestHeaders buildUpstreamHeaders(RequestHeaders incoming, String targetPath) {
+    private static RequestHeaders buildUpstreamHeaders(RequestHeaders incoming, String targetPath,
+                                                       ServiceRequestContext ctx) {
         RequestHeadersBuilder b = RequestHeaders.builder(incoming.method(), targetPath);
         incoming.forEach((name, value) -> {
             if (!isHopByHop(name.toString())) b.add(name, value);
@@ -137,6 +143,13 @@ final class GatewayProxyService implements HttpService {
             b.set(HttpHeaderNames.of("x-forwarded-host"), host);
         }
         b.set(HttpHeaderNames.of("x-forwarded-proto"), "http");
+        if (ctx.remoteAddress() != null) {
+            String clientIp = ctx.remoteAddress().getAddress().getHostAddress();
+            String existing = incoming.get(HttpHeaderNames.of("x-forwarded-for"));
+            String newValue = (existing != null && !existing.isBlank())
+                    ? existing + ", " + clientIp : clientIp;
+            b.set(HttpHeaderNames.of("x-forwarded-for"), newValue);
+        }
         return b.build();
     }
 

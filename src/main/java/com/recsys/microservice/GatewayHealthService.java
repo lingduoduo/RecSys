@@ -1,6 +1,5 @@
 package com.recsys.microservice;
 
-import com.fasterxml.jackson.databind.ObjectMapper;
 import com.linecorp.armeria.client.WebClient;
 import com.linecorp.armeria.common.HttpRequest;
 import com.linecorp.armeria.common.HttpResponse;
@@ -17,8 +16,6 @@ import java.util.Map;
 import java.util.concurrent.CompletableFuture;
 
 final class GatewayHealthService extends BaseApiService {
-
-    private static final ObjectMapper MAPPER = new ObjectMapper();
 
     private final List<MicroserviceRoute> routes;
     private final Map<String, RouteCircuitBreaker> circuitBreakers;
@@ -85,7 +82,7 @@ final class GatewayHealthService extends BaseApiService {
         WebClient client = healthClients.get(route.name());
         return client.get(target).aggregate()
                 .thenApply(agg -> new ServiceHealth(
-                        agg.status().code() < 500,
+                        agg.status().isSuccess(),
                         agg.status().code(),
                         System.currentTimeMillis() - startMs,
                         null))
