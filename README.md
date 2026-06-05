@@ -921,6 +921,69 @@ sh streaming/online-serving/scripts/produce_movie_events.sh
 
 ---
 
+## Sharded Record Store
+
+`ShardedRecordStore` distributes event, feature, and log records across N Redis shards using consistent hashing. Each write fans out to an HSET (full record) + ZADD (device index for per-device reads) + XADD (shard stream for ordered replay). The number of shards is controlled by `SHARDED_RECORD_SHARD_COUNT` (default `2`).
+
+The HTTP façade is mounted at `/shards/` on port `7010`.
+
+#### Write a record
+
+```bash
+# EVENT (click, watch, rating, dwell, search)
+curl -X POST http://localhost:7010/shards/records \
+  -H "Content-Type: application/json" \
+  -d '{"deviceId":"user:123","type":"EVENT","eventId":"click-001","payload":"{\"movieId\":7}"}'
+# {"seqNum":1,"shardIndex":0,"status":"OK"}
+
+# FEATURE (Flink-written behavioral features: CTR, session data)
+curl -X POST http://localhost:7010/shards/records \
+  -H "Content-Type: application/json" \
+  -d '{"deviceId":"user:123","type":"FEATURE","eventId":"ctr-001","payload":"{\"ctr\":0.42}"}'
+
+# LOG (audit / debug entries)
+curl -X POST http://localhost:7010/shards/records \
+  -H "Content-Type: application/json" \
+  -d '{"deviceId":"user:123","type":"LOG","eventId":"log-001","payload":"startup"}'
+```
+
+Duplicate `eventId` for the same device returns `"status":"DUPLICATE"` — idempotent writes are safe to retry.
+
+#### Read records by device (cursor-paginated)
+
+```bash
+# First page (default limit 10)
+curl "http://localhost:7010/shards/device?deviceId=user:123"
+# {"deviceId":"user:123","cursor":"","hasMore":false,"count":3,"records":[...]}
+
+# With explicit limit and cursor
+curl "http://localhost:7010/shards/device?deviceId=user:123&limit=2"
+# {"deviceId":"user:123","cursor":"3","hasMore":true,"count":2,"records":[...]}
+
+# Next page — pass cursor value from previous response
+curl "http://localhost:7010/shards/device?deviceId=user:123&limit=2&cursor=3"
+```
+
+#### Read all records on a shard (stream scan)
+
+```bash
+# Shard 0, first 20 records
+curl "http://localhost:7010/shards/shard?index=0&limit=20"
+# {"shardIndex":0,"cursor":"","hasMore":false,"count":2,"records":[...]}
+
+# Shard 1 with cursor for incremental replay
+curl "http://localhost:7010/shards/shard?index=1&limit=10"
+```
+
+| Param | Endpoint | Default | Notes |
+|---|---|---|---|
+| `deviceId` | `/shards/device` | required | Any string device/user ID |
+| `limit` | both | `10` | 1–100 |
+| `cursor` | both | start | Opaque string from previous response; empty string = start |
+| `index` | `/shards/shard` | `0` | Shard index (0 to `SHARDED_RECORD_SHARD_COUNT - 1`) |
+
+---
+
 ## Offline Item Embeddings
 
 **Rule-based path (Spark Word2Vec → Redis):**
