@@ -11,7 +11,7 @@ import java.util.TreeMap;
 import java.util.concurrent.atomic.AtomicLong;
 
 /**
- * Lightweight request metrics for the Jetty online-serving path.
+ * Lightweight request metrics for the Armeria online-serving path.
  */
 public final class OnlineServingMetricsService {
     private static final Logger log = LoggerFactory.getLogger(OnlineServingMetricsService.class);

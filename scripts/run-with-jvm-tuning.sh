@@ -7,13 +7,13 @@ Usage:
   sh scripts/run-with-jvm-tuning.sh <profile> -- <maven command...>
 
 Profiles:
-  recsys-serving       Jetty Recommendation Serving API, G1 GC, port 6010
-  recsys-serving-zgc   Jetty Recommendation Serving API, ZGC, port 6010
+  recsys-serving       Armeria Recommendation Serving API, G1 GC, port 6010
+  recsys-serving-zgc   Armeria Recommendation Serving API, ZGC, port 6010
   model-serving        Spring Boot ONNX model service, G1 GC, port 8080
   model-serving-zgc    Spring Boot ONNX model service, ZGC, port 8080
-  online-serving       Jetty Online Prediction Server, G1 GC, port 7010
-  online-serving-zgc   Jetty Online Prediction Server, ZGC, port 7010
-  api-gateway          Jetty microservice API gateway, G1 GC, port 8010
+  online-serving       Armeria Online Prediction Server, G1 GC, port 7010
+  online-serving-zgc   Armeria Online Prediction Server, ZGC, port 7010
+  api-gateway          Armeria microservice API gateway, G1 GC, port 8010
   offline-embedding    Local offline embedding / Spark driver runs, G1 GC
 
 Examples:
