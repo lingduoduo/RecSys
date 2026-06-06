@@ -32,6 +32,11 @@ public final class OnlineServingMetricsService {
     private long windowLatencyMs;
     private final Object lock = new Object();
 
+    private static final int RESERVOIR_SIZE = 512;
+    private final long[] reservoir = new long[RESERVOIR_SIZE];
+    private final AtomicLong reservoirCount = new AtomicLong(0L);
+    private final Object reservoirLock = new Object();
+
     private final Map<String, StrategyMetrics> strategyMetrics = new TreeMap<>();
     private final Object strategyLock = new Object();
 
@@ -83,6 +88,7 @@ public final class OnlineServingMetricsService {
         double recentRejectedRate = recentTotal > 0 ? (double) recentRejected / recentTotal : 0.0;
         double qps = (double) recentTotal / windowSeconds;
 
+        long[] pctls = percentiles(50, 95, 99);
         return new Snapshot(
                 total,
                 successCount.get(),
@@ -96,6 +102,9 @@ public final class OnlineServingMetricsService {
                 recentFailureRate,
                 recentRejectedRate,
                 qps,
+                pctls[0],
+                pctls[1],
+                pctls[2],
                 strategies
         );
     }
@@ -112,6 +121,16 @@ public final class OnlineServingMetricsService {
         }
         totalLatencyMs.addAndGet(latencyMs);
 
+        // Reservoir: replace a random slot once full (Vitter's Algorithm R, simplified).
+        synchronized (reservoirLock) {
+            long n = reservoirCount.incrementAndGet();
+            int slot = (int) (n <= RESERVOIR_SIZE ? n - 1
+                    : (long) (Math.random() * n));
+            if (slot < RESERVOIR_SIZE) {
+                reservoir[slot] = latencyMs;
+            }
+        }
+
         long now = System.currentTimeMillis() / 1000L;
         synchronized (lock) {
             evict(now);
@@ -121,6 +140,21 @@ public final class OnlineServingMetricsService {
             if (rejected) windowRejected++;
             windowLatencyMs += latencyMs;
         }
+    }
+
+    private long[] percentiles(int... ranks) {
+        long[] result = new long[ranks.length];
+        synchronized (reservoirLock) {
+            int count = (int) Math.min(reservoirCount.get(), RESERVOIR_SIZE);
+            if (count == 0) return result;
+            long[] sorted = java.util.Arrays.copyOf(reservoir, count);
+            java.util.Arrays.sort(sorted);
+            for (int i = 0; i < ranks.length; i++) {
+                int idx = Math.min(count - 1, (int) Math.ceil(ranks[i] / 100.0 * count) - 1);
+                result[i] = sorted[Math.max(0, idx)];
+            }
+        }
+        return result;
     }
 
     private void evict(long nowSeconds) {
@@ -185,6 +219,9 @@ public final class OnlineServingMetricsService {
             double recentFailureRate,
             double recentRejectedRate,
             double qps,
+            long p50Ms,
+            long p95Ms,
+            long p99Ms,
             Map<String, StrategySnapshot> strategies
     ) {}
 

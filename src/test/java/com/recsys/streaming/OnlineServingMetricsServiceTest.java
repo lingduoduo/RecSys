@@ -74,4 +74,29 @@ class OnlineServingMetricsServiceTest {
         assertThat(online.share()).isCloseTo(1.0 / 3.0, within(1e-9));
         assertThat(online.failureRate()).isZero();
     }
+
+    @Test
+    void percentiles_computedFromRecordedLatencies() {
+        var service = new OnlineServingMetricsService(60);
+
+        // Record 100 samples: 1 ms, 2 ms, …, 100 ms
+        for (int i = 1; i <= 100; i++) {
+            service.recordSuccess(i, "online");
+        }
+
+        var snap = service.snapshot();
+        // p50 ≈ 50, p95 ≈ 95, p99 ≈ 99 — allow ±5 ms for reservoir rounding
+        assertThat(snap.p50Ms()).isBetween(45L, 55L);
+        assertThat(snap.p95Ms()).isBetween(90L, 100L);
+        assertThat(snap.p99Ms()).isBetween(94L, 100L);
+    }
+
+    @Test
+    void percentiles_zeroWhenNoRequests() {
+        var service = new OnlineServingMetricsService(60);
+        var snap = service.snapshot();
+        assertThat(snap.p50Ms()).isZero();
+        assertThat(snap.p95Ms()).isZero();
+        assertThat(snap.p99Ms()).isZero();
+    }
 }
