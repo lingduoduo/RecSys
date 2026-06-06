@@ -7,6 +7,7 @@ import com.linecorp.armeria.server.metric.MetricCollectingService;
 import com.linecorp.armeria.server.metric.PrometheusExpositionService;
 import com.linecorp.armeria.common.metric.MeterIdPrefixFunction;
 import com.linecorp.armeria.common.metric.PrometheusMeterRegistries;
+import io.micrometer.prometheus.PrometheusMeterRegistry;
 import com.recsys.infrastructure.DataManager;
 import com.recsys.infrastructure.redis.RedisConnectionFactory;
 import com.recsys.infrastructure.redis.ShardedTopKStore;
@@ -37,7 +38,7 @@ public final class OnlinePredictionServer {
             OnlineRecommendationEngine engine = new OnlineRecommendationEngine(dataManager, topkStore, onlineFeatureStore);
             OnlineRecommendationService recommendationService =
                     new OnlineRecommendationService(dataManager, engine, candidateGenerator);
-            var registry = PrometheusMeterRegistries.defaultRegistry();
+            PrometheusMeterRegistry registry = PrometheusMeterRegistries.defaultRegistry();
             OnlineServingMetricsService metricsService = new OnlineServingMetricsService();
             OnlineLoadShedder loadShedder = new OnlineLoadShedder();
             OnlineCapacityService capacityService = new OnlineCapacityService();
@@ -62,7 +63,7 @@ public final class OnlinePredictionServer {
                       new OnlineHealthService(metricsService, loadShedder))
               .service("/health",
                       new OnlineHealthService(metricsService, loadShedder))
-              .service("/metrics", PrometheusExpositionService.of())
+              .service("/metrics", PrometheusExpositionService.of(registry.getPrometheusRegistry()))
               .service("/online/features",
                       new OnlineAdmissionControl(
                               new OnlineFeaturesService(recommendationService, metricsService,

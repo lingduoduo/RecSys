@@ -168,12 +168,15 @@ public final class OnlineServingMetricsService {
         }
         totalLatencyMs.addAndGet(latencyMs);
 
-        // Reservoir: replace a random slot once full (Vitter's Algorithm R, simplified).
-        synchronized (reservoirLock) {
-            long n = ++reservoirCount;
-            long slotL = n <= RESERVOIR_SIZE ? n - 1 : ThreadLocalRandom.current().nextLong(n);
-            if (slotL < RESERVOIR_SIZE) {
-                reservoir[(int) slotL] = latencyMs;
+        // Reservoir tracks served-request latency only; rejected requests (latencyMs=0) are excluded
+        // so percentiles reflect actual work done, not the concurrency gate decision time.
+        if (!rejected) {
+            synchronized (reservoirLock) {
+                long n = ++reservoirCount;
+                long slotL = n <= RESERVOIR_SIZE ? n - 1 : ThreadLocalRandom.current().nextLong(n);
+                if (slotL < RESERVOIR_SIZE) {
+                    reservoir[(int) slotL] = latencyMs;
+                }
             }
         }
 
