@@ -16,6 +16,7 @@ import java.util.List;
 import java.util.concurrent.CountDownLatch;
 import java.util.concurrent.ExecutorService;
 import java.util.concurrent.Executors;
+import java.util.concurrent.TimeUnit;
 import java.util.concurrent.atomic.AtomicInteger;
 import java.util.concurrent.atomic.AtomicLong;
 
@@ -89,6 +90,7 @@ class OnlinePredictionLoadTest {
 
         latch.await();
         pool.shutdown();
+        pool.awaitTermination(5, TimeUnit.SECONDS);
 
         double avgMs = (double) totalMs.get() / requests;
         System.out.printf("[LOAD] steady-state: ok=%d err=%d avgMs=%.1f%n", ok.get(), err.get(), avgMs);
@@ -127,6 +129,7 @@ class OnlinePredictionLoadTest {
 
         latch.await();
         pool.shutdown();
+        pool.awaitTermination(5, TimeUnit.SECONDS);
 
         System.out.printf("[LOAD] burst: ok=%d shed(429)=%d other=%d%n",
                 ok.get(), shed.get(), other.get());
@@ -153,6 +156,7 @@ class OnlinePredictionLoadTest {
         }
         latch.await();
         pool.shutdown();
+        pool.awaitTermination(5, TimeUnit.SECONDS);
 
         AggregatedHttpResponse ops = server.blockingWebClient().get("/online/ops");
         assertThat(ops.status()).isEqualTo(HttpStatus.OK);
