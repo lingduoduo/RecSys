@@ -9,6 +9,7 @@ import com.linecorp.armeria.common.HttpStatus;
 import com.linecorp.armeria.common.RequestHeaders;
 import com.linecorp.armeria.server.Route;
 import com.linecorp.armeria.server.ServerBuilder;
+import com.linecorp.armeria.server.metric.PrometheusExpositionService;
 import com.linecorp.armeria.testing.junit5.server.ServerExtension;
 import com.recsys.infrastructure.redis.sharding.Page;
 import com.recsys.infrastructure.redis.sharding.RecordType;
@@ -55,9 +56,16 @@ class OnlinePredictionServerIntegrationTest {
             OnlineLoadShedder shedder = new OnlineLoadShedder();
             OnlineCapacityService capacity = new OnlineCapacityService();
 
-            sb.service("/health", new OnlineHealthService(metrics, shedder))
-              .service("/online/features", new OnlineFeaturesService(mockRec, metrics, shedder))
-              .service("/online/recommendation", new OnlinePredictionService(mockRec, metrics, shedder))
+            sb.service("/health/live", new OnlineLiveService())
+              .service("/health/ready", new OnlineHealthService(metrics, shedder))
+              .service("/health", new OnlineHealthService(metrics, shedder))
+              .service("/metrics", PrometheusExpositionService.of())
+              .service("/online/features", new OnlineAdmissionControl(
+                      new OnlineFeaturesService(mockRec, metrics, shedder,
+                              RedisRateLimiter.disabled(), null, true), shedder, metrics))
+              .service("/online/recommendation", new OnlineAdmissionControl(
+                      new OnlinePredictionService(mockRec, metrics, shedder,
+                              RedisRateLimiter.disabled(), null, true), shedder, metrics))
               .service("/online/ops", new OnlineOpsService(metrics, shedder, capacity))
               .service(Route.builder().pathPrefix("/shards/").build(),
                       new ShardedRecordService(mockStore));
@@ -66,6 +74,15 @@ class OnlinePredictionServerIntegrationTest {
 
     @Test void healthReturns200() {
         assertThat(server.blockingWebClient().get("/health").status()).isEqualTo(HttpStatus.OK);
+    }
+
+    @Test void liveAndReadyHealthReturn200() {
+        assertThat(server.blockingWebClient().get("/health/live").status()).isEqualTo(HttpStatus.OK);
+        assertThat(server.blockingWebClient().get("/health/ready").status()).isEqualTo(HttpStatus.OK);
+    }
+
+    @Test void metricsReturns200() {
+        assertThat(server.blockingWebClient().get("/metrics").status()).isEqualTo(HttpStatus.OK);
     }
 
     @Test void onlineRecommendation() {

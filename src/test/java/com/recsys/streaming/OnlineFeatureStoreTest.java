@@ -38,6 +38,22 @@ class OnlineFeatureStoreTest {
     }
 
     @Test
+    void getRecentMovieIds_servesBoundedStaleValueWhenRedisFails() throws Exception {
+        var stub = new RedisPoolStub();
+        when(stub.pool.getResource()).thenReturn(stub.jedis);
+        when(stub.jedis.get("user:1:recent_movies"))
+                .thenReturn("10 20")
+                .thenThrow(new IllegalStateException("redis down"));
+        var store = new OnlineFeatureStore(stub.pool, 1L, 5_000L, 100);
+
+        assertThat(store.getRecentMovieIds(1, 10)).containsExactly(10, 20);
+        Thread.sleep(5);
+
+        assertThat(store.getRecentMovieIds(1, 10)).containsExactly(10, 20);
+        verify(stub.jedis, times(2)).get("user:1:recent_movies");
+    }
+
+    @Test
     void getRecentMovieIds_appliesLimitFromCache() {
         var pool = RedisPoolStub.withHistory(2, "5 6 7 8 9");
         var store = new OnlineFeatureStore(pool.pool,5_000L);
