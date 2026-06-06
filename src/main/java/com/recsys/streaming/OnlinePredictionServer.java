@@ -3,6 +3,10 @@ package com.recsys.streaming;
 import com.linecorp.armeria.server.Route;
 import com.linecorp.armeria.server.Server;
 import com.linecorp.armeria.server.ServerBuilder;
+import com.linecorp.armeria.server.metric.MetricCollectingService;
+import com.linecorp.armeria.server.metric.PrometheusExpositionService;
+import com.linecorp.armeria.common.metric.MeterIdPrefixFunction;
+import com.linecorp.armeria.common.metric.PrometheusMeterRegistries;
 import com.recsys.infrastructure.DataManager;
 import com.recsys.infrastructure.redis.RedisConnectionFactory;
 import com.recsys.infrastructure.redis.ShardedTopKStore;
@@ -20,6 +24,7 @@ public final class OnlinePredictionServer {
 
     public static void main(String[] args) throws Exception {
         int port = readIntEnv("ONLINE_DEMO_PORT", DEFAULT_PORT);
+        int requestTimeoutMs = readIntEnv("ONLINE_REQUEST_TIMEOUT_MS", 500);
 
         Pool<Jedis> jedisPool = RedisConnectionFactory.fromEnv();
         AsyncEventPublisher asyncEventPublisher = new AsyncEventPublisher();
@@ -46,14 +51,27 @@ public final class OnlinePredictionServer {
 
             ServerBuilder sb = Server.builder();
             sb.http(port)
+              .requestTimeoutMillis(requestTimeoutMs)
+              .gracefulShutdownTimeoutMillis(1_000L, 30_000L)
+              .meterRegistry(PrometheusMeterRegistries.defaultRegistry())
+              .decorator(MetricCollectingService.newDecorator(
+                      MeterIdPrefixFunction.ofDefault("online_serving")))
+              .service("/health/live", new OnlineLiveService())
+              .service("/health/ready",
+                      new OnlineHealthService(metricsService, loadShedder))
               .service("/health",
                       new OnlineHealthService(metricsService, loadShedder))
+              .service("/metrics", PrometheusExpositionService.of())
               .service("/online/features",
-                      new OnlineFeaturesService(recommendationService, metricsService,
-                              loadShedder, redisRateLimiter, asyncEventPublisher))
+                      new OnlineAdmissionControl(
+                              new OnlineFeaturesService(recommendationService, metricsService,
+                                      loadShedder, redisRateLimiter, asyncEventPublisher, true),
+                              loadShedder, metricsService))
               .service("/online/recommendation",
-                      new OnlinePredictionService(recommendationService, metricsService,
-                              loadShedder, redisRateLimiter, asyncEventPublisher))
+                      new OnlineAdmissionControl(
+                              new OnlinePredictionService(recommendationService, metricsService,
+                                      loadShedder, redisRateLimiter, asyncEventPublisher, true),
+                              loadShedder, metricsService))
               .service("/online/ops",
                       new OnlineOpsService(metricsService, loadShedder, capacityService,
                               redisRateLimiter, asyncEventPublisher))

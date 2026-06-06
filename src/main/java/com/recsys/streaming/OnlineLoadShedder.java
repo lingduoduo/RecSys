@@ -7,7 +7,7 @@ import java.util.concurrent.atomic.AtomicLong;
  * Simple concurrency gate for protecting the online serving path under QPS spikes.
  */
 public final class OnlineLoadShedder {
-    private static final int DEFAULT_MAX_CONCURRENT_REQUESTS = 512;
+    private static final int DEFAULT_MAX_CONCURRENT_REQUESTS = 64;
     private static final double DEFAULT_DRAIN_UTILIZATION = 0.90;
 
     private final int maxConcurrentRequests;

@@ -8,6 +8,7 @@ import redis.clients.jedis.util.Pool;
 
 import java.util.Map;
 import java.util.Set;
+import java.time.Duration;
 
 import static org.junit.jupiter.api.Assertions.*;
 
@@ -63,6 +64,23 @@ class RedisConnectionFactoryTest {
     @Test
     void parsePortParsesValidPort() {
         assertEquals(6380, RedisConnectionFactory.parsePort("6380"));
+    }
+
+    @Test
+    void poolConfigReadsFailFastLimitsFromEnvironment() {
+        JedisPoolConfig config = RedisConnectionFactory.defaultPoolConfig(Map.of(
+                "REDIS_POOL_MAX_TOTAL", "80",
+                "REDIS_POOL_MAX_IDLE", "20",
+                "REDIS_POOL_MIN_IDLE", "4",
+                "REDIS_POOL_MAX_WAIT_MS", "125",
+                "REDIS_POOL_TEST_ON_BORROW", "false"
+        ));
+
+        assertEquals(80, config.getMaxTotal());
+        assertEquals(20, config.getMaxIdle());
+        assertEquals(4, config.getMinIdle());
+        assertEquals(Duration.ofMillis(125), config.getMaxWaitDuration());
+        assertFalse(config.getTestOnBorrow());
     }
 
     @Test

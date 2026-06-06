@@ -218,18 +218,31 @@ Online-serving env vars:
 
 | Env var | Default | Purpose |
 |---|---:|---|
-| `ONLINE_DEMO_PORT` | `7010` | Online Jetty server port |
+| `ONLINE_DEMO_PORT` | `7010` | Online Armeria server port |
 | `REDIS_HOST` | `localhost` | Redis host for online features and Top-K |
 | `REDIS_PORT` | `6379` | Redis port |
-| `ONLINE_MAX_CONCURRENT_REQUESTS` | `512` | Per-instance in-flight request cap before the service returns HTTP `429` |
-| `ONLINE_DRAIN_UTILIZATION` | `0.90` | In-flight utilization where `/health` returns `503` so load balancers can drain the node |
+| `ONLINE_REQUEST_TIMEOUT_MS` | `500` | End-to-end request deadline |
+| `ONLINE_MAX_CONCURRENT_REQUESTS` | `64` | Pre-queue in-flight request cap before the service returns HTTP `429` |
+| `ONLINE_DRAIN_UTILIZATION` | `0.90` | In-flight utilization where `/health/ready` returns `503` so load balancers can drain the node |
 | `ONLINE_REDIS_RATE_LIMIT_QPS` | `0` | Optional Redis-backed cross-instance request limit; `0` disables distributed rate limiting |
 | `ONLINE_REDIS_RATE_LIMIT_WINDOW_SECONDS` | `1` | Redis rate-limit window size |
 | `ONLINE_FEATURE_CACHE_MAX_USERS` | `10000` | Max users kept in the short-TTL recent-history JVM cache |
+| `ONLINE_FEATURE_STALE_TTL_MS` | `60000` | Maximum stale recent-history age served during Redis errors |
+| `ONLINE_TOPK_STALE_TTL_MS` | `60000` | Maximum stale Top-K age served during Redis errors |
 | `ONLINE_METRICS_WINDOW_SECONDS` | `60` | Rolling metrics window for QPS, latency, failures, rejected requests, and strategy mix |
 | `ONLINE_TARGET_DAU` | `2000000` | Capacity target shown by `/online/ops` |
 | `ONLINE_PEAK_QPS` | `8000` | Peak recommendation read-QPS target shown by `/online/ops` |
 | `ONLINE_PEAK_TPS` | `20000` | Peak behavior-event TPS target shown by `/online/ops` |
+| `REDIS_POOL_MAX_TOTAL` | `50` | Maximum Redis connections per process |
+| `REDIS_POOL_MAX_WAIT_MS` | `250` | Fail-fast wait when the Redis pool is exhausted |
+| `REDIS_TIMEOUT_MS` | `2000` | Redis connect/socket timeout; set below the request deadline for online serving |
+
+Health and metrics endpoints:
+
+- `/health/live` reports process liveness and remains healthy while a pod drains.
+- `/health/ready` reports whether the pod should receive new traffic.
+- `/health` remains a readiness-compatible alias.
+- `/metrics` exposes Armeria request metrics in Prometheus format.
 
 ## Recommendation Strategy
 

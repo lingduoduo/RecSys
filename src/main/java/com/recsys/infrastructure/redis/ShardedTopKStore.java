@@ -43,6 +43,7 @@ public final class ShardedTopKStore implements TrendingStore {
     private static final Logger log = LoggerFactory.getLogger(ShardedTopKStore.class);
 
     static final long DEFAULT_CACHE_TTL_MS     = 2_000L;
+    static final long DEFAULT_STALE_TTL_MS     = 60_000L;
     static final int  DEFAULT_SHARD_COUNT      = 4;
     static final int  MAX_FULL_CACHE_SIZE      = 100;
     private static final long FETCH_WAIT_TIMEOUT_MS = 2_000L;
@@ -52,6 +53,7 @@ public final class ShardedTopKStore implements TrendingStore {
     private final String keyPrefix;   // e.g. "topk:"
     private final int shardCount;
     private final long cacheTtlMs;
+    private final long staleTtlMs;
 
     // Local hot-data cache: window → CachedIds.  Keyed by logical window, not by shard.
     private final ConcurrentHashMap<String, CachedIds> hotCache   = new ConcurrentHashMap<>();
@@ -70,7 +72,8 @@ public final class ShardedTopKStore implements TrendingStore {
      * Preserved for backwards compatibility and non-replicated deployments.
      */
     public ShardedTopKStore(Pool<Jedis> pool, String keyPrefix) {
-        this(pool, pool, keyPrefix, DEFAULT_SHARD_COUNT, DEFAULT_CACHE_TTL_MS, new HotKeyDetector());
+        this(pool, pool, keyPrefix, DEFAULT_SHARD_COUNT, DEFAULT_CACHE_TTL_MS,
+                readLongEnv("ONLINE_TOPK_STALE_TTL_MS", DEFAULT_STALE_TTL_MS), new HotKeyDetector());
     }
 
     /**
@@ -78,16 +81,25 @@ public final class ShardedTopKStore implements TrendingStore {
      * (primary), reads (getTopKIds) go to {@code readPool} (AZ-local replica).
      */
     public ShardedTopKStore(Pool<Jedis> writePool, Pool<Jedis> readPool, String keyPrefix) {
-        this(writePool, readPool, keyPrefix, DEFAULT_SHARD_COUNT, DEFAULT_CACHE_TTL_MS, new HotKeyDetector());
+        this(writePool, readPool, keyPrefix, DEFAULT_SHARD_COUNT, DEFAULT_CACHE_TTL_MS,
+                readLongEnv("ONLINE_TOPK_STALE_TTL_MS", DEFAULT_STALE_TTL_MS), new HotKeyDetector());
     }
 
     ShardedTopKStore(Pool<Jedis> writePool, Pool<Jedis> readPool, String keyPrefix,
                      int shardCount, long cacheTtlMs, HotKeyDetector hotKeyDetector) {
+        this(writePool, readPool, keyPrefix, shardCount, cacheTtlMs,
+                DEFAULT_STALE_TTL_MS, hotKeyDetector);
+    }
+
+    ShardedTopKStore(Pool<Jedis> writePool, Pool<Jedis> readPool, String keyPrefix,
+                     int shardCount, long cacheTtlMs, long staleTtlMs,
+                     HotKeyDetector hotKeyDetector) {
         this.writePool      = writePool;
         this.readPool       = readPool;
         this.keyPrefix      = keyPrefix;
         this.shardCount     = Math.max(1, shardCount);
         this.cacheTtlMs     = Math.max(0L, cacheTtlMs);
+        this.staleTtlMs     = Math.max(this.cacheTtlMs, staleTtlMs);
         this.hotKeyDetector = hotKeyDetector;
     }
 
@@ -119,6 +131,10 @@ public final class ShardedTopKStore implements TrendingStore {
                 myFuture.complete(fresh);
                 return slice(fresh.ids, k);
             } catch (RuntimeException ex) {
+                if (cached != null && cached.staleExpiresAtMs > now) {
+                    myFuture.complete(cached);
+                    return slice(cached.ids, k);
+                }
                 myFuture.completeExceptionally(ex);
                 throw ex;
             } finally {
@@ -151,8 +167,8 @@ public final class ShardedTopKStore implements TrendingStore {
                 }
             }
             redisFetches.incrementAndGet();
-            CachedIds result = new CachedIds(ids, now + cacheTtlMs);
-            if (cacheTtlMs > 0L) hotCache.put(window, result);
+            CachedIds result = new CachedIds(ids, now + cacheTtlMs, now + staleTtlMs);
+            if (staleTtlMs > 0L) hotCache.put(window, result);
             return result;
         }
     }
@@ -225,5 +241,15 @@ public final class ShardedTopKStore implements TrendingStore {
         return keyPrefix + window;
     }
 
-    private record CachedIds(List<String> ids, long expiresAtMs) {}
+    private static long readLongEnv(String envName, long defaultValue) {
+        String raw = System.getenv(envName);
+        if (raw == null || raw.isBlank()) return defaultValue;
+        try {
+            return Long.parseLong(raw.trim());
+        } catch (NumberFormatException e) {
+            return defaultValue;
+        }
+    }
+
+    private record CachedIds(List<String> ids, long expiresAtMs, long staleExpiresAtMs) {}
 }

@@ -19,6 +19,7 @@ public final class OnlinePredictionService extends ApiService {
     private final OnlineLoadShedder loadShedder;
     private final RedisRateLimiter redisRateLimiter;
     private final AsyncEventPublisher asyncEventPublisher;
+    private final boolean admissionHandledExternally;
 
     public OnlinePredictionService(OnlineRecommendationService recommendationService) {
         this(recommendationService, new OnlineServingMetricsService(),
@@ -48,16 +49,31 @@ public final class OnlinePredictionService extends ApiService {
         this.loadShedder = loadShedder;
         this.redisRateLimiter = redisRateLimiter;
         this.asyncEventPublisher = asyncEventPublisher;
+        this.admissionHandledExternally = false;
+    }
+
+    OnlinePredictionService(OnlineRecommendationService recommendationService,
+                            OnlineServingMetricsService metricsService,
+                            OnlineLoadShedder loadShedder,
+                            RedisRateLimiter redisRateLimiter,
+                            AsyncEventPublisher asyncEventPublisher,
+                            boolean admissionHandledExternally) {
+        this.recommendationService = recommendationService;
+        this.metricsService = metricsService;
+        this.loadShedder = loadShedder;
+        this.redisRateLimiter = redisRateLimiter;
+        this.asyncEventPublisher = asyncEventPublisher;
+        this.admissionHandledExternally = admissionHandledExternally;
     }
 
     @Override
     protected HttpResponse doGet(ServiceRequestContext ctx, HttpRequest req) {
         return HttpResponse.of(CompletableFuture.supplyAsync(() -> {
             long startedAtMs = System.currentTimeMillis();
-            if (!loadShedder.tryAcquire()) {
+            if (!admissionHandledExternally && !loadShedder.tryAcquire()) {
                 metricsService.recordRejected();
                 return writeErrorWithRetryAfter(HttpStatus.TOO_MANY_REQUESTS,
-                        "online serving overloaded", loadShedder.retryAfterSeconds());
+                        "online serving overloaded", Math.max(1, loadShedder.retryAfterSeconds()));
             }
             try {
                 RedisRateLimiter.Decision rateDecision = redisRateLimiter.tryAcquire("online");
@@ -99,7 +115,9 @@ public final class OnlinePredictionService extends ApiService {
                 log.error("Unexpected error in OnlinePredictionService", e);
                 return writeError(HttpStatus.INTERNAL_SERVER_ERROR, "internal server error");
             } finally {
-                loadShedder.release();
+                if (!admissionHandledExternally) {
+                    loadShedder.release();
+                }
             }
         }, ctx.blockingTaskExecutor()));
     }

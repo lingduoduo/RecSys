@@ -30,12 +30,14 @@ import java.util.concurrent.TimeoutException;
 public final class OnlineFeatureStore implements RecentHistoryStore {
 
     private static final long DEFAULT_CACHE_TTL_MS = 5_000L;
+    private static final long DEFAULT_STALE_TTL_MS = 60_000L;
     private static final int DEFAULT_MAX_CACHE_USERS = 10_000;
     private static final long EVICT_INTERVAL_MS = 5_000L;
     private static final long REDIS_FETCH_TIMEOUT_MS = 2_000L;
 
     private final Pool<Jedis> pool;
     private final long cacheTtlMs;
+    private final long staleTtlMs;
     private final int maxCacheUsers;
     private final int redisMgetBatchSize;
     private final ConcurrentHashMap<String, CachedFeature> featureCache = new ConcurrentHashMap<>();
@@ -44,20 +46,33 @@ public final class OnlineFeatureStore implements RecentHistoryStore {
     private volatile long lastEvictMs = 0L;
 
     public OnlineFeatureStore(Pool<Jedis> pool) {
-        this(pool, DEFAULT_CACHE_TTL_MS, readIntEnv("ONLINE_FEATURE_CACHE_MAX_USERS", DEFAULT_MAX_CACHE_USERS));
+        this(pool, DEFAULT_CACHE_TTL_MS,
+                readLongEnv("ONLINE_FEATURE_STALE_TTL_MS", DEFAULT_STALE_TTL_MS),
+                readIntEnv("ONLINE_FEATURE_CACHE_MAX_USERS", DEFAULT_MAX_CACHE_USERS));
     }
 
     OnlineFeatureStore(Pool<Jedis> pool, long cacheTtlMs) {
-        this(pool, cacheTtlMs, DEFAULT_MAX_CACHE_USERS);
+        this(pool, cacheTtlMs, DEFAULT_STALE_TTL_MS, DEFAULT_MAX_CACHE_USERS);
     }
 
     OnlineFeatureStore(Pool<Jedis> pool, long cacheTtlMs, int maxCacheUsers) {
-        this(pool, cacheTtlMs, maxCacheUsers, readIntEnv("ONLINE_FEATURE_REDIS_MGET_BATCH_SIZE", 500));
+        this(pool, cacheTtlMs, DEFAULT_STALE_TTL_MS, maxCacheUsers);
+    }
+
+    OnlineFeatureStore(Pool<Jedis> pool, long cacheTtlMs, long staleTtlMs, int maxCacheUsers) {
+        this(pool, cacheTtlMs, staleTtlMs, maxCacheUsers,
+                readIntEnv("ONLINE_FEATURE_REDIS_MGET_BATCH_SIZE", 500));
     }
 
     OnlineFeatureStore(Pool<Jedis> pool, long cacheTtlMs, int maxCacheUsers, int redisMgetBatchSize) {
+        this(pool, cacheTtlMs, DEFAULT_STALE_TTL_MS, maxCacheUsers, redisMgetBatchSize);
+    }
+
+    OnlineFeatureStore(Pool<Jedis> pool, long cacheTtlMs, long staleTtlMs,
+                       int maxCacheUsers, int redisMgetBatchSize) {
         this.pool = pool;
         this.cacheTtlMs = cacheTtlMs;
+        this.staleTtlMs = Math.max(cacheTtlMs, staleTtlMs);
         this.maxCacheUsers = Math.max(1, maxCacheUsers);
         this.redisMgetBatchSize = Math.max(1, redisMgetBatchSize);
     }
@@ -130,6 +145,10 @@ public final class OnlineFeatureStore implements RecentHistoryStore {
                 myFuture.complete(fresh);
                 return fresh;
             } catch (RuntimeException ex) {
+                if (cached != null && cached.staleExpiresAtMs > now) {
+                    myFuture.complete(cached);
+                    return cached;
+                }
                 myFuture.completeExceptionally(ex);
                 throw ex;
             } finally {
@@ -147,7 +166,7 @@ public final class OnlineFeatureStore implements RecentHistoryStore {
 
     private CachedFeature fetchFeatureFromRedis(String redisKey, long now) {
         try (Jedis jedis = pool.getResource()) {
-            return new CachedFeature(jedis.get(redisKey), now + cacheTtlMs);
+            return cachedFeature(jedis.get(redisKey), now);
         }
     }
 
@@ -160,7 +179,7 @@ public final class OnlineFeatureStore implements RecentHistoryStore {
                 String[] batch = keys.subList(start, end).toArray(new String[0]);
                 List<String> values = jedis.mget(batch);
                 for (int i = 0; i < values.size(); i++) {
-                    result.put(batch[i], new CachedFeature(values.get(i), now + cacheTtlMs));
+                    result.put(batch[i], cachedFeature(values.get(i), now));
                 }
             }
         }
@@ -192,7 +211,7 @@ public final class OnlineFeatureStore implements RecentHistoryStore {
         if (now - lastEvictMs < EVICT_INTERVAL_MS) return;
         lastEvictMs = now;
         // First pass: remove genuinely expired entries.
-        featureCache.entrySet().removeIf(entry -> entry.getValue().expiresAtMs <= now);
+        featureCache.entrySet().removeIf(entry -> entry.getValue().staleExpiresAtMs <= now);
         // Second pass: if still over capacity, evict arbitrary live entries via an
         // iterator — safe under concurrent modification, avoids Enumeration.nextElement()
         // which can throw NoSuchElementException when the map is modified concurrently.
@@ -219,5 +238,19 @@ public final class OnlineFeatureStore implements RecentHistoryStore {
         }
     }
 
-    private record CachedFeature(String value, long expiresAtMs) {}
+    private static long readLongEnv(String envName, long defaultValue) {
+        String raw = System.getenv(envName);
+        if (raw == null || raw.isBlank()) return defaultValue;
+        try {
+            return Long.parseLong(raw.trim());
+        } catch (NumberFormatException e) {
+            return defaultValue;
+        }
+    }
+
+    private CachedFeature cachedFeature(String value, long now) {
+        return new CachedFeature(value, now + cacheTtlMs, now + staleTtlMs);
+    }
+
+    private record CachedFeature(String value, long expiresAtMs, long staleExpiresAtMs) {}
 }

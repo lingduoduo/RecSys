@@ -19,11 +19,13 @@ public final class RedisConnectionFactory {
     static final int DEFAULT_MAX_TOTAL = 50;
     static final int DEFAULT_MAX_IDLE  = 10;
     static final int DEFAULT_MIN_IDLE  = 2;
+    static final int DEFAULT_MAX_WAIT_MS = 250;
 
     private RedisConnectionFactory() {}
 
     public static Pool<Jedis> fromEnv() {
-        return create(System.getenv(), defaultPoolConfig());
+        Map<String, String> env = System.getenv();
+        return create(env, defaultPoolConfig(env));
     }
 
     /**
@@ -40,7 +42,8 @@ public final class RedisConnectionFactory {
      * </ul>
      */
     public static RedisReadReplicaRouter routerFromEnv() {
-        return routerFromEnv(System.getenv(), defaultPoolConfig());
+        Map<String, String> env = System.getenv();
+        return routerFromEnv(env, defaultPoolConfig(env));
     }
 
     static RedisReadReplicaRouter routerFromEnv(Map<String, String> env, JedisPoolConfig config) {
@@ -65,18 +68,19 @@ public final class RedisConnectionFactory {
     static Pool<Jedis> create(Map<String, String> env, JedisPoolConfig config) {
         String mode     = env.getOrDefault("REDIS_MODE", "standalone");
         String password = env.getOrDefault("REDIS_PASSWORD", "");
+        int timeoutMs = readPositiveInt(env, "REDIS_TIMEOUT_MS", Protocol.DEFAULT_TIMEOUT);
         if ("sentinel".equalsIgnoreCase(mode)) {
             String master = env.getOrDefault("REDIS_SENTINEL_MASTER", "mymaster");
             String nodes  = env.getOrDefault("REDIS_SENTINEL_NODES", "");
             return password.isEmpty()
-                ? new JedisSentinelPool(master, parseSentinelNodes(nodes), config)
-                : new JedisSentinelPool(master, parseSentinelNodes(nodes), config, password);
+                ? new JedisSentinelPool(master, parseSentinelNodes(nodes), config, timeoutMs)
+                : new JedisSentinelPool(master, parseSentinelNodes(nodes), config, timeoutMs, password);
         }
         String host = env.getOrDefault("REDIS_HOST", "localhost");
         int    port = parsePort(env.getOrDefault("REDIS_PORT", "6379"));
         return password.isEmpty()
-            ? new JedisPool(config, host, port)
-            : new JedisPool(config, host, port, Protocol.DEFAULT_TIMEOUT, password);
+            ? new JedisPool(config, host, port, timeoutMs)
+            : new JedisPool(config, host, port, timeoutMs, password);
     }
 
     static Set<String> parseSentinelNodes(String nodes) {
@@ -101,14 +105,32 @@ public final class RedisConnectionFactory {
         }
     }
 
-    private static JedisPoolConfig defaultPoolConfig() {
+    static JedisPoolConfig defaultPoolConfig(Map<String, String> env) {
         JedisPoolConfig cfg = new JedisPoolConfig();
-        cfg.setMaxTotal(DEFAULT_MAX_TOTAL);
-        cfg.setMaxIdle(DEFAULT_MAX_IDLE);
-        cfg.setMinIdle(DEFAULT_MIN_IDLE);
-        cfg.setTestOnBorrow(true);
+        cfg.setMaxTotal(readPositiveInt(env, "REDIS_POOL_MAX_TOTAL", DEFAULT_MAX_TOTAL));
+        cfg.setMaxIdle(readPositiveInt(env, "REDIS_POOL_MAX_IDLE", DEFAULT_MAX_IDLE));
+        cfg.setMinIdle(readNonNegativeInt(env, "REDIS_POOL_MIN_IDLE", DEFAULT_MIN_IDLE));
+        cfg.setTestOnBorrow(Boolean.parseBoolean(env.getOrDefault("REDIS_POOL_TEST_ON_BORROW", "true")));
         cfg.setBlockWhenExhausted(true);
-        cfg.setMaxWait(java.time.Duration.ofSeconds(2));
+        cfg.setMaxWait(java.time.Duration.ofMillis(
+                readPositiveInt(env, "REDIS_POOL_MAX_WAIT_MS", DEFAULT_MAX_WAIT_MS)));
         return cfg;
+    }
+
+    private static int readPositiveInt(Map<String, String> env, String name, int defaultValue) {
+        return Math.max(1, readInt(env.get(name), defaultValue));
+    }
+
+    private static int readNonNegativeInt(Map<String, String> env, String name, int defaultValue) {
+        return Math.max(0, readInt(env.get(name), defaultValue));
+    }
+
+    private static int readInt(String value, int defaultValue) {
+        if (value == null || value.isBlank()) return defaultValue;
+        try {
+            return Integer.parseInt(value.trim());
+        } catch (NumberFormatException e) {
+            return defaultValue;
+        }
     }
 }

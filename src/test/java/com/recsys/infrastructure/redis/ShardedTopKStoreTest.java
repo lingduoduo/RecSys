@@ -67,6 +67,20 @@ class ShardedTopKStoreTest {
     }
 
     @Test
+    void getTopKIds_servesBoundedStaleValueWhenRedisFails() throws InterruptedException {
+        when(jedis.zrevrange(anyString(), anyLong(), anyLong()))
+                .thenReturn(List.of("1", "2"))
+                .thenThrow(new IllegalStateException("redis down"));
+        ShardedTopKStore store = new ShardedTopKStore(
+                pool, pool, "topk:", 2, 1L, 5_000L, new HotKeyDetector());
+
+        assertThat(store.getTopKIds("last_hour", 2)).containsExactly("1", "2");
+        Thread.sleep(5);
+
+        assertThat(store.getTopKIds("last_hour", 2)).containsExactly("1", "2");
+    }
+
+    @Test
     void getTopKIds_slicesResultToRequestedK() {
         when(jedis.zrevrange(anyString(), anyLong(), anyLong()))
                 .thenReturn(List.of("1", "2", "3", "4", "5"));

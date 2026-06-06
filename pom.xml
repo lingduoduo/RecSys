@@ -90,6 +90,11 @@
       <version>${armeria.version}</version>
       <scope>test</scope>
     </dependency>
+    <dependency>
+      <groupId>io.micrometer</groupId>
+      <artifactId>micrometer-registry-prometheus</artifactId>
+      <version>1.12.4</version>
+    </dependency>
 
     <!-- Spring Boot service for the two-tower ONNX serving demo. -->
     <dependency>

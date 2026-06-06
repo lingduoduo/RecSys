@@ -655,14 +655,20 @@ curl -v -X POST http://localhost:8010/api/llm/api/generate \
 | Env var | Default | Purpose |
 |---|---:|---|
 | `ONLINE_DEMO_PORT` | `7010` | Server port |
-| `ONLINE_MAX_CONCURRENT_REQUESTS` | `512` | In-flight cap before `429` |
-| `ONLINE_DRAIN_UTILIZATION` | `0.90` | Utilization where `/health` → `503` for drain |
+| `ONLINE_REQUEST_TIMEOUT_MS` | `500` | End-to-end Armeria request deadline |
+| `ONLINE_MAX_CONCURRENT_REQUESTS` | `64` | Pre-queue in-flight cap before `429`; tune against Redis pool and load tests |
+| `ONLINE_DRAIN_UTILIZATION` | `0.90` | Utilization where `/health/ready` → `503` for drain |
 | `ONLINE_REDIS_RATE_LIMIT_QPS` | `0` | Cross-instance Redis rate limit; `0` = disabled |
 | `ONLINE_FEATURE_CACHE_MAX_USERS` | `10000` | Max Redis feature keys in JVM cache |
+| `ONLINE_FEATURE_STALE_TTL_MS` | `60000` | Maximum stale recent-history age served during Redis errors |
+| `ONLINE_TOPK_STALE_TTL_MS` | `60000` | Maximum stale Top-K age served during Redis errors |
 | `ONLINE_FEATURE_REDIS_MGET_BATCH_SIZE` | `500` | Redis `MGET` batch size |
 | `ONLINE_METRICS_WINDOW_SECONDS` | `60` | Rolling metrics window |
 | `ONLINE_TARGET_DAU` | `2000000` | Capacity sizing assumption |
 | `ONLINE_PEAK_QPS` | `8000` | Peak read-QPS target |
+| `REDIS_POOL_MAX_TOTAL` | `50` | Maximum Redis connections per process |
+| `REDIS_POOL_MAX_WAIT_MS` | `250` | Fail-fast wait when the Redis pool is exhausted |
+| `REDIS_TIMEOUT_MS` | `2000` | Redis connect/socket timeout; set below the request deadline for online serving |
 
 ### API Gateway (port 8010)
 
