@@ -146,6 +146,28 @@ class OnlineFeatureStoreTest {
         verify(stub.jedis, times(1)).mget("trend:hourly");
     }
 
+    @Test
+    void getFeatures_servesStaleValueWhenRedisFailsOnBatchPath() throws Exception {
+        var stub = new RedisPoolStub();
+        when(stub.pool.getResource()).thenReturn(stub.jedis);
+        // First call succeeds and populates cache
+        when(stub.jedis.mget("user:1:embedding")).thenReturn(List.of("0.1 0.2"));
+        var store = new OnlineFeatureStore(stub.pool, 1L, 5_000L, 100, 10);
+
+        // Warm the cache
+        Map<String, String> first = store.getFeatures(List.of("user:1:embedding"));
+        assertThat(first).containsEntry("user:1:embedding", "0.1 0.2");
+
+        // Redis goes down after TTL expires
+        Thread.sleep(5);
+        when(stub.jedis.mget("user:1:embedding"))
+                .thenThrow(new RuntimeException("redis down"));
+
+        // Should serve stale value within staleTtlMs (5000 ms), not throw
+        Map<String, String> stale = store.getFeatures(List.of("user:1:embedding"));
+        assertThat(stale).containsEntry("user:1:embedding", "0.1 0.2");
+    }
+
     // ── minimal Jedis/JedisPool stub ──────────────────────────────────────
 
     private static final class RedisPoolStub {

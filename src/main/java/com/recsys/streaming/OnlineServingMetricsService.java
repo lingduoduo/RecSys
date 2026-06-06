@@ -1,5 +1,7 @@
 package com.recsys.streaming;
 
+import io.micrometer.core.instrument.Gauge;
+import io.micrometer.core.instrument.MeterRegistry;
 import org.slf4j.Logger;
 import org.slf4j.LoggerFactory;
 
@@ -8,6 +10,7 @@ import java.util.Deque;
 import java.util.LinkedHashMap;
 import java.util.Map;
 import java.util.TreeMap;
+import java.util.concurrent.ThreadLocalRandom;
 import java.util.concurrent.atomic.AtomicLong;
 
 /**
@@ -31,6 +34,11 @@ public final class OnlineServingMetricsService {
     private long windowRejected;
     private long windowLatencyMs;
     private final Object lock = new Object();
+
+    private static final int RESERVOIR_SIZE = 512;
+    private final long[] reservoir = new long[RESERVOIR_SIZE];
+    private long reservoirCount = 0L;
+    private final Object reservoirLock = new Object();
 
     private final Map<String, StrategyMetrics> strategyMetrics = new TreeMap<>();
     private final Object strategyLock = new Object();
@@ -83,6 +91,7 @@ public final class OnlineServingMetricsService {
         double recentRejectedRate = recentTotal > 0 ? (double) recentRejected / recentTotal : 0.0;
         double qps = (double) recentTotal / windowSeconds;
 
+        long[] pctls = percentiles(50, 95, 99);
         return new Snapshot(
                 total,
                 successCount.get(),
@@ -96,8 +105,55 @@ public final class OnlineServingMetricsService {
                 recentFailureRate,
                 recentRejectedRate,
                 qps,
+                pctls[0],
+                pctls[1],
+                pctls[2],
                 strategies
         );
+    }
+
+    // Volatile snapshot shared across all gauge lambdas during a single Prometheus scrape.
+    // Each scrape fires all lambdas sequentially from one thread; the first lambda refreshes
+    // the cache so all 6 gauges reflect the same snapshot computation.
+    private volatile Snapshot gaugeSnapshot = null;
+    private volatile long gaugeSnapshotExpiresMs = 0L;
+
+    private Snapshot scrapeSnapshot() {
+        long now = System.currentTimeMillis();
+        if (now < gaugeSnapshotExpiresMs && gaugeSnapshot != null) {
+            return gaugeSnapshot;
+        }
+        Snapshot s = snapshot();
+        gaugeSnapshot = s;
+        gaugeSnapshotExpiresMs = now + 1_000L; // 1-second scrape cache
+        return s;
+    }
+
+    public void registerGauges(MeterRegistry registry) {
+        if (registry.find("online_serving_qps").gauge() != null) {
+            return; // already registered in this registry — skip to prevent duplicate-meter error
+        }
+        Gauge.builder("online_serving_qps", this, s -> s.scrapeSnapshot().qps())
+                .description("Observed QPS in the recent window")
+                .register(registry);
+        Gauge.builder("online_serving_failure_rate", this, s -> s.scrapeSnapshot().recentFailureRate())
+                .description("Recent request failure rate (0.0–1.0)")
+                .register(registry);
+        Gauge.builder("online_serving_rejected_rate", this, s -> s.scrapeSnapshot().recentRejectedRate())
+                .description("Recent request rejection rate (0.0–1.0)")
+                .register(registry);
+        Gauge.builder("online_serving_p50_ms", this, s -> (double) s.scrapeSnapshot().p50Ms())
+                .description("P50 request latency in milliseconds (lifetime reservoir estimate)")
+                .baseUnit("ms")
+                .register(registry);
+        Gauge.builder("online_serving_p95_ms", this, s -> (double) s.scrapeSnapshot().p95Ms())
+                .description("P95 request latency in milliseconds (lifetime reservoir estimate)")
+                .baseUnit("ms")
+                .register(registry);
+        Gauge.builder("online_serving_p99_ms", this, s -> (double) s.scrapeSnapshot().p99Ms())
+                .description("P99 request latency in milliseconds (lifetime reservoir estimate)")
+                .baseUnit("ms")
+                .register(registry);
     }
 
     private void record(long latencyMs, boolean failed, boolean rejected) {
@@ -112,6 +168,18 @@ public final class OnlineServingMetricsService {
         }
         totalLatencyMs.addAndGet(latencyMs);
 
+        // Reservoir tracks served-request latency only; rejected requests (latencyMs=0) are excluded
+        // so percentiles reflect actual work done, not the concurrency gate decision time.
+        if (!rejected) {
+            synchronized (reservoirLock) {
+                long n = ++reservoirCount;
+                long slotL = n <= RESERVOIR_SIZE ? n - 1 : ThreadLocalRandom.current().nextLong(n);
+                if (slotL < RESERVOIR_SIZE) {
+                    reservoir[(int) slotL] = latencyMs;
+                }
+            }
+        }
+
         long now = System.currentTimeMillis() / 1000L;
         synchronized (lock) {
             evict(now);
@@ -121,6 +189,23 @@ public final class OnlineServingMetricsService {
             if (rejected) windowRejected++;
             windowLatencyMs += latencyMs;
         }
+    }
+
+    private long[] percentiles(int... ranks) {
+        long[] result = new long[ranks.length];
+        long[] sorted;
+        int count;
+        synchronized (reservoirLock) {
+            count = (int) Math.min(reservoirCount, RESERVOIR_SIZE);
+            if (count == 0) return result;
+            sorted = java.util.Arrays.copyOf(reservoir, count);
+        }
+        java.util.Arrays.sort(sorted);
+        for (int i = 0; i < ranks.length; i++) {
+            int idx = Math.max(0, Math.min(count - 1, (int) Math.ceil(ranks[i] / 100.0 * count) - 1));
+            result[i] = sorted[idx];
+        }
+        return result;
     }
 
     private void evict(long nowSeconds) {
@@ -185,6 +270,11 @@ public final class OnlineServingMetricsService {
             double recentFailureRate,
             double recentRejectedRate,
             double qps,
+            // Lifetime reservoir estimates (512-slot, Vitter Algorithm R) — not window-scoped.
+            // Values converge to the true distribution but lag window-scoped metrics after traffic changes.
+            long p50Ms,
+            long p95Ms,
+            long p99Ms,
             Map<String, StrategySnapshot> strategies
     ) {}
 

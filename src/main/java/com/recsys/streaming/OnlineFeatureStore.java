@@ -1,5 +1,7 @@
 package com.recsys.streaming;
 
+import org.slf4j.Logger;
+import org.slf4j.LoggerFactory;
 import redis.clients.jedis.Jedis;
 import redis.clients.jedis.util.Pool;
 
@@ -28,6 +30,8 @@ import java.util.concurrent.TimeoutException;
  * window is imperceptible to recommendation quality.
  */
 public final class OnlineFeatureStore implements RecentHistoryStore {
+
+    private static final Logger log = LoggerFactory.getLogger(OnlineFeatureStore.class);
 
     private static final long DEFAULT_CACHE_TTL_MS = 5_000L;
     private static final long DEFAULT_STALE_TTL_MS = 60_000L;
@@ -114,14 +118,29 @@ public final class OnlineFeatureStore implements RecentHistoryStore {
             return result;
         }
 
-        evictIfNeeded(now);
-        Map<String, CachedFeature> fetched = fetchFeaturesFromRedis(misses, now);
-        fetched.forEach((key, feature) -> {
-            featureCache.put(key, feature);
-            if (feature.value != null) {
-                result.put(key, feature.value);
+        // Snapshot stale values before eviction so they cannot be removed before we read them.
+        Map<String, String> staleByKey = new LinkedHashMap<>();
+        for (String key : misses) {
+            CachedFeature cached = featureCache.get(key);
+            if (cached != null && cached.staleExpiresAtMs() > now && cached.value() != null) {
+                staleByKey.put(key, cached.value());
             }
-        });
+        }
+
+        evictIfNeeded(now);
+
+        try {
+            Map<String, CachedFeature> fetched = fetchFeaturesFromRedis(misses, now);
+            fetched.forEach((key, feature) -> {
+                featureCache.put(key, feature);
+                if (feature.value() != null) {
+                    result.put(key, feature.value());
+                }
+            });
+        } catch (RuntimeException e) {
+            log.warn("getFeatures Redis batch failed; serving {} stale values", staleByKey.size(), e);
+            result.putAll(staleByKey);
+        }
         return result;
     }
 
