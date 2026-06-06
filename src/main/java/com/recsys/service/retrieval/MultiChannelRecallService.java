@@ -2,6 +2,8 @@ package com.recsys.service.retrieval;
 
 import com.recsys.model.MovieCandidate;
 import com.recsys.model.RecommendationQuery;
+import org.slf4j.Logger;
+import org.slf4j.LoggerFactory;
 
 import java.util.Comparator;
 import java.util.LinkedHashMap;
@@ -10,6 +12,7 @@ import java.util.Map;
 import java.util.Objects;
 
 public class MultiChannelRecallService {
+    private static final Logger log = LoggerFactory.getLogger(MultiChannelRecallService.class);
     private final List<RecallChannel> channels;
 
     public MultiChannelRecallService(List<RecallChannel> channels) {
@@ -27,7 +30,13 @@ public class MultiChannelRecallService {
 
         Map<String, MovieCandidate> merged = new LinkedHashMap<>();
         for (RecallChannel channel : channels) {
-            List<MovieCandidate> recalled = channel.recall(query, limit);
+            List<MovieCandidate> recalled;
+            try {
+                recalled = channel.recall(query, limit);
+            } catch (Exception e) {
+                log.warn("Channel '{}' failed — skipping: {}", channel.name(), e.getMessage());
+                continue;
+            }
             if (recalled == null) {
                 continue;
             }

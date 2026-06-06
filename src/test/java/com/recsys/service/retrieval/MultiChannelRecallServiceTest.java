@@ -8,6 +8,7 @@ import java.util.List;
 import java.util.Map;
 import java.util.Set;
 
+import static org.assertj.core.api.Assertions.assertThat;
 import static org.junit.jupiter.api.Assertions.assertEquals;
 
 class MultiChannelRecallServiceTest {
@@ -29,6 +30,25 @@ class MultiChannelRecallServiceTest {
 
         assertEquals(List.of("1", "3"), recalled.stream().map(MovieCandidate::itemId).toList());
         assertEquals("vector", recalled.get(0).channel());
+    }
+
+    @Test
+    void failingChannelIsSkipped_othersStillContribute() {
+        RecallChannel broken = new RecallChannel() {
+            @Override public String name() { return "broken"; }
+            @Override public List<MovieCandidate> recall(RecommendationQuery query, int limit) {
+                throw new RuntimeException("Redis down");
+            }
+        };
+        RecallChannel good = channel("good",
+                new MovieCandidate("42", 0.8, "good", Map.of()));
+
+        MultiChannelRecallService service = new MultiChannelRecallService(List.of(broken, good));
+        List<MovieCandidate> recalled = service.recall(
+                new RecommendationQuery("u1", 10, Set.of(), null), 10);
+
+        assertThat(recalled).hasSize(1);
+        assertThat(recalled.get(0).itemId()).isEqualTo("42");
     }
 
     private static RecallChannel channel(String name, MovieCandidate... candidates) {
