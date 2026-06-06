@@ -26,6 +26,7 @@ class RecSysServerIntegrationTest {
 
     static final DataManager mockData = mock(DataManager.class);
     static final EmbeddingStore mockEmb = mock(EmbeddingStore.class);
+    static final EmbeddingStore mockUserEmb = mock(EmbeddingStore.class);
     static final TrendingStore mockTopk = mock(TrendingStore.class);
     static final PairPredictionService mockPrediction = mock(PairPredictionService.class);
 
@@ -65,6 +66,7 @@ class RecSysServerIntegrationTest {
               .service("/getrecommendation", rec)
               .service("/recommendation", rec)
               .service("/setembedding", new SetEmbeddingService(mockEmb, cg))
+              .service("/setuserembedding", new SetUserEmbeddingService(mockUserEmb))
               .service("/health", new HealthService())
               .service(Route.builder()
                                .regex("^/v1/models/recmodel:predict$")
@@ -156,6 +158,19 @@ class RecSysServerIntegrationTest {
     @Test void predictEmptyBodyReturns400() {
         AggregatedHttpResponse r = server.blockingWebClient().post(
                 "/v1/models/recmodel:predict", "");
+        assertThat(r.status()).isEqualTo(HttpStatus.BAD_REQUEST);
+    }
+
+    @Test void setUserEmbeddingHappyPath() {
+        AggregatedHttpResponse r = server.blockingWebClient().post(
+                "/setuserembedding?userId=1", "0.1 0.2 0.3");
+        assertThat(r.status()).isEqualTo(HttpStatus.OK);
+        assertThat(r.contentUtf8()).contains("\"ok\":true");
+        assertThat(r.contentUtf8()).contains("\"userId\":1");
+    }
+
+    @Test void setUserEmbeddingEmptyBody() {
+        AggregatedHttpResponse r = server.blockingWebClient().post("/setuserembedding?userId=1", "");
         assertThat(r.status()).isEqualTo(HttpStatus.BAD_REQUEST);
     }
 }
