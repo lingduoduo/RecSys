@@ -118,10 +118,7 @@ public final class OnlineFeatureStore implements RecentHistoryStore {
             return result;
         }
 
-        evictIfNeeded(now);
-
-        // Snapshot stale values for all misses before touching Redis — used as fallback
-        // if the batch Redis call fails, matching the single-key stale behaviour in getCachedOrLoad.
+        // Snapshot stale values before eviction so they cannot be removed before we read them.
         Map<String, String> staleByKey = new LinkedHashMap<>();
         for (String key : misses) {
             CachedFeature cached = featureCache.get(key);
@@ -129,6 +126,8 @@ public final class OnlineFeatureStore implements RecentHistoryStore {
                 staleByKey.put(key, cached.value());
             }
         }
+
+        evictIfNeeded(now);
 
         try {
             Map<String, CachedFeature> fetched = fetchFeaturesFromRedis(misses, now);
@@ -139,7 +138,7 @@ public final class OnlineFeatureStore implements RecentHistoryStore {
                 }
             });
         } catch (RuntimeException e) {
-            log.warn("getFeatures Redis batch failed; serving {} stale values: {}", staleByKey.size(), e.toString());
+            log.warn("getFeatures Redis batch failed; serving {} stale values", staleByKey.size(), e);
             result.putAll(staleByKey);
         }
         return result;
