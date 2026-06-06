@@ -100,6 +100,13 @@ public class CandidateGenerator {
                 .collect(Collectors.toUnmodifiableList());
     }
 
+    // Hot-reload embedding: serialize concurrent writes from /setembedding HTTP requests
+    // so they don't interleave at the LshVectorIndex level (three non-atomic steps:
+    // embeddings map + lsh buckets + allIds). Reads are concurrent and correct.
+    public synchronized void updateEmbedding(int id, float[] vec) {
+        embeddingIndex.addOrUpdate(id, vec);
+    }
+
     private static VectorIndex createEmbeddingIndex(Map<Integer, float[]> embeddings) {
         if (embeddings.isEmpty()) return new ExactVectorIndex(Map.of());
 
