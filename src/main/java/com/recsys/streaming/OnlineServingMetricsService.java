@@ -221,6 +221,8 @@ public final class OnlineServingMetricsService {
             double recentFailureRate,
             double recentRejectedRate,
             double qps,
+            // Lifetime reservoir estimates (512-slot, Vitter Algorithm R) — not window-scoped.
+            // Values converge to the true distribution but lag window-scoped metrics after traffic changes.
             long p50Ms,
             long p95Ms,
             long p99Ms,
