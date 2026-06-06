@@ -7,18 +7,24 @@ import java.util.Map;
 import java.util.Objects;
 import java.util.PriorityQueue;
 import java.util.Set;
+import java.util.concurrent.ConcurrentHashMap;
 
 public class ExactVectorIndex implements VectorIndex {
 
-    private final Map<Integer, float[]> embeddings;
+    private final ConcurrentHashMap<Integer, float[]> embeddings;
 
     public ExactVectorIndex(Map<Integer, float[]> embeddings) {
-        this.embeddings = Map.copyOf(embeddings);
+        this.embeddings = new ConcurrentHashMap<>(embeddings);
     }
 
     @Override
     public List<SearchResult> search(float[] query, int k, Set<Integer> excludeIds) {
         return topK(query, k, excludeIds, embeddings.keySet());
+    }
+
+    @Override
+    public void addOrUpdate(int id, float[] vec) {
+        embeddings.put(id, vec);
     }
 
     protected List<SearchResult> topK(float[] query, int k, Set<Integer> excludeIds, Iterable<Integer> candidateIds) {

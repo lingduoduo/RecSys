@@ -7,4 +7,6 @@ public interface VectorIndex {
     List<SearchResult> search(float[] query, int k, Set<Integer> excludeIds);
 
     String name();
+
+    default void addOrUpdate(int id, float[] vec) {}
 }
