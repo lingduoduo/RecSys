@@ -144,15 +144,17 @@ public final class OnlineServingMetricsService {
 
     private long[] percentiles(int... ranks) {
         long[] result = new long[ranks.length];
+        long[] sorted;
+        int count;
         synchronized (reservoirLock) {
-            int count = (int) Math.min(reservoirCount, RESERVOIR_SIZE);
+            count = (int) Math.min(reservoirCount, RESERVOIR_SIZE);
             if (count == 0) return result;
-            long[] sorted = java.util.Arrays.copyOf(reservoir, count);
-            java.util.Arrays.sort(sorted);
-            for (int i = 0; i < ranks.length; i++) {
-                int idx = Math.min(count - 1, (int) Math.ceil(ranks[i] / 100.0 * count) - 1);
-                result[i] = sorted[Math.max(0, idx)];
-            }
+            sorted = java.util.Arrays.copyOf(reservoir, count);
+        }
+        java.util.Arrays.sort(sorted);
+        for (int i = 0; i < ranks.length; i++) {
+            int idx = Math.max(0, Math.min(count - 1, (int) Math.ceil(ranks[i] / 100.0 * count) - 1));
+            result[i] = sorted[idx];
         }
         return result;
     }
