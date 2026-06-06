@@ -64,7 +64,7 @@ class RecSysServerIntegrationTest {
               .service("/similar", new SimilarMovieService(mockEmb, mockData))
               .service("/getrecommendation", rec)
               .service("/recommendation", rec)
-              .service("/setembedding", new SetEmbeddingService(mockEmb))
+              .service("/setembedding", new SetEmbeddingService(mockEmb, cg))
               .service("/health", new HealthService())
               .service(Route.builder()
                                .regex("^/v1/models/recmodel:predict$")

@@ -81,7 +81,7 @@ public class RecSysServer {
                     .service(ROUTE_SIMILAR, new SimilarMovieService(embCache))
                     .service(ROUTE_RECOMMENDATION, recommendationService)
                     .service(ROUTE_RECOMMENDATION_ALIAS, recommendationService)
-                    .service(ROUTE_SET_EMBEDDING, new SetEmbeddingService(embCache))
+                    .service(ROUTE_SET_EMBEDDING, new SetEmbeddingService(embCache, candidateGenerator))
                     .service(ROUTE_HEALTH, new HealthService())
                     // exact() encodes ':' as '%3A' so the literal path never matches;
                     // regex routing matches against the decoded path.
