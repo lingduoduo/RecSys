@@ -8,6 +8,7 @@ import java.util.Deque;
 import java.util.LinkedHashMap;
 import java.util.Map;
 import java.util.TreeMap;
+import java.util.concurrent.ThreadLocalRandom;
 import java.util.concurrent.atomic.AtomicLong;
 
 /**
@@ -34,7 +35,7 @@ public final class OnlineServingMetricsService {
 
     private static final int RESERVOIR_SIZE = 512;
     private final long[] reservoir = new long[RESERVOIR_SIZE];
-    private final AtomicLong reservoirCount = new AtomicLong(0L);
+    private long reservoirCount = 0L;
     private final Object reservoirLock = new Object();
 
     private final Map<String, StrategyMetrics> strategyMetrics = new TreeMap<>();
@@ -123,11 +124,10 @@ public final class OnlineServingMetricsService {
 
         // Reservoir: replace a random slot once full (Vitter's Algorithm R, simplified).
         synchronized (reservoirLock) {
-            long n = reservoirCount.incrementAndGet();
-            int slot = (int) (n <= RESERVOIR_SIZE ? n - 1
-                    : (long) (Math.random() * n));
-            if (slot < RESERVOIR_SIZE) {
-                reservoir[slot] = latencyMs;
+            long n = ++reservoirCount;
+            long slotL = n <= RESERVOIR_SIZE ? n - 1 : ThreadLocalRandom.current().nextLong(n);
+            if (slotL < RESERVOIR_SIZE) {
+                reservoir[(int) slotL] = latencyMs;
             }
         }
 
@@ -145,7 +145,7 @@ public final class OnlineServingMetricsService {
     private long[] percentiles(int... ranks) {
         long[] result = new long[ranks.length];
         synchronized (reservoirLock) {
-            int count = (int) Math.min(reservoirCount.get(), RESERVOIR_SIZE);
+            int count = (int) Math.min(reservoirCount, RESERVOIR_SIZE);
             if (count == 0) return result;
             long[] sorted = java.util.Arrays.copyOf(reservoir, count);
             java.util.Arrays.sort(sorted);
