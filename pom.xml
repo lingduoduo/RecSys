@@ -15,9 +15,10 @@
     <spring-boot.version>3.3.4</spring-boot.version>
     <onnxruntime.version>1.18.0</onnxruntime.version>
     <armeria.version>1.28.4</armeria.version>
-    <!-- Default: skip @Tag("load") tests. Override to run them:
-         mvn test -DexcludedGroups="" -Dgroups=load -->
-    <excludedGroups>load</excludedGroups>
+    <!-- Default: skip @Tag("load") and @Tag("docker") tests.
+         Override: mvn test -DexcludedGroups="" -Dgroups=load
+         Run docker tests: mvn test -DexcludedGroups=load -->
+    <excludedGroups>load,docker</excludedGroups>
   </properties>
 
   <build>

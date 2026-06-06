@@ -10,6 +10,7 @@ import com.recsys.infrastructure.redis.sharding.SequenceGenerator;
 import com.recsys.infrastructure.redis.sharding.ShardedRecordStore;
 import org.junit.jupiter.api.AfterAll;
 import org.junit.jupiter.api.AfterEach;
+import org.junit.jupiter.api.Tag;
 import org.junit.jupiter.api.Test;
 import org.junit.jupiter.api.extension.RegisterExtension;
 import org.testcontainers.containers.GenericContainer;
@@ -21,6 +22,7 @@ import redis.clients.jedis.util.Pool;
 
 import static org.assertj.core.api.Assertions.assertThat;
 
+@Tag("docker")
 @Testcontainers
 class ShardedRecordServiceIntegrationTest {
 

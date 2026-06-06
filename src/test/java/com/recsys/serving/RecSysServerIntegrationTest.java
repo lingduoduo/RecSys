@@ -10,7 +10,7 @@ import com.recsys.infrastructure.PairPredictionService;
 import com.recsys.infrastructure.vectordb.CandidateGenerator;
 import com.recsys.infrastructure.vectordb.EmbeddingStore;
 import com.recsys.model.Movie;
-import com.recsys.streaming.TrendingStore;
+import com.recsys.service.retrieval.MultiChannelRecallService;
 import org.junit.jupiter.api.Test;
 import org.junit.jupiter.api.extension.RegisterExtension;
 
@@ -26,7 +26,7 @@ class RecSysServerIntegrationTest {
 
     static final DataManager mockData = mock(DataManager.class);
     static final EmbeddingStore mockEmb = mock(EmbeddingStore.class);
-    static final TrendingStore mockTopk = mock(TrendingStore.class);
+    static final EmbeddingStore mockUserEmb = mock(EmbeddingStore.class);
     static final PairPredictionService mockPrediction = mock(PairPredictionService.class);
 
     static {
@@ -40,7 +40,6 @@ class RecSysServerIntegrationTest {
         when(mockEmb.getEmbedding(1)).thenReturn(new float[]{0.1f, 0.2f, 0.3f});
         when(mockEmb.getEmbedding(999)).thenReturn(null);
         when(mockEmb.getEmbeddings(any())).thenReturn(java.util.Map.of());
-        when(mockTopk.getTopKIds(any(), anyInt())).thenReturn(List.of("1", "2"));
         when(mockPrediction.predict(any())).thenReturn(List.of());
     }
 
@@ -53,9 +52,12 @@ class RecSysServerIntegrationTest {
             when(cg.byEmbedding(anyInt(), anyInt())).thenReturn(List.of());
             when(cg.byGenre(any(), anyInt())).thenReturn(List.of());
 
+            MultiChannelRecallService recallService = mock(MultiChannelRecallService.class);
+            when(recallService.recall(any(), anyInt())).thenReturn(List.of());
+
             MovieService movie = new MovieService(mockData);
             UserService user = new UserService(mockData);
-            RecommendationService rec = new RecommendationService(mockData, cg, mockTopk);
+            RecommendationService rec = new RecommendationService(mockData, recallService);
 
             sb.service("/item", movie)
               .service("/movie", movie)
@@ -64,7 +66,8 @@ class RecSysServerIntegrationTest {
               .service("/similar", new SimilarMovieService(mockEmb, mockData))
               .service("/getrecommendation", rec)
               .service("/recommendation", rec)
-              .service("/setembedding", new SetEmbeddingService(mockEmb))
+              .service("/setembedding", new SetEmbeddingService(mockEmb, cg))
+              .service("/setuserembedding", new SetUserEmbeddingService(mockUserEmb))
               .service("/health", new HealthService())
               .service(Route.builder()
                                .regex("^/v1/models/recmodel:predict$")
@@ -156,6 +159,19 @@ class RecSysServerIntegrationTest {
     @Test void predictEmptyBodyReturns400() {
         AggregatedHttpResponse r = server.blockingWebClient().post(
                 "/v1/models/recmodel:predict", "");
+        assertThat(r.status()).isEqualTo(HttpStatus.BAD_REQUEST);
+    }
+
+    @Test void setUserEmbeddingHappyPath() {
+        AggregatedHttpResponse r = server.blockingWebClient().post(
+                "/setuserembedding?userId=1", "0.1 0.2 0.3");
+        assertThat(r.status()).isEqualTo(HttpStatus.OK);
+        assertThat(r.contentUtf8()).contains("\"ok\":true");
+        assertThat(r.contentUtf8()).contains("\"userId\":1");
+    }
+
+    @Test void setUserEmbeddingEmptyBody() {
+        AggregatedHttpResponse r = server.blockingWebClient().post("/setuserembedding?userId=1", "");
         assertThat(r.status()).isEqualTo(HttpStatus.BAD_REQUEST);
     }
 }

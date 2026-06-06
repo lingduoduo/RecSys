@@ -2,6 +2,7 @@ package com.recsys.infrastructure.redis.sharding;
 
 import org.junit.jupiter.api.AfterEach;
 import org.junit.jupiter.api.BeforeEach;
+import org.junit.jupiter.api.Tag;
 import org.junit.jupiter.api.Test;
 import org.testcontainers.containers.GenericContainer;
 import org.testcontainers.junit.jupiter.Container;
@@ -20,6 +21,7 @@ import static org.assertj.core.api.Assertions.assertThat;
  * any replication in this test, so reads on an empty replica confirm routing
  * rather than Redis replication behaviour.
  */
+@Tag("docker")
 @Testcontainers
 class ShardedRecordStoreReplicaRoutingTest {
 

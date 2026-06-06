@@ -5,6 +5,7 @@ import java.util.Objects;
 import java.util.Set;
 import java.util.HashSet;
 import java.util.List;
+import java.util.concurrent.ConcurrentHashMap;
 
 public class LshVectorIndex extends ExactVectorIndex {
 
@@ -14,7 +15,15 @@ public class LshVectorIndex extends ExactVectorIndex {
     public LshVectorIndex(Map<Integer, float[]> embeddings) {
         super(embeddings);
         this.lsh = new EmbeddingLSH(embeddings);
-        this.allIds = Set.copyOf(embeddings.keySet());
+        this.allIds = ConcurrentHashMap.newKeySet();
+        this.allIds.addAll(embeddings.keySet());
+    }
+
+    @Override
+    public void addOrUpdate(int id, float[] vec) {
+        super.addOrUpdate(id, vec);  // update ConcurrentHashMap in ExactVectorIndex
+        lsh.add(id, vec);            // update LSH buckets
+        allIds.add(id);              // expose id to full-scan fallback
     }
 
     @Override

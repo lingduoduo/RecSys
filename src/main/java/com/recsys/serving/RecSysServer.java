@@ -13,11 +13,17 @@ import com.recsys.infrastructure.redis.RedisConnectionFactory;
 import com.recsys.infrastructure.redis.RedisEmbeddingStore;
 import com.recsys.infrastructure.redis.ShardedTopKStore;
 import com.recsys.infrastructure.vectordb.CandidateGenerator;
+import com.recsys.service.retrieval.EmbeddingChannel;
+import com.recsys.service.retrieval.GenreHistoryChannel;
+import com.recsys.service.retrieval.MultiChannelRecallService;
+import com.recsys.service.retrieval.PopularityChannel;
+import com.recsys.service.retrieval.TrendingChannel;
 import com.recsys.streaming.TrendingStore;
 import org.slf4j.Logger;
 import org.slf4j.LoggerFactory;
 import redis.clients.jedis.Jedis;
 import redis.clients.jedis.util.Pool;
+import java.util.List;
 
 public class RecSysServer {
 
@@ -28,6 +34,7 @@ public class RecSysServer {
     private static final String ROUTE_SIMILAR = "/similar";
     private static final String ROUTE_RECOMMENDATION = "/getrecommendation";
     private static final String ROUTE_SET_EMBEDDING = "/setembedding";
+    private static final String ROUTE_SET_USER_EMBEDDING = "/setuserembedding";
     private static final String ROUTE_HEALTH = "/health";
     private static final String ROUTE_PREDICT = "/v1/models/recmodel:predict";
     // REST-style aliases used when requests arrive via the API gateway
@@ -65,10 +72,17 @@ public class RecSysServer {
 
             CandidateGenerator candidateGenerator = new CandidateGenerator(dataManager, userEmbCache);
 
+            MultiChannelRecallService recallService = new MultiChannelRecallService(List.of(
+                    new EmbeddingChannel(candidateGenerator),
+                    new TrendingChannel(topkStore),
+                    new GenreHistoryChannel(candidateGenerator),
+                    new PopularityChannel(dataManager)
+            ));
+
             MovieService movieService = new MovieService(dataManager);
             UserService userService = new UserService(dataManager);
             RecommendationService recommendationService =
-                    new RecommendationService(dataManager, candidateGenerator, topkStore);
+                    new RecommendationService(dataManager, recallService);
 
             String corsOrigin = System.getenv("CORS_ALLOWED_ORIGIN");
 
@@ -81,7 +95,8 @@ public class RecSysServer {
                     .service(ROUTE_SIMILAR, new SimilarMovieService(embCache))
                     .service(ROUTE_RECOMMENDATION, recommendationService)
                     .service(ROUTE_RECOMMENDATION_ALIAS, recommendationService)
-                    .service(ROUTE_SET_EMBEDDING, new SetEmbeddingService(embCache))
+                    .service(ROUTE_SET_EMBEDDING, new SetEmbeddingService(embCache, candidateGenerator))
+                    .service(ROUTE_SET_USER_EMBEDDING, new SetUserEmbeddingService(userEmbCache))
                     .service(ROUTE_HEALTH, new HealthService())
                     // exact() encodes ':' as '%3A' so the literal path never matches;
                     // regex routing matches against the decoded path.
