@@ -112,10 +112,11 @@ class OnlineServingMetricsServiceTest {
 
         // Gauges exist — values are computed lazily on first scrape
         assertThat(registry.find("online_serving_qps").gauge()).isNotNull();
-        assertThat(registry.find("online_serving_p95_ms").gauge()).isNotNull();
-        assertThat(registry.find("online_serving_p99_ms").gauge()).isNotNull();
         assertThat(registry.find("online_serving_failure_rate").gauge()).isNotNull();
         assertThat(registry.find("online_serving_rejected_rate").gauge()).isNotNull();
+        assertThat(registry.find("online_serving_p50_ms").gauge()).isNotNull();
+        assertThat(registry.find("online_serving_p95_ms").gauge()).isNotNull();
+        assertThat(registry.find("online_serving_p99_ms").gauge()).isNotNull();
 
         // QPS > 0 after recording 10 requests in a 60-second window
         double qps = registry.find("online_serving_qps").gauge().value();

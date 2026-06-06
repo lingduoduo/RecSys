@@ -112,25 +112,45 @@ public final class OnlineServingMetricsService {
         );
     }
 
+    // Volatile snapshot shared across all gauge lambdas during a single Prometheus scrape.
+    // Each scrape fires all lambdas sequentially from one thread; the first lambda refreshes
+    // the cache so all 6 gauges reflect the same snapshot computation.
+    private volatile Snapshot gaugeSnapshot = null;
+    private volatile long gaugeSnapshotExpiresMs = 0L;
+
+    private Snapshot scrapeSnapshot() {
+        long now = System.currentTimeMillis();
+        if (now < gaugeSnapshotExpiresMs && gaugeSnapshot != null) {
+            return gaugeSnapshot;
+        }
+        Snapshot s = snapshot();
+        gaugeSnapshot = s;
+        gaugeSnapshotExpiresMs = now + 1_000L; // 1-second scrape cache
+        return s;
+    }
+
     public void registerGauges(MeterRegistry registry) {
-        Gauge.builder("online_serving_qps", this, s -> s.snapshot().qps())
+        if (registry.find("online_serving_qps").gauge() != null) {
+            return; // already registered in this registry — skip to prevent duplicate-meter error
+        }
+        Gauge.builder("online_serving_qps", this, s -> s.scrapeSnapshot().qps())
                 .description("Observed QPS in the recent window")
                 .register(registry);
-        Gauge.builder("online_serving_failure_rate", this, s -> s.snapshot().recentFailureRate())
+        Gauge.builder("online_serving_failure_rate", this, s -> s.scrapeSnapshot().recentFailureRate())
                 .description("Recent request failure rate (0.0–1.0)")
                 .register(registry);
-        Gauge.builder("online_serving_rejected_rate", this, s -> s.snapshot().recentRejectedRate())
+        Gauge.builder("online_serving_rejected_rate", this, s -> s.scrapeSnapshot().recentRejectedRate())
                 .description("Recent request rejection rate (0.0–1.0)")
                 .register(registry);
-        Gauge.builder("online_serving_p50_ms", this, s -> (double) s.snapshot().p50Ms())
+        Gauge.builder("online_serving_p50_ms", this, s -> (double) s.scrapeSnapshot().p50Ms())
                 .description("P50 request latency in milliseconds (lifetime reservoir estimate)")
                 .baseUnit("ms")
                 .register(registry);
-        Gauge.builder("online_serving_p95_ms", this, s -> (double) s.snapshot().p95Ms())
+        Gauge.builder("online_serving_p95_ms", this, s -> (double) s.scrapeSnapshot().p95Ms())
                 .description("P95 request latency in milliseconds (lifetime reservoir estimate)")
                 .baseUnit("ms")
                 .register(registry);
-        Gauge.builder("online_serving_p99_ms", this, s -> (double) s.snapshot().p99Ms())
+        Gauge.builder("online_serving_p99_ms", this, s -> (double) s.scrapeSnapshot().p99Ms())
                 .description("P99 request latency in milliseconds (lifetime reservoir estimate)")
                 .baseUnit("ms")
                 .register(registry);

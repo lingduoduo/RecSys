@@ -37,8 +37,8 @@ public final class OnlinePredictionServer {
             OnlineRecommendationEngine engine = new OnlineRecommendationEngine(dataManager, topkStore, onlineFeatureStore);
             OnlineRecommendationService recommendationService =
                     new OnlineRecommendationService(dataManager, engine, candidateGenerator);
+            var registry = PrometheusMeterRegistries.defaultRegistry();
             OnlineServingMetricsService metricsService = new OnlineServingMetricsService();
-            metricsService.registerGauges(PrometheusMeterRegistries.defaultRegistry());
             OnlineLoadShedder loadShedder = new OnlineLoadShedder();
             OnlineCapacityService capacityService = new OnlineCapacityService();
             RedisRateLimiter redisRateLimiter = new RedisRateLimiter(jedisPool);
@@ -54,7 +54,7 @@ public final class OnlinePredictionServer {
             sb.http(port)
               .requestTimeoutMillis(requestTimeoutMs)
               .gracefulShutdownTimeoutMillis(1_000L, 30_000L)
-              .meterRegistry(PrometheusMeterRegistries.defaultRegistry())
+              .meterRegistry(registry)
               .decorator(MetricCollectingService.newDecorator(
                       MeterIdPrefixFunction.ofDefault("online_serving")))
               .service("/health/live", new OnlineLiveService())
@@ -80,6 +80,7 @@ public final class OnlinePredictionServer {
                       new ShardedRecordService(shardedRecordStore));
 
             Server server = sb.build();
+            metricsService.registerGauges(registry);
 
             Runtime.getRuntime().addShutdownHook(new Thread(() -> {
                 server.stop().join();
