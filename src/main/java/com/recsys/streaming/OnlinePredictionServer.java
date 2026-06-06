@@ -38,6 +38,7 @@ public final class OnlinePredictionServer {
             OnlineRecommendationService recommendationService =
                     new OnlineRecommendationService(dataManager, engine, candidateGenerator);
             OnlineServingMetricsService metricsService = new OnlineServingMetricsService();
+            metricsService.registerGauges(PrometheusMeterRegistries.defaultRegistry());
             OnlineLoadShedder loadShedder = new OnlineLoadShedder();
             OnlineCapacityService capacityService = new OnlineCapacityService();
             RedisRateLimiter redisRateLimiter = new RedisRateLimiter(jedisPool);

@@ -1,5 +1,7 @@
 package com.recsys.streaming;
 
+import io.micrometer.core.instrument.Gauge;
+import io.micrometer.core.instrument.MeterRegistry;
 import org.slf4j.Logger;
 import org.slf4j.LoggerFactory;
 
@@ -108,6 +110,30 @@ public final class OnlineServingMetricsService {
                 pctls[2],
                 strategies
         );
+    }
+
+    public void registerGauges(MeterRegistry registry) {
+        Gauge.builder("online_serving_qps", this, s -> s.snapshot().qps())
+                .description("Observed QPS in the recent window")
+                .register(registry);
+        Gauge.builder("online_serving_failure_rate", this, s -> s.snapshot().recentFailureRate())
+                .description("Recent request failure rate (0.0–1.0)")
+                .register(registry);
+        Gauge.builder("online_serving_rejected_rate", this, s -> s.snapshot().recentRejectedRate())
+                .description("Recent request rejection rate (0.0–1.0)")
+                .register(registry);
+        Gauge.builder("online_serving_p50_ms", this, s -> (double) s.snapshot().p50Ms())
+                .description("P50 request latency in milliseconds (lifetime reservoir estimate)")
+                .baseUnit("ms")
+                .register(registry);
+        Gauge.builder("online_serving_p95_ms", this, s -> (double) s.snapshot().p95Ms())
+                .description("P95 request latency in milliseconds (lifetime reservoir estimate)")
+                .baseUnit("ms")
+                .register(registry);
+        Gauge.builder("online_serving_p99_ms", this, s -> (double) s.snapshot().p99Ms())
+                .description("P99 request latency in milliseconds (lifetime reservoir estimate)")
+                .baseUnit("ms")
+                .register(registry);
     }
 
     private void record(long latencyMs, boolean failed, boolean rejected) {

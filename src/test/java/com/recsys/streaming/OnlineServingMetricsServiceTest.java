@@ -99,4 +99,26 @@ class OnlineServingMetricsServiceTest {
         assertThat(snap.p95Ms()).isZero();
         assertThat(snap.p99Ms()).isZero();
     }
+
+    @Test
+    void registerGauges_exposesQpsAndPercentilesToMeterRegistry() {
+        var service = new OnlineServingMetricsService(60);
+        for (int i = 1; i <= 10; i++) {
+            service.recordSuccess(i * 10L, "online"); // 10, 20, …, 100 ms
+        }
+
+        var registry = new io.micrometer.core.instrument.simple.SimpleMeterRegistry();
+        service.registerGauges(registry);
+
+        // Gauges exist — values are computed lazily on first scrape
+        assertThat(registry.find("online_serving_qps").gauge()).isNotNull();
+        assertThat(registry.find("online_serving_p95_ms").gauge()).isNotNull();
+        assertThat(registry.find("online_serving_p99_ms").gauge()).isNotNull();
+        assertThat(registry.find("online_serving_failure_rate").gauge()).isNotNull();
+        assertThat(registry.find("online_serving_rejected_rate").gauge()).isNotNull();
+
+        // QPS > 0 after recording 10 requests in a 60-second window
+        double qps = registry.find("online_serving_qps").gauge().value();
+        assertThat(qps).isGreaterThan(0.0);
+    }
 }
