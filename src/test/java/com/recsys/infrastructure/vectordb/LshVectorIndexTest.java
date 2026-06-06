@@ -75,4 +75,15 @@ class LshVectorIndexTest {
     void name_returnsLsh() {
         assertThat(new LshVectorIndex(twoItemEmbeddings()).name()).isEqualTo("lsh");
     }
+
+    @Test
+    void addOrUpdate_newVecIsSearchable() {
+        // Start with item 1 at [0,1] (orthogonal to query [1,0]).
+        // Add item 2 at [1,0] — should now rank highest.
+        LshVectorIndex idx = new LshVectorIndex(Map.of(1, new float[]{0f, 1f}));
+        idx.addOrUpdate(2, new float[]{1f, 0f});
+        List<SearchResult> results = idx.search(new float[]{1f, 0f}, 2, Set.of());
+        assertThat(results).extracting(SearchResult::id).contains(2);
+        assertThat(results.get(0).id()).isEqualTo(2);
+    }
 }
