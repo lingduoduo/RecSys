@@ -1,5 +1,6 @@
 package com.recsys.infrastructure.redis.sharding;
 
+import org.junit.jupiter.api.Tag;
 import org.junit.jupiter.api.Test;
 import redis.clients.jedis.Jedis;
 
@@ -11,6 +12,7 @@ import java.util.concurrent.Executors;
 
 import static org.assertj.core.api.Assertions.assertThat;
 
+@Tag("docker")
 class SequenceGeneratorTest extends RedisShardingTestBase {
 
     @Test

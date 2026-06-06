@@ -1,12 +1,14 @@
 package com.recsys.infrastructure.redis.sharding;
 
 import org.junit.jupiter.api.BeforeEach;
+import org.junit.jupiter.api.Tag;
 import org.junit.jupiter.api.Test;
 
 import java.util.List;
 
 import static org.assertj.core.api.Assertions.assertThat;
 
+@Tag("docker")
 class ShardedRecordStoreReadTest extends RedisShardingTestBase {
 
     private ShardedRecordStore store;
