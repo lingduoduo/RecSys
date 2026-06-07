@@ -1,5 +1,8 @@
 package com.recsys.modelbased.service;
 
+import com.recsys.featureflags.FeatureFlagService;
+import com.recsys.featureflags.Flags;
+import com.recsys.modelbased.config.RecommendationCacheProperties;
 import com.recsys.modelbased.dto.RecommendRequest;
 import com.recsys.modelbased.dto.ScoredItem;
 import org.junit.jupiter.api.BeforeEach;
@@ -175,13 +178,13 @@ class RecommendationServiceTest {
 
     @Test
     void recommend_coldStartFlagDisabled_runsFullInferenceForEachUnknownUser() {
-        var flagService = new com.recsys.featureflags.FeatureFlagService(
-                (flag, id, props) -> "cold-start-enabled".equals(flag.key())
+        var flagService = new FeatureFlagService(
+                (flag, id, props) -> flag.key().equals(Flags.COLD_START_ENABLED.key())
                         ? Optional.of(false)
                         : Optional.empty());
         var testService = new RecommendationService(
                 modelRuntimeProvider, abTestService,
-                new com.recsys.modelbased.config.RecommendationCacheProperties(),
+                new RecommendationCacheProperties(),
                 flagService);
 
         var encoded = new FeatureEncoder.EncodedFeatures(0L);

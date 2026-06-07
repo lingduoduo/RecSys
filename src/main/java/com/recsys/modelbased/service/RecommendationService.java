@@ -28,13 +28,13 @@ public class RecommendationService {
     private final FeatureFlagService featureFlagService;
 
     private static final FeatureFlagService NOOP_FLAGS =
-            new FeatureFlagService((flag, id, props) -> java.util.Optional.empty());
+            new FeatureFlagService((flag, id, props) -> Optional.empty());
 
     public RecommendationService(
             ModelRuntimeProvider modelRuntimeProvider,
             ABTestService abTestService
     ) {
-        this(modelRuntimeProvider, abTestService, new RecommendationCacheProperties(), NOOP_FLAGS);
+        this(modelRuntimeProvider, abTestService, new RecommendationCacheProperties());
     }
 
     public RecommendationService(
@@ -83,9 +83,11 @@ public class RecommendationService {
 
         // getOrCompute ensures concurrent misses for the same key share a single computation.
         List<ScoredItem> items = cache.getOrCompute(cacheKey, () -> {
+            // Cold-start requires BOTH the static property (fast kill switch) AND
+            // the dynamic feature flag (supports per-user gradual rollout via PostHog).
             if (cache.isColdStartEnabled()
-                    && featureFlagService.isEnabled(Flags.COLD_START_ENABLED, request.getUserId())
-                    && isColdStartUser(request.getUserId(), runtime)) {
+                    && isColdStartUser(request.getUserId(), runtime)
+                    && featureFlagService.isEnabled(Flags.COLD_START_ENABLED, request.getUserId())) {
                 return coldStartItems(request, runtime, assignment, modelVersion, excludedItemIds);
             }
             return computeRecommendations(request, runtime, excludedItemIds);
