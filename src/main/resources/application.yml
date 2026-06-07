@@ -78,3 +78,21 @@ recsys:
     enabled: ${RECSYS_SUBMIT_TOKEN_ENABLED:false}
     ttl-seconds: ${RECSYS_SUBMIT_TOKEN_TTL_SECONDS:300}
     key-prefix: ${RECSYS_SUBMIT_TOKEN_KEY_PREFIX:submit_token:}
+
+management:
+  endpoints:
+    web:
+      exposure:
+        include: ${MANAGEMENT_ENDPOINTS_EXPOSURE:health,info,prometheus}
+      base-path: /actuator
+  endpoint:
+    health:
+      show-details: always
+    prometheus:
+      enabled: true
+  metrics:
+    tags:
+      application: ${spring.application.name}
+    distribution:
+      percentiles-histogram:
+        http.server.requests: true
