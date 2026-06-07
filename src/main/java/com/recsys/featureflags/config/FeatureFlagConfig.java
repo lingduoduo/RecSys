@@ -25,10 +25,10 @@ public class FeatureFlagConfig {
         List<FeatureFlagProvider> providers = new ArrayList<>();
         providers.add(new EnvFeatureFlagProvider(properties.environmentPrefix));
         PostHog postHog = properties.postHog;
-        if (postHog.enabled && postHog.apiKey != null && !postHog.apiKey.isBlank()) {
+        if (postHog.isEnabled() && postHog.getApiKey() != null && !postHog.getApiKey().isBlank()) {
             FeatureFlagProvider raw = new PostHogFeatureFlagProvider(
-                    postHog.apiKey, postHog.host, postHog.timeout);
-            providers.add(new CachingFeatureFlagProvider(raw, postHog.cacheTtl));
+                    postHog.getApiKey(), postHog.getHost(), postHog.getTimeout());
+            providers.add(new CachingFeatureFlagProvider(raw, postHog.getCacheTtl()));
         }
         return new CompositeFeatureFlagProvider(providers);
     }
@@ -64,6 +64,12 @@ public class FeatureFlagConfig {
         public Duration getTimeout() { return timeout; }
         public void setTimeout(Duration timeout) { this.timeout = timeout; }
         public Duration getCacheTtl() { return cacheTtl; }
-        public void setCacheTtl(Duration cacheTtl) { this.cacheTtl = cacheTtl; }
+        public void setCacheTtl(Duration cacheTtl) {
+            if (cacheTtl == null || cacheTtl.isNegative() || cacheTtl.isZero()) {
+                throw new IllegalArgumentException(
+                        "recsys.feature-flags.post-hog.cache-ttl must be a positive duration, got: " + cacheTtl);
+            }
+            this.cacheTtl = cacheTtl;
+        }
     }
 }
