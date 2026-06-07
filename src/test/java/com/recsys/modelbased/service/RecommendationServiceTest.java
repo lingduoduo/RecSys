@@ -1,5 +1,8 @@
 package com.recsys.modelbased.service;
 
+import com.recsys.featureflags.FeatureFlagService;
+import com.recsys.featureflags.Flags;
+import com.recsys.modelbased.config.RecommendationCacheProperties;
 import com.recsys.modelbased.dto.RecommendRequest;
 import com.recsys.modelbased.dto.ScoredItem;
 import org.junit.jupiter.api.BeforeEach;
@@ -7,6 +10,7 @@ import org.junit.jupiter.api.Test;
 
 import java.util.List;
 import java.util.Map;
+import java.util.Optional;
 import java.util.Set;
 
 import static org.assertj.core.api.Assertions.assertThat;
@@ -170,6 +174,32 @@ class RecommendationServiceTest {
         // non-numeric userId should not throw — null numericUserId is passed to candidate selection
         var response = service.recommend(request("alice", 3));
         assertThat(response).isNotNull();
+    }
+
+    @Test
+    void recommend_coldStartFlagDisabled_runsFullInferenceForEachUnknownUser() {
+        var flagService = new FeatureFlagService(
+                (flag, id, props) -> flag.key().equals(Flags.COLD_START_ENABLED.key())
+                        ? Optional.of(false)
+                        : Optional.empty());
+        var testService = new RecommendationService(
+                modelRuntimeProvider, abTestService,
+                new RecommendationCacheProperties(),
+                flagService);
+
+        var encoded = new FeatureEncoder.EncodedFeatures(0L);
+        when(artifactService.getUserVocab()).thenReturn(Map.of("__UNK__", 0));
+        when(featureEncoder.encode(any())).thenReturn(encoded);
+        when(candidateSelectionService.selectCandidates(any(), any())).thenReturn(Set.of("1", "2"));
+        when(inferenceService.scoreCandidates(eq(encoded), eq(featureEncoder), any(), anyInt()))
+                .thenReturn(List.of(new ScoredItem("1", 0.9), new ScoredItem("2", 0.8)));
+        when(artifactService.getModelVersion()).thenReturn("v1");
+
+        testService.recommend(request("new-user-a", 1));
+        testService.recommend(request("new-user-b", 1));
+
+        // flag disabled → no cold-start pool → each unknown user triggers its own inference call
+        verify(inferenceService, times(2)).scoreCandidates(eq(encoded), eq(featureEncoder), any(), anyInt());
     }
 
     private static RecommendRequest request(String userId, int k) {

@@ -1,5 +1,7 @@
 package com.recsys.modelbased.service;
 
+import com.recsys.featureflags.FeatureFlagService;
+import com.recsys.featureflags.Flags;
 import com.recsys.modelbased.config.RecommendationCacheProperties;
 import com.recsys.modelbased.dto.RecommendRequest;
 import com.recsys.modelbased.dto.RecommendResponse;
@@ -23,6 +25,10 @@ public class RecommendationService {
     private final ModelRuntimeProvider modelRuntimeProvider;
     private final ABTestService abTestService;
     private final RecommendationCache cache;
+    private final FeatureFlagService featureFlagService;
+
+    private static final FeatureFlagService NOOP_FLAGS =
+            new FeatureFlagService((flag, id, props) -> Optional.empty());
 
     public RecommendationService(
             ModelRuntimeProvider modelRuntimeProvider,
@@ -31,15 +37,25 @@ public class RecommendationService {
         this(modelRuntimeProvider, abTestService, new RecommendationCacheProperties());
     }
 
-    @Autowired
     public RecommendationService(
             ModelRuntimeProvider modelRuntimeProvider,
             ABTestService abTestService,
             RecommendationCacheProperties cacheProperties
     ) {
+        this(modelRuntimeProvider, abTestService, cacheProperties, NOOP_FLAGS);
+    }
+
+    @Autowired
+    public RecommendationService(
+            ModelRuntimeProvider modelRuntimeProvider,
+            ABTestService abTestService,
+            RecommendationCacheProperties cacheProperties,
+            FeatureFlagService featureFlagService
+    ) {
         this.modelRuntimeProvider = modelRuntimeProvider;
         this.abTestService = abTestService;
         this.cache = new RecommendationCache(cacheProperties);
+        this.featureFlagService = featureFlagService;
     }
 
     public RecommendResponse recommend(RecommendRequest request) {
@@ -67,7 +83,11 @@ public class RecommendationService {
 
         // getOrCompute ensures concurrent misses for the same key share a single computation.
         List<ScoredItem> items = cache.getOrCompute(cacheKey, () -> {
-            if (cache.isColdStartEnabled() && isColdStartUser(request.getUserId(), runtime)) {
+            // Cold-start requires BOTH the static property (fast kill switch) AND
+            // the dynamic feature flag (supports per-user gradual rollout via PostHog).
+            if (cache.isColdStartEnabled()
+                    && isColdStartUser(request.getUserId(), runtime)
+                    && featureFlagService.isEnabled(Flags.COLD_START_ENABLED, request.getUserId())) {
                 return coldStartItems(request, runtime, assignment, modelVersion, excludedItemIds);
             }
             return computeRecommendations(request, runtime, excludedItemIds);

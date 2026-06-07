@@ -2,6 +2,7 @@ package com.recsys.featureflags.config;
 
 import com.recsys.featureflags.FeatureFlagProvider;
 import com.recsys.featureflags.FeatureFlagService;
+import com.recsys.featureflags.providers.CachingFeatureFlagProvider;
 import com.recsys.featureflags.providers.CompositeFeatureFlagProvider;
 import com.recsys.featureflags.providers.EnvFeatureFlagProvider;
 import com.recsys.featureflags.providers.PostHogFeatureFlagProvider;
@@ -24,8 +25,10 @@ public class FeatureFlagConfig {
         List<FeatureFlagProvider> providers = new ArrayList<>();
         providers.add(new EnvFeatureFlagProvider(properties.environmentPrefix));
         PostHog postHog = properties.postHog;
-        if (postHog.enabled && postHog.apiKey != null && !postHog.apiKey.isBlank()) {
-            providers.add(new PostHogFeatureFlagProvider(postHog.apiKey, postHog.host, postHog.timeout));
+        if (postHog.isEnabled() && postHog.getApiKey() != null && !postHog.getApiKey().isBlank()) {
+            FeatureFlagProvider raw = new PostHogFeatureFlagProvider(
+                    postHog.getApiKey(), postHog.getHost(), postHog.getTimeout());
+            providers.add(new CachingFeatureFlagProvider(raw, postHog.getCacheTtl()));
         }
         return new CompositeFeatureFlagProvider(providers);
     }
@@ -50,6 +53,7 @@ public class FeatureFlagConfig {
         private String apiKey;
         private URI host = URI.create("https://us.i.posthog.com");
         private Duration timeout = Duration.ofSeconds(2);
+        private Duration cacheTtl = Duration.ofMinutes(1);
 
         public boolean isEnabled() { return enabled; }
         public void setEnabled(boolean enabled) { this.enabled = enabled; }
@@ -59,5 +63,13 @@ public class FeatureFlagConfig {
         public void setHost(URI host) { this.host = host; }
         public Duration getTimeout() { return timeout; }
         public void setTimeout(Duration timeout) { this.timeout = timeout; }
+        public Duration getCacheTtl() { return cacheTtl; }
+        public void setCacheTtl(Duration cacheTtl) {
+            if (cacheTtl == null || cacheTtl.isNegative() || cacheTtl.isZero()) {
+                throw new IllegalArgumentException(
+                        "recsys.feature-flags.post-hog.cache-ttl must be a positive duration, got: " + cacheTtl);
+            }
+            this.cacheTtl = cacheTtl;
+        }
     }
 }

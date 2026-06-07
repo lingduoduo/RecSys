@@ -38,6 +38,33 @@ class FeatureFlagConfigTest {
                     assertThat(config.getEnvironmentPrefix()).isEqualTo("FF_");
                     assertThat(config.getPostHog().getHost()).hasToString("https://eu.i.posthog.com");
                     assertThat(config.getPostHog().getTimeout()).isEqualTo(java.time.Duration.ofMillis(500));
+                    assertThat(config.getPostHog().getCacheTtl()).isEqualTo(java.time.Duration.ofMinutes(1));
+                });
+    }
+
+    @Test
+    void posthogProviderIsWrappedInCachingProviderWhenEnabled() {
+        contextRunner
+                .withPropertyValues(
+                        "recsys.feature-flags.post-hog.enabled=true",
+                        "recsys.feature-flags.post-hog.api-key=phc_test")
+                .run(context -> {
+                    FeatureFlagProvider provider = context.getBean(FeatureFlagProvider.class);
+                    assertThat(provider).isInstanceOf(com.recsys.featureflags.providers.CompositeFeatureFlagProvider.class);
+                });
+    }
+
+    @Test
+    void bindsPostHogCacheTtl() {
+        contextRunner
+                .withPropertyValues(
+                        "recsys.feature-flags.post-hog.enabled=true",
+                        "recsys.feature-flags.post-hog.api-key=phc_test",
+                        "recsys.feature-flags.post-hog.cache-ttl=30s")
+                .run(context -> {
+                    FeatureFlagConfig.Properties config = context.getBean(FeatureFlagConfig.Properties.class);
+                    assertThat(config.getPostHog().getCacheTtl())
+                            .isEqualTo(java.time.Duration.ofSeconds(30));
                 });
     }
 }
