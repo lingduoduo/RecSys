@@ -6,7 +6,7 @@ metadata:
   labels:
     app: recsys-model-serving
 spec:
-  replicas: 2
+  replicas: 3
   progressDeadlineSeconds: 600
   strategy:
     type: RollingUpdate
