@@ -23,7 +23,11 @@ public class CachingFeatureFlagProvider implements FeatureFlagProvider {
 
     CachingFeatureFlagProvider(FeatureFlagProvider delegate, Duration ttl, LongSupplier clock) {
         this.delegate = Objects.requireNonNull(delegate, "delegate");
-        this.ttlNanos = Objects.requireNonNull(ttl, "ttl").toNanos();
+        Objects.requireNonNull(ttl, "ttl");
+        if (ttl.isNegative() || ttl.isZero()) {
+            throw new IllegalArgumentException("ttl must be positive, got: " + ttl);
+        }
+        this.ttlNanos = ttl.toNanos();
         this.clock = Objects.requireNonNull(clock, "clock");
     }
 
@@ -35,6 +39,9 @@ public class CachingFeatureFlagProvider implements FeatureFlagProvider {
         if (existing != null && nowNanos < existing.expiryNanos()) {
             return Optional.ofNullable(existing.value());
         }
+        // Intentional: concurrent misses for the same key may each call the delegate.
+        // The delegate (PostHog) is idempotent and results converge; avoiding compute()
+        // keeps the hot path lock-free.
         Optional<Boolean> result = delegate.resolve(flag, distinctId, properties);
         cache.put(key, new CacheEntry(result.orElse(null), nowNanos + ttlNanos));
         return result;

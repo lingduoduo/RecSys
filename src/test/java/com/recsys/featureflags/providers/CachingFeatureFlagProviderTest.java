@@ -1,5 +1,6 @@
 package com.recsys.featureflags.providers;
 
+import com.recsys.featureflags.FeatureFlagProvider;
 import com.recsys.featureflags.models.FeatureFlag;
 import org.junit.jupiter.api.Test;
 
@@ -10,10 +11,11 @@ import java.util.concurrent.atomic.AtomicInteger;
 import java.util.concurrent.atomic.AtomicLong;
 
 import static org.assertj.core.api.Assertions.assertThat;
+import static org.assertj.core.api.Assertions.assertThatThrownBy;
 
 class CachingFeatureFlagProviderTest {
 
-    private final FeatureFlag FLAG = FeatureFlag.disabledByDefault("test-flag");
+    private static final FeatureFlag FLAG = FeatureFlag.disabledByDefault("test-flag");
 
     @Test
     void cachedResultReturnedWithoutCallingDelegateAgain() {
@@ -112,5 +114,16 @@ class CachingFeatureFlagProviderTest {
         provider.resolve(FLAG, "user-1", Map.of());
 
         assertThat(calls.get()).isEqualTo(2);
+    }
+
+    @Test
+    void zeroOrNegativeTtlThrowsIllegalArgument() {
+        FeatureFlagProvider noop = (f, id, props) -> Optional.empty();
+        assertThatThrownBy(() -> new CachingFeatureFlagProvider(noop, Duration.ZERO))
+                .isInstanceOf(IllegalArgumentException.class)
+                .hasMessageContaining("ttl must be positive");
+        assertThatThrownBy(() -> new CachingFeatureFlagProvider(noop, Duration.ofSeconds(-1)))
+                .isInstanceOf(IllegalArgumentException.class)
+                .hasMessageContaining("ttl must be positive");
     }
 }
