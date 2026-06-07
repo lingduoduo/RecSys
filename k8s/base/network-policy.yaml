@@ -69,7 +69,7 @@ spec:
         - port: 53
           protocol: TCP
 ---
-# Model serving: ingress from gateway only; egress to Redis and DNS.
+# Model serving: ingress from gateway and Prometheus; egress to Redis and DNS.
 apiVersion: networking.k8s.io/v1
 kind: NetworkPolicy
 metadata:
@@ -85,6 +85,15 @@ spec:
         - podSelector:
             matchLabels:
               app: recsys-api-gateway
+      ports:
+        - port: 8080
+    - from:
+        - namespaceSelector:
+            matchLabels:
+              kubernetes.io/metadata.name: monitoring
+          podSelector:
+            matchLabels:
+              app.kubernetes.io/name: prometheus
       ports:
         - port: 8080
   egress:

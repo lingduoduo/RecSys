@@ -15,7 +15,9 @@ spec:
       labels:
         app: recsys-model-serving
       annotations:
-        prometheus.io/scrape: "true"
+        # Annotation-based scraping disabled — ServiceMonitor (k8s/base/servicemonitor.yaml) is the authoritative discovery path.
+        # Set to "true" only in environments without the Prometheus Operator.
+        prometheus.io/scrape: "false"
         prometheus.io/path: "/actuator/prometheus"
         prometheus.io/port: "8080"
     spec:
