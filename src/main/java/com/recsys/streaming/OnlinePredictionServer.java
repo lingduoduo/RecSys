@@ -29,6 +29,7 @@ public final class OnlinePredictionServer {
 
         Pool<Jedis> jedisPool = RedisConnectionFactory.fromEnv();
         AsyncEventPublisher asyncEventPublisher = new AsyncEventPublisher();
+        LearnerFlushScheduler learnerFlushScheduler = null;
 
         try {
             DataManager dataManager = DataManager.getInstance();
@@ -36,8 +37,12 @@ public final class OnlinePredictionServer {
             TrendingStore topkStore = new ShardedTopKStore(jedisPool, "topk:");
             OnlineFeatureStore onlineFeatureStore = new OnlineFeatureStore(jedisPool);
             OnlineRecommendationEngine engine = new OnlineRecommendationEngine(dataManager, topkStore, onlineFeatureStore);
+            OnlineLearner onlineLearner = new OnlineLearner();
             OnlineRecommendationService recommendationService =
-                    new OnlineRecommendationService(dataManager, engine, candidateGenerator);
+                    new OnlineRecommendationService(dataManager, engine, candidateGenerator, onlineLearner);
+            learnerFlushScheduler =
+                    new LearnerFlushScheduler(onlineLearner, jedisPool, "bias:item", 30L);
+            learnerFlushScheduler.start();
             PrometheusMeterRegistry registry = PrometheusMeterRegistries.defaultRegistry();
             OnlineServingMetricsService metricsService = new OnlineServingMetricsService();
             OnlineLoadShedder loadShedder = new OnlineLoadShedder();
@@ -86,6 +91,7 @@ public final class OnlinePredictionServer {
             Runtime.getRuntime().addShutdownHook(new Thread(() -> {
                 server.stop().join();
                 asyncEventPublisher.close();
+                learnerFlushScheduler.close();
                 jedisPool.close();
             }));
 
@@ -93,6 +99,7 @@ public final class OnlinePredictionServer {
             server.blockUntilShutdown();
         } catch (Exception e) {
             asyncEventPublisher.close();
+            if (learnerFlushScheduler != null) learnerFlushScheduler.close();
             jedisPool.close();
             throw e;
         }
