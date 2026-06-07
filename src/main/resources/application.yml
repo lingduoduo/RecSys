@@ -27,6 +27,7 @@ recsys:
       api-key: ${POSTHOG_PROJECT_API_KEY:}
       host: ${POSTHOG_HOST:https://us.i.posthog.com}
       timeout: ${POSTHOG_FEATURE_FLAGS_TIMEOUT:2s}
+      cache-ttl: ${POSTHOG_FEATURE_FLAGS_CACHE_TTL:60s}
   ab-test:
     enabled: false
     layer-name: default

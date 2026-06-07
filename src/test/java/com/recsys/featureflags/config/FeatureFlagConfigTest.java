@@ -40,4 +40,18 @@ class FeatureFlagConfigTest {
                     assertThat(config.getPostHog().getTimeout()).isEqualTo(java.time.Duration.ofMillis(500));
                 });
     }
+
+    @Test
+    void bindsPostHogCacheTtl() {
+        contextRunner
+                .withPropertyValues(
+                        "recsys.feature-flags.post-hog.enabled=true",
+                        "recsys.feature-flags.post-hog.api-key=phc_test",
+                        "recsys.feature-flags.post-hog.cache-ttl=30s")
+                .run(context -> {
+                    FeatureFlagConfig.Properties config = context.getBean(FeatureFlagConfig.Properties.class);
+                    assertThat(config.getPostHog().getCacheTtl())
+                            .isEqualTo(java.time.Duration.ofSeconds(30));
+                });
+    }
 }
