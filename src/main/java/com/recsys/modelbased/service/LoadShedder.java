@@ -1,6 +1,9 @@
 package com.recsys.modelbased.service;
 
 import com.recsys.modelbased.config.HealthProperties;
+import io.micrometer.core.instrument.Counter;
+import io.micrometer.core.instrument.Gauge;
+import io.micrometer.core.instrument.MeterRegistry;
 import org.springframework.stereotype.Service;
 
 import java.util.concurrent.Semaphore;
@@ -16,13 +19,32 @@ public class LoadShedder {
     private final AtomicInteger inFlightRequests = new AtomicInteger();
     private final AtomicLong acceptedRequests = new AtomicLong();
     private final AtomicLong rejectedRequests = new AtomicLong();
+    private final Counter acceptedCounter;
+    private final Counter rejectedCounter;
     // Set once on SIGTERM; volatile ensures all threads see it immediately.
     private volatile boolean shuttingDown = false;
 
-    public LoadShedder(HealthProperties props) {
+    public LoadShedder(HealthProperties props, MeterRegistry registry) {
         this.maxConcurrentRequests = props.getMaxConcurrentRequests();
         this.maxReadinessUtilization = props.getMaxInFlightUtilization();
         this.requestSlots = new Semaphore(maxConcurrentRequests);
+        this.acceptedCounter = Counter.builder("recsys.load_shedder.requests")
+                .tag("result", "accepted")
+                .description("Total load-shedder decisions by result")
+                .register(registry);
+        this.rejectedCounter = Counter.builder("recsys.load_shedder.requests")
+                .tag("result", "rejected")
+                .description("Total load-shedder decisions by result")
+                .register(registry);
+        // Gauge.builder stores state as a WeakReference. Safe here because
+        // LoadShedder is a @Service singleton — Spring holds a strong reference
+        // for the full application lifetime.
+        Gauge.builder("recsys.load_shedder.in_flight_requests", inFlightRequests, AtomicInteger::get)
+                .description("Number of in-flight ONNX inference requests")
+                .register(registry);
+        Gauge.builder("recsys.load_shedder.utilization", this, s -> s.snapshot().utilization())
+                .description("In-flight / max-concurrent ratio (0–1)")
+                .register(registry);
     }
 
     /**
@@ -40,14 +62,17 @@ public class LoadShedder {
     public boolean tryAcquire() {
         if (shuttingDown) {
             rejectedRequests.incrementAndGet();
+            rejectedCounter.increment();
             return false;
         }
         if (!requestSlots.tryAcquire()) {
             rejectedRequests.incrementAndGet();
+            rejectedCounter.increment();
             return false;
         }
         inFlightRequests.incrementAndGet();
         acceptedRequests.incrementAndGet();
+        acceptedCounter.increment();
         return true;
     }
 
