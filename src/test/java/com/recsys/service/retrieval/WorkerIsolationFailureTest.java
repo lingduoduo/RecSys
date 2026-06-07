@@ -18,6 +18,8 @@ import static org.assertj.core.api.Assertions.assertThat;
 class WorkerIsolationFailureTest {
 
     private WorkerBulkhead bulkhead;
+    // 150ms timeout + thread pool scheduling + future completion overhead
+    private static final long MAX_ISOLATION_ELAPSED_MS = 400L;
 
     @AfterEach
     void tearDown() {
@@ -46,7 +48,7 @@ class WorkerIsolationFailureTest {
 
         assertThat(results).hasSize(1);
         assertThat(results.get(0).itemId()).isEqualTo("fast-1");
-        assertThat(elapsed).isLessThan(400L);
+        assertThat(elapsed).isLessThan(MAX_ISOLATION_ELAPSED_MS);
     }
 
     @Test
