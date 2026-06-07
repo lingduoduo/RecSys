@@ -3,6 +3,7 @@ package com.recsys.streaming;
 import org.junit.jupiter.api.AfterEach;
 import org.junit.jupiter.api.Test;
 import redis.clients.jedis.Jedis;
+import redis.clients.jedis.JedisPool;
 import redis.clients.jedis.util.Pool;
 
 import java.util.concurrent.CountDownLatch;
@@ -30,7 +31,7 @@ class LearnerFlushSchedulerTest {
             }
         };
 
-        scheduler = new LearnerFlushScheduler(learner, null, "bias:", 1L);
+        scheduler = new LearnerFlushScheduler(learner, new JedisPool(), "bias:", 1L);
         scheduler.start();
 
         assertThat(latch.await(3, TimeUnit.SECONDS)).isTrue();
@@ -50,7 +51,7 @@ class LearnerFlushSchedulerTest {
             }
         };
 
-        scheduler = new LearnerFlushScheduler(learner, null, "bias:", 1L);
+        scheduler = new LearnerFlushScheduler(learner, new JedisPool(), "bias:", 1L);
         scheduler.start();
 
         assertThat(twoSuccessful.await(5, TimeUnit.SECONDS)).isTrue();
@@ -59,7 +60,7 @@ class LearnerFlushSchedulerTest {
 
     @Test
     void snapshotContainsIntervalSeconds() {
-        scheduler = new LearnerFlushScheduler(new OnlineLearner(), null, "bias:", 30L);
+        scheduler = new LearnerFlushScheduler(new OnlineLearner(), new JedisPool(), "bias:", 30L);
         assertThat(scheduler.snapshot().intervalSeconds()).isEqualTo(30L);
     }
 }

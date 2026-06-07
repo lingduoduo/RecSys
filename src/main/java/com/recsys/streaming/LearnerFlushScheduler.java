@@ -37,25 +37,32 @@ public final class LearnerFlushScheduler implements AutoCloseable {
     }
 
     public void start() {
+        // scheduleWithFixedDelay: interval measured after flush completes, preventing back-to-back writes
         scheduler.scheduleWithFixedDelay(
                 this::tryFlush, intervalSeconds, intervalSeconds, TimeUnit.SECONDS);
     }
 
     private void tryFlush() {
+        if (pool == null) return;
         try {
             learner.flushToRedis(pool, keyPrefix);
             flushCount.incrementAndGet();
             lastFlushMs = System.currentTimeMillis();
         } catch (Exception e) {
             errorCount.incrementAndGet();
-            log.warn("LearnerFlushScheduler: flush error: {}", e.toString());
+            log.warn("LearnerFlushScheduler: flush error", e);
         }
     }
 
     @Override
     public void close() {
         scheduler.shutdown();
-        tryFlush(); // best-effort final flush
+        try {
+            scheduler.awaitTermination(intervalSeconds, TimeUnit.SECONDS);
+        } catch (InterruptedException ie) {
+            Thread.currentThread().interrupt();
+        }
+        tryFlush(); // final flush on calling thread
     }
 
     public Snapshot snapshot() {
