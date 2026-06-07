@@ -70,10 +70,12 @@ public class InferenceMetricsService {
         Gauge.builder("recsys.inference.recent_failure_rate", this,
                 s -> s.snapshot().recentFailureRate())
                 .description("Rolling-window failure rate (0–1)")
+                .strongReference(true)
                 .register(registry);
         Gauge.builder("recsys.inference.throughput_per_second", this,
                 s -> s.snapshot().throughputPerSecond())
                 .description("Rolling-window requests per second")
+                .strongReference(true)
                 .register(registry);
     }
 
