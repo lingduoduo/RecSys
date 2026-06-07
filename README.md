@@ -84,6 +84,7 @@ curl http://localhost:8010/health
 - [Configuration](#configuration)
 - [Model Serving Demo](#model-serving-demo)
 - [A/B Testing](#ab-testing)
+- [Feature Flags](#feature-flags)
 - [Testing](#testing)
 - [Redis Test Data](#redis-test-data)
 - [Online Serving](#online-serving)
@@ -695,6 +696,11 @@ curl -v -X POST http://localhost:8010/api/llm/api/generate \
 | `recsys.health.max-avg-latency-ms` | `2000` | Avg latency above which `/health/ready` → `503` |
 | `recsys.health.max-concurrent-requests` | `64` | Per-instance in-flight cap |
 | `MYSQL_ENABLED` | `false` | Optional MySQL switch |
+| `FEATURE_FLAG_ENVIRONMENT_PREFIX` | `FEATURE_FLAG_` | Prefix for environment-backed feature flags |
+| `POSTHOG_FEATURE_FLAGS_ENABLED` | `false` | Enables PostHog feature-flag evaluation |
+| `POSTHOG_PROJECT_API_KEY` | _(unset)_ | PostHog project API key used by `/decide` |
+| `POSTHOG_HOST` | `https://us.i.posthog.com` | PostHog host |
+| `POSTHOG_FEATURE_FLAGS_TIMEOUT` | `2s` | PostHog request timeout |
 
 ---
 
@@ -836,6 +842,50 @@ Compare live variant performance:
 ```bash
 curl http://localhost:8080/health/ab-tests
 ```
+
+---
+
+## Feature Flags
+
+`FeatureFlagService` provides boolean feature flags with safe per-flag defaults. Providers are evaluated in order:
+
+1. Environment overrides.
+2. PostHog, when enabled and configured.
+3. The flag's default value.
+
+Environment flags normalize the flag key to uppercase snake case and prepend `FEATURE_FLAG_` by default:
+
+```bash
+# Enables FeatureFlag.disabledByDefault("new-ranking")
+FEATURE_FLAG_NEW_RANKING=true mvn spring-boot:run
+
+# Disables FeatureFlag.enabledByDefault("new-ranking")
+FEATURE_FLAG_NEW_RANKING=false mvn spring-boot:run
+```
+
+Accepted truthy values are `true`, `1`, `yes`, `on`, and `enabled`; accepted falsey values are `false`, `0`, `no`, `off`, and `disabled`.
+
+Enable PostHog evaluation:
+
+```bash
+POSTHOG_FEATURE_FLAGS_ENABLED=true \
+POSTHOG_PROJECT_API_KEY=phc_your_project_key \
+POSTHOG_HOST=https://us.i.posthog.com \
+  mvn spring-boot:run
+```
+
+PostHog evaluation requires a non-blank distinct ID:
+
+```java
+FeatureFlag flag = FeatureFlag.disabledByDefault("new-ranking");
+boolean enabled = featureFlagService.isEnabled(
+    flag,
+    "user-123",
+    Map.of("plan", "pro")
+);
+```
+
+If PostHog or an environment value cannot resolve a flag, callers get the default declared on the `FeatureFlag`, so failure mode stays explicit at the call site.
 
 ---
 
