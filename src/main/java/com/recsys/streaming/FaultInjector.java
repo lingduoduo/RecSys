@@ -5,7 +5,7 @@ import java.util.concurrent.ConcurrentHashMap;
 
 public class FaultInjector {
 
-    public static final FaultInjector NOOP = new FaultInjector() {
+    public static final FaultInjector NOOP = new FaultInjector(true) {
         @Override public void injectLatency(String point, long millis) {}
         @Override public void injectException(String point, RuntimeException ex) {}
         @Override public void clear(String point) {}
@@ -16,10 +16,20 @@ public class FaultInjector {
 
     private record FaultConfig(FaultType type, long latencyMs, RuntimeException exception) {}
 
-    private final ConcurrentHashMap<String, FaultConfig> faults = new ConcurrentHashMap<>();
+    // null in NOOP instances — all mutating methods are overridden to no-ops
+    private final ConcurrentHashMap<String, FaultConfig> faults;
+
+    public FaultInjector() {
+        this.faults = new ConcurrentHashMap<>();
+    }
+
+    private FaultInjector(boolean noop) {
+        this.faults = null; // NOOP — never accessed
+    }
 
     public void injectLatency(String point, long millis) {
         Objects.requireNonNull(point, "point");
+        if (millis < 0) throw new IllegalArgumentException("millis must be >= 0, got " + millis);
         faults.put(point, new FaultConfig(FaultType.LATENCY, millis, null));
     }
 
@@ -30,20 +40,22 @@ public class FaultInjector {
     }
 
     public void clear(String point) {
+        Objects.requireNonNull(point, "point");
         faults.remove(point);
     }
 
     public void maybeInject(String point) {
         FaultConfig config = faults.get(point);
         if (config == null) return;
-        if (config.type() == FaultType.LATENCY) {
-            try {
-                Thread.sleep(config.latencyMs());
-            } catch (InterruptedException e) {
-                Thread.currentThread().interrupt();
+        switch (config.type()) {
+            case LATENCY -> {
+                try {
+                    Thread.sleep(config.latencyMs());
+                } catch (InterruptedException e) {
+                    Thread.currentThread().interrupt();
+                }
             }
-        } else {
-            throw config.exception();
+            case EXCEPTION -> throw config.exception();
         }
     }
 }
