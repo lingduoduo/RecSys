@@ -14,7 +14,7 @@ import java.util.Map;
 import java.util.PriorityQueue;
 import java.util.concurrent.ConcurrentHashMap;
 
-public final class OnlineLearner {
+public class OnlineLearner {
     private static final double DEFAULT_LEARNING_RATE = 0.08;
     private static final double DEFAULT_L2 = 0.001;
     private static final double DEFAULT_MAX_ABS_BIAS = 2.0;
