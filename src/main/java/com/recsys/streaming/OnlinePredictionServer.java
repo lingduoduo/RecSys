@@ -87,11 +87,12 @@ public final class OnlinePredictionServer {
 
             Server server = sb.build();
             metricsService.registerGauges(registry);
+            LearnerFlushScheduler activeLearnerFlushScheduler = learnerFlushScheduler;
 
             Runtime.getRuntime().addShutdownHook(new Thread(() -> {
                 server.stop().join();
                 asyncEventPublisher.close();
-                learnerFlushScheduler.close();
+                activeLearnerFlushScheduler.close();
                 jedisPool.close();
             }));
 

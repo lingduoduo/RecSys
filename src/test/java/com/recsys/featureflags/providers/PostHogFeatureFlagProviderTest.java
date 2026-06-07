@@ -5,34 +5,36 @@ import com.fasterxml.jackson.databind.ObjectMapper;
 import com.recsys.featureflags.models.FeatureFlag;
 import org.junit.jupiter.api.BeforeEach;
 import org.junit.jupiter.api.Test;
-import org.mockito.ArgumentCaptor;
 
+import javax.net.ssl.SSLContext;
+import javax.net.ssl.SSLParameters;
+import javax.net.ssl.SSLSession;
+import java.net.Authenticator;
+import java.net.CookieHandler;
+import java.net.ProxySelector;
 import java.net.URI;
 import java.net.http.HttpClient;
+import java.net.http.HttpHeaders;
 import java.net.http.HttpRequest;
 import java.net.http.HttpResponse;
+import java.net.http.WebSocket;
 import java.time.Duration;
 import java.util.Map;
+import java.util.Optional;
+import java.util.concurrent.CompletableFuture;
+import java.util.concurrent.Executor;
 
 import static org.assertj.core.api.Assertions.assertThat;
-import static org.mockito.ArgumentMatchers.any;
-import static org.mockito.ArgumentMatchers.eq;
-import static org.mockito.Mockito.mock;
-import static org.mockito.Mockito.verify;
-import static org.mockito.Mockito.when;
 
 class PostHogFeatureFlagProviderTest {
 
-    private HttpClient client;
-    private HttpResponse<String> response;
+    private CapturingHttpClient client;
     private ObjectMapper objectMapper;
     private PostHogFeatureFlagProvider provider;
 
     @BeforeEach
-    @SuppressWarnings("unchecked")
     void setUp() {
-        client = mock(HttpClient.class);
-        response = mock(HttpResponse.class);
+        client = new CapturingHttpClient();
         objectMapper = new ObjectMapper();
         provider = new PostHogFeatureFlagProvider(
                 "phc_test",
@@ -44,11 +46,9 @@ class PostHogFeatureFlagProviderTest {
 
     @Test
     void resolvesBooleanFlagAndSendsEvaluationContext() throws Exception {
-        when(response.statusCode()).thenReturn(200);
-        when(response.body()).thenReturn("""
+        client.nextResponse = new StubResponse(200, """
                 {"featureFlags":{"new-ranking":false}}
                 """);
-        when(client.send(any(HttpRequest.class), any(HttpResponse.BodyHandler.class))).thenReturn(response);
 
         assertThat(provider.resolve(
                 FeatureFlag.enabledByDefault("new-ranking"),
@@ -56,9 +56,7 @@ class PostHogFeatureFlagProviderTest {
                 Map.of("plan", "pro")))
                 .contains(false);
 
-        ArgumentCaptor<HttpRequest> requestCaptor = ArgumentCaptor.forClass(HttpRequest.class);
-        verify(client).send(requestCaptor.capture(), any(HttpResponse.BodyHandler.class));
-        HttpRequest request = requestCaptor.getValue();
+        HttpRequest request = client.lastRequest;
         assertThat(request.uri()).isEqualTo(URI.create("https://posthog.example/decide/?v=3"));
         assertThat(request.timeout()).contains(Duration.ofSeconds(1));
 
@@ -72,11 +70,9 @@ class PostHogFeatureFlagProviderTest {
 
     @Test
     void treatsMultivariateFlagAsEnabled() throws Exception {
-        when(response.statusCode()).thenReturn(200);
-        when(response.body()).thenReturn("""
+        client.nextResponse = new StubResponse(200, """
                 {"featureFlags":{"new-ranking":"treatment"}}
                 """);
-        when(client.send(any(HttpRequest.class), any(HttpResponse.BodyHandler.class))).thenReturn(response);
 
         assertThat(provider.resolve(
                 FeatureFlag.disabledByDefault("new-ranking"),
@@ -93,8 +89,7 @@ class PostHogFeatureFlagProviderTest {
                 Map.of()))
                 .isEmpty();
 
-        when(response.statusCode()).thenReturn(500);
-        when(client.send(any(HttpRequest.class), any(HttpResponse.BodyHandler.class))).thenReturn(response);
+        client.nextResponse = new StubResponse(500, "");
 
         assertThat(provider.resolve(
                 FeatureFlag.disabledByDefault("new-ranking"),
@@ -127,5 +122,70 @@ class PostHogFeatureFlagProviderTest {
                 };
         request.bodyPublisher().orElseThrow().subscribe(subscriber);
         return output.toString(java.nio.charset.StandardCharsets.UTF_8);
+    }
+
+    private static final class CapturingHttpClient extends HttpClient {
+        private HttpRequest lastRequest;
+        private HttpResponse<String> nextResponse = new StubResponse(200, "{}");
+
+        @Override
+        public Optional<CookieHandler> cookieHandler() { return Optional.empty(); }
+        @Override
+        public Optional<Duration> connectTimeout() { return Optional.empty(); }
+        @Override
+        public Redirect followRedirects() { return Redirect.NEVER; }
+        @Override
+        public Optional<ProxySelector> proxy() { return Optional.empty(); }
+        @Override
+        public SSLContext sslContext() { return null; }
+        @Override
+        public SSLParameters sslParameters() { return null; }
+        @Override
+        public Optional<Authenticator> authenticator() { return Optional.empty(); }
+        @Override
+        public Version version() { return Version.HTTP_1_1; }
+        @Override
+        public Optional<Executor> executor() { return Optional.empty(); }
+
+        @Override
+        @SuppressWarnings("unchecked")
+        public <T> HttpResponse<T> send(HttpRequest request, HttpResponse.BodyHandler<T> responseBodyHandler) {
+            lastRequest = request;
+            return (HttpResponse<T>) nextResponse;
+        }
+
+        @Override
+        public <T> CompletableFuture<HttpResponse<T>> sendAsync(
+                HttpRequest request, HttpResponse.BodyHandler<T> responseBodyHandler) {
+            throw new UnsupportedOperationException();
+        }
+
+        @Override
+        public <T> CompletableFuture<HttpResponse<T>> sendAsync(
+                HttpRequest request,
+                HttpResponse.BodyHandler<T> responseBodyHandler,
+                HttpResponse.PushPromiseHandler<T> pushPromiseHandler) {
+            throw new UnsupportedOperationException();
+        }
+
+        @Override
+        public WebSocket.Builder newWebSocketBuilder() {
+            throw new UnsupportedOperationException();
+        }
+    }
+
+    private record StubResponse(int statusCode, String body) implements HttpResponse<String> {
+        @Override
+        public HttpRequest request() { return null; }
+        @Override
+        public Optional<HttpResponse<String>> previousResponse() { return Optional.empty(); }
+        @Override
+        public HttpHeaders headers() { return HttpHeaders.of(Map.of(), (name, value) -> true); }
+        @Override
+        public Optional<SSLSession> sslSession() { return Optional.empty(); }
+        @Override
+        public URI uri() { return URI.create("https://posthog.example/decide/?v=3"); }
+        @Override
+        public HttpClient.Version version() { return HttpClient.Version.HTTP_1_1; }
     }
 }

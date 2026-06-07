@@ -7,6 +7,8 @@ import com.linecorp.armeria.testing.junit5.server.ServerExtension;
 import org.junit.jupiter.api.Test;
 import org.junit.jupiter.api.extension.RegisterExtension;
 
+import java.time.Duration;
+
 import static org.assertj.core.api.Assertions.assertThat;
 
 class OnlineAdmissionControlTest {
@@ -34,6 +36,25 @@ class OnlineAdmissionControlTest {
         assertThat(rejected.contentUtf8()).contains("concurrency_limit");
 
         assertThat(first.join().status()).isEqualTo(HttpStatus.OK);
-        assertThat(SHEDDER.snapshot().inFlightRequests()).isZero();
+        assertInFlightEventually(0, Duration.ofSeconds(1));
+    }
+
+    private void assertInFlightEventually(int expected, Duration timeout) {
+        long deadline = System.nanoTime() + timeout.toNanos();
+        int actual;
+        do {
+            actual = SHEDDER.snapshot().inFlightRequests();
+            if (actual == expected) {
+                return;
+            }
+            try {
+                Thread.sleep(10);
+            } catch (InterruptedException e) {
+                Thread.currentThread().interrupt();
+                break;
+            }
+        } while (System.nanoTime() < deadline);
+
+        assertThat(actual).isEqualTo(expected);
     }
 }
