@@ -1,11 +1,14 @@
 package com.recsys.service.retrieval;
 
 import org.junit.jupiter.api.Test;
+import org.junit.jupiter.api.TestInstance;
 
 import java.util.concurrent.atomic.AtomicLong;
 
 import static org.assertj.core.api.Assertions.assertThat;
+import static org.assertj.core.api.Assertions.assertThatThrownBy;
 
+@TestInstance(TestInstance.Lifecycle.PER_METHOD)
 class ChannelHealthMonitorTest {
 
     private final AtomicLong clock = new AtomicLong(1_000_000L);
@@ -62,6 +65,19 @@ class ChannelHealthMonitorTest {
         failThrice("a");
         assertThat(monitor.isAvailable("a")).isFalse();
         assertThat(monitor.isAvailable("b")).isTrue();
+    }
+
+    @Test
+    void constructorRejectsZeroFailureThreshold() {
+        assertThatThrownBy(() -> new ChannelHealthMonitor(0, 1_000L, 30_000L, clock::get))
+                .isInstanceOf(IllegalArgumentException.class);
+    }
+
+    @Test
+    void constructorRejectsInvalidMaxBackoff() {
+        assertThatThrownBy(() -> new ChannelHealthMonitor(3, 5_000L, 1_000L, clock::get))
+                .isInstanceOf(IllegalArgumentException.class)
+                .hasMessageContaining("maxBackoffMs");
     }
 
     private void failThrice(String name) {

@@ -26,23 +26,29 @@ public final class ChannelHealthMonitor {
                                 LongSupplier clock) {
         if (failureThreshold < 1) throw new IllegalArgumentException("failureThreshold must be >= 1");
         if (baseBackoffMs < 1)    throw new IllegalArgumentException("baseBackoffMs must be >= 1");
+        if (maxBackoffMs < baseBackoffMs)
+            throw new IllegalArgumentException(
+                "maxBackoffMs (" + maxBackoffMs + ") must be >= baseBackoffMs (" + baseBackoffMs + ")");
         this.failureThreshold = failureThreshold;
         this.baseBackoffMs    = baseBackoffMs;
-        this.maxBackoffMs     = Math.max(baseBackoffMs, maxBackoffMs);
+        this.maxBackoffMs     = maxBackoffMs;
         this.clock            = Objects.requireNonNull(clock, "clock");
     }
 
     public boolean isAvailable(String channelName) {
+        Objects.requireNonNull(channelName, "channelName");
         ChannelState state = states.get(channelName);
         if (state == null) return true;
         return state.backoffUntilMs() < 0 || clock.getAsLong() >= state.backoffUntilMs();
     }
 
     public void recordSuccess(String channelName) {
+        Objects.requireNonNull(channelName, "channelName");
         states.put(channelName, ChannelState.HEALTHY);
     }
 
     public void recordFailure(String channelName) {
+        Objects.requireNonNull(channelName, "channelName");
         states.compute(channelName, (name, existing) -> {
             int failures = (existing == null ? 0 : existing.consecutiveFailures()) + 1;
             if (failures < failureThreshold) {
