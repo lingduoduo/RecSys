@@ -111,4 +111,24 @@ class LoadShedderTest {
         inFlight = registry.get("recsys.load_shedder.in_flight_requests").gauge().value();
         assertThat(inFlight).isEqualTo(0.0);
     }
+
+    @Test
+    void tryAcquire_registersRejectedCounterForBothRejectionPaths() {
+        var props = new HealthProperties();
+        props.setMaxConcurrentRequests(1);
+        var registry = new SimpleMeterRegistry();
+        var shedder = new LoadShedder(props, registry);
+
+        shedder.tryAcquire();            // accepted — fills the one slot
+        shedder.tryAcquire();            // rejected — semaphore exhausted
+
+        shedder.markShuttingDown();
+        shedder.tryAcquire();            // rejected — shuttingDown
+
+        double rejected = registry.counter("recsys.load_shedder.requests", "result", "rejected").count();
+        assertThat(rejected).isEqualTo(2.0);
+
+        double accepted = registry.counter("recsys.load_shedder.requests", "result", "accepted").count();
+        assertThat(accepted).isEqualTo(1.0);
+    }
 }

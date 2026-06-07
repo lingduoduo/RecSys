@@ -41,9 +41,11 @@ public class LoadShedder {
         // for the full application lifetime.
         Gauge.builder("recsys.load_shedder.in_flight_requests", inFlightRequests, AtomicInteger::get)
                 .description("Number of in-flight ONNX inference requests")
+                .strongReference(true)
                 .register(registry);
         Gauge.builder("recsys.load_shedder.utilization", this, s -> s.snapshot().utilization())
                 .description("In-flight / max-concurrent ratio (0–1)")
+                .strongReference(true)
                 .register(registry);
     }
 
