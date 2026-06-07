@@ -82,8 +82,20 @@ spec:
           type: Utilization
           averageUtilization: 80
   behavior:
+    scaleUp:
+      stabilizationWindowSeconds: 30
+      policies:
+        - type: Pods
+          value: 2
+          periodSeconds: 60
+      selectPolicy: Max
     scaleDown:
       stabilizationWindowSeconds: 300
+      policies:
+        - type: Pods
+          value: 1
+          periodSeconds: 120
+      selectPolicy: Min
 ---
 apiVersion: autoscaling/v2
 kind: HorizontalPodAutoscaler
