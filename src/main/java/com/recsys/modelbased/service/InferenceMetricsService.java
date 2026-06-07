@@ -1,6 +1,9 @@
 package com.recsys.modelbased.service;
 
 import com.recsys.modelbased.config.HealthProperties;
+import io.micrometer.core.instrument.Counter;
+import io.micrometer.core.instrument.Gauge;
+import io.micrometer.core.instrument.MeterRegistry;
 import org.slf4j.Logger;
 import org.slf4j.LoggerFactory;
 import org.springframework.stereotype.Service;
@@ -33,6 +36,10 @@ public class InferenceMetricsService {
     private final AtomicLong failureCount   = new AtomicLong();
     private final AtomicLong totalLatencyMs = new AtomicLong();
 
+    // Micrometer counters
+    private final Counter successCounter;
+    private final Counter failureCounter;
+
     // Rolling window — needed for recency-sensitive readiness checks.
     // Running totals (windowTotal, windowFailures, windowLatencyMs) mirror the deque so that
     // snapshot() reads are O(1) instead of O(window-size). They are decremented in evict().
@@ -46,8 +53,30 @@ public class InferenceMetricsService {
     private final Map<String, VariantMetrics> variantMetrics = new TreeMap<>();
     private final Object variantLock = new Object();
 
-    public InferenceMetricsService(HealthProperties props) {
+    public InferenceMetricsService(HealthProperties props, MeterRegistry registry) {
         this.windowSeconds = props.getWindowSeconds();
+        this.successCounter = Counter.builder("recsys.inference.requests")
+                .tag("result", "success")
+                .description("Total inference requests by result")
+                .register(registry);
+        this.failureCounter = Counter.builder("recsys.inference.requests")
+                .tag("result", "failure")
+                .description("Total inference requests by result")
+                .register(registry);
+        // Gauge.builder stores `this` as a WeakReference internally. Safe here because
+        // InferenceMetricsService is a @Service singleton — Spring holds a strong reference
+        // for the full application lifetime. If this class were ever prototype-scoped,
+        // the gauge would silently return NaN after GC.
+        Gauge.builder("recsys.inference.recent_failure_rate", this,
+                s -> s.snapshot().recentFailureRate())
+                .description("Rolling-window failure rate (0–1)")
+                .strongReference(true)
+                .register(registry);
+        Gauge.builder("recsys.inference.throughput_per_second", this,
+                s -> s.snapshot().throughputPerSecond())
+                .description("Rolling-window requests per second")
+                .strongReference(true)
+                .register(registry);
     }
 
     public void recordSuccess(long latencyMs) {
@@ -74,6 +103,10 @@ public class InferenceMetricsService {
         if (failed) failureCount.incrementAndGet();
         else         successCount.incrementAndGet();
         totalLatencyMs.addAndGet(latencyMs);
+
+        // Micrometer counter increments (thread-safe, no lock needed)
+        if (failed) failureCounter.increment();
+        else         successCounter.increment();
 
         // Rolling window requires a lock: evict + add + running-total updates must be atomic
         long now = System.currentTimeMillis() / 1_000L;

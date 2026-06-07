@@ -66,7 +66,7 @@ spec:
     apiVersion: apps/v1
     kind: Deployment
     name: recsys-model-serving
-  minReplicas: 2
+  minReplicas: 3
   maxReplicas: 6
   metrics:
     - type: Resource
@@ -82,8 +82,20 @@ spec:
           type: Utilization
           averageUtilization: 80
   behavior:
+    scaleUp:
+      stabilizationWindowSeconds: 120
+      policies:
+        - type: Pods
+          value: 2
+          periodSeconds: 60
+      selectPolicy: Max
     scaleDown:
       stabilizationWindowSeconds: 300
+      policies:
+        - type: Pods
+          value: 1
+          periodSeconds: 120
+      selectPolicy: Min
 ---
 apiVersion: autoscaling/v2
 kind: HorizontalPodAutoscaler

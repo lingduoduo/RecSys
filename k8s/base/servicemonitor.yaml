@@ -1,0 +1,23 @@
+apiVersion: monitoring.coreos.com/v1
+kind: ServiceMonitor
+metadata:
+  name: recsys-model-serving
+  namespace: recsys
+  labels:
+    app: recsys-model-serving
+    # Must match the Prometheus CR's serviceMonitorSelector; adjust for your cluster.
+    # kube-prometheus-stack default: release: <helm-release-name>
+    release: kube-prometheus-stack
+spec:
+  namespaceSelector:
+    matchNames:
+      - recsys
+  selector:
+    matchLabels:
+      app: recsys-model-serving
+  endpoints:
+    - port: http
+      path: /actuator/prometheus
+      interval: 15s
+      scrapeTimeout: 10s
+      scheme: http

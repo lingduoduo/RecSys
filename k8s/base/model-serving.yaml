@@ -6,7 +6,13 @@ metadata:
   labels:
     app: recsys-model-serving
 spec:
-  replicas: 2
+  replicas: 3
+  progressDeadlineSeconds: 600
+  strategy:
+    type: RollingUpdate
+    rollingUpdate:
+      maxUnavailable: 0
+      maxSurge: 1
   selector:
     matchLabels:
       app: recsys-model-serving
@@ -14,6 +20,12 @@ spec:
     metadata:
       labels:
         app: recsys-model-serving
+      annotations:
+        # Annotation-based scraping disabled — ServiceMonitor (k8s/base/servicemonitor.yaml) is the authoritative discovery path.
+        # Set to "true" only in environments without the Prometheus Operator.
+        prometheus.io/scrape: "false"
+        prometheus.io/path: "/actuator/prometheus"
+        prometheus.io/port: "8080"
     spec:
       terminationGracePeriodSeconds: 60
       securityContext:
@@ -46,6 +58,8 @@ spec:
               value: "8080"
             - name: JAVA_OPTS
               value: "-Xms1g -Xmx2g -XX:MaxDirectMemorySize=512m"
+            - name: MANAGEMENT_ENDPOINTS_EXPOSURE
+              value: "health,info,prometheus"
           ports:
             - name: http
               containerPort: 8080

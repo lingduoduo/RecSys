@@ -5,11 +5,11 @@ import com.fasterxml.jackson.databind.ObjectMapper;
 import com.linecorp.armeria.common.AggregatedHttpResponse;
 import com.linecorp.armeria.common.HttpData;
 import com.linecorp.armeria.common.HttpMethod;
+import com.linecorp.armeria.common.HttpResponse;
 import com.linecorp.armeria.common.HttpStatus;
 import com.linecorp.armeria.common.RequestHeaders;
 import com.linecorp.armeria.server.Route;
 import com.linecorp.armeria.server.ServerBuilder;
-import com.linecorp.armeria.server.metric.PrometheusExpositionService;
 import com.linecorp.armeria.testing.junit5.server.ServerExtension;
 import com.recsys.infrastructure.redis.sharding.Page;
 import com.recsys.infrastructure.redis.sharding.RecordType;
@@ -59,7 +59,7 @@ class OnlinePredictionServerIntegrationTest {
             sb.service("/health/live", new OnlineLiveService())
               .service("/health/ready", new OnlineHealthService(metrics, shedder))
               .service("/health", new OnlineHealthService(metrics, shedder))
-              .service("/metrics", PrometheusExpositionService.of())
+              .service("/metrics", (ctx, req) -> HttpResponse.of(HttpStatus.OK))
               .service("/online/features", new OnlineAdmissionControl(
                       new OnlineFeaturesService(mockRec, metrics, shedder,
                               RedisRateLimiter.disabled(), null, true), shedder, metrics))

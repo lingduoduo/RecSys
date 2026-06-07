@@ -1,6 +1,7 @@
 package com.recsys.modelbased.service;
 
 import com.recsys.modelbased.config.HealthProperties;
+import io.micrometer.core.instrument.simple.SimpleMeterRegistry;
 import org.junit.jupiter.api.BeforeEach;
 import org.junit.jupiter.api.Test;
 
@@ -15,7 +16,7 @@ class InferenceMetricsServiceTest {
     void setUp() {
         var props = new HealthProperties();
         props.setWindowSeconds(60);
-        metrics = new InferenceMetricsService(props);
+        metrics = new InferenceMetricsService(props, new SimpleMeterRegistry());
     }
 
     @Test
@@ -84,10 +85,47 @@ class InferenceMetricsServiceTest {
     void throughputPerSecond_basedOnWindowSize() {
         var props = new HealthProperties();
         props.setWindowSeconds(10);
-        var svc = new InferenceMetricsService(props);
+        var svc = new InferenceMetricsService(props, new SimpleMeterRegistry());
         for (int i = 0; i < 5; i++) svc.recordSuccess(10L);
 
         InferenceMetricsService.Snapshot snap = svc.snapshot();
         assertThat(snap.throughputPerSecond()).isCloseTo(0.5, within(1e-9));
+    }
+
+    @Test
+    void recordSuccess_and_recordFailure_incrementMicrometerCounters() {
+        var props = new HealthProperties();
+        props.setWindowSeconds(60);
+        var registry = new SimpleMeterRegistry();
+        var svc = new InferenceMetricsService(props, registry);
+
+        svc.recordSuccess(42L);
+        svc.recordSuccess(10L);
+        svc.recordFailure(5L);
+
+        double successCount = registry.counter("recsys.inference.requests",
+                "result", "success").count();
+        double failureCount = registry.counter("recsys.inference.requests",
+                "result", "failure").count();
+
+        assertThat(successCount).isEqualTo(2.0);
+        assertThat(failureCount).isEqualTo(1.0);
+    }
+
+    @Test
+    void gauges_reflectSnapshotValuesAfterRequests() {
+        var registry = new SimpleMeterRegistry();
+        var props = new HealthProperties();
+        props.setWindowSeconds(60);
+        var svc = new InferenceMetricsService(props, registry);
+
+        svc.recordSuccess(100L);
+        svc.recordFailure(50L);
+
+        double failureRate = registry.get("recsys.inference.recent_failure_rate").gauge().value();
+        double throughput  = registry.get("recsys.inference.throughput_per_second").gauge().value();
+
+        assertThat(failureRate).isCloseTo(0.5, within(1e-9));
+        assertThat(throughput).isPositive();
     }
 }

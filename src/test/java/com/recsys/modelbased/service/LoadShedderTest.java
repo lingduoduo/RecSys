@@ -1,6 +1,7 @@
 package com.recsys.modelbased.service;
 
 import com.recsys.modelbased.config.HealthProperties;
+import io.micrometer.core.instrument.simple.SimpleMeterRegistry;
 import org.junit.jupiter.api.Test;
 
 import static org.assertj.core.api.Assertions.assertThat;
@@ -11,7 +12,7 @@ class LoadShedderTest {
     void tryAcquire_rejectsWhenConcurrencyLimitReached() {
         var props = new HealthProperties();
         props.setMaxConcurrentRequests(2);
-        var shedder = new LoadShedder(props);
+        var shedder = new LoadShedder(props, new SimpleMeterRegistry());
 
         assertThat(shedder.tryAcquire()).isTrue();
         assertThat(shedder.tryAcquire()).isTrue();
@@ -28,7 +29,7 @@ class LoadShedderTest {
     void release_allowsAnotherRequest() {
         var props = new HealthProperties();
         props.setMaxConcurrentRequests(1);
-        var shedder = new LoadShedder(props);
+        var shedder = new LoadShedder(props, new SimpleMeterRegistry());
 
         assertThat(shedder.tryAcquire()).isTrue();
         assertThat(shedder.tryAcquire()).isFalse();
@@ -44,7 +45,7 @@ class LoadShedderTest {
         var props = new HealthProperties();
         props.setMaxConcurrentRequests(4);
         props.setMaxInFlightUtilization(0.75);
-        var shedder = new LoadShedder(props);
+        var shedder = new LoadShedder(props, new SimpleMeterRegistry());
 
         assertThat(shedder.tryAcquire()).isTrue();
         assertThat(shedder.tryAcquire()).isTrue();
@@ -59,7 +60,7 @@ class LoadShedderTest {
     void markShuttingDown_rejectsAllNewAcquires() {
         var props = new HealthProperties();
         props.setMaxConcurrentRequests(10);
-        var shedder = new LoadShedder(props);
+        var shedder = new LoadShedder(props, new SimpleMeterRegistry());
 
         assertThat(shedder.tryAcquire()).isTrue();
         shedder.markShuttingDown();
@@ -78,7 +79,7 @@ class LoadShedderTest {
     void markShuttingDown_doesNotAffectInFlightRelease() {
         var props = new HealthProperties();
         props.setMaxConcurrentRequests(5);
-        var shedder = new LoadShedder(props);
+        var shedder = new LoadShedder(props, new SimpleMeterRegistry());
 
         assertThat(shedder.tryAcquire()).isTrue();
         shedder.markShuttingDown();
@@ -86,5 +87,48 @@ class LoadShedderTest {
         // In-flight request that acquired before shutdown must still release cleanly.
         shedder.release();
         assertThat(shedder.snapshot().inFlightRequests()).isZero();
+    }
+
+    @Test
+    void tryAcquire_registersInFlightGaugeAndAcceptedCounter() {
+        var props = new HealthProperties();
+        props.setMaxConcurrentRequests(4);
+        var registry = new SimpleMeterRegistry();
+        var shedder = new LoadShedder(props, registry);
+
+        shedder.tryAcquire();
+        shedder.tryAcquire();
+
+        double inFlight = registry.get("recsys.load_shedder.in_flight_requests").gauge().value();
+        assertThat(inFlight).isEqualTo(2.0);
+
+        double accepted = registry.counter("recsys.load_shedder.requests", "result", "accepted").count();
+        assertThat(accepted).isEqualTo(2.0);
+
+        shedder.release();
+        shedder.release();
+
+        inFlight = registry.get("recsys.load_shedder.in_flight_requests").gauge().value();
+        assertThat(inFlight).isEqualTo(0.0);
+    }
+
+    @Test
+    void tryAcquire_registersRejectedCounterForBothRejectionPaths() {
+        var props = new HealthProperties();
+        props.setMaxConcurrentRequests(1);
+        var registry = new SimpleMeterRegistry();
+        var shedder = new LoadShedder(props, registry);
+
+        shedder.tryAcquire();            // accepted — fills the one slot
+        shedder.tryAcquire();            // rejected — semaphore exhausted
+
+        shedder.markShuttingDown();
+        shedder.tryAcquire();            // rejected — shuttingDown
+
+        double rejected = registry.counter("recsys.load_shedder.requests", "result", "rejected").count();
+        assertThat(rejected).isEqualTo(2.0);
+
+        double accepted = registry.counter("recsys.load_shedder.requests", "result", "accepted").count();
+        assertThat(accepted).isEqualTo(1.0);
     }
 }
