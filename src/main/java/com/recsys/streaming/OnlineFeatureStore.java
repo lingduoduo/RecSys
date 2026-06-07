@@ -138,7 +138,9 @@ public final class OnlineFeatureStore implements RecentHistoryStore {
                 }
             });
         } catch (RuntimeException e) {
-            log.warn("getFeatures Redis batch failed; serving {} stale values", staleByKey.size(), e);
+            log.warn("getFeatures Redis batch failed; serving {} stale values: {}",
+                    staleByKey.size(), e.toString());
+            log.debug("getFeatures Redis batch failure details", e);
             result.putAll(staleByKey);
         }
         return result;
