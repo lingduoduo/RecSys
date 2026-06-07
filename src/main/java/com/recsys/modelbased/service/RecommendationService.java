@@ -1,5 +1,7 @@
 package com.recsys.modelbased.service;
 
+import com.recsys.featureflags.FeatureFlagService;
+import com.recsys.featureflags.Flags;
 import com.recsys.modelbased.config.RecommendationCacheProperties;
 import com.recsys.modelbased.dto.RecommendRequest;
 import com.recsys.modelbased.dto.RecommendResponse;
@@ -23,23 +25,37 @@ public class RecommendationService {
     private final ModelRuntimeProvider modelRuntimeProvider;
     private final ABTestService abTestService;
     private final RecommendationCache cache;
+    private final FeatureFlagService featureFlagService;
+
+    private static final FeatureFlagService NOOP_FLAGS =
+            new FeatureFlagService((flag, id, props) -> java.util.Optional.empty());
 
     public RecommendationService(
             ModelRuntimeProvider modelRuntimeProvider,
             ABTestService abTestService
     ) {
-        this(modelRuntimeProvider, abTestService, new RecommendationCacheProperties());
+        this(modelRuntimeProvider, abTestService, new RecommendationCacheProperties(), NOOP_FLAGS);
+    }
+
+    public RecommendationService(
+            ModelRuntimeProvider modelRuntimeProvider,
+            ABTestService abTestService,
+            RecommendationCacheProperties cacheProperties
+    ) {
+        this(modelRuntimeProvider, abTestService, cacheProperties, NOOP_FLAGS);
     }
 
     @Autowired
     public RecommendationService(
             ModelRuntimeProvider modelRuntimeProvider,
             ABTestService abTestService,
-            RecommendationCacheProperties cacheProperties
+            RecommendationCacheProperties cacheProperties,
+            FeatureFlagService featureFlagService
     ) {
         this.modelRuntimeProvider = modelRuntimeProvider;
         this.abTestService = abTestService;
         this.cache = new RecommendationCache(cacheProperties);
+        this.featureFlagService = featureFlagService;
     }
 
     public RecommendResponse recommend(RecommendRequest request) {
@@ -67,7 +83,9 @@ public class RecommendationService {
 
         // getOrCompute ensures concurrent misses for the same key share a single computation.
         List<ScoredItem> items = cache.getOrCompute(cacheKey, () -> {
-            if (cache.isColdStartEnabled() && isColdStartUser(request.getUserId(), runtime)) {
+            if (cache.isColdStartEnabled()
+                    && featureFlagService.isEnabled(Flags.COLD_START_ENABLED, request.getUserId())
+                    && isColdStartUser(request.getUserId(), runtime)) {
                 return coldStartItems(request, runtime, assignment, modelVersion, excludedItemIds);
             }
             return computeRecommendations(request, runtime, excludedItemIds);
