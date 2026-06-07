@@ -2,7 +2,6 @@ package com.recsys.service.retrieval;
 
 import com.recsys.model.MovieCandidate;
 import com.recsys.model.RecommendationQuery;
-import com.recsys.service.retrieval.ChannelHealthMonitor;
 import com.recsys.streaming.FaultInjector;
 import com.recsys.streaming.WorkerBulkhead;
 import org.junit.jupiter.api.Test;
@@ -60,7 +59,7 @@ class MultiChannelRecallServiceTest {
         RecallChannel slow = new RecallChannel() {
             @Override public String name() { return "slow"; }
             @Override public List<MovieCandidate> recall(RecommendationQuery query, int limit) {
-                try { Thread.sleep(500); } catch (InterruptedException e) { Thread.currentThread().interrupt(); }
+                try { Thread.sleep(2_000); } catch (InterruptedException e) { Thread.currentThread().interrupt(); }
                 return List.of(new MovieCandidate("slow-1", 0.9, "slow", Map.of()));
             }
         };

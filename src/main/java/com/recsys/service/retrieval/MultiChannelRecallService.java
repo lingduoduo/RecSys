@@ -27,6 +27,8 @@ public class MultiChannelRecallService {
     private final long channelTimeoutMs;
     private final FaultInjector faultInjector;
 
+    // Convenience constructor for tests. Production callers should supply a WorkerBulkhead
+    // via the 5-arg constructor — ForkJoinPool.commonPool() is unsuitable for blocking I/O.
     public MultiChannelRecallService(List<RecallChannel> channels) {
         this(channels, new ChannelHealthMonitor(), ForkJoinPool.commonPool(),
                 DEFAULT_CHANNEL_TIMEOUT_MS, FaultInjector.NOOP);
@@ -80,18 +82,17 @@ public class MultiChannelRecallService {
             ChannelResult result = future.join(); // already complete
             if (result.error() != null) {
                 healthMonitor.recordFailure(result.channel());
+                Throwable err = result.error();
                 log.warn("Channel '{}' failed: {}", result.channel(),
-                        result.error().getMessage());
+                        err.getMessage() != null ? err.getMessage() : err.getClass().getSimpleName());
                 continue;
             }
             healthMonitor.recordSuccess(result.channel());
-            if (result.candidates() != null) {
-                for (MovieCandidate c : result.candidates()) {
-                    if (query.excludedItemIds().contains(c.itemId())) continue;
-                    merged.merge(c.itemId(), c,
-                            (existing, incoming) ->
-                                    incoming.score() > existing.score() ? incoming : existing);
-                }
+            for (MovieCandidate c : result.candidates()) {
+                if (query.excludedItemIds().contains(c.itemId())) continue;
+                merged.merge(c.itemId(), c,
+                        (existing, incoming) ->
+                                incoming.score() > existing.score() ? incoming : existing);
             }
         }
 
@@ -102,5 +103,7 @@ public class MultiChannelRecallService {
                 .toList();
     }
 
-    private record ChannelResult(String channel, List<MovieCandidate> candidates, Throwable error) {}
+    private record ChannelResult(String channel, List<MovieCandidate> candidates, Throwable error) {
+        ChannelResult { Objects.requireNonNull(candidates, "candidates"); }
+    }
 }
