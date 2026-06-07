@@ -19,6 +19,14 @@ logging:
     org.springframework: INFO
 
 recsys:
+  feature-flags:
+    # Environment flags take precedence and use names such as FEATURE_FLAG_NEW_RANKING.
+    environment-prefix: ${FEATURE_FLAG_ENVIRONMENT_PREFIX:FEATURE_FLAG_}
+    post-hog:
+      enabled: ${POSTHOG_FEATURE_FLAGS_ENABLED:false}
+      api-key: ${POSTHOG_PROJECT_API_KEY:}
+      host: ${POSTHOG_HOST:https://us.i.posthog.com}
+      timeout: ${POSTHOG_FEATURE_FLAGS_TIMEOUT:2s}
   ab-test:
     enabled: false
     layer-name: default
