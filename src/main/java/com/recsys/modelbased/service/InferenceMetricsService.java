@@ -55,8 +55,18 @@ public class InferenceMetricsService {
 
     public InferenceMetricsService(HealthProperties props, MeterRegistry registry) {
         this.windowSeconds = props.getWindowSeconds();
-        this.successCounter = registry.counter("recsys.inference.requests", "result", "success");
-        this.failureCounter = registry.counter("recsys.inference.requests", "result", "failure");
+        this.successCounter = Counter.builder("recsys.inference.requests")
+                .tag("result", "success")
+                .description("Total inference requests by result")
+                .register(registry);
+        this.failureCounter = Counter.builder("recsys.inference.requests")
+                .tag("result", "failure")
+                .description("Total inference requests by result")
+                .register(registry);
+        // Gauge.builder stores `this` as a WeakReference internally. Safe here because
+        // InferenceMetricsService is a @Service singleton — Spring holds a strong reference
+        // for the full application lifetime. If this class were ever prototype-scoped,
+        // the gauge would silently return NaN after GC.
         Gauge.builder("recsys.inference.recent_failure_rate", this,
                 s -> s.snapshot().recentFailureRate())
                 .description("Rolling-window failure rate (0–1)")

@@ -111,4 +111,21 @@ class InferenceMetricsServiceTest {
         assertThat(successCount).isEqualTo(2.0);
         assertThat(failureCount).isEqualTo(1.0);
     }
+
+    @Test
+    void gauges_reflectSnapshotValuesAfterRequests() {
+        var registry = new SimpleMeterRegistry();
+        var props = new HealthProperties();
+        props.setWindowSeconds(60);
+        var svc = new InferenceMetricsService(props, registry);
+
+        svc.recordSuccess(100L);
+        svc.recordFailure(50L);
+
+        double failureRate = registry.get("recsys.inference.recent_failure_rate").gauge().value();
+        double throughput  = registry.get("recsys.inference.throughput_per_second").gauge().value();
+
+        assertThat(failureRate).isCloseTo(0.5, within(1e-9));
+        assertThat(throughput).isPositive();
+    }
 }
