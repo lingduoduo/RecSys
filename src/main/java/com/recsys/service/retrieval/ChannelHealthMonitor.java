@@ -22,6 +22,10 @@ public final class ChannelHealthMonitor {
                 System::currentTimeMillis);
     }
 
+    public ChannelHealthMonitor(int failureThreshold, long baseBackoffMs, long maxBackoffMs) {
+        this(failureThreshold, baseBackoffMs, maxBackoffMs, System::currentTimeMillis);
+    }
+
     public ChannelHealthMonitor(int failureThreshold, long baseBackoffMs, long maxBackoffMs,
                                 LongSupplier clock) {
         if (failureThreshold < 1) throw new IllegalArgumentException("failureThreshold must be >= 1");

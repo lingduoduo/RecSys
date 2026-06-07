@@ -2,11 +2,15 @@ package com.recsys.service.retrieval;
 
 import com.recsys.model.MovieCandidate;
 import com.recsys.model.RecommendationQuery;
+import com.recsys.service.retrieval.ChannelHealthMonitor;
+import com.recsys.streaming.FaultInjector;
+import com.recsys.streaming.WorkerBulkhead;
 import org.junit.jupiter.api.Test;
 
 import java.util.List;
 import java.util.Map;
 import java.util.Set;
+import java.util.concurrent.atomic.AtomicInteger;
 
 import static org.assertj.core.api.Assertions.assertThat;
 import static org.junit.jupiter.api.Assertions.assertEquals;
@@ -49,6 +53,59 @@ class MultiChannelRecallServiceTest {
 
         assertThat(recalled).hasSize(1);
         assertThat(recalled.get(0).itemId()).isEqualTo("42");
+    }
+
+    @Test
+    void slowChannelTimesOut_othersStillContribute() throws Exception {
+        RecallChannel slow = new RecallChannel() {
+            @Override public String name() { return "slow"; }
+            @Override public List<MovieCandidate> recall(RecommendationQuery query, int limit) {
+                try { Thread.sleep(500); } catch (InterruptedException e) { Thread.currentThread().interrupt(); }
+                return List.of(new MovieCandidate("slow-1", 0.9, "slow", Map.of()));
+            }
+        };
+        RecallChannel fast = channel("fast", new MovieCandidate("fast-1", 0.5, "fast", Map.of()));
+
+        WorkerBulkhead bulkhead = new WorkerBulkhead("test-recall", 4, 16);
+        ChannelHealthMonitor health = new ChannelHealthMonitor();
+        MultiChannelRecallService service = new MultiChannelRecallService(
+                List.of(slow, fast), health, bulkhead.asExecutorService(), 100L, FaultInjector.NOOP);
+
+        List<MovieCandidate> recalled = service.recall(
+                new RecommendationQuery("u1", 10, Set.of(), null), 10);
+
+        assertThat(recalled).hasSize(1);
+        assertThat(recalled.get(0).itemId()).isEqualTo("fast-1");
+        bulkhead.close();
+    }
+
+    @Test
+    void channelBackedOff_isSkippedWithoutCall() {
+        AtomicInteger callCount = new AtomicInteger();
+        RecallChannel tracked = new RecallChannel() {
+            @Override public String name() { return "tracked"; }
+            @Override public List<MovieCandidate> recall(RecommendationQuery query, int limit) {
+                callCount.incrementAndGet();
+                throw new RuntimeException("always fails");
+            }
+        };
+        WorkerBulkhead bulkhead = new WorkerBulkhead("test-health", 4, 16);
+        // Very long backoff (60s) so after threshold the channel stays down for the test duration
+        ChannelHealthMonitor health = new ChannelHealthMonitor(3, 60_000L, 60_000L);
+        MultiChannelRecallService service = new MultiChannelRecallService(
+                List.of(tracked), health, bulkhead.asExecutorService(), 200L, FaultInjector.NOOP);
+
+        RecommendationQuery query = new RecommendationQuery("u1", 10, Set.of(), null);
+        // 3 calls to trigger backoff (failure threshold = 3)
+        service.recall(query, 10);
+        service.recall(query, 10);
+        service.recall(query, 10);
+        int callsBeforeBackoff = callCount.get();
+
+        // Channel should now be in backoff — further call skips it
+        service.recall(query, 10);
+        assertThat(callCount.get()).isEqualTo(callsBeforeBackoff);
+        bulkhead.close();
     }
 
     private static RecallChannel channel(String name, MovieCandidate... candidates) {
