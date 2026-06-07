@@ -7,7 +7,6 @@ import org.junit.jupiter.api.Test;
 import java.util.concurrent.CompletableFuture;
 import java.util.concurrent.CountDownLatch;
 import java.util.concurrent.TimeUnit;
-import java.util.concurrent.atomic.AtomicInteger;
 
 import static org.assertj.core.api.Assertions.assertThat;
 
@@ -29,18 +28,16 @@ class WorkerBulkheadTest {
 
     @Test
     void queueOverflowIncrementsRejectedCount() throws InterruptedException {
-        // 1 thread, 0 queue capacity → every task beyond in-flight 1 is rejected
+        // 1 thread, effective queue capacity 1 (Math.max(1, 0) = 1)
+        // Thread is blocked → 1 slot in queue → tasks 3..7 are rejected
         bulkhead = new WorkerBulkhead("tight", 1, 0);
         CountDownLatch blocker = new CountDownLatch(1);
-        // Occupy the sole thread
-        bulkhead.submit(() -> { blocker.await(); return null; });
+        bulkhead.submit(() -> { blocker.await(); return null; }); // occupies thread
+        Thread.sleep(20); // ensure thread is blocked before submitting
 
-        AtomicInteger rejectedFutures = new AtomicInteger();
         for (int i = 0; i < 5; i++) {
-            CompletableFuture<Void> f = bulkhead.submit(() -> null);
-            f.exceptionally(ex -> { rejectedFutures.incrementAndGet(); return null; });
+            bulkhead.submit(() -> null); // tasks 1-5; first fills queue, rest rejected
         }
-        Thread.sleep(50); // let exceptionally callbacks fire
         assertThat(bulkhead.snapshot().rejected()).isGreaterThan(0);
         blocker.countDown();
     }
