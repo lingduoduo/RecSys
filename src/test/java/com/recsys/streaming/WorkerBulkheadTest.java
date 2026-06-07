@@ -48,7 +48,10 @@ class WorkerBulkheadTest {
     @Test
     void snapshotReflectsPoolName() {
         bulkhead = new WorkerBulkhead("scoring", 4, 32);
-        assertThat(bulkhead.snapshot().name()).isEqualTo("scoring");
-        assertThat(bulkhead.snapshot().poolSize()).isEqualTo(4);
+        WorkerBulkhead.Snapshot snap = bulkhead.snapshot();
+        assertThat(snap.name()).isEqualTo("scoring");
+        assertThat(snap.poolSize()).isEqualTo(4);
+        assertThat(snap.active()).isZero();
+        assertThat(snap.queued()).isZero();
     }
 }

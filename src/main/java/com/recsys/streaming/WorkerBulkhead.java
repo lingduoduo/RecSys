@@ -28,8 +28,8 @@ public final class WorkerBulkhead {
                     Thread t = new Thread(r, name + "-worker-" + THREAD_COUNTER.incrementAndGet());
                     t.setDaemon(true);
                     return t;
-                },
-                (runnable, tpe) -> rejectedCount.incrementAndGet()
+                }
+                // No custom RejectedExecutionHandler — let it throw RejectedExecutionException
         );
     }
 
