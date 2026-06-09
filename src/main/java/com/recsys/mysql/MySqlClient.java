@@ -53,6 +53,41 @@ public class MySqlClient {
         return connection;
     }
 
+    public Connection openWriteConnection() throws SQLException {
+        if (!settings.enabled()) {
+            throw new IllegalStateException("MySQL is disabled; set MYSQL_ENABLED=true before opening connections");
+        }
+        Properties props = new Properties();
+        props.setProperty("user", settings.username());
+        props.setProperty("password", settings.password());
+        return DriverManager.getConnection(settings.url(), props);
+    }
+
+    public <T> List<T> query(String sql, List<Object> params, RowMapper<T> mapper) throws SQLException {
+        Objects.requireNonNull(sql, "sql");
+        Objects.requireNonNull(mapper, "mapper");
+        try (Connection connection = openConnection();
+             PreparedStatement statement = connection.prepareStatement(sql)) {
+            bind(statement, params == null ? Collections.emptyList() : params);
+            try (ResultSet rs = statement.executeQuery()) {
+                List<T> rows = new ArrayList<>();
+                while (rs.next()) {
+                    rows.add(mapper.map(rs));
+                }
+                return rows;
+            }
+        }
+    }
+
+    public int execute(String sql, List<Object> params) throws SQLException {
+        Objects.requireNonNull(sql, "sql");
+        try (Connection connection = openWriteConnection();
+             PreparedStatement statement = connection.prepareStatement(sql)) {
+            bind(statement, params == null ? Collections.emptyList() : params);
+            return statement.executeUpdate();
+        }
+    }
+
     public HealthCheck healthCheck() {
         if (!settings.enabled()) {
             return new HealthCheck(false, false, "disabled");
