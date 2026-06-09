@@ -1,4 +1,4 @@
-package com.recsys.modelbased.service;
+package com.recsys.modelbased.exception;
 
 public class ServiceOverloadedException extends RuntimeException {
 

@@ -3,8 +3,9 @@ package com.recsys.modelbased.service;
 import com.recsys.featureflags.FeatureFlagService;
 import com.recsys.featureflags.Flags;
 import com.recsys.modelbased.config.RecommendationCacheProperties;
-import com.recsys.modelbased.dto.RecommendRequest;
-import com.recsys.modelbased.dto.RecommendResponse;
+import com.recsys.modelbased.converter.RecommendationConverter;
+import com.recsys.modelbased.request.RecommendRequest;
+import com.recsys.modelbased.response.RecommendResponse;
 import com.recsys.modelbased.dto.ScoredItem;
 import org.springframework.beans.factory.annotation.Autowired;
 import org.springframework.stereotype.Service;
@@ -14,7 +15,6 @@ import java.util.List;
 import java.util.Map;
 import java.util.Optional;
 import java.util.Set;
-import java.util.TreeSet;
 
 @Service
 public class RecommendationService {
@@ -26,6 +26,7 @@ public class RecommendationService {
     private final ABTestService abTestService;
     private final RecommendationCache cache;
     private final FeatureFlagService featureFlagService;
+    private final RecommendationConverter converter;
 
     private static final FeatureFlagService NOOP_FLAGS =
             new FeatureFlagService((flag, id, props) -> Optional.empty());
@@ -45,17 +46,28 @@ public class RecommendationService {
         this(modelRuntimeProvider, abTestService, cacheProperties, NOOP_FLAGS);
     }
 
-    @Autowired
     public RecommendationService(
             ModelRuntimeProvider modelRuntimeProvider,
             ABTestService abTestService,
             RecommendationCacheProperties cacheProperties,
             FeatureFlagService featureFlagService
     ) {
+        this(modelRuntimeProvider, abTestService, cacheProperties, featureFlagService, new RecommendationConverter());
+    }
+
+    @Autowired
+    public RecommendationService(
+            ModelRuntimeProvider modelRuntimeProvider,
+            ABTestService abTestService,
+            RecommendationCacheProperties cacheProperties,
+            FeatureFlagService featureFlagService,
+            RecommendationConverter converter
+    ) {
         this.modelRuntimeProvider = modelRuntimeProvider;
         this.abTestService = abTestService;
         this.cache = new RecommendationCache(cacheProperties);
         this.featureFlagService = featureFlagService;
+        this.converter = converter;
     }
 
     public RecommendResponse recommend(RecommendRequest request) {
@@ -76,7 +88,7 @@ public class RecommendationService {
     public RecommendResponse recommend(RecommendRequest request, ABTestService.Assignment assignment) {
         ModelRuntime runtime = modelRuntimeProvider.getRuntime(assignment.variant());
         String modelVersion = runtime.modelVersion();
-        List<String> excludedItemIds = normalizedExcludeItemIds(request);
+        List<String> excludedItemIds = converter.normalizedExcludeItemIds(request);
 
         var cacheKey = new RecommendationCache.RecommendationKey(
                 request.getUserId(), request.getK(), excludedItemIds, assignment.variant(), modelVersion);
@@ -93,7 +105,7 @@ public class RecommendationService {
             return computeRecommendations(request, runtime, excludedItemIds);
         });
 
-        return response(request, modelVersion, assignment, items);
+        return converter.toResponse(request, modelVersion, assignment, items);
     }
 
     /** Returns a human-readable snapshot of cache hit/miss rates for monitoring. */
@@ -132,20 +144,20 @@ public class RecommendationService {
         ModelRuntime runtime = modelRuntimeProvider.getLoadedRuntime(assignment.variant());
         if (runtime == null) return Optional.empty();
         String modelVersion = runtime.modelVersion();
-        List<String> excludedItemIds = normalizedExcludeItemIds(request);
+        List<String> excludedItemIds = converter.normalizedExcludeItemIds(request);
 
         var cacheKey = new RecommendationCache.RecommendationKey(
                 request.getUserId(), request.getK(), excludedItemIds, assignment.variant(), modelVersion);
         List<ScoredItem> items = cache.get(cacheKey);
         if (items != null) {
-            return Optional.of(response(request, modelVersion, assignment, items));
+            return Optional.of(converter.toResponse(request, modelVersion, assignment, items));
         }
 
         if (cache.isColdStartEnabled()) {
             var coldStartKey = new RecommendationCache.ColdStartKey(assignment.variant(), modelVersion);
             List<ScoredItem> pool = cache.getColdStart(coldStartKey);
             if (pool != null) {
-                return Optional.of(response(request, modelVersion, assignment,
+                return Optional.of(converter.toResponse(request, modelVersion, assignment,
                         limitAndExclude(pool, excludedItemIds, request.getK())));
             }
         }
@@ -210,27 +222,6 @@ public class RecommendationService {
     private static boolean isColdStartUser(String userId, ModelRuntime runtime) {
         Map<String, Integer> userVocab = runtime.artifactService().getUserVocab();
         return userVocab != null && !userVocab.containsKey(userId);
-    }
-
-    private static RecommendResponse response(
-            RecommendRequest request,
-            String modelVersion,
-            ABTestService.Assignment assignment,
-            List<ScoredItem> items
-    ) {
-        return new RecommendResponse(
-                request.getUserId(),
-                modelVersion,
-                assignment.variant(),
-                items
-        );
-    }
-
-    private static List<String> normalizedExcludeItemIds(RecommendRequest request) {
-        if (request.getExcludeItemIds() == null || request.getExcludeItemIds().isEmpty()) {
-            return List.of();
-        }
-        return List.copyOf(new TreeSet<>(request.getExcludeItemIds()));
     }
 
     private static List<ScoredItem> limitAndExclude(List<ScoredItem> items, List<String> excludedItemIds, int k) {

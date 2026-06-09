@@ -1,16 +1,16 @@
 package com.recsys.modelbased.controller;
 
-import com.recsys.modelbased.dto.RecommendRequest;
-import com.recsys.modelbased.dto.RecommendResponse;
-import com.recsys.modelbased.dto.SubmitTokenResponse;
+import com.recsys.modelbased.request.RecommendRequest;
+import com.recsys.modelbased.response.RecommendResponse;
+import com.recsys.modelbased.response.SubmitTokenResponse;
 import java.util.Optional;
 import com.recsys.modelbased.service.ABTestService;
 import com.recsys.modelbased.service.InferenceMetricsService;
 import com.recsys.modelbased.service.LoadShedder;
 import com.recsys.modelbased.service.ModelRateLimiter;
-import com.recsys.modelbased.service.RateLimitExceededException;
+import com.recsys.modelbased.exception.RateLimitExceededException;
+import com.recsys.modelbased.exception.ServiceOverloadedException;
 import com.recsys.modelbased.service.RecommendationService;
-import com.recsys.modelbased.service.ServiceOverloadedException;
 import com.recsys.modelbased.service.SubmitTokenService;
 import jakarta.validation.Valid;
 import org.springframework.http.HttpHeaders;

@@ -1,7 +1,7 @@
 package com.recsys.modelbased.service;
 
 import com.recsys.modelbased.config.ABTestConfig;
-import com.recsys.modelbased.dto.ModelVersionResponse;
+import com.recsys.modelbased.response.ModelVersionResponse;
 import org.springframework.stereotype.Service;
 
 import java.util.Comparator;

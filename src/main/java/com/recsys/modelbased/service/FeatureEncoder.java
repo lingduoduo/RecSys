@@ -1,6 +1,6 @@
 package com.recsys.modelbased.service;
 
-import com.recsys.modelbased.dto.RecommendRequest;
+import com.recsys.modelbased.request.RecommendRequest;
 import java.util.Map;
 
 public class FeatureEncoder {

@@ -1,3 +1,3 @@
-package com.recsys.modelbased.dto;
+package com.recsys.modelbased.response;
 
 public record SubmitTokenResponse(String token, int expiresInSeconds) {}
