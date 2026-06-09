@@ -1,7 +1,7 @@
 package com.recsys.modelbased.controller;
 
 import com.recsys.modelbased.dto.ApiError;
-import com.recsys.modelbased.dto.RecommendRequest;
+import com.recsys.modelbased.request.RecommendRequest;
 import com.recsys.modelbased.dto.RecommendResponse;
 import com.recsys.modelbased.service.InferenceMetricsService;
 import com.recsys.modelbased.service.ModelRuntimeProvider;

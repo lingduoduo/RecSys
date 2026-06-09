@@ -2,7 +2,7 @@ package com.recsys.modelbased.controller;
 
 import com.fasterxml.jackson.databind.ObjectMapper;
 import com.recsys.modelbased.config.GlobalExceptionHandler;
-import com.recsys.modelbased.dto.RecommendRequest;
+import com.recsys.modelbased.request.RecommendRequest;
 import com.recsys.modelbased.dto.RecommendResponse;
 import com.recsys.modelbased.dto.ScoredItem;
 import com.recsys.modelbased.service.ABTestService;

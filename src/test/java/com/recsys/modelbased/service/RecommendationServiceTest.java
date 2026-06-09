@@ -3,7 +3,7 @@ package com.recsys.modelbased.service;
 import com.recsys.featureflags.FeatureFlagService;
 import com.recsys.featureflags.Flags;
 import com.recsys.modelbased.config.RecommendationCacheProperties;
-import com.recsys.modelbased.dto.RecommendRequest;
+import com.recsys.modelbased.request.RecommendRequest;
 import com.recsys.modelbased.dto.ScoredItem;
 import org.junit.jupiter.api.BeforeEach;
 import org.junit.jupiter.api.Test;
