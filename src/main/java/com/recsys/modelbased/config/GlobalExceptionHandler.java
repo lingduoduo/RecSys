@@ -1,9 +1,9 @@
 package com.recsys.modelbased.config;
 
 import com.recsys.modelbased.dto.ApiError;
-import com.recsys.modelbased.service.RateLimitExceededException;
-import com.recsys.modelbased.service.ServiceOverloadedException;
-import com.recsys.modelbased.service.SubmitTokenException;
+import com.recsys.modelbased.exception.RateLimitExceededException;
+import com.recsys.modelbased.exception.ServiceOverloadedException;
+import com.recsys.modelbased.exception.SubmitTokenException;
 import org.slf4j.Logger;
 import org.slf4j.LoggerFactory;
 import org.springframework.http.HttpHeaders;

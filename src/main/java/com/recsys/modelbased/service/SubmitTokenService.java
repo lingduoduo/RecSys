@@ -2,6 +2,7 @@ package com.recsys.modelbased.service;
 
 import com.recsys.infrastructure.redis.RedisConnectionFactory;
 import com.recsys.modelbased.config.SubmitTokenProperties;
+import com.recsys.modelbased.exception.SubmitTokenException;
 import jakarta.annotation.PreDestroy;
 import org.springframework.beans.factory.annotation.Autowired;
 import org.springframework.stereotype.Service;

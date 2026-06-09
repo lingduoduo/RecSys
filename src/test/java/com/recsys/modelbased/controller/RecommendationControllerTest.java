@@ -10,7 +10,7 @@ import com.recsys.modelbased.service.InferenceMetricsService;
 import com.recsys.modelbased.service.LoadShedder;
 import com.recsys.modelbased.service.ModelRateLimiter;
 import com.recsys.modelbased.service.RecommendationService;
-import com.recsys.modelbased.service.SubmitTokenException;
+import com.recsys.modelbased.exception.SubmitTokenException;
 import com.recsys.modelbased.service.SubmitTokenService;
 
 import java.time.Duration;
