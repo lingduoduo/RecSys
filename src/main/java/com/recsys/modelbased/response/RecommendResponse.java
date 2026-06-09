@@ -1,4 +1,6 @@
-package com.recsys.modelbased.dto;
+package com.recsys.modelbased.response;
+
+import com.recsys.modelbased.dto.ScoredItem;
 
 import java.util.List;
 

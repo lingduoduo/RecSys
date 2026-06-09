@@ -1,7 +1,7 @@
 package com.recsys.modelbased.controller;
 
 import com.recsys.modelbased.request.ModelVersionRequest;
-import com.recsys.modelbased.dto.ModelVersionResponse;
+import com.recsys.modelbased.response.ModelVersionResponse;
 import com.recsys.modelbased.service.ModelVersionService;
 import jakarta.validation.Valid;
 import org.springframework.http.MediaType;

@@ -1,7 +1,7 @@
 package com.recsys.modelbased.service;
 
 import com.recsys.modelbased.request.RecommendRequest;
-import com.recsys.modelbased.dto.RecommendResponse;
+import com.recsys.modelbased.response.RecommendResponse;
 import org.junit.jupiter.api.AfterAll;
 import org.junit.jupiter.api.BeforeAll;
 import org.junit.jupiter.api.Test;

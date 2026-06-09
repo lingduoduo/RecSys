@@ -1,4 +1,4 @@
-package com.recsys.modelbased.dto;
+package com.recsys.modelbased.response;
 
 import java.util.List;
 

@@ -4,7 +4,7 @@ import com.recsys.featureflags.FeatureFlagService;
 import com.recsys.featureflags.Flags;
 import com.recsys.modelbased.config.RecommendationCacheProperties;
 import com.recsys.modelbased.request.RecommendRequest;
-import com.recsys.modelbased.dto.RecommendResponse;
+import com.recsys.modelbased.response.RecommendResponse;
 import com.recsys.modelbased.dto.ScoredItem;
 import org.springframework.beans.factory.annotation.Autowired;
 import org.springframework.stereotype.Service;

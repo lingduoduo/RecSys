@@ -1,8 +1,8 @@
 package com.recsys.modelbased.controller;
 
 import com.recsys.modelbased.request.RecommendRequest;
-import com.recsys.modelbased.dto.RecommendResponse;
-import com.recsys.modelbased.dto.SubmitTokenResponse;
+import com.recsys.modelbased.response.RecommendResponse;
+import com.recsys.modelbased.response.SubmitTokenResponse;
 import java.util.Optional;
 import com.recsys.modelbased.service.ABTestService;
 import com.recsys.modelbased.service.InferenceMetricsService;
