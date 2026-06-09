@@ -4,8 +4,8 @@ import com.linecorp.armeria.common.HttpRequest;
 import com.linecorp.armeria.common.HttpResponse;
 import com.linecorp.armeria.common.HttpStatus;
 import com.linecorp.armeria.server.ServiceRequestContext;
-import com.recsys.model.Movie;
-import com.recsys.model.User;
+import com.recsys.domain.Movie;
+import com.recsys.domain.User;
 
 import java.util.List;
 import java.util.Map;

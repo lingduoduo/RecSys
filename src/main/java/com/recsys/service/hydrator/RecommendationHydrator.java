@@ -1,7 +1,7 @@
 package com.recsys.service.hydrator;
 
-import com.recsys.model.RankedMovie;
-import com.recsys.model.RecommendationQuery;
+import com.recsys.domain.RankedMovie;
+import com.recsys.domain.RecommendationQuery;
 
 import java.util.List;
 

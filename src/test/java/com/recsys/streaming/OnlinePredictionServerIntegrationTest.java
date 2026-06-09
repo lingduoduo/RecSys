@@ -18,7 +18,7 @@ import com.recsys.infrastructure.redis.sharding.ShardedRecord;
 import com.recsys.infrastructure.redis.sharding.ShardedRecordStore;
 import com.recsys.infrastructure.redis.sharding.WriteResult;
 import com.recsys.infrastructure.redis.sharding.WriteStatus;
-import com.recsys.model.User;
+import com.recsys.domain.User;
 import org.junit.jupiter.api.Test;
 import org.junit.jupiter.api.extension.RegisterExtension;
 

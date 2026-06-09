@@ -1,9 +1,9 @@
 package com.recsys.service.retrieval;
 
 import com.recsys.infrastructure.DataManager;
-import com.recsys.model.Movie;
-import com.recsys.model.MovieCandidate;
-import com.recsys.model.RecommendationQuery;
+import com.recsys.domain.Movie;
+import com.recsys.domain.MovieCandidate;
+import com.recsys.domain.RecommendationQuery;
 
 import java.util.LinkedHashMap;
 import java.util.List;

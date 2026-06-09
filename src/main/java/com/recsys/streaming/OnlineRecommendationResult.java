@@ -1,7 +1,7 @@
 package com.recsys.streaming;
 
-import com.recsys.model.Movie;
-import com.recsys.model.User;
+import com.recsys.domain.Movie;
+import com.recsys.domain.User;
 
 import java.util.List;
 
