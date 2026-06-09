@@ -1,8 +1,8 @@
 package com.recsys.infrastructure;
 
-import com.recsys.model.Movie;
-import com.recsys.model.Rating;
-import com.recsys.model.User;
+import com.recsys.domain.Movie;
+import com.recsys.domain.Rating;
+import com.recsys.domain.User;
 
 import java.util.List;
 import java.util.Map;

@@ -7,7 +7,7 @@ import com.linecorp.armeria.server.ServiceRequestContext;
 import com.recsys.infrastructure.DataManager;
 import com.recsys.infrastructure.vectordb.EmbeddingStore;
 import com.recsys.infrastructure.vectordb.ExactVectorIndex;
-import com.recsys.model.Movie;
+import com.recsys.domain.Movie;
 
 import java.util.LinkedHashSet;
 import java.util.List;

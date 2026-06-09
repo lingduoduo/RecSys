@@ -5,8 +5,8 @@ import com.linecorp.armeria.common.HttpResponse;
 import com.linecorp.armeria.common.HttpStatus;
 import com.linecorp.armeria.server.ServiceRequestContext;
 import com.recsys.infrastructure.PairPredictionService;
-import com.recsys.model.PredictRequest;
-import com.recsys.model.PredictResponse;
+import com.recsys.domain.PredictRequest;
+import com.recsys.domain.PredictResponse;
 
 public class PredictionService extends BaseApiService {
 

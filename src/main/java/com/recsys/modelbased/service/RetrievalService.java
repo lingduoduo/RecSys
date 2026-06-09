@@ -2,8 +2,8 @@ package com.recsys.modelbased.service;
 
 import com.recsys.infrastructure.DataManager;
 import com.recsys.infrastructure.vectordb.VectorMath;
-import com.recsys.model.Movie;
-import com.recsys.model.Rating;
+import com.recsys.domain.Movie;
+import com.recsys.domain.Rating;
 import com.recsys.modelbased.dto.ScoredItem;
 import java.util.HashSet;
 import java.util.LinkedHashMap;

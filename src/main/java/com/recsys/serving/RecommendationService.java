@@ -5,11 +5,11 @@ import com.linecorp.armeria.common.HttpResponse;
 import com.linecorp.armeria.common.HttpStatus;
 import com.linecorp.armeria.server.ServiceRequestContext;
 import com.recsys.infrastructure.DataManager;
-import com.recsys.model.Movie;
-import com.recsys.model.MovieCandidate;
-import com.recsys.model.RecommendationQuery;
-import com.recsys.model.RecommendationResponse;
-import com.recsys.model.User;
+import com.recsys.domain.Movie;
+import com.recsys.domain.MovieCandidate;
+import com.recsys.domain.RecommendationQuery;
+import com.recsys.domain.RecommendationResponse;
+import com.recsys.domain.User;
 import com.recsys.service.retrieval.MultiChannelRecallService;
 
 import java.util.List;

@@ -1,7 +1,7 @@
 package com.recsys.service.retrieval;
 
-import com.recsys.model.MovieCandidate;
-import com.recsys.model.RecommendationQuery;
+import com.recsys.domain.MovieCandidate;
+import com.recsys.domain.RecommendationQuery;
 import com.recsys.streaming.TrendingStore;
 import org.junit.jupiter.api.Test;
 import java.util.List;

@@ -2,8 +2,8 @@ package com.recsys.streaming;
 
 import com.recsys.infrastructure.vectordb.CandidateGenerator;
 import com.recsys.infrastructure.DataManager;
-import com.recsys.model.Movie;
-import com.recsys.model.User;
+import com.recsys.domain.Movie;
+import com.recsys.domain.User;
 import org.junit.jupiter.api.BeforeEach;
 import org.junit.jupiter.api.Test;
 

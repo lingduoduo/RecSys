@@ -5,7 +5,7 @@ import com.linecorp.armeria.common.HttpResponse;
 import com.linecorp.armeria.common.HttpStatus;
 import com.linecorp.armeria.server.ServiceRequestContext;
 import com.recsys.infrastructure.DataManager;
-import com.recsys.model.User;
+import com.recsys.domain.User;
 
 import java.util.concurrent.CompletableFuture;
 

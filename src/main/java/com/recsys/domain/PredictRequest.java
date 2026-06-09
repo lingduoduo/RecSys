@@ -1,4 +1,4 @@
-package com.recsys.model;
+package com.recsys.domain;
 
 import java.util.ArrayList;
 import java.util.List;

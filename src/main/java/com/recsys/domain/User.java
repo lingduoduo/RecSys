@@ -1,3 +1,3 @@
-package com.recsys.model;
+package com.recsys.domain;
 
 public record User(int userId, String name) {}

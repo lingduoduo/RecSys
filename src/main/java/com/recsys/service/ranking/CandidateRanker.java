@@ -1,8 +1,8 @@
 package com.recsys.service.ranking;
 
-import com.recsys.model.MovieCandidate;
-import com.recsys.model.RankedMovie;
-import com.recsys.model.RecommendationQuery;
+import com.recsys.domain.MovieCandidate;
+import com.recsys.domain.RankedMovie;
+import com.recsys.domain.RecommendationQuery;
 
 import java.util.List;
 

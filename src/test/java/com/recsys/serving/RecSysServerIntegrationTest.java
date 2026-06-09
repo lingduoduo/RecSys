@@ -9,7 +9,7 @@ import com.recsys.infrastructure.DataManager;
 import com.recsys.infrastructure.PairPredictionService;
 import com.recsys.infrastructure.vectordb.CandidateGenerator;
 import com.recsys.infrastructure.vectordb.EmbeddingStore;
-import com.recsys.model.Movie;
+import com.recsys.domain.Movie;
 import com.recsys.service.retrieval.MultiChannelRecallService;
 import org.junit.jupiter.api.Test;
 import org.junit.jupiter.api.extension.RegisterExtension;
