@@ -30,7 +30,7 @@ class RecSysServerIntegrationTest {
     static final PairPredictionService mockPrediction = mock(PairPredictionService.class);
 
     static {
-        when(mockData.getUserById(anyInt())).thenReturn(new com.recsys.model.User(1, "Alice"));
+        when(mockData.getUserById(anyInt())).thenReturn(new com.recsys.domain.User(1, "Alice"));
         when(mockData.getUserById(999)).thenReturn(null);
         when(mockData.getMovieById(anyInt())).thenReturn(null);
         when(mockData.getMovieById(1)).thenReturn(new Movie(1, "Test Movie", 2020, List.of("Action")));

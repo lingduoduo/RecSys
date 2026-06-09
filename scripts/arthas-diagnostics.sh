@@ -46,9 +46,9 @@ Examples:
   sh scripts/arthas-diagnostics.sh 12345 thread
   sh scripts/arthas-diagnostics.sh 12345 cpu 45
   sh scripts/arthas-diagnostics.sh 12345 classloader
-  sh scripts/arthas-diagnostics.sh 12345 watch com.recsys.modelbased.model.service.RankingService rank
-  sh scripts/arthas-diagnostics.sh 12345 trace com.recsys.modelbased.model.service.RecommendationService recommend
-  sh scripts/arthas-diagnostics.sh 12345 jad com.recsys.modelbased.model.service.RecommendationCache
+  sh scripts/arthas-diagnostics.sh 12345 watch com.recsys.model.service.RankingService rank
+  sh scripts/arthas-diagnostics.sh 12345 trace com.recsys.model.service.RecommendationService recommend
+  sh scripts/arthas-diagnostics.sh 12345 jad com.recsys.model.service.RecommendationCache
 USAGE
   exit 64
 }

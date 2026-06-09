@@ -29,7 +29,7 @@ docker-compose -f docker-compose.streaming.yml up
 | Service | Port | Entry point |
 |---|---|---|
 | RecSys Serving API | 6010 | `com.recsys.serving.RecSysServer` |
-| Model Serving (Spring Boot) | 8080 | `com.recsys.modelbased.model.ModelApplication` |
+| Model Serving (Spring Boot) | 8080 | `com.recsys.model.ModelApplication` |
 | Online Serving | 7010 | `com.recsys.streaming.OnlinePredictionServer` |
 | API Gateway | 8010 | `com.recsys.microservice.MicroserviceGatewayServer` |
 
