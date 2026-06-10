@@ -42,7 +42,7 @@
         <configuration>
           <excludes>
             <exclude>com/recsys/training/rulebased/**</exclude>
-            <exclude>com/recsys/streaming/flink/**</exclude>
+            <exclude>com/recsys/online/flink/**</exclude>
           </excludes>
         </configuration>
       </plugin>

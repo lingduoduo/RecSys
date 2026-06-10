@@ -31,7 +31,7 @@ start_service model-serving env SERVER_PORT=8080 \
 
 start_service online-serving env ONLINE_DEMO_PORT=7010 \
   sh scripts/run-with-jvm-tuning.sh online-serving -- \
-  mvn exec:java -Dexec.mainClass=com.recsys.streaming.OnlinePredictionServer
+  mvn exec:java -Dexec.mainClass=com.recsys.online.serving.OnlinePredictionServer
 
 sleep "${GATEWAY_START_DELAY_SECONDS:-10}"
 

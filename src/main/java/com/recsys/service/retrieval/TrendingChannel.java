@@ -2,7 +2,7 @@ package com.recsys.service.retrieval;
 
 import com.recsys.domain.MovieCandidate;
 import com.recsys.domain.RecommendationQuery;
-import com.recsys.streaming.TrendingStore;
+import com.recsys.online.store.TrendingStore;
 
 import java.util.List;
 import java.util.Map;

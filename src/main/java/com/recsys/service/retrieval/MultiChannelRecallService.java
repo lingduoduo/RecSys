@@ -2,7 +2,7 @@ package com.recsys.service.retrieval;
 
 import com.recsys.domain.MovieCandidate;
 import com.recsys.domain.RecommendationQuery;
-import com.recsys.streaming.FaultInjector;
+import com.recsys.online.ops.FaultInjector;
 import org.slf4j.Logger;
 import org.slf4j.LoggerFactory;
 
