@@ -21,7 +21,7 @@ class OnlineLearnerTest {
                 3,
                 List.of(
                         new ExperienceCollector.ItemFeedback(9, 1, 3, "order", Map.of()),
-                        new ExperienceCollector.ItemFeedback(11, 2, 0, "impression", Map.of())
+                        new ExperienceCollector.ItemFeedback(11, 2, 0, "view", Map.of())
                 )
         );
 

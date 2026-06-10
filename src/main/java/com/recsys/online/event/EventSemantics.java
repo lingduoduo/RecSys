@@ -7,7 +7,6 @@ public final class EventSemantics {
     private static final long MIN_VIEW_WATCH_MS = 30_000L;
     private static final long MIN_DWELL_MS = 10_000L;
     private static final Set<String> SUPPORTED_EVENT_TYPES = Set.of(
-            "impression", "exposure", "show",
             "view", "watch", "click", "like", "rating", "dwell", "search",
             "order", "purchase"
     );

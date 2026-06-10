@@ -111,15 +111,6 @@ public final class OnlineFeatureStreamingJob {
                 .addSink(new RedisMovieMetricSink(redisHost, redisPort))
                 .name("redis-movie-metric-sink");
 
-        events
-                .filter(event -> event.movieId > 0 && event.contributesCtr())
-                .keyBy(event -> event.movieId)
-                .window(TumblingProcessingTimeWindows.of(Time.seconds(windowSeconds)))
-                .aggregate(new CtrFeatureAggregate(), new CtrFeatureWindowFunction(windowLabel, metricTtlSeconds))
-                .name("ctr-feature-window")
-                .addSink(new RedisStringFeatureSink(redisHost, redisPort))
-                .name("redis-ctr-feature-sink");
-
         DataStream<TopKSnapshot> topKSnapshots = events
                 .filter(event -> event.engagementWeight() > 0L)
                 .windowAll(TumblingProcessingTimeWindows.of(Time.seconds(windowSeconds)))
@@ -200,9 +191,6 @@ public final class OnlineFeatureStreamingJob {
     private static String metricKind(MovieEvent event) {
         if (event.movieId <= 0) {
             return null;
-        }
-        if (event.isImpression()) {
-            return "impressions_1h";
         }
         if (event.isOrder()) {
             return "orders_1h";
@@ -436,70 +424,6 @@ public final class OnlineFeatureStreamingJob {
         @Override
         public Long merge(Long a, Long b) {
             return a + b;
-        }
-    }
-
-    static final class CtrFeatureAggregate implements AggregateFunction<MovieEvent, CtrFeature, CtrFeature> {
-        @Override
-        public CtrFeature createAccumulator() {
-            return new CtrFeature();
-        }
-
-        @Override
-        public CtrFeature add(MovieEvent event, CtrFeature acc) {
-            acc.movieId = event.movieId;
-            if (event.isImpression()) acc.impressions++;
-            if (event.isClick()) acc.clicks++;
-            if (event.isView()) acc.watches++;
-            if (event.isDwell()) acc.dwells++;
-            if (event.isLike()) acc.likes++;
-            if (event.isRating()) acc.ratings++;
-            acc.engagementScore += event.engagementWeight();
-            return acc;
-        }
-
-        @Override
-        public CtrFeature getResult(CtrFeature accumulator) {
-            return accumulator;
-        }
-
-        @Override
-        public CtrFeature merge(CtrFeature a, CtrFeature b) {
-            a.impressions += b.impressions;
-            a.clicks += b.clicks;
-            a.watches += b.watches;
-            a.dwells += b.dwells;
-            a.likes += b.likes;
-            a.ratings += b.ratings;
-            a.engagementScore += b.engagementScore;
-            return a;
-        }
-    }
-
-    static final class CtrFeatureWindowFunction extends ProcessWindowFunction<CtrFeature, StringFeatureUpdate, Integer, TimeWindow> {
-        private final String windowLabel;
-        private final int ttlSeconds;
-
-        CtrFeatureWindowFunction(String windowLabel, int ttlSeconds) {
-            this.windowLabel = windowLabel;
-            this.ttlSeconds = ttlSeconds;
-        }
-
-        @Override
-        public void process(Integer movieId,
-                            ProcessWindowFunction<CtrFeature, StringFeatureUpdate, Integer, TimeWindow>.Context context,
-                            Iterable<CtrFeature> elements,
-                            Collector<StringFeatureUpdate> out) {
-            java.util.Iterator<CtrFeature> it = elements.iterator();
-            if (!it.hasNext()) return;
-            CtrFeature feature = it.next();
-            feature.movieId = movieId;
-            out.collect(new StringFeatureUpdate(
-                    "feature:movie:" + movieId + ":ctr:" + windowLabel,
-                    feature.encode(),
-                    context.window().getEnd(),
-                    ttlSeconds
-            ));
         }
     }
 
@@ -759,29 +683,6 @@ public final class OnlineFeatureStreamingJob {
                     + ",engagementScore=" + engagementScore
                     + ",lastMovieId=" + lastMovieId
                     + ",lastEventType=" + lastEventType;
-        }
-    }
-
-    public static final class CtrFeature {
-        public int movieId;
-        public long impressions;
-        public long clicks;
-        public long watches;
-        public long dwells;
-        public long likes;
-        public long ratings;
-        public long engagementScore;
-
-        String encode() {
-            double ctr = impressions > 0 ? (double) clicks / impressions : 0.0;
-            return "impressions=" + impressions
-                    + ",clicks=" + clicks
-                    + ",ctr=" + String.format(java.util.Locale.ROOT, "%.6f", ctr)
-                    + ",watches=" + watches
-                    + ",dwells=" + dwells
-                    + ",likes=" + likes
-                    + ",ratings=" + ratings
-                    + ",engagementScore=" + engagementScore;
         }
     }
 

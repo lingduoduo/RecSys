@@ -85,7 +85,7 @@ public class RecommendationController {
         try {
             RecommendResponse response = recommendationService.recommend(request, assignment);
             metricsService.recordSuccess(elapsedMs(startNs), response.abTestVariant(), response.modelVersion());
-            // Advertise current capacity so load balancers can adjust routing weight in real time
+            // Publish current capacity so load balancers can adjust routing weight in real time
             // without waiting for the next /health/ready poll (e.g. Envoy, Consul, NGINX Plus).
             HttpHeaders headers = new HttpHeaders();
             headers.set("X-Capacity-Weight", String.valueOf(loadShedder.snapshot().suggestedWeight()));

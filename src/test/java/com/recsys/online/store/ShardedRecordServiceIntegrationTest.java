@@ -117,7 +117,7 @@ class ShardedRecordServiceIntegrationTest {
     void postRecord_featureAndLogTypesAccepted() {
         AggregatedHttpResponse r1 = server.blockingWebClient().post(
                 "/shards/records",
-                "{\"deviceId\":\"dev-2\",\"type\":\"FEATURE\",\"eventId\":\"f1\",\"payload\":\"{\\\"ctr\\\":0.5}\"}");
+                "{\"deviceId\":\"dev-2\",\"type\":\"FEATURE\",\"eventId\":\"f1\",\"payload\":\"{\\\"engagement\\\":0.5}\"}");
         AggregatedHttpResponse r2 = server.blockingWebClient().post(
                 "/shards/records",
                 "{\"deviceId\":\"dev-2\",\"type\":\"LOG\",\"eventId\":\"l1\",\"payload\":\"startup\"}");

@@ -108,7 +108,7 @@ public enum RecordType {
     /** Click, watch, rating, dwell, search — from LogCollector / Kafka. */
     EVENT,
     /**
-     * Flink-written behavioral features: recent history updates, CTR events, session data.
+     * Flink-written behavioral features: recent history updates, engagement events, session data.
      * Raw float[] embeddings are NOT stored here — use RedisEmbeddingStore for those.
      */
     FEATURE,
@@ -692,7 +692,7 @@ class ShardedRecordStoreWriteTest extends RedisShardingTestBase {
     @Test
     void write_storesFullRecordInHashKey() {
         ShardedRecord record = new ShardedRecord("device-2", 0, RecordType.FEATURE,
-                "feat-001", "{\"ctr\":0.12}", System.currentTimeMillis());
+                "feat-001", "{\"engagement\":0.12}", System.currentTimeMillis());
 
         WriteResult result = store.write(record);
 
@@ -703,7 +703,7 @@ class ShardedRecordStoreWriteTest extends RedisShardingTestBase {
                     .containsEntry("deviceId", "device-2")
                     .containsEntry("type", "FEATURE")
                     .containsEntry("eventId", "feat-001")
-                    .containsEntry("payload", "{\"ctr\":0.12}");
+                    .containsEntry("payload", "{\"engagement\":0.12}");
         }
     }
 
@@ -1332,7 +1332,7 @@ class ShardedRecordStoreIntegrationTest extends RedisShardingTestBase {
     @Test
     void fullRoundTrip_featureAndLogTypes() {
         store.write(new ShardedRecord("user:1", 0, RecordType.FEATURE,
-                "ctr-001", "{\"ctr\":0.2}", System.currentTimeMillis()));
+                "engagement-001", "{\"engagement\":0.2}", System.currentTimeMillis()));
         store.write(new ShardedRecord("user:1", 0, RecordType.LOG,
                 "log-001", "startup", System.currentTimeMillis()));
 
