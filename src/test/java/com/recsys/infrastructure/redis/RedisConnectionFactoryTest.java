@@ -1,9 +1,9 @@
 package com.recsys.infrastructure.redis;
 
+import org.apache.commons.pool2.impl.GenericObjectPoolConfig;
 import org.junit.jupiter.api.Test;
 import redis.clients.jedis.Jedis;
 import redis.clients.jedis.JedisPool;
-import redis.clients.jedis.JedisPoolConfig;
 import redis.clients.jedis.util.Pool;
 
 import java.util.Map;
@@ -14,8 +14,8 @@ import static org.junit.jupiter.api.Assertions.*;
 
 class RedisConnectionFactoryTest {
 
-    private static JedisPoolConfig noIdleConfig() {
-        JedisPoolConfig cfg = new JedisPoolConfig();
+    private static GenericObjectPoolConfig<Jedis> noIdleConfig() {
+        GenericObjectPoolConfig<Jedis> cfg = new GenericObjectPoolConfig<>();
         cfg.setMinIdle(0);
         cfg.setTestOnBorrow(false);
         return cfg;
@@ -68,7 +68,7 @@ class RedisConnectionFactoryTest {
 
     @Test
     void poolConfigReadsFailFastLimitsFromEnvironment() {
-        JedisPoolConfig config = RedisConnectionFactory.defaultPoolConfig(Map.of(
+        GenericObjectPoolConfig<Jedis> config = RedisConnectionFactory.defaultPoolConfig(Map.of(
                 "REDIS_POOL_MAX_TOTAL", "80",
                 "REDIS_POOL_MAX_IDLE", "20",
                 "REDIS_POOL_MIN_IDLE", "4",

@@ -1,7 +1,7 @@
 package com.recsys.model.controller;
 
 import com.fasterxml.jackson.databind.ObjectMapper;
-import com.recsys.model.config.GlobalExceptionHandler;
+import com.recsys.config.GlobalExceptionHandler;
 import com.recsys.model.response.CreateKnowledgeBaseResponse;
 import com.recsys.model.response.GetKnowledgeBasesResponse;
 import com.recsys.model.service.KnowledgeBaseFacadeService;

@@ -1,6 +1,6 @@
 package com.recsys.model.service;
 
-import com.recsys.model.config.RecommendationCacheProperties;
+import com.recsys.config.RecommendationCacheProperties;
 import com.recsys.model.dto.ScoredItem;
 import org.junit.jupiter.api.Test;
 

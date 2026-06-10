@@ -1,6 +1,6 @@
 package com.recsys.model.service;
 
-import com.recsys.model.config.ABTestConfig;
+import com.recsys.config.ABTestConfig;
 import org.junit.jupiter.api.BeforeEach;
 import org.junit.jupiter.api.Test;
 
