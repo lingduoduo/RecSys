@@ -4,6 +4,7 @@ import com.recsys.model.dto.ApiError;
 import com.recsys.model.exception.RateLimitExceededException;
 import com.recsys.model.exception.ServiceOverloadedException;
 import com.recsys.model.exception.SubmitTokenException;
+import com.recsys.model.exception.UnauthorizedException;
 import org.slf4j.Logger;
 import org.slf4j.LoggerFactory;
 import org.springframework.http.HttpHeaders;
@@ -66,6 +67,13 @@ public class GlobalExceptionHandler {
     public ResponseEntity<ApiError> handleOverloaded(ServiceOverloadedException ex) {
         return ResponseEntity.status(HttpStatus.SERVICE_UNAVAILABLE)
                 .header(HttpHeaders.RETRY_AFTER, Integer.toString(ex.getRetryAfterSeconds()))
+                .body(new ApiError(ex.getMessage(), List.of()));
+    }
+
+    @ExceptionHandler(UnauthorizedException.class)
+    public ResponseEntity<ApiError> handleUnauthorized(UnauthorizedException ex) {
+        return ResponseEntity.status(HttpStatus.UNAUTHORIZED)
+                .header(HttpHeaders.WWW_AUTHENTICATE, "Bearer")
                 .body(new ApiError(ex.getMessage(), List.of()));
     }
 
