@@ -1,4 +1,4 @@
-package com.recsys.model.config;
+package com.recsys.config;
 
 import com.recsys.model.dto.ApiError;
 import com.recsys.model.exception.RateLimitExceededException;

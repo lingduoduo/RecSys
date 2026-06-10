@@ -1,6 +1,6 @@
 package com.recsys.model.service;
 
-import com.recsys.model.config.ABTestConfig;
+import com.recsys.config.ABTestConfig;
 import com.recsys.model.response.ModelVersionResponse;
 import org.springframework.stereotype.Service;
 

@@ -1,6 +1,6 @@
 package com.recsys.model.service;
 
-import com.recsys.model.config.HealthProperties;
+import com.recsys.config.HealthProperties;
 import io.micrometer.core.instrument.Counter;
 import io.micrometer.core.instrument.Gauge;
 import io.micrometer.core.instrument.MeterRegistry;

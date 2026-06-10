@@ -1,4 +1,4 @@
-package com.recsys.model.config;
+package com.recsys.config;
 
 import com.recsys.annotation.NeedLogin;
 import com.recsys.model.dto.ApiResponseUtil;

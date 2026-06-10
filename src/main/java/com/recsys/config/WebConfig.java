@@ -1,4 +1,4 @@
-package com.recsys.model.config;
+package com.recsys.config;
 
 import org.springframework.context.annotation.Configuration;
 import org.springframework.lang.NonNull;

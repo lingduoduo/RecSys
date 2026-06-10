@@ -3,7 +3,7 @@ package com.recsys.model.service;
 import ai.onnxruntime.OrtException;
 import com.recsys.infrastructure.redis.RedisConnectionFactory;
 import com.recsys.infrastructure.redis.RedisEmbeddingStore;
-import com.recsys.model.config.ABTestConfig;
+import com.recsys.config.ABTestConfig;
 import jakarta.annotation.PostConstruct;
 import jakarta.annotation.PreDestroy;
 import org.springframework.beans.factory.annotation.Autowired;

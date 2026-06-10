@@ -1,4 +1,4 @@
-package com.recsys.model.config;
+package com.recsys.config;
 
 import jakarta.validation.constraints.Max;
 import jakarta.validation.constraints.Positive;

@@ -1,6 +1,6 @@
 package com.recsys.model.service;
 
-import com.recsys.model.config.ABTestConfig;
+import com.recsys.config.ABTestConfig;
 import org.slf4j.Logger;
 import org.slf4j.LoggerFactory;
 import org.springframework.stereotype.Service;

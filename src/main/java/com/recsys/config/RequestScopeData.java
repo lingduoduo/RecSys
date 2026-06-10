@@ -1,4 +1,4 @@
-package com.recsys.model.config;
+package com.recsys.config;
 
 import org.springframework.stereotype.Component;
 import org.springframework.web.context.annotation.RequestScope;
