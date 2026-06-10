@@ -4,8 +4,8 @@ import ai.onnxruntime.OrtException;
 import com.recsys.infrastructure.redis.RedisConnectionFactory;
 import com.recsys.infrastructure.redis.RedisEmbeddingStore;
 import com.recsys.config.ABTestConfig;
-import jakarta.annotation.PostConstruct;
 import jakarta.annotation.PreDestroy;
+import org.springframework.beans.factory.SmartInitializingSingleton;
 import org.springframework.beans.factory.annotation.Autowired;
 import org.springframework.beans.factory.annotation.Value;
 import org.slf4j.Logger;
@@ -24,7 +24,7 @@ import java.util.concurrent.ConcurrentHashMap;
 import java.util.stream.Collectors;
 
 @Service
-public class ModelRuntimeProvider {
+public class ModelRuntimeProvider implements SmartInitializingSingleton {
 
     private static final Logger log = LoggerFactory.getLogger(ModelRuntimeProvider.class);
 
@@ -61,7 +61,11 @@ public class ModelRuntimeProvider {
      * disabled only the default variant is loaded; all three buckets are loaded when
      * it is enabled.
      */
-    @PostConstruct
+    @Override
+    public void afterSingletonsInstantiated() {
+        warmUp();
+    }
+
     public void warmUp() {
         Set<String> variants = new LinkedHashSet<>();
         variants.add(ModelVariants.normalizeOrDefault(abTestConfig.getDefaultVariant()));
