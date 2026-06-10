@@ -18,7 +18,7 @@ import com.recsys.service.retrieval.GenreHistoryChannel;
 import com.recsys.service.retrieval.MultiChannelRecallService;
 import com.recsys.service.retrieval.PopularityChannel;
 import com.recsys.service.retrieval.TrendingChannel;
-import com.recsys.streaming.TrendingStore;
+import com.recsys.streaming.store.TrendingStore;
 import org.slf4j.Logger;
 import org.slf4j.LoggerFactory;
 import redis.clients.jedis.Jedis;

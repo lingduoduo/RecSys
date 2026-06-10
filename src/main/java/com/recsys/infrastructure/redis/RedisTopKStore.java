@@ -1,6 +1,6 @@
 package com.recsys.infrastructure.redis;
 
-import com.recsys.streaming.TrendingStore;
+import com.recsys.streaming.store.TrendingStore;
 
 import redis.clients.jedis.Jedis;
 import redis.clients.jedis.util.Pool;
