@@ -72,7 +72,7 @@ public class RecommendationController {
         // recomputed on the failure recording path or the degraded-cache fallback.
         ABTestService.Assignment assignment = abTestService.getAssignmentForUser(request.getUserId());
         if (!loadShedder.tryAcquire()) {
-            // Degradation (降级): serve stale cache or cold-start popular items before failing.
+            // Degradation: serve stale cache or cold-start popular items before failing.
             Optional<RecommendResponse> fallback = recommendationService.tryServeFromCache(request, assignment);
             if (fallback.isPresent()) {
                 HttpHeaders headers = new HttpHeaders();

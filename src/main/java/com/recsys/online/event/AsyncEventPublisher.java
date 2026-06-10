@@ -14,17 +14,17 @@ import java.util.concurrent.atomic.AtomicLong;
  *
  * Demonstrates three MQ patterns:
  *
- *   削峰 (peak shaving)  — bounded {@link ArrayBlockingQueue}; events are dropped
- *                          (not blocked) when the queue is full, so the serving
- *                          thread is never stalled by MQ back-pressure.
+ *   Peak shaving  — bounded {@link ArrayBlockingQueue}; events are dropped
+ *                   (not blocked) when the queue is full, so the serving
+ *                   thread is never stalled by MQ back-pressure.
  *
- *   异步 (async)         — {@link #publish} returns in nanoseconds; the drain
- *                          thread batches events and writes to MQ independently.
+ *   Async         — {@link #publish} returns in nanoseconds; the drain
+ *                   thread batches events and writes to MQ independently.
  *
- *   解耦 (decoupling)    — the HTTP serving path has no dependency on Kafka
- *                          availability; {@link #sendBatch} is overridable so
- *                          the transport can be swapped (Kafka, Pulsar, log, …)
- *                          without touching the servlet code.
+ *   Decoupling    — the HTTP serving path has no dependency on Kafka
+ *                   availability; {@link #sendBatch} is overridable so
+ *                   the transport can be swapped (Kafka, Pulsar, log, …)
+ *                   without touching the servlet code.
  */
 public class AsyncEventPublisher implements AutoCloseable {
     private static final Logger log = LoggerFactory.getLogger(AsyncEventPublisher.class);
@@ -56,7 +56,7 @@ public class AsyncEventPublisher implements AutoCloseable {
 
     /**
      * Non-blocking publish. Returns {@code true} if the event was queued;
-     * {@code false} if the queue was full and the event was dropped (削峰).
+     * {@code false} if the queue was full and the event was dropped (peak shaving).
      */
     public boolean publish(String event) {
         if (event == null || !running) return false;

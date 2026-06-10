@@ -9,7 +9,7 @@ import java.util.UUID;
 import java.util.function.Supplier;
 
 /**
- * Redis-based distributed mutex (互斥锁) for cache breakdown (缓存击穿) prevention.
+ * Redis-based distributed mutex for cache breakdown (thundering herd) prevention.
  *
  * When a hot cache key expires simultaneously on all JVM instances, this mutex ensures
  * at most ONE instance across the cluster rebuilds the cache while the others either

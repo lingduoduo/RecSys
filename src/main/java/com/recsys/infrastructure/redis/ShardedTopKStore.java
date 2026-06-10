@@ -18,7 +18,7 @@ import java.util.concurrent.TimeoutException;
 import java.util.concurrent.atomic.AtomicLong;
 
 /**
- * Read-replica sharding for Redis top-K sorted-set keys (热点Key分片).
+ * Read-replica sharding for Redis top-K sorted-set keys (hot-key sharding).
  *
  * Problem: a handful of trending-window keys ({@code topk:last_hour}, {@code topk:last_day},
  * etc.) are read on every recommendation request across all JVM instances.  When the
@@ -30,7 +30,7 @@ import java.util.concurrent.atomic.AtomicLong;
  *   All shards hold identical data; each is written by {@link #seedAllShards}.
  *   On a JVM-cache miss, one shard is chosen at random → N-fold reduction in per-key QPS.
  *
- * Local JVM cache (热点本地缓存):
+ * Local JVM cache (hot-key local cache):
  *   Identical to {@link RedisTopKStore}: ConcurrentHashMap keyed by window, 2-second TTL,
  *   per-window singleflight deduplication.  The local cache absorbs the vast majority of
  *   reads; sharding only affects the infrequent Redis refreshes.

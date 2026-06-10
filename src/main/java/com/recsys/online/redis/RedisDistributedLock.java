@@ -133,7 +133,7 @@ public final class RedisDistributedLock {
         }
     }
 
-    // ── Safe release (共用) ────────────────────────────────────────────────────────
+    // ── Safe release (shared path) ────────────────────────────────────────────────
 
     /**
      * Releases the lock using a Lua fencing-token check.

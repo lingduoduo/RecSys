@@ -8,11 +8,11 @@ import java.util.concurrent.TimeoutException;
 import java.util.function.Supplier;
 
 /**
- * Deduplicates concurrent computations for the same key (singleflight pattern, 缓存击穿防护).
+ * Deduplicates concurrent computations for the same key (singleflight pattern).
  *
  * When multiple threads request the same key simultaneously during a cache miss, only the
  * first thread runs the {@link #execute supplier}; the rest wait for and share its result.
- * This prevents cache breakdown (缓存击穿) where N threads would all independently hit the
+ * This prevents cache breakdown where N threads would all independently hit the
  * backing store for the same expired hot key.
  *
  * On timeout or interruption, the waiting thread falls back to computing independently

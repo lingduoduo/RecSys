@@ -29,7 +29,7 @@ import java.util.concurrent.ConcurrentHashMap;
  * Call warmUp() at startup to pre-populate the cache from Redis so the first requests
  * are served entirely from heap rather than paying a Redis round-trip.
  *
- * Cache penetration (缓存穿透) protection:
+ * Cache penetration protection:
  *  - Bloom filter: after warmUp/preload populates the filter with all valid IDs, requests
  *    for IDs definitively absent (mightContain = false) are short-circuited without a
  *    Redis round-trip.  The filter is inactive until a bulk load runs.
@@ -37,7 +37,7 @@ import java.util.concurrent.ConcurrentHashMap;
  *    NULL_SENTINEL_TTL_MS so that repeated queries for the same absent ID do not each
  *    trigger a backing-store round-trip.
  *
- * Multi-level cache (多级缓存, 缓存雪崩 mitigation):
+ * Multi-level cache (cache avalanche mitigation):
  *  Tier-1 (file system) → Tier-2 (Redis via backing store) → Tier-3 (this JVM heap).
  *  A Redis outage degrades gracefully: this cache continues serving hot embeddings
  *  from heap; only cold misses fall through to the unavailable tier.
@@ -54,11 +54,11 @@ public class LocalEmbeddingCache implements EmbeddingStore {
     private final int maxEntries;
     private final Map<Integer, float[]> cache;
 
-    // 缓存穿透 — Bloom filter: activated after warmUp/preload loads all valid IDs.
+    // Cache penetration guard — Bloom filter: activated after warmUp/preload loads all valid IDs.
     private final BloomFilterGuard bloom;
     private volatile boolean bloomPopulated = false;
 
-    // 缓存穿透 — Null sentinel: maps absent ID → expiry timestamp.
+    // Cache penetration guard — Null sentinel: maps absent ID → expiry timestamp.
     private final ConcurrentHashMap<Integer, Long> nullSentinels = new ConcurrentHashMap<>();
     private final SingleFlight<Integer, float[]> missSingleFlight = new SingleFlight<>(MISS_WAIT_TIMEOUT_MS);
 
@@ -85,7 +85,7 @@ public class LocalEmbeddingCache implements EmbeddingStore {
     /**
      * Bulk-loads all embeddings from the backing store into the heap cache.
      * Should be called once at server startup, after seeding Redis from the file system.
-     * Also activates Bloom filter protection (缓存穿透 guard).
+     * Also activates Bloom filter protection against cache penetration.
      */
     public void warmUp() {
         if (!(backingStore instanceof RedisEmbeddingStore redisStore)) return;
@@ -100,7 +100,7 @@ public class LocalEmbeddingCache implements EmbeddingStore {
     /**
      * Pre-loads embeddings directly from a file-system-sourced map (Tier 1 → Tier 3 shortcut).
      * Avoids a Redis round-trip when the classpath data is already available at startup.
-     * Also activates Bloom filter protection (缓存穿透 guard).
+     * Also activates Bloom filter protection against cache penetration.
      */
     public void preload(Map<Integer, float[]> embeddings) {
         if (embeddings != null && !embeddings.isEmpty()) {
