@@ -11,7 +11,7 @@ import java.util.concurrent.atomic.AtomicInteger;
 import java.util.concurrent.atomic.AtomicLong;
 
 /**
- * Redis-backed fixed-window rate limiter for cross-instance request protection (限流降级).
+ * Redis-backed fixed-window rate limiter for cross-instance request protection.
  *
  * Local pre-check: the first {@code localPassThreshold} requests in each window are
  * allowed without a Redis round-trip.  Only when the local count climbs above that
@@ -19,7 +19,7 @@ import java.util.concurrent.atomic.AtomicLong;
  * This keeps the common case (well under limit) free of network latency while still
  * enforcing the global limit for burst traffic.
  *
- * Circuit breaker (缓存雪崩/限流降级): if Redis fails consecutively at least
+ * Circuit breaker (cache avalanche / rate-limit degradation): if Redis fails consecutively at least
  * {@code circuitFailureThreshold} times, the circuit opens and all subsequent requests
  * are allowed without a Redis call for {@code circuitResetMs} milliseconds.  After the
  * reset window, one probe request is allowed through (HALF_OPEN state); on success the
@@ -54,7 +54,7 @@ public final class RedisRateLimiter {
     private volatile long localWindowBucket = -1L;
     private final AtomicLong localCount = new AtomicLong(0L);
 
-    // Circuit breaker state (缓存雪崩/限流降级).
+    // Circuit breaker state (cache avalanche / rate-limit degradation).
     private final int circuitFailureThreshold;
     private final long circuitResetMs;
     private final AtomicInteger consecutiveFailures = new AtomicInteger(0);

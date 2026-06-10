@@ -27,7 +27,7 @@ public class RedisEmbeddingStore implements EmbeddingStore {
     private final Pool<Jedis> pool;
     private final String keyPrefix;
     private final int mgetBatchSize;
-    // 缓存雪崩 — random TTL jitter: staggers expiry across keys so a batch write does not
+    // Cache avalanche — random TTL jitter: staggers expiry across keys so a batch write does not
     // cause all entries to expire simultaneously and trigger a thundering herd on Redis.
     // jitterFraction=0.1 means 0..10% of baseTtl is added as a random offset.
     private final double jitterFraction;
@@ -88,7 +88,7 @@ public class RedisEmbeddingStore implements EmbeddingStore {
 
     // Bulk write — mirrors the Spark/Scala pattern of iterating model vectors after training.
     // Uses a pipeline to send all SETs in one round-trip instead of N.
-    // Each key gets an independently jittered millisecond TTL to stagger expiry (缓存雪崩/随机TTL):
+    // Each key gets an independently jittered millisecond TTL to stagger expiry (cache avalanche / random TTL):
     // when ttlSeconds > 0, every pipeline.set() call draws a fresh random jitter so entries
     // written in the same batch do not all expire at the same moment.
     @Override

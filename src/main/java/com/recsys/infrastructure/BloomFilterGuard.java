@@ -3,7 +3,7 @@ package com.recsys.infrastructure;
 import java.util.concurrent.atomic.AtomicLongArray;
 
 /**
- * Thread-safe Bloom filter for cache penetration (缓存穿透) protection.
+ * Thread-safe Bloom filter for cache penetration protection.
  *
  * {@link #mightContain} returning {@code false} guarantees the ID was never added.
  * Returning {@code true} means it was probably added (bounded false-positive rate).

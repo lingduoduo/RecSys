@@ -15,10 +15,10 @@ import java.util.Map;
  * Exposes a structured snapshot of the four JVM memory regions for observability and tuning.
  *
  * JVM memory model covered:
- *   堆  (Heap)      – object allocations; dominated here by float[] embedding vectors (old gen)
+ *   Heap           – object allocations; dominated here by float[] embedding vectors (old gen)
  *                     and per-inference intermediate arrays (young gen / eden).
- *   栈  (Stack)     – per-thread call frames; approximated via live thread count × -Xss.
- *   方法区/元空间     – class metadata, interned strings, JIT code cache; grows with Spring Boot +
+ *   Stack          – per-thread call frames; approximated via live thread count × -Xss.
+ *   Metaspace      – class metadata, interned strings, JIT code cache; grows with Spring Boot +
  *                     ONNX Runtime class loading at startup then stabilises.
  *   (Non-heap)      – covers metaspace + compressed class space + code cache as sub-pools.
  *
@@ -173,7 +173,7 @@ public class JvmMemoryMonitor {
     /**
      * Thread counts from {@link ThreadMXBean}.
      *
-     * Stack memory (栈) is not directly measurable via MXBeans; the OS-level cost is
+     * Stack memory is not directly measurable via MXBeans; the OS-level cost is
      * approximately {@code live × -Xss} (default 512 KB on most JVM builds).
      */
     public record ThreadStats(int live, int daemon, int peak) {

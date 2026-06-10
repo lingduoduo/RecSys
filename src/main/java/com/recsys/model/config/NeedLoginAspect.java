@@ -18,10 +18,10 @@ public class NeedLoginAspect {
     @Around("@annotation(needLogin)")
     public Object around(ProceedingJoinPoint joinPoint, NeedLogin needLogin) throws Throwable {
         if (!requestScopeData.isLogin()) {
-            return ApiResponseUtil.error("用户未登录");
+            return ApiResponseUtil.error("user not logged in");
         }
         if (requestScopeData.getUserId() == null) {
-            return ApiResponseUtil.error("用户 ID 异常");
+            return ApiResponseUtil.error("user ID is invalid");
         }
         return joinPoint.proceed();
     }

@@ -14,7 +14,7 @@ import java.util.concurrent.TimeUnit;
 import java.util.concurrent.atomic.AtomicBoolean;
 
 /**
- * Distributed lock with watchdog lease renewal — Redisson 看门狗 pattern.
+ * Distributed lock with watchdog lease renewal — Redisson watchdog pattern.
  *
  * Problem with fixed TTL: if the lock holder's task runs longer than the initial TTL,
  * the lock expires while the critical section is still active.  Another client then

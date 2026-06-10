@@ -15,7 +15,7 @@ import java.util.concurrent.Executor;
 import java.util.concurrent.ForkJoinPool;
 
 /**
- * Logical-expiry wrapper for EmbeddingStore to prevent cache breakdown (缓存击穿) on hot keys.
+ * Logical-expiry wrapper for EmbeddingStore to prevent cache breakdown (thundering herd) on hot keys.
  *
  * Problem: when a hot Redis key's TTL expires all readers rush to the backing store
  * simultaneously, causing a thundering herd that overwhelms the data source.
