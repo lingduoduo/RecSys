@@ -1,4 +1,4 @@
-package com.recsys.model.config;
+package com.recsys.config;
 
 import com.recsys.model.service.LoginTokenService;
 import jakarta.servlet.http.HttpServletRequest;

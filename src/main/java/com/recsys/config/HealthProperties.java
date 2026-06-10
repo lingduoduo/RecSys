@@ -1,4 +1,4 @@
-package com.recsys.model.config;
+package com.recsys.config;
 
 import jakarta.validation.constraints.DecimalMax;
 import jakarta.validation.constraints.DecimalMin;

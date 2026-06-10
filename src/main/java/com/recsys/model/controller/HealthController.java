@@ -1,7 +1,7 @@
 package com.recsys.model.controller;
 
-import com.recsys.model.config.HealthProperties;
-import com.recsys.model.config.ABTestConfig;
+import com.recsys.config.HealthProperties;
+import com.recsys.config.ABTestConfig;
 import com.recsys.model.service.GcEventTracker;
 import com.recsys.model.service.InferenceMetricsService;
 import com.recsys.model.service.JvmMemoryMonitor;
