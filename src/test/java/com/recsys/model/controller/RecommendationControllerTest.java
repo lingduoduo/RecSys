@@ -1,7 +1,8 @@
 package com.recsys.model.controller;
 
 import com.fasterxml.jackson.databind.ObjectMapper;
-import com.recsys.model.config.GlobalExceptionHandler;
+import com.recsys.config.GlobalExceptionHandler;
+import com.recsys.config.RequestScopeData;
 import com.recsys.model.request.RecommendRequest;
 import com.recsys.model.response.RecommendResponse;
 import com.recsys.model.dto.ScoredItem;
@@ -11,6 +12,7 @@ import com.recsys.model.service.LoadShedder;
 import com.recsys.model.service.ModelRateLimiter;
 import com.recsys.model.service.RecommendationService;
 import com.recsys.model.exception.SubmitTokenException;
+import com.recsys.model.service.LoginTokenService;
 import com.recsys.model.service.SubmitTokenService;
 
 import java.time.Duration;
@@ -45,6 +47,8 @@ class RecommendationControllerTest {
     @MockBean LoadShedder loadShedder;
     @MockBean ModelRateLimiter modelRateLimiter;
     @MockBean SubmitTokenService submitTokenService;
+    @MockBean LoginTokenService loginTokenService;
+    @MockBean RequestScopeData requestScopeData;
 
     @BeforeEach
     void allowRequest() {

@@ -14,7 +14,7 @@ class ModelRuntimeProviderTest {
 
     @Test
     void getRuntime_classpathLoadsBundledTrainingAndTestVariants() {
-        ModelRuntimeProvider provider = new ModelRuntimeProvider(new ModelArtifactLocator("", ""), new com.recsys.model.config.ABTestConfig());
+        ModelRuntimeProvider provider = new ModelRuntimeProvider(new ModelArtifactLocator("", ""), new com.recsys.config.ABTestConfig());
         try {
             ModelRuntime training = provider.getRuntime("training");
             ModelRuntime test = provider.getRuntime("test");
@@ -31,7 +31,7 @@ class ModelRuntimeProviderTest {
         writeVariantArtifacts(tmp, "training", "demo-training-v1");
         writeVariantArtifacts(tmp, "test", "demo-test-v2");
 
-        ModelRuntimeProvider provider = new ModelRuntimeProvider(new ModelArtifactLocator(tmp.toString(), ""), new com.recsys.model.config.ABTestConfig());
+        ModelRuntimeProvider provider = new ModelRuntimeProvider(new ModelArtifactLocator(tmp.toString(), ""), new com.recsys.config.ABTestConfig());
         try {
             ModelRuntime training = provider.getRuntime("training");
             ModelRuntime test = provider.getRuntime("test");
@@ -50,7 +50,7 @@ class ModelRuntimeProviderTest {
 
         ModelRuntimeProvider provider = new ModelRuntimeProvider(
                 new ModelArtifactLocator(tmp.toString(), ""),
-                new com.recsys.model.config.ABTestConfig(),
+                new com.recsys.config.ABTestConfig(),
                 "configured_model.onnx",
                 "classpath",
                 "i2vEmb");

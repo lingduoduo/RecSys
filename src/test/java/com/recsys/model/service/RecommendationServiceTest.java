@@ -2,7 +2,7 @@ package com.recsys.model.service;
 
 import com.recsys.featureflags.FeatureFlagService;
 import com.recsys.featureflags.Flags;
-import com.recsys.model.config.RecommendationCacheProperties;
+import com.recsys.config.RecommendationCacheProperties;
 import com.recsys.model.request.RecommendRequest;
 import com.recsys.model.dto.ScoredItem;
 import org.junit.jupiter.api.BeforeEach;

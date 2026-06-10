@@ -1,8 +1,12 @@
 package com.recsys.infrastructure.redis;
 
+import com.recsys.config.RedisProperties;
+import org.apache.commons.pool2.impl.GenericObjectPoolConfig;
+import redis.clients.jedis.DefaultJedisClientConfig;
+import redis.clients.jedis.HostAndPort;
 import redis.clients.jedis.Jedis;
+import redis.clients.jedis.JedisClientConfig;
 import redis.clients.jedis.JedisPool;
-import redis.clients.jedis.JedisPoolConfig;
 import redis.clients.jedis.JedisSentinelPool;
 import redis.clients.jedis.Protocol;
 import redis.clients.jedis.util.Pool;
@@ -28,6 +32,42 @@ public final class RedisConnectionFactory {
         return create(env, defaultPoolConfig(env));
     }
 
+    /** Creates a pool from Spring-managed {@link RedisProperties}. */
+    public static Pool<Jedis> from(RedisProperties props) {
+        GenericObjectPoolConfig<Jedis> poolCfg = poolConfig(props.getPool());
+        JedisClientConfig clientCfg = clientConfig(props.getTimeoutMs(), props.getPassword());
+        if (props.isSentinelMode()) {
+            JedisClientConfig sentinelCfg = DefaultJedisClientConfig.builder().build();
+            return new JedisSentinelPool(props.getSentinelMaster(),
+                    parseSentinelHostAndPorts(props.getSentinelNodes()), poolCfg, clientCfg, sentinelCfg);
+        }
+        return new JedisPool(poolCfg, new HostAndPort(props.getHost(), props.getPort()), clientCfg);
+    }
+
+    /**
+     * Builds an AZ-aware {@link RedisReadReplicaRouter} from Spring-managed {@link RedisProperties}.
+     */
+    public static RedisReadReplicaRouter routerFrom(RedisProperties props) {
+        GenericObjectPoolConfig<Jedis> poolCfg = poolConfig(props.getPool());
+        JedisClientConfig clientCfg = clientConfig(props.getTimeoutMs(), props.getPassword());
+        Pool<Jedis> primary = from(props);
+        String localAz = System.getenv().getOrDefault("AWS_AZ",
+                System.getenv().getOrDefault("AVAILABILITY_ZONE", "unknown"));
+
+        List<RedisReadReplicaRouter.AzPool> replicas = new ArrayList<>();
+        String replicasSpec = props.getReplicaNodes();
+        if (!replicasSpec.isBlank()) {
+            for (String spec : replicasSpec.split(",")) {
+                spec = spec.strip();
+                if (spec.isEmpty()) continue;
+                ReplicaConfig cfg = ReplicaConfig.parse(spec);
+                replicas.add(new RedisReadReplicaRouter.AzPool(
+                        new JedisPool(poolCfg, new HostAndPort(cfg.host(), cfg.port()), clientCfg), cfg.az()));
+            }
+        }
+        return new RedisReadReplicaRouter(primary, replicas, localAz);
+    }
+
     /**
      * Builds an AZ-aware {@link RedisReadReplicaRouter} from environment variables.
      *
@@ -46,11 +86,14 @@ public final class RedisConnectionFactory {
         return routerFromEnv(env, defaultPoolConfig(env));
     }
 
-    static RedisReadReplicaRouter routerFromEnv(Map<String, String> env, JedisPoolConfig config) {
-        Pool<Jedis> primary = create(env, config);
+    static RedisReadReplicaRouter routerFromEnv(Map<String, String> env, GenericObjectPoolConfig<Jedis> poolCfg) {
+        Pool<Jedis> primary = create(env, poolCfg);
         String localAz = env.getOrDefault("AWS_AZ",
                 env.getOrDefault("AVAILABILITY_ZONE", "unknown"));
         String replicasSpec = env.getOrDefault("REDIS_REPLICA_NODES", "");
+        int timeoutMs = readPositiveInt(env, "REDIS_TIMEOUT_MS", Protocol.DEFAULT_TIMEOUT);
+        String password = env.getOrDefault("REDIS_PASSWORD", "");
+        JedisClientConfig clientCfg = clientConfig(timeoutMs, password);
 
         List<RedisReadReplicaRouter.AzPool> replicas = new ArrayList<>();
         if (!replicasSpec.isBlank()) {
@@ -58,31 +101,30 @@ public final class RedisConnectionFactory {
                 spec = spec.strip();
                 if (spec.isEmpty()) continue;
                 ReplicaConfig cfg = ReplicaConfig.parse(spec);
-                JedisPool pool = new JedisPool(config, cfg.host(), cfg.port());
-                replicas.add(new RedisReadReplicaRouter.AzPool(pool, cfg.az()));
+                replicas.add(new RedisReadReplicaRouter.AzPool(
+                        new JedisPool(poolCfg, new HostAndPort(cfg.host(), cfg.port()), clientCfg), cfg.az()));
             }
         }
         return new RedisReadReplicaRouter(primary, replicas, localAz);
     }
 
-    static Pool<Jedis> create(Map<String, String> env, JedisPoolConfig config) {
+    static Pool<Jedis> create(Map<String, String> env, GenericObjectPoolConfig<Jedis> poolCfg) {
         String mode     = env.getOrDefault("REDIS_MODE", "standalone");
         String password = env.getOrDefault("REDIS_PASSWORD", "");
-        int timeoutMs = readPositiveInt(env, "REDIS_TIMEOUT_MS", Protocol.DEFAULT_TIMEOUT);
+        int timeoutMs   = readPositiveInt(env, "REDIS_TIMEOUT_MS", Protocol.DEFAULT_TIMEOUT);
+        JedisClientConfig clientCfg = clientConfig(timeoutMs, password);
         if ("sentinel".equalsIgnoreCase(mode)) {
             String master = env.getOrDefault("REDIS_SENTINEL_MASTER", "mymaster");
             String nodes  = env.getOrDefault("REDIS_SENTINEL_NODES", "");
-            return password.isEmpty()
-                ? new JedisSentinelPool(master, parseSentinelNodes(nodes), config, timeoutMs)
-                : new JedisSentinelPool(master, parseSentinelNodes(nodes), config, timeoutMs, password);
+            JedisClientConfig sentinelCfg = DefaultJedisClientConfig.builder().build();
+            return new JedisSentinelPool(master, parseSentinelHostAndPorts(nodes), poolCfg, clientCfg, sentinelCfg);
         }
         String host = env.getOrDefault("REDIS_HOST", "localhost");
         int    port = parsePort(env.getOrDefault("REDIS_PORT", "6379"));
-        return password.isEmpty()
-            ? new JedisPool(config, host, port, timeoutMs)
-            : new JedisPool(config, host, port, timeoutMs, password);
+        return new JedisPool(poolCfg, new HostAndPort(host, port), clientCfg);
     }
 
+    /** Parses {@code "host:port,..."} into a set of strings (used in tests). */
     static Set<String> parseSentinelNodes(String nodes) {
         Set<String> result = new LinkedHashSet<>();
         if (nodes == null || nodes.isBlank()) {
@@ -96,6 +138,26 @@ public final class RedisConnectionFactory {
         return result;
     }
 
+    /** Parses {@code "host:port,..."} into typed {@link HostAndPort} objects for modern sentinel constructors. */
+    static Set<HostAndPort> parseSentinelHostAndPorts(String nodes) {
+        Set<HostAndPort> result = new LinkedHashSet<>();
+        if (nodes == null || nodes.isBlank()) {
+            result.add(new HostAndPort("localhost", 26379));
+            return result;
+        }
+        for (String node : nodes.split(",")) {
+            node = node.trim();
+            if (node.isEmpty()) continue;
+            int colon = node.lastIndexOf(':');
+            if (colon > 0) {
+                result.add(new HostAndPort(node.substring(0, colon), parsePort(node.substring(colon + 1))));
+            } else {
+                result.add(new HostAndPort(node, 26379));
+            }
+        }
+        return result;
+    }
+
     static int parsePort(String value) {
         if (value == null) return 6379;
         try {
@@ -105,8 +167,29 @@ public final class RedisConnectionFactory {
         }
     }
 
-    static JedisPoolConfig defaultPoolConfig(Map<String, String> env) {
-        JedisPoolConfig cfg = new JedisPoolConfig();
+    private static JedisClientConfig clientConfig(int timeoutMs, String password) {
+        DefaultJedisClientConfig.Builder builder = DefaultJedisClientConfig.builder()
+                .connectionTimeoutMillis(timeoutMs)
+                .socketTimeoutMillis(timeoutMs);
+        if (password != null && !password.isBlank()) {
+            builder.password(password);
+        }
+        return builder.build();
+    }
+
+    static GenericObjectPoolConfig<Jedis> poolConfig(RedisProperties.Pool pool) {
+        GenericObjectPoolConfig<Jedis> cfg = new GenericObjectPoolConfig<>();
+        cfg.setMaxTotal(pool.getMaxTotal());
+        cfg.setMaxIdle(pool.getMaxIdle());
+        cfg.setMinIdle(pool.getMinIdle());
+        cfg.setTestOnBorrow(pool.isTestOnBorrow());
+        cfg.setBlockWhenExhausted(true);
+        cfg.setMaxWait(java.time.Duration.ofMillis(pool.getMaxWaitMs()));
+        return cfg;
+    }
+
+    static GenericObjectPoolConfig<Jedis> defaultPoolConfig(Map<String, String> env) {
+        GenericObjectPoolConfig<Jedis> cfg = new GenericObjectPoolConfig<>();
         cfg.setMaxTotal(readPositiveInt(env, "REDIS_POOL_MAX_TOTAL", DEFAULT_MAX_TOTAL));
         cfg.setMaxIdle(readPositiveInt(env, "REDIS_POOL_MAX_IDLE", DEFAULT_MAX_IDLE));
         cfg.setMinIdle(readNonNegativeInt(env, "REDIS_POOL_MIN_IDLE", DEFAULT_MIN_IDLE));

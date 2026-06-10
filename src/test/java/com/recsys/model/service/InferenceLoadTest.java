@@ -37,10 +37,10 @@ class InferenceLoadTest {
     @BeforeAll
     void setUp() throws Exception {
         var locator = new ModelArtifactLocator("", "");
-        runtimeProvider = new ModelRuntimeProvider(locator, new com.recsys.model.config.ABTestConfig());
+        runtimeProvider = new ModelRuntimeProvider(locator, new com.recsys.config.ABTestConfig());
         service = new RecommendationService(
                 runtimeProvider,
-                new ABTestService(new com.recsys.model.config.ABTestConfig())
+                new ABTestService(new com.recsys.config.ABTestConfig())
         );
     }
 

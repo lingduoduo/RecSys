@@ -24,7 +24,7 @@ public class FeatureFlagConfig {
     public FeatureFlagProvider featureFlagProvider(Properties properties) {
         List<FeatureFlagProvider> providers = new ArrayList<>();
         providers.add(new EnvFeatureFlagProvider(properties.environmentPrefix));
-        PostHog postHog = properties.postHog;
+        PostHog postHog = properties.getPostHog();
         if (postHog.isEnabled() && postHog.getApiKey() != null && !postHog.getApiKey().isBlank()) {
             FeatureFlagProvider raw = new PostHogFeatureFlagProvider(
                     postHog.getApiKey(), postHog.getHost(), postHog.getTimeout());

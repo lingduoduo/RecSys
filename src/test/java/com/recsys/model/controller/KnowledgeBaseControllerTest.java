@@ -1,10 +1,12 @@
 package com.recsys.model.controller;
 
 import com.fasterxml.jackson.databind.ObjectMapper;
-import com.recsys.model.config.GlobalExceptionHandler;
+import com.recsys.config.GlobalExceptionHandler;
+import com.recsys.config.RequestScopeData;
 import com.recsys.model.response.CreateKnowledgeBaseResponse;
 import com.recsys.model.response.GetKnowledgeBasesResponse;
 import com.recsys.model.service.KnowledgeBaseFacadeService;
+import com.recsys.model.service.LoginTokenService;
 import com.recsys.model.vo.KnowledgeBaseVO;
 import org.junit.jupiter.api.Test;
 import org.springframework.beans.factory.annotation.Autowired;
@@ -35,6 +37,8 @@ class KnowledgeBaseControllerTest {
     @Autowired MockMvc mockMvc;
     @Autowired ObjectMapper objectMapper;
     @MockBean KnowledgeBaseFacadeService service;
+    @MockBean LoginTokenService loginTokenService;
+    @MockBean RequestScopeData requestScopeData;
 
     // --- GET /knowledge-bases ---
 
