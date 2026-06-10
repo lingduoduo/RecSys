@@ -30,7 +30,7 @@ docker-compose -f docker-compose.streaming.yml up
 |---|---|---|
 | RecSys Serving API | 6010 | `com.recsys.serving.RecSysServer` |
 | Model Serving (Spring Boot) | 8080 | `com.recsys.model.ModelApplication` |
-| Online Serving | 7010 | `com.recsys.streaming.OnlinePredictionServer` |
+| Online Serving | 7010 | `com.recsys.online.serving.OnlinePredictionServer` |
 | API Gateway | 8010 | `com.recsys.microservice.MicroserviceGatewayServer` |
 
 Run an individual service:
@@ -42,7 +42,7 @@ mvn exec:java -Dexec.mainClass=com.recsys.serving.RecSysServer
 mvn spring-boot:run
 
 # Online Serving
-mvn exec:java -Dexec.mainClass=com.recsys.streaming.OnlinePredictionServer
+mvn exec:java -Dexec.mainClass=com.recsys.online.serving.OnlinePredictionServer
 
 # API Gateway
 mvn exec:java -Dexec.mainClass=com.recsys.microservice.MicroserviceGatewayServer
@@ -68,7 +68,7 @@ The system demonstrates two recommendation paths:
 |---|---|
 | `serving/` | Jetty servlet handlers for the offline RecSys API |
 | `modelbased/` | Spring Boot ONNX model serving (controller → service → ONNX runtime) |
-| `streaming/` | Online feature store, learner, rate limiter, distributed lock (Redis), Jetty servlets |
+| `online/` | Online feature store, learner, rate limiter, distributed lock (Redis), Jetty servlets |
 | `microservice/` | API gateway: proxy, circuit breaker, rate limiter, LLM proxy |
 | `features/` | Embedding stores (Redis, local heap, multi-level L1→L2→L3), LSH index, candidate generation |
 | `models/` | Shared domain DTOs (Movie, User, Rating) |

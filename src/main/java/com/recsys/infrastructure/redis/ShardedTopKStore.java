@@ -1,7 +1,7 @@
 package com.recsys.infrastructure.redis;
 
 import com.recsys.infrastructure.HotKeyDetector;
-import com.recsys.streaming.store.TrendingStore;
+import com.recsys.online.store.TrendingStore;
 import org.slf4j.Logger;
 import org.slf4j.LoggerFactory;
 import redis.clients.jedis.Jedis;

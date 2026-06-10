@@ -45,7 +45,7 @@ spec:
                 name: recsys-config
           env:
             - name: RECSYS_MAIN_CLASS
-              value: com.recsys.streaming.OnlinePredictionServer
+              value: com.recsys.online.serving.OnlinePredictionServer
             - name: ONLINE_DEMO_PORT
               value: "7010"
             - name: REDIS_POOL_MAX_TOTAL

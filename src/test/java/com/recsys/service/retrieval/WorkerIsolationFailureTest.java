@@ -3,8 +3,8 @@ package com.recsys.service.retrieval;
 
 import com.recsys.domain.MovieCandidate;
 import com.recsys.domain.RecommendationQuery;
-import com.recsys.streaming.ops.FaultInjector;
-import com.recsys.streaming.ops.WorkerBulkhead;
+import com.recsys.online.ops.FaultInjector;
+import com.recsys.online.ops.WorkerBulkhead;
 import org.junit.jupiter.api.AfterEach;
 import org.junit.jupiter.api.Test;
 
