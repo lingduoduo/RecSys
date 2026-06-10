@@ -1,7 +1,9 @@
 package com.recsys.model.controller;
 
 import com.recsys.config.GlobalExceptionHandler;
+import com.recsys.config.RequestScopeData;
 import com.recsys.model.response.ModelVersionResponse;
+import com.recsys.model.service.LoginTokenService;
 import com.recsys.model.service.ModelVersionService;
 import org.junit.jupiter.api.Test;
 import org.springframework.beans.factory.annotation.Autowired;
@@ -25,6 +27,8 @@ class VersionControllerTest {
 
     @Autowired MockMvc mockMvc;
     @MockBean ModelVersionService versionService;
+    @MockBean LoginTokenService loginTokenService;
+    @MockBean RequestScopeData requestScopeData;
 
     @Test
     void listVersions_returnsActiveAndLoadedVariants() throws Exception {

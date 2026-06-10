@@ -19,7 +19,7 @@ public class TraceIdAspect {
     private static final String TRACE_ID_KEY = "traceId";
     private static final String TRACE_ID_HEADER = "X-Trace-Id";
 
-    @Around("execution(* com.recsys..*(..))")
+    @Around("execution(* com.recsys..*(..)) && !within(com.recsys.infrastructure..*) && !@within(org.springframework.boot.context.properties.ConfigurationProperties)")
     public Object addTraceId(ProceedingJoinPoint joinPoint) throws Throwable {
         boolean set = false;
         try {
