@@ -342,7 +342,7 @@ Spring Boot service running a PyTorch-exported DSSM ONNX model with A/B variant 
 
 #### Recommend
 
-Runs ONNX inference to rank candidates for a user; returns `abTestVariant` so impressions can be attributed to the correct experiment bucket:
+Runs ONNX inference to rank candidates for a user; returns `abTestVariant` so outcomes can be attributed to the correct experiment bucket:
 
 ```bash
 curl -X POST http://localhost:8080/api/v1/recommend \
@@ -794,7 +794,7 @@ Options: `--vector-size=16`, `--window-size=5`, `--min-count=1`, `--max-iter=10`
 
 ## A/B Testing
 
-`ABTestService` assigns users to variants deterministically by hashing `userId:layerName` modulo `trafficSplitNumber`. The assigned variant is returned in every response so impressions can be attributed to the right bucket.
+`ABTestService` assigns users to variants deterministically by hashing `userId:layerName` modulo `trafficSplitNumber`. The assigned variant is returned in every response so experiment outcomes can be attributed to the right bucket.
 
 **Bucketing:**
 
@@ -962,7 +962,6 @@ Redis key conventions:
 | `topk:<window>` | Trending sorted set (`last_hour`, `last_day`, `last_month`) |
 | `user:<id>:recent_movies` | Per-user recent watch history (written by Flink) |
 | `feature:user:<id>:embedding` | User embedding from online Flink job |
-| `feature:movie:<id>:ctr:<window>` | Movie CTR and engagement metrics |
 
 ---
 
@@ -993,11 +992,11 @@ sh streaming/online-serving/scripts/produce_movie_events.sh
 
 | Component | Responsibility |
 |---|---|
-| `LogCollector` | Validates and emits Kafka-ready behavior logs (exposure, click, watch, like, rating, dwell, search, order) |
+| `LogCollector` | Validates and emits Kafka-ready behavior logs (click, watch, like, rating, dwell, search, order) |
 | `OnlineJoiner` | Joins behavior logs with user/item/context features; produces labeled samples |
 | `ExperienceCollector` | Groups samples by request into ranked list experiences for listwise training |
 | `OnlineLearner` | Updates per-item bias parameters from list experiences; persists to Redis |
-| `OnlineFeatureStreamingJob` | Flink job: reads Kafka, writes history + embeddings + trending + CTR to Redis |
+| `OnlineFeatureStreamingJob` | Flink job: reads Kafka, writes history + embeddings + trending to Redis |
 | `OnlineRecommendationEngine` | Scores candidates from per-user history + windowed trending |
 | `OnlineRecommendationService` | Blends behavioral + embedding signals; cold-start fallback |
 | `OnlineLoadShedder` | Caps in-flight requests; returns `429` + `Retry-After` when overloaded |
@@ -1020,10 +1019,10 @@ curl -X POST http://localhost:7010/shards/records \
   -d '{"deviceId":"user:123","type":"EVENT","eventId":"click-001","payload":"{\"movieId\":7}"}'
 # {"seqNum":1,"shardIndex":0,"status":"OK"}
 
-# FEATURE (Flink-written behavioral features: CTR, session data)
+# FEATURE (Flink-written behavioral features: engagement, session data)
 curl -X POST http://localhost:7010/shards/records \
   -H "Content-Type: application/json" \
-  -d '{"deviceId":"user:123","type":"FEATURE","eventId":"ctr-001","payload":"{\"ctr\":0.42}"}'
+  -d '{"deviceId":"user:123","type":"FEATURE","eventId":"engagement-001","payload":"{\"engagement\":0.42}"}'
 
 # LOG (audit / debug entries)
 curl -X POST http://localhost:7010/shards/records \

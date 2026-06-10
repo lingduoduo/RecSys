@@ -46,7 +46,7 @@ class ShardedRecordStoreIntegrationTest extends RedisShardingTestBase {
     @Test
     void fullRoundTrip_featureAndLogTypes() {
         store.write(new ShardedRecord("user:1", 0, RecordType.FEATURE,
-                "ctr-001", "{\"ctr\":0.2}", System.currentTimeMillis()));
+                "engagement-001", "{\"engagement\":0.2}", System.currentTimeMillis()));
         store.write(new ShardedRecord("user:1", 0, RecordType.LOG,
                 "log-001", "startup", System.currentTimeMillis()));
 

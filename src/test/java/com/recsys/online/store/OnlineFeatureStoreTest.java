@@ -113,23 +113,23 @@ class OnlineFeatureStoreTest {
     void getFeatures_deduplicatesChunksAndCachesRedisMget() {
         var stub = new RedisPoolStub();
         when(stub.pool.getResource()).thenReturn(stub.jedis);
-        when(stub.jedis.mget("user:1:embedding", "movie:7:ctr")).thenReturn(List.of("0.1 0.2", "0.42"));
+        when(stub.jedis.mget("user:1:embedding", "movie:7:engagement")).thenReturn(List.of("0.1 0.2", "0.42"));
         when(stub.jedis.mget("session:abc:features")).thenReturn(List.of("fresh"));
         var store = new OnlineFeatureStore(stub.pool, 5_000L, 100, 2);
 
         Map<String, String> first = store.getFeatures(List.of(
                 "user:1:embedding",
                 "user:1:embedding",
-                "movie:7:ctr",
+                "movie:7:engagement",
                 "session:abc:features"
         ));
-        Map<String, String> second = store.getFeatures(List.of("user:1:embedding", "movie:7:ctr", "session:abc:features"));
+        Map<String, String> second = store.getFeatures(List.of("user:1:embedding", "movie:7:engagement", "session:abc:features"));
 
         assertThat(first).containsEntry("user:1:embedding", "0.1 0.2")
-                .containsEntry("movie:7:ctr", "0.42")
+                .containsEntry("movie:7:engagement", "0.42")
                 .containsEntry("session:abc:features", "fresh");
         assertThat(second).isEqualTo(first);
-        verify(stub.jedis, times(1)).mget("user:1:embedding", "movie:7:ctr");
+        verify(stub.jedis, times(1)).mget("user:1:embedding", "movie:7:engagement");
         verify(stub.jedis, times(1)).mget("session:abc:features");
     }
 

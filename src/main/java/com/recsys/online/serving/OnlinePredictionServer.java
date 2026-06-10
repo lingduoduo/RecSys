@@ -90,7 +90,7 @@ public final class OnlinePredictionServer {
               .service("/online/recommendation",
                       new OnlineAdmissionControl(
                               new OnlinePredictionService(recommendationService, metricsService,
-                                      loadShedder, redisRateLimiter, asyncEventPublisher, true),
+                                      loadShedder, redisRateLimiter, true),
                               loadShedder, metricsService))
               .service("/online/ops",
                       new OnlineOpsService(metricsService, loadShedder, capacityService,

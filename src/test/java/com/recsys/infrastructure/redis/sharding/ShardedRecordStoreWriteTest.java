@@ -36,7 +36,7 @@ class ShardedRecordStoreWriteTest extends RedisShardingTestBase {
     @Test
     void write_storesFullRecordInHashKey() {
         ShardedRecord record = new ShardedRecord("device-2", 0, RecordType.FEATURE,
-                "feat-001", "{\"ctr\":0.12}", System.currentTimeMillis());
+                "feat-001", "{\"engagement\":0.12}", System.currentTimeMillis());
 
         WriteResult result = store.write(record);
 
@@ -47,7 +47,7 @@ class ShardedRecordStoreWriteTest extends RedisShardingTestBase {
                     .containsEntry("deviceId", "device-2")
                     .containsEntry("type", "FEATURE")
                     .containsEntry("eventId", "feat-001")
-                    .containsEntry("payload", "{\"ctr\":0.12}");
+                    .containsEntry("payload", "{\"engagement\":0.12}");
         }
     }
 

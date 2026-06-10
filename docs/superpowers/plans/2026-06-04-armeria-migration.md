@@ -1181,7 +1181,6 @@ public final class OnlinePredictionService extends ApiService {
                 OnlineRecommendationResult result = recommendationService.recommend(
                         new OnlineRecommendationRequest(userId, window, k));
                 metricsService.recordSuccess(elapsed(startedAtMs), result.strategy());
-                if (asyncEventPublisher != null) asyncEventPublisher.publish(impressionEvent(userId, result));
                 return writeJson(HttpStatus.OK, new OnlinePredictionResponse(
                         result.user(), result.window(), result.strategy(),
                         result.recentMovies(), result.trendingMovies().stream().limit(k).toList(),
@@ -1203,15 +1202,6 @@ public final class OnlinePredictionService extends ApiService {
     }
 
     private static long elapsed(long startMs) { return Math.max(0L, System.currentTimeMillis() - startMs); }
-
-    private static String impressionEvent(int userId, OnlineRecommendationResult result) {
-        try {
-            return MAPPER.writeValueAsString(Map.of("eventId", UUID.randomUUID().toString(),
-                    "userId", userId, "eventType", "impression", "strategy", result.strategy(),
-                    "window", result.window(), "k", result.recommendations().size(),
-                    "eventTimeMillis", System.currentTimeMillis(), "source", "online-prediction"));
-        } catch (Exception e) { return "{}"; }
-    }
 
     private record OnlinePredictionResponse(User user, String window, String strategy,
                                             List<Movie> recentMovies, List<Movie> trendingMovies,

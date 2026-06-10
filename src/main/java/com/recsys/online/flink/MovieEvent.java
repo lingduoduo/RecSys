@@ -32,10 +32,6 @@ public class MovieEvent {
         return userId + ":" + movieId + ":" + eventType + ":" + eventTimeMillis;
     }
 
-    public boolean isImpression() {
-        return matches("impression") || matches("exposure") || matches("show");
-    }
-
     public boolean isView() {
         return matches("view") || matches("watch");
     }
@@ -77,10 +73,6 @@ public class MovieEvent {
             return sessionId;
         }
         return "";
-    }
-
-    public boolean contributesCtr() {
-        return isImpression() || isClick() || isView() || isDwell() || isLike() || isRating();
     }
 
     public boolean updatesRecentHistory() {

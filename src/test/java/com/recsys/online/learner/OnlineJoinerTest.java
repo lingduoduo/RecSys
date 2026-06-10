@@ -67,8 +67,8 @@ class OnlineJoinerTest {
         OnlineJoiner.JoinedSample order = joiner.join(new LogCollector.UserBehaviorLog(
                 "evt-order", 123, 9, "order", 0L, null, 100L, "web", Map.of()),
                 Map.of(), Map.of(), Map.of());
-        OnlineJoiner.JoinedSample impression = joiner.join(new LogCollector.UserBehaviorLog(
-                "evt-imp", 123, 9, "impression", 0L, null, 100L, "web", Map.of()),
+        OnlineJoiner.JoinedSample shortView = joiner.join(new LogCollector.UserBehaviorLog(
+                "evt-view", 123, 9, "view", 0L, null, 100L, "web", Map.of()),
                 Map.of(), Map.of(), Map.of());
         OnlineJoiner.JoinedSample rating = joiner.join(new LogCollector.UserBehaviorLog(
                 "evt-rating", 123, 9, "rating", 0L, 0L, 5, 100L, "web", Map.of()),
@@ -83,7 +83,7 @@ class OnlineJoinerTest {
 
         assertEquals(2, like.label());
         assertEquals(3, order.label());
-        assertEquals(0, impression.label());
+        assertEquals(0, shortView.label());
         assertEquals(2, rating.label());
         assertEquals(1, dwell.label());
         assertEquals(1, search.label());

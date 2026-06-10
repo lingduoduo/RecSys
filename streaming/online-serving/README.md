@@ -98,7 +98,7 @@ sh streaming/online-serving/scripts/produce_movie_events.sh
 
 That publishes the bundled event stream from `movie_events.ndjson` into Kafka topic `movie_events`.
 In a real app, `LogCollector` is the counterpart to this replay script: product surfaces call it with
-impression, click, view, like, or order logs, then its JSON output is written to Kafka.
+click, view, like, or order logs, then its JSON output is written to Kafka.
 `OnlineJoiner` is the next step: it combines those behavior records with user, item, and request context
 features and assigns labels for online and offline training streams.
 `ExperienceCollector` then groups joined point samples by `event.requestId`, restores item order from
@@ -165,7 +165,6 @@ This path intentionally does not use a distributed transaction spanning MQ, Flin
 What the job writes to Redis:
 
 - `user:<id>:recent_movies`
-- `movie:<id>:impressions_1h`
 - `movie:<id>:views_1h`
 - `movie:<id>:clicks_1h`
 - `movie:<id>:likes_1h`
@@ -178,9 +177,8 @@ Each Redis feature key also has a companion freshness key:
 - `movie:<id>:<metric>:updated_at`
 - `topk:<window>:updated_at`
 
-The Flink job treats exposure/impression records as metric and label input, but it does not let them update
-`user:<id>:recent_movies`. Recent history is reserved for stronger feedback such as click, like, order, or a
-view with meaningful watch time, matching the Online Joiner split between raw logs and labeled samples.
+Recent history is reserved for stronger feedback such as click, like, order, or a view with meaningful
+watch time, matching the Online Joiner split between raw logs and labeled samples.
 
 ## Load Online Features Into Redis
 

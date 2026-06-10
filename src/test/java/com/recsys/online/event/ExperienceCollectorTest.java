@@ -17,7 +17,7 @@ class ExperienceCollectorTest {
     @Test
     void collectGroupsJoinedSamplesIntoRankedRecommendationExperience() throws Exception {
         OnlineJoiner joiner = new OnlineJoiner();
-        OnlineJoiner.JoinedSample second = sample(joiner, "evt-2", 11, "impression", 2, 0);
+        OnlineJoiner.JoinedSample second = sample(joiner, "evt-2", 11, "view", 2, 0);
         OnlineJoiner.JoinedSample first = sample(joiner, "evt-1", 9, "click", 1, 1);
         OnlineJoiner.JoinedSample otherRequest = joiner.join(new LogCollector.UserBehaviorLog(
                         "evt-3", 123, 12, "like", 0L, null, 103L, "web",
@@ -48,7 +48,7 @@ class ExperienceCollectorTest {
     @Test
     void collectFallsBackToEventIdWhenRequestIdIsMissing() {
         OnlineJoiner.JoinedSample sample = new OnlineJoiner().join(
-                new LogCollector.UserBehaviorLog("evt-1", 123, 9, "impression", 0L, null, 100L, "web", Map.of()),
+                new LogCollector.UserBehaviorLog("evt-1", 123, 9, "view", 0L, null, 100L, "web", Map.of()),
                 Map.of(), Map.of(), Map.of());
 
         List<ExperienceCollector.RecommendationExperience> experiences =
@@ -62,8 +62,8 @@ class ExperienceCollectorTest {
     @Test
     void collectCompactsDuplicateMovieFeedbackWithinSameRequest() {
         OnlineJoiner joiner = new OnlineJoiner();
-        OnlineJoiner.JoinedSample impression = joiner.join(new LogCollector.UserBehaviorLog(
-                        "evt-1", 123, 9, "impression", 0L, null, 100L, "web",
+        OnlineJoiner.JoinedSample shortView = joiner.join(new LogCollector.UserBehaviorLog(
+                        "evt-1", 123, 9, "view", 0L, null, 100L, "web",
                         Map.of("requestId", "req-9", "rank", "2")),
                 Map.of(), Map.of(), Map.of());
         OnlineJoiner.JoinedSample click = joiner.join(new LogCollector.UserBehaviorLog(
@@ -72,7 +72,7 @@ class ExperienceCollectorTest {
                 Map.of(), Map.of(), Map.of());
 
         ExperienceCollector.RecommendationExperience experience =
-                new ExperienceCollector().collect(List.of(impression, click)).get(0);
+                new ExperienceCollector().collect(List.of(shortView, click)).get(0);
 
         assertEquals(1, experience.items().size());
         assertEquals(1, experience.label());

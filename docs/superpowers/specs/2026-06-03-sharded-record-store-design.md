@@ -19,7 +19,7 @@ Several existing components handle adjacent concerns and are **unchanged**:
 | Component | What it handles | Why excluded |
 |---|---|---|
 | `RedisEmbeddingStore` | Item/user embeddings (`float[]`) as `{prefix}:{id}` → float string | Write-once per training cycle; no ordering, dedup, or cursor reads needed |
-| `OnlineFeatureStore` | Pure reader — loads arbitrary Redis keys (history, CTR, session, embeddings) with JVM cache | No write path; delegates to Flink-written keys |
+| `OnlineFeatureStore` | Pure reader — loads arbitrary Redis keys (history, engagement, session, embeddings) with JVM cache | No write path; delegates to Flink-written keys |
 | `ShardedTopKStore` | Trending Top-K sorted sets as read replicas | Read-replica pattern, not data partitioning |
 | `EmbeddingLSH` | SimHash of `float[]` vectors for ANN similarity search | Similarity hashing — orthogonal to consistent-hash partitioning |
 
@@ -34,7 +34,7 @@ The `ConsistentHashRing` maps a **device/user ID string → shard index** for da
 - Use that sequence number for: deduplication, ordering, optimistic versioning, and cursor-based reads
 - Cover three record types with clear boundaries:
   - **EVENT** — click, watch, rating, dwell, search events (new; no existing handler)
-  - **FEATURE** — Flink-written behavioral features only: recent history updates, CTR events, session data (streaming writes that need ordering and dedup; raw embeddings remain in `RedisEmbeddingStore`)
+  - **FEATURE** — Flink-written behavioral features only: recent history updates, engagement events, session data (streaming writes that need ordering and dedup; raw embeddings remain in `RedisEmbeddingStore`)
   - **LOG** — general audit/debug log entries (new; no existing handler)
 - Expose two read modes: per-device cursor and shard-level stream scan
 
@@ -122,7 +122,7 @@ record ShardedRecord(
 
 enum RecordType {
     EVENT,    // click, watch, rating, dwell, search — from LogCollector / Kafka
-    FEATURE,  // Flink-written behavioral features: recent history, CTR, session data
+    FEATURE,  // Flink-written behavioral features: recent history, engagement, session data
               // NOT raw embeddings (float[]) — those stay in RedisEmbeddingStore
     LOG       // general audit / debug log entries
 }

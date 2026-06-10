@@ -14,7 +14,7 @@ class AsyncEventPublisherTest {
     @Test
     void publish_queuesEventAndReturnsTrue() {
         try (var publisher = new AsyncEventPublisher(100, 10)) {
-            assertThat(publisher.publish("{\"eventType\":\"impression\"}")).isTrue();
+            assertThat(publisher.publish("{\"eventType\":\"click\"}")).isTrue();
             assertThat(publisher.snapshot().published()).isEqualTo(1L);
         }
     }

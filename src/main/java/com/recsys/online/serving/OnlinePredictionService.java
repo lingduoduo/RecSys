@@ -6,14 +6,11 @@ import com.linecorp.armeria.common.HttpStatus;
 import com.linecorp.armeria.server.ServiceRequestContext;
 import com.recsys.domain.Movie;
 import com.recsys.domain.User;
-import com.recsys.online.event.AsyncEventPublisher;
 import com.recsys.online.ops.OnlineLoadShedder;
 import com.recsys.online.ops.OnlineServingMetricsService;
 import com.recsys.online.redis.RedisRateLimiter;
 
 import java.util.List;
-import java.util.Map;
-import java.util.UUID;
 import java.util.concurrent.CompletableFuture;
 
 public final class OnlinePredictionService extends ApiService {
@@ -22,37 +19,27 @@ public final class OnlinePredictionService extends ApiService {
     private final OnlineServingMetricsService metricsService;
     private final OnlineLoadShedder loadShedder;
     private final RedisRateLimiter redisRateLimiter;
-    private final AsyncEventPublisher asyncEventPublisher;
     private final boolean admissionHandledExternally;
 
     public OnlinePredictionService(OnlineRecommendationService recommendationService) {
         this(recommendationService, new OnlineServingMetricsService(),
-                new OnlineLoadShedder(), RedisRateLimiter.disabled(), null);
+                new OnlineLoadShedder(), RedisRateLimiter.disabled());
     }
 
     public OnlinePredictionService(OnlineRecommendationService recommendationService,
                                    OnlineServingMetricsService metricsService,
                                    OnlineLoadShedder loadShedder) {
-        this(recommendationService, metricsService, loadShedder, RedisRateLimiter.disabled(), null);
+        this(recommendationService, metricsService, loadShedder, RedisRateLimiter.disabled());
     }
 
     public OnlinePredictionService(OnlineRecommendationService recommendationService,
                                    OnlineServingMetricsService metricsService,
                                    OnlineLoadShedder loadShedder,
                                    RedisRateLimiter redisRateLimiter) {
-        this(recommendationService, metricsService, loadShedder, redisRateLimiter, null);
-    }
-
-    public OnlinePredictionService(OnlineRecommendationService recommendationService,
-                                   OnlineServingMetricsService metricsService,
-                                   OnlineLoadShedder loadShedder,
-                                   RedisRateLimiter redisRateLimiter,
-                                   AsyncEventPublisher asyncEventPublisher) {
         this.recommendationService = recommendationService;
         this.metricsService = metricsService;
         this.loadShedder = loadShedder;
         this.redisRateLimiter = redisRateLimiter;
-        this.asyncEventPublisher = asyncEventPublisher;
         this.admissionHandledExternally = false;
     }
 
@@ -60,13 +47,11 @@ public final class OnlinePredictionService extends ApiService {
                             OnlineServingMetricsService metricsService,
                             OnlineLoadShedder loadShedder,
                             RedisRateLimiter redisRateLimiter,
-                            AsyncEventPublisher asyncEventPublisher,
                             boolean admissionHandledExternally) {
         this.recommendationService = recommendationService;
         this.metricsService = metricsService;
         this.loadShedder = loadShedder;
         this.redisRateLimiter = redisRateLimiter;
-        this.asyncEventPublisher = asyncEventPublisher;
         this.admissionHandledExternally = admissionHandledExternally;
     }
 
@@ -102,11 +87,6 @@ public final class OnlinePredictionService extends ApiService {
                         result.recommendations()
                 ));
                 metricsService.recordSuccess(elapsedMs(startedAtMs), result.strategy());
-
-                // Fire impression event asynchronously — non-blocking, decoupled from MQ availability.
-                if (asyncEventPublisher != null) {
-                    asyncEventPublisher.publish(impressionEvent(userId, result));
-                }
                 return response;
             } catch (BadRequestException | IllegalArgumentException e) {
                 metricsService.recordFailure(elapsedMs(startedAtMs));
@@ -124,23 +104,6 @@ public final class OnlinePredictionService extends ApiService {
                 }
             }
         }, ctx.blockingTaskExecutor()));
-    }
-
-    private static String impressionEvent(int userId, OnlineRecommendationResult result) {
-        try {
-            return MAPPER.writeValueAsString(Map.of(
-                    "eventId",         UUID.randomUUID().toString(),
-                    "userId",          userId,
-                    "eventType",       "impression",
-                    "strategy",        result.strategy(),
-                    "window",          result.window(),
-                    "k",               result.recommendations().size(),
-                    "eventTimeMillis", System.currentTimeMillis(),
-                    "source",          "online-prediction"
-            ));
-        } catch (Exception e) {
-            return "{}";
-        }
     }
 
     private static long elapsedMs(long startedAtMs) {

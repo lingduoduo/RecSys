@@ -98,7 +98,7 @@ class LogCollectorTest {
         features.put("nullValue", null);
 
         String json = collector.collect(new LogCollector.UserBehaviorLog(
-                "evt-1", 123, 9, "impression", 0L, null, 0L, "web", features));
+                "evt-1", 123, 9, "view", 0L, null, 0L, "web", features));
 
         JsonNode featureNode = MAPPER.readTree(json).get("features");
         assertEquals("4", featureNode.get("rank").asText());

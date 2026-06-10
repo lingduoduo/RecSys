@@ -73,7 +73,7 @@ class OnlinePredictionServerIntegrationTest {
                               RedisRateLimiter.disabled(), null, true), shedder, metrics))
               .service("/online/recommendation", new OnlineAdmissionControl(
                       new OnlinePredictionService(mockRec, metrics, shedder,
-                              RedisRateLimiter.disabled(), null, true), shedder, metrics))
+                              RedisRateLimiter.disabled(), true), shedder, metrics))
               .service("/online/ops", new OnlineOpsService(metrics, shedder, capacity))
               .service(Route.builder().pathPrefix("/shards/").build(),
                       new ShardedRecordService(mockStore));
