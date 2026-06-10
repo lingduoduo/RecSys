@@ -81,6 +81,23 @@ recsys:
     cold-start-max-k: ${RECSYS_RECOMMENDATION_CACHE_COLD_START_MAX_K:100}
     # Max time a duplicate request waits for another thread's in-flight cache miss.
     compute-wait-timeout-millis: ${RECSYS_RECOMMENDATION_CACHE_COMPUTE_WAIT_TIMEOUT_MILLIS:2000}
+  redis:
+    host: ${REDIS_HOST:localhost}
+    port: ${REDIS_PORT:6379}
+    password: ${REDIS_PASSWORD:}
+    mode: ${REDIS_MODE:standalone}
+    timeout-ms: ${REDIS_TIMEOUT_MS:2000}
+    # Comma-separated read-replica specs: host:port@az (e.g. redis-b:6379@us-east-1b)
+    replica-nodes: ${REDIS_REPLICA_NODES:}
+    sentinel-master: ${REDIS_SENTINEL_MASTER:mymaster}
+    # Comma-separated sentinel endpoints: host:port (e.g. sentinel-1:26379,sentinel-2:26379)
+    sentinel-nodes: ${REDIS_SENTINEL_NODES:}
+    pool:
+      max-total: ${REDIS_POOL_MAX_TOTAL:50}
+      max-idle: ${REDIS_POOL_MAX_IDLE:10}
+      min-idle: ${REDIS_POOL_MIN_IDLE:2}
+      max-wait-ms: ${REDIS_POOL_MAX_WAIT_MS:250}
+      test-on-borrow: ${REDIS_POOL_TEST_ON_BORROW:true}
   submit-token:
     # Optional one-time token protection for POST /api/v1/recommend.
     # When enabled, clients fetch GET /api/v1/token and send X-Submit-Token on submit.
