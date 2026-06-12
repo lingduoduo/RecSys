@@ -83,6 +83,12 @@ public class GlobalExceptionHandler {
                 .body(new ApiError(ex.getMessage(), List.of()));
     }
 
+    @ExceptionHandler(UnsupportedOperationException.class)
+    @ResponseStatus(HttpStatus.NOT_IMPLEMENTED)
+    public ApiError handleNotImplemented(UnsupportedOperationException ex) {
+        return new ApiError(ex.getMessage(), List.of());
+    }
+
     // Catch-all: unexpected inference or runtime errors
     @ExceptionHandler(Exception.class)
     @ResponseStatus(HttpStatus.INTERNAL_SERVER_ERROR)
