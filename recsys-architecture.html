@@ -10,18 +10,17 @@
   body { background: #020617; color: #e2e8f0; font-family: 'JetBrains Mono', monospace; min-height: 100vh; padding: 32px 24px 48px; }
   .header { display: flex; align-items: flex-start; gap: 14px; margin-bottom: 28px; }
   .pulse-dot { width: 10px; height: 10px; border-radius: 50%; background: #34d399; flex-shrink: 0; margin-top: 5px; animation: pulse 2s infinite; }
-  @keyframes pulse { 0%,100% { box-shadow: 0 0 0 0 rgba(52,211,153,.5); } 50% { box-shadow: 0 0 0 7px rgba(52,211,153,0); } }
+  @keyframes pulse { 0%,100%{box-shadow:0 0 0 0 rgba(52,211,153,.5);}50%{box-shadow:0 0 0 7px rgba(52,211,153,0);} }
   h1 { font-size: 20px; font-weight: 700; color: #f8fafc; letter-spacing: -.3px; }
   .subtitle { font-size: 11px; color: #64748b; margin-top: 3px; }
   .diagram-card { background: #0f172a; border: 1px solid #1e293b; border-radius: 12px; padding: 20px; overflow-x: auto; }
   svg { display: block; }
-  .cards { display: grid; grid-template-columns: repeat(3, 1fr); gap: 16px; margin-top: 20px; }
+  .cards { display: grid; grid-template-columns: repeat(3,1fr); gap: 16px; margin-top: 20px; }
   .card { background: #0f172a; border: 1px solid #1e293b; border-radius: 8px; padding: 16px; }
   .card-header { display: flex; align-items: center; gap: 8px; margin-bottom: 10px; }
   .card-dot { width: 8px; height: 8px; border-radius: 50%; flex-shrink: 0; }
-  .dot-green  { background: #34d399; }
-  .dot-violet { background: #a78bfa; }
-  .dot-orange { background: #fb923c; }
+  .dot-cyan{background:#22d3ee;} .dot-green{background:#34d399;} .dot-violet{background:#a78bfa;}
+  .dot-amber{background:#fbbf24;} .dot-rose{background:#fb7185;} .dot-orange{background:#fb923c;}
   .card-header h3 { font-size: 11px; font-weight: 600; color: #e2e8f0; }
   .card ul { list-style: none; }
   .card li { font-size: 10px; color: #94a3b8; padding: 2px 0; line-height: 1.55; }
@@ -29,15 +28,17 @@
 </style>
 </head>
 <body>
+
 <div class="header">
   <div class="pulse-dot"></div>
   <div>
     <h1>RecSys Backend Service</h1>
-    <div class="subtitle">Recommendation System Architecture · Java / Maven · lingduoduo/Recsys-Backend-Service</div>
+    <div class="subtitle">Recommendation System Architecture · Java 17 / Maven · 47 commits · lingduoduo/Recsys-Backend-Service</div>
   </div>
 </div>
+
 <div class="diagram-card">
-<svg viewBox="0 0 1120 780" xmlns="http://www.w3.org/2000/svg" width="1120" height="780">
+<svg viewBox="0 0 1240 960" xmlns="http://www.w3.org/2000/svg" width="1240" height="960">
 <defs>
   <pattern id="grid" width="40" height="40" patternUnits="userSpaceOnUse"><path d="M40 0L0 0 0 40" fill="none" stroke="#1e293b" stroke-width=".5"/></pattern>
   <marker id="a"     markerWidth="9" markerHeight="6" refX="8" refY="3" orient="auto"><polygon points="0 0,9 3,0 6" fill="#475569"/></marker>
@@ -46,229 +47,358 @@
   <marker id="avio"  markerWidth="9" markerHeight="6" refX="8" refY="3" orient="auto"><polygon points="0 0,9 3,0 6" fill="#a78bfa"/></marker>
   <marker id="aamb"  markerWidth="9" markerHeight="6" refX="8" refY="3" orient="auto"><polygon points="0 0,9 3,0 6" fill="#fbbf24"/></marker>
   <marker id="aorg"  markerWidth="9" markerHeight="6" refX="8" refY="3" orient="auto"><polygon points="0 0,9 3,0 6" fill="#fb923c"/></marker>
+  <marker id="arose" markerWidth="9" markerHeight="6" refX="8" refY="3" orient="auto"><polygon points="0 0,9 3,0 6" fill="#fb7185"/></marker>
 </defs>
-<rect width="1120" height="780" fill="#020617"/>
-<rect width="1120" height="780" fill="url(#grid)"/>
 
-<!-- ZONE OUTLINES -->
-<rect x="330" y="108" width="264" height="98" rx="10" fill="none" stroke="#fb923c" stroke-width="1.4" stroke-dasharray="7,4"/>
-<text x="346" y="100" fill="#fb923c" font-family="'JetBrains Mono',monospace" font-size="9">Docker Compose  (Streaming Layer)</text>
-<rect x="44" y="590" width="318" height="104" rx="10" fill="none" stroke="#fbbf24" stroke-width="1.4" stroke-dasharray="7,4"/>
-<text x="60" y="583" fill="#fbbf24" font-family="'JetBrains Mono',monospace" font-size="9">Offline Embedding Pipeline</text>
-<rect x="520" y="108" width="420" height="98" rx="10" fill="none" stroke="#34d399" stroke-width="1.4" stroke-dasharray="7,4"/>
-<text x="536" y="100" fill="#34d399" font-family="'JetBrains Mono',monospace" font-size="9">Spring Boot  Two-Tower Serving  :8080</text>
+<rect width="1240" height="960" fill="#020617"/>
+<rect width="1240" height="960" fill="url(#grid)"/>
 
-<!-- ARROWS -->
-<line x1="100" y1="88" x2="100" y2="158" stroke="#22d3ee" stroke-width="1.5" marker-end="url(#acyan)"/>
-<line x1="100" y1="74" x2="652" y2="158" stroke="#22d3ee" stroke-width="1.4" stroke-dasharray="5,3" marker-end="url(#acyan)"/>
-<line x1="100" y1="230" x2="100" y2="308" stroke="#475569" stroke-width="1.2" marker-end="url(#a)"/>
-<line x1="155" y1="230" x2="295" y2="308" stroke="#475569" stroke-width="1.2" marker-end="url(#a)"/>
-<line x1="168" y1="216" x2="820" y2="312" stroke="#475569" stroke-width="1" stroke-dasharray="4,3" marker-end="url(#a)"/>
-<line x1="100" y1="380" x2="100" y2="458" stroke="#34d399" stroke-width="1.3" marker-end="url(#agrn)"/>
-<line x1="155" y1="380" x2="308" y2="458" stroke="#34d399" stroke-width="1.3" marker-end="url(#agrn)"/>
-<line x1="386" y1="352" x2="790" y2="352" stroke="#a78bfa" stroke-width="1.3" marker-end="url(#avio)"/>
-<line x1="100" y1="530" x2="155" y2="612" stroke="#34d399" stroke-width="1.1" marker-end="url(#agrn)"/>
-<line x1="620" y1="230" x2="580" y2="308" stroke="#475569" stroke-width="1.2" marker-end="url(#a)"/>
-<line x1="680" y1="230" x2="762" y2="308" stroke="#475569" stroke-width="1.2" marker-end="url(#a)"/>
-<line x1="560" y1="380" x2="560" y2="458" stroke="#34d399" stroke-width="1.3" marker-end="url(#agrn)"/>
-<line x1="800" y1="380" x2="800" y2="458" stroke="#34d399" stroke-width="1.3" marker-end="url(#agrn)"/>
-<line x1="848" y1="380" x2="942" y2="458" stroke="#34d399" stroke-width="1.3" marker-end="url(#agrn)"/>
-<line x1="560" y1="530" x2="628" y2="618" stroke="#34d399" stroke-width="1.1" marker-end="url(#agrn)"/>
-<line x1="970" y1="530" x2="750" y2="620" stroke="#34d399" stroke-width="1.1" marker-end="url(#agrn)"/>
-<line x1="430" y1="152" x2="490" y2="152" stroke="#fb923c" stroke-width="1.3" marker-end="url(#aorg)"/>
-<line x1="540" y1="180" x2="820" y2="318" stroke="#fb923c" stroke-width="1.2" stroke-dasharray="5,3" marker-end="url(#aorg)"/>
-<line x1="264" y1="642" x2="790" y2="392" stroke="#fbbf24" stroke-width="1.1" stroke-dasharray="5,3" marker-end="url(#aamb)"/>
+<!-- ═══ ZONE BORDERS ═══ -->
+<!-- Jetty Movie API zone -->
+<rect x="28" y="128" width="388" height="470" rx="10" fill="none" stroke="#34d399" stroke-width="1.4" stroke-dasharray="7,4"/>
+<text x="44" y="120" fill="#34d399" font-family="'JetBrains Mono',monospace" font-size="9">Jetty Movie API  :6010  (com.recsys.serving)</text>
 
-<!-- CLIENT -->
-<rect x="34" y="38" width="132" height="50" rx="6" fill="#0f172a"/>
-<rect x="34" y="38" width="132" height="50" rx="6" fill="rgba(8,51,68,.45)" stroke="#22d3ee" stroke-width="1.6"/>
-<text x="100" y="59" fill="#f8fafc" font-family="'JetBrains Mono',monospace" font-size="11" font-weight="700" text-anchor="middle">HTTP Client</text>
-<text x="100" y="76" fill="#94a3b8" font-family="'JetBrains Mono',monospace" font-size="9" text-anchor="middle">curl / REST</text>
+<!-- Two-Tower Spring Boot zone -->
+<rect x="436" y="128" width="388" height="470" rx="10" fill="none" stroke="#22d3ee" stroke-width="1.4" stroke-dasharray="7,4"/>
+<text x="452" y="120" fill="#22d3ee" font-family="'JetBrains Mono',monospace" font-size="9">Spring Boot Two-Tower  :8080  (com.recsys.training.modelbased.twotower)</text>
 
-<!-- JETTY -->
-<rect x="34" y="158" width="132" height="72" rx="6" fill="#0f172a"/>
-<rect x="34" y="158" width="132" height="72" rx="6" fill="rgba(6,78,59,.4)" stroke="#34d399" stroke-width="1.6"/>
-<text x="100" y="179" fill="#f8fafc" font-family="'JetBrains Mono',monospace" font-size="11" font-weight="700" text-anchor="middle">Jetty Movie API</text>
-<text x="100" y="195" fill="#94a3b8" font-family="'JetBrains Mono',monospace" font-size="9" text-anchor="middle">RecSysServer</text>
-<text x="100" y="209" fill="#64748b" font-family="'JetBrains Mono',monospace" font-size="8" text-anchor="middle">port 6010</text>
-<text x="100" y="222" fill="#64748b" font-family="'JetBrains Mono',monospace" font-size="8" text-anchor="middle">BaseApiServlet</text>
+<!-- Docker Compose Streaming zone -->
+<rect x="844" y="128" width="368" height="220" rx="10" fill="none" stroke="#fb923c" stroke-width="1.4" stroke-dasharray="7,4"/>
+<text x="860" y="120" fill="#fb923c" font-family="'JetBrains Mono',monospace" font-size="9">Docker Compose  (docker-compose.streaming.yml)</text>
 
-<!-- KAFKA -->
-<rect x="334" y="128" width="120" height="52" rx="6" fill="#0f172a"/>
-<rect x="334" y="128" width="120" height="52" rx="6" fill="rgba(251,146,60,.28)" stroke="#fb923c" stroke-width="1.6"/>
-<text x="394" y="150" fill="#f8fafc" font-family="'JetBrains Mono',monospace" font-size="11" font-weight="700" text-anchor="middle">Kafka</text>
-<text x="394" y="166" fill="#94a3b8" font-family="'JetBrains Mono',monospace" font-size="9" text-anchor="middle">movie_events topic</text>
+<!-- Offline Pipelines zone -->
+<rect x="844" y="370" width="368" height="228" rx="10" fill="none" stroke="#fbbf24" stroke-width="1.4" stroke-dasharray="7,4"/>
+<text x="860" y="362" fill="#fbbf24" font-family="'JetBrains Mono',monospace" font-size="9">Offline Embedding Pipelines  (com.recsys.training)</text>
 
-<!-- FLINK -->
-<rect x="490" y="128" width="100" height="52" rx="6" fill="#0f172a"/>
-<rect x="490" y="128" width="100" height="52" rx="6" fill="rgba(251,146,60,.28)" stroke="#fb923c" stroke-width="1.6"/>
-<text x="540" y="150" fill="#f8fafc" font-family="'JetBrains Mono',monospace" font-size="11" font-weight="700" text-anchor="middle">Flink</text>
-<text x="540" y="166" fill="#94a3b8" font-family="'JetBrains Mono',monospace" font-size="9" text-anchor="middle">streaming top-k</text>
+<!-- Embedding Storage zone (bottom) -->
+<rect x="28" y="630" width="1184" height="178" rx="10" fill="none" stroke="#475569" stroke-width="1.4" stroke-dasharray="7,4"/>
+<text x="44" y="622" fill="#94a3b8" font-family="'JetBrains Mono',monospace" font-size="9">Embedding Storage Paths  —  three independent paths into serving</text>
 
-<!-- TWO-TOWER -->
-<rect x="528" y="158" width="248" height="72" rx="6" fill="#0f172a"/>
-<rect x="528" y="158" width="248" height="72" rx="6" fill="rgba(6,78,59,.4)" stroke="#34d399" stroke-width="1.6"/>
-<text x="652" y="179" fill="#f8fafc" font-family="'JetBrains Mono',monospace" font-size="11" font-weight="700" text-anchor="middle">Spring Boot · Two-Tower</text>
-<text x="652" y="195" fill="#94a3b8" font-family="'JetBrains Mono',monospace" font-size="9" text-anchor="middle">TwoTowerApplication</text>
-<text x="652" y="209" fill="#64748b" font-family="'JetBrains Mono',monospace" font-size="8" text-anchor="middle">POST /recommend   port 8080</text>
-<text x="652" y="222" fill="#64748b" font-family="'JetBrains Mono',monospace" font-size="8" text-anchor="middle">RecommendationController</text>
+<!-- ═══ ARROWS ═══ -->
+<!-- Client → Jetty -->
+<line x1="130" y1="88" x2="130" y2="128" stroke="#22d3ee" stroke-width="1.5" marker-end="url(#acyan)"/>
+<!-- Client → Spring Boot -->
+<line x1="200" y1="80" x2="600" y2="128" stroke="#22d3ee" stroke-width="1.4" stroke-dasharray="5,3" marker-end="url(#acyan)"/>
 
-<!-- CANDIDATE GENERATOR -->
-<rect x="34" y="308" width="148" height="72" rx="6" fill="#0f172a"/>
-<rect x="34" y="308" width="148" height="72" rx="6" fill="rgba(6,78,59,.4)" stroke="#34d399" stroke-width="1.6"/>
-<text x="108" y="329" fill="#f8fafc" font-family="'JetBrains Mono',monospace" font-size="11" font-weight="700" text-anchor="middle">CandidateGenerator</text>
-<text x="108" y="345" fill="#94a3b8" font-family="'JetBrains Mono',monospace" font-size="9" text-anchor="middle">byGenre / byUserHistory</text>
-<text x="108" y="359" fill="#64748b" font-family="'JetBrains Mono',monospace" font-size="8" text-anchor="middle">byEmbedding</text>
-<text x="108" y="371" fill="#64748b" font-family="'JetBrains Mono',monospace" font-size="8" text-anchor="middle">RecommendationService</text>
+<!-- Jetty internals -->
+<line x1="130" y1="228" x2="130" y2="288" stroke="#475569" stroke-width="1.2" marker-end="url(#a)"/>
+<line x1="200" y1="228" x2="320" y2="288" stroke="#475569" stroke-width="1.2" marker-end="url(#a)"/>
+<line x1="130" y1="358" x2="130" y2="418" stroke="#34d399" stroke-width="1.3" marker-end="url(#agrn)"/>
+<line x1="200" y1="358" x2="320" y2="418" stroke="#34d399" stroke-width="1.3" marker-end="url(#agrn)"/>
+<line x1="200" y1="228" x2="200" y2="288" stroke="#475569" stroke-width="1.2" marker-end="url(#a)"/>
 
-<!-- SIMILAR MOVIE SERVICE -->
-<rect x="238" y="308" width="148" height="72" rx="6" fill="#0f172a"/>
-<rect x="238" y="308" width="148" height="72" rx="6" fill="rgba(6,78,59,.4)" stroke="#34d399" stroke-width="1.6"/>
-<text x="312" y="329" fill="#f8fafc" font-family="'JetBrains Mono',monospace" font-size="11" font-weight="700" text-anchor="middle">SimilarMovieService</text>
-<text x="312" y="345" fill="#94a3b8" font-family="'JetBrains Mono',monospace" font-size="9" text-anchor="middle">inner-product top-k</text>
-<text x="312" y="359" fill="#64748b" font-family="'JetBrains Mono',monospace" font-size="8" text-anchor="middle">candidates → Redis MGET</text>
-<text x="312" y="371" fill="#64748b" font-family="'JetBrains Mono',monospace" font-size="8" text-anchor="middle">→ rank → return top-k</text>
+<!-- Jetty → Redis (embedding lookup) -->
+<line x1="340" y1="325" x2="840" y2="205" stroke="#a78bfa" stroke-width="1.2" stroke-dasharray="5,3" marker-end="url(#avio)"/>
+<!-- Jetty → Classpath Embeddings -->
+<line x1="130" y1="488" x2="130" y2="645" stroke="#34d399" stroke-width="1.1" marker-end="url(#agrn)"/>
 
-<!-- FEATURE ENCODER -->
-<rect x="500" y="308" width="148" height="72" rx="6" fill="#0f172a"/>
-<rect x="500" y="308" width="148" height="72" rx="6" fill="rgba(6,78,59,.4)" stroke="#34d399" stroke-width="1.6"/>
-<text x="574" y="329" fill="#f8fafc" font-family="'JetBrains Mono',monospace" font-size="11" font-weight="700" text-anchor="middle">FeatureEncoder</text>
-<text x="574" y="345" fill="#94a3b8" font-family="'JetBrains Mono',monospace" font-size="9" text-anchor="middle">userId → vocab index</text>
-<text x="574" y="359" fill="#64748b" font-family="'JetBrains Mono',monospace" font-size="8" text-anchor="middle">__UNK__ fallback</text>
-<text x="574" y="371" fill="#64748b" font-family="'JetBrains Mono',monospace" font-size="8" text-anchor="middle">feature_config.json</text>
+<!-- Two-Tower internals -->
+<line x1="600" y1="228" x2="555" y2="288" stroke="#475569" stroke-width="1.2" marker-end="url(#a)"/>
+<line x1="650" y1="228" x2="720" y2="288" stroke="#475569" stroke-width="1.2" marker-end="url(#a)"/>
+<line x1="555" y1="358" x2="555" y2="418" stroke="#22d3ee" stroke-width="1.3" marker-end="url(#acyan)"/>
+<line x1="610" y1="358" x2="720" y2="418" stroke="#22d3ee" stroke-width="1.3" marker-end="url(#acyan)"/>
+<!-- Two-Tower → Model Artifacts classpath -->
+<line x1="600" y1="595" x2="680" y2="645" stroke="#22d3ee" stroke-width="1.1" marker-end="url(#acyan)"/>
 
-<!-- CANDIDATE SELECTION SVC -->
-<rect x="700" y="308" width="162" height="72" rx="6" fill="#0f172a"/>
-<rect x="700" y="308" width="162" height="72" rx="6" fill="rgba(6,78,59,.4)" stroke="#34d399" stroke-width="1.6"/>
-<text x="781" y="329" fill="#f8fafc" font-family="'JetBrains Mono',monospace" font-size="10" font-weight="700" text-anchor="middle">CandidateSelectionSvc</text>
-<text x="781" y="345" fill="#94a3b8" font-family="'JetBrains Mono',monospace" font-size="9" text-anchor="middle">user-history genres</text>
-<text x="781" y="359" fill="#64748b" font-family="'JetBrains Mono',monospace" font-size="8" text-anchor="middle">+ global top pools</text>
-<text x="781" y="371" fill="#64748b" font-family="'JetBrains Mono',monospace" font-size="8" text-anchor="middle">RetrievalService</text>
+<!-- Kafka → Flink -->
+<line x1="920" y1="228" x2="1060" y2="228" stroke="#fb923c" stroke-width="1.3" marker-end="url(#aorg)"/>
+<!-- Flink → Redis (topk) -->
+<line x1="1060" y1="258" x2="980" y2="300" stroke="#fb923c" stroke-width="1.2" stroke-dasharray="4,3" marker-end="url(#aorg)"/>
 
-<!-- REDIS -->
-<rect x="790" y="308" width="296" height="100" rx="6" fill="#0f172a"/>
-<rect x="790" y="308" width="296" height="100" rx="6" fill="rgba(76,29,149,.4)" stroke="#a78bfa" stroke-width="1.6"/>
-<text x="938" y="331" fill="#f8fafc" font-family="'JetBrains Mono',monospace" font-size="11" font-weight="700" text-anchor="middle">Redis</text>
-<text x="938" y="349" fill="#94a3b8" font-family="'JetBrains Mono',monospace" font-size="9" text-anchor="middle">i2vEmb:{movieId}   u2vEmb:{userId}</text>
-<text x="938" y="365" fill="#64748b" font-family="'JetBrains Mono',monospace" font-size="8" text-anchor="middle">topk:last_hour / last_day / last_month</text>
-<text x="938" y="379" fill="#64748b" font-family="'JetBrains Mono',monospace" font-size="8" text-anchor="middle">RedisEmbeddingStore   TTL 86400s</text>
-<text x="938" y="393" fill="#64748b" font-family="'JetBrains Mono',monospace" font-size="8" text-anchor="middle">Jedis pipeline bulk-write</text>
+<!-- Spark Rule-Based → Redis -->
+<line x1="920" y1="460" x2="920" y2="660" stroke="#fbbf24" stroke-width="1.2" marker-end="url(#aamb)"/>
+<!-- Spark Model-Based → Model Artifacts -->
+<line x1="1060" y1="555" x2="820" y2="660" stroke="#fbbf24" stroke-width="1.1" stroke-dasharray="5,3" marker-end="url(#aamb)"/>
 
-<!-- VECTOR INDEX -->
-<rect x="34" y="458" width="148" height="72" rx="6" fill="#0f172a"/>
-<rect x="34" y="458" width="148" height="72" rx="6" fill="rgba(6,78,59,.4)" stroke="#34d399" stroke-width="1.6"/>
-<text x="108" y="479" fill="#f8fafc" font-family="'JetBrains Mono',monospace" font-size="11" font-weight="700" text-anchor="middle">VectorIndex</text>
-<text x="108" y="495" fill="#94a3b8" font-family="'JetBrains Mono',monospace" font-size="9" text-anchor="middle">LSH (approx)</text>
-<text x="108" y="509" fill="#64748b" font-family="'JetBrains Mono',monospace" font-size="8" text-anchor="middle">Exact (full-scan)</text>
-<text x="108" y="521" fill="#64748b" font-family="'JetBrains Mono',monospace" font-size="8" text-anchor="middle">FAISS (Linux native)</text>
+<!-- Redis → serving paths -->
+<line x1="940" y1="348" x2="340" y2="560" stroke="#a78bfa" stroke-width="1" stroke-dasharray="3,3" marker-end="url(#avio)"/>
 
-<!-- DATA MANAGER -->
-<rect x="238" y="458" width="148" height="72" rx="6" fill="#0f172a"/>
-<rect x="238" y="458" width="148" height="72" rx="6" fill="rgba(76,29,149,.4)" stroke="#a78bfa" stroke-width="1.6"/>
-<text x="312" y="479" fill="#f8fafc" font-family="'JetBrains Mono',monospace" font-size="11" font-weight="700" text-anchor="middle">DataManager</text>
-<text x="312" y="495" fill="#94a3b8" font-family="'JetBrains Mono',monospace" font-size="9" text-anchor="middle">singleton · immutable</text>
-<text x="312" y="509" fill="#64748b" font-family="'JetBrains Mono',monospace" font-size="8" text-anchor="middle">topRated / latest</text>
-<text x="312" y="521" fill="#64748b" font-family="'JetBrains Mono',monospace" font-size="8" text-anchor="middle">moviesByGenre</text>
+<!-- LLM Ideas (future) -->
+<line x1="1105" y1="465" x2="1105" y2="630" stroke="#fb7185" stroke-width="1" stroke-dasharray="3,3" marker-end="url(#arose)"/>
 
-<!-- ONNX RUNTIME -->
-<rect x="500" y="458" width="148" height="72" rx="6" fill="#0f172a"/>
-<rect x="500" y="458" width="148" height="72" rx="6" fill="rgba(6,78,59,.4)" stroke="#34d399" stroke-width="1.6"/>
-<text x="574" y="479" fill="#f8fafc" font-family="'JetBrains Mono',monospace" font-size="11" font-weight="700" text-anchor="middle">ONNX Runtime</text>
-<text x="574" y="495" fill="#94a3b8" font-family="'JetBrains Mono',monospace" font-size="9" text-anchor="middle">user_tower.onnx</text>
-<text x="574" y="509" fill="#64748b" font-family="'JetBrains Mono',monospace" font-size="8" text-anchor="middle">live inference</text>
-<text x="574" y="521" fill="#64748b" font-family="'JetBrains Mono',monospace" font-size="8" text-anchor="middle">user embedding → float[]</text>
+<!-- ═══ CLIENT ═══ -->
+<rect x="44" y="38" width="132" height="50" rx="6" fill="#0f172a"/>
+<rect x="44" y="38" width="132" height="50" rx="6" fill="rgba(8,51,68,.45)" stroke="#22d3ee" stroke-width="1.6"/>
+<text x="110" y="59" fill="#f8fafc" font-family="'JetBrains Mono',monospace" font-size="11" font-weight="700" text-anchor="middle">HTTP Client</text>
+<text x="110" y="76" fill="#94a3b8" font-family="'JetBrains Mono',monospace" font-size="9" text-anchor="middle">curl / REST</text>
 
-<!-- RANKING SERVICE -->
-<rect x="700" y="458" width="148" height="72" rx="6" fill="#0f172a"/>
-<rect x="700" y="458" width="148" height="72" rx="6" fill="rgba(6,78,59,.4)" stroke="#34d399" stroke-width="1.6"/>
-<text x="774" y="479" fill="#f8fafc" font-family="'JetBrains Mono',monospace" font-size="11" font-weight="700" text-anchor="middle">RankingService</text>
-<text x="774" y="495" fill="#94a3b8" font-family="'JetBrains Mono',monospace" font-size="9" text-anchor="middle">inner-product sort</text>
-<text x="774" y="509" fill="#64748b" font-family="'JetBrains Mono',monospace" font-size="8" text-anchor="middle">k-truncation</text>
-<text x="774" y="521" fill="#64748b" font-family="'JetBrains Mono',monospace" font-size="8" text-anchor="middle">dedup + missing skip</text>
+<!-- ═══ JETTY MOVIE API ═══ -->
+<!-- RecSysServer -->
+<rect x="40" y="140" width="220" height="88" rx="6" fill="#0f172a"/>
+<rect x="40" y="140" width="220" height="88" rx="6" fill="rgba(6,78,59,.4)" stroke="#34d399" stroke-width="1.6"/>
+<text x="150" y="161" fill="#f8fafc" font-family="'JetBrains Mono',monospace" font-size="11" font-weight="700" text-anchor="middle">RecSysServer  :6010</text>
+<text x="150" y="177" fill="#94a3b8" font-family="'JetBrains Mono',monospace" font-size="9" text-anchor="middle">GET /health · /getmovie · /getuser</text>
+<text x="150" y="191" fill="#64748b" font-family="'JetBrains Mono',monospace" font-size="8" text-anchor="middle">GET /getrecommendation · /getsimilarmovie</text>
+<text x="150" y="203" fill="#64748b" font-family="'JetBrains Mono',monospace" font-size="8" text-anchor="middle">POST /v1/models/recmodel:predict · /setembedding</text>
+<text x="150" y="218" fill="#64748b" font-family="'JetBrains Mono',monospace" font-size="8" text-anchor="middle">BaseApiServlet  (Jackson · error handling)</text>
 
-<!-- MODEL ARTIFACT SERVICE -->
-<rect x="900" y="458" width="172" height="72" rx="6" fill="#0f172a"/>
-<rect x="900" y="458" width="172" height="72" rx="6" fill="rgba(76,29,149,.4)" stroke="#a78bfa" stroke-width="1.6"/>
-<text x="986" y="479" fill="#f8fafc" font-family="'JetBrains Mono',monospace" font-size="10" font-weight="700" text-anchor="middle">ModelArtifactService</text>
-<text x="986" y="495" fill="#94a3b8" font-family="'JetBrains Mono',monospace" font-size="9" text-anchor="middle">@PostConstruct load</text>
-<text x="986" y="509" fill="#64748b" font-family="'JetBrains Mono',monospace" font-size="8" text-anchor="middle">ConcurrentHashMap</text>
-<text x="986" y="521" fill="#64748b" font-family="'JetBrains Mono',monospace" font-size="8" text-anchor="middle">ModelArtifactLocator</text>
+<!-- CandidateGenerator -->
+<rect x="40" y="248" width="220" height="88" rx="6" fill="#0f172a"/>
+<rect x="40" y="248" width="220" height="88" rx="6" fill="rgba(6,78,59,.4)" stroke="#34d399" stroke-width="1.6"/>
+<text x="150" y="269" fill="#f8fafc" font-family="'JetBrains Mono',monospace" font-size="11" font-weight="700" text-anchor="middle">CandidateGenerator</text>
+<text x="150" y="285" fill="#94a3b8" font-family="'JetBrains Mono',monospace" font-size="9" text-anchor="middle">byGenre  (seed-movie recall)</text>
+<text x="150" y="299" fill="#64748b" font-family="'JetBrains Mono',monospace" font-size="8" text-anchor="middle">byUserHistory  (genre+topRated+latest)</text>
+<text x="150" y="311" fill="#64748b" font-family="'JetBrains Mono',monospace" font-size="8" text-anchor="middle">byEmbedding  → VectorIndex</text>
+<text x="150" y="325" fill="#64748b" font-family="'JetBrains Mono',monospace" font-size="8" text-anchor="middle">mode=topk/trending → Redis ZADD</text>
 
-<!-- CLASSPATH EMBEDDINGS -->
-<rect x="44" y="610" width="155" height="66" rx="6" fill="#0f172a"/>
-<rect x="44" y="610" width="155" height="66" rx="6" fill="rgba(76,29,149,.4)" stroke="#a78bfa" stroke-width="1.6"/>
-<text x="122" y="631" fill="#f8fafc" font-family="'JetBrains Mono',monospace" font-size="10" font-weight="700" text-anchor="middle">Classpath Embeddings</text>
-<text x="122" y="647" fill="#94a3b8" font-family="'JetBrains Mono',monospace" font-size="9" text-anchor="middle">movie_embeddings.txt</text>
-<text x="122" y="663" fill="#64748b" font-family="'JetBrains Mono',monospace" font-size="8" text-anchor="middle">user_embeddings.txt</text>
+<!-- SimilarMovieService -->
+<rect x="278" y="248" width="130" height="88" rx="6" fill="#0f172a"/>
+<rect x="278" y="248" width="130" height="88" rx="6" fill="rgba(6,78,59,.4)" stroke="#34d399" stroke-width="1.6"/>
+<text x="343" y="269" fill="#f8fafc" font-family="'JetBrains Mono',monospace" font-size="10" font-weight="700" text-anchor="middle">SimilarMovie</text>
+<text x="343" y="283" fill="#94a3b8" font-family="'JetBrains Mono',monospace" font-size="9" text-anchor="middle">Service</text>
+<text x="343" y="299" fill="#64748b" font-family="'JetBrains Mono',monospace" font-size="8" text-anchor="middle">metadata candidates</text>
+<text x="343" y="311" fill="#64748b" font-family="'JetBrains Mono',monospace" font-size="8" text-anchor="middle">Redis MGET vectors</text>
+<text x="343" y="325" fill="#64748b" font-family="'JetBrains Mono',monospace" font-size="8" text-anchor="middle">inner-product top-k</text>
 
-<!-- SPARK WORD2VEC -->
-<rect x="214" y="610" width="148" height="66" rx="6" fill="#0f172a"/>
-<rect x="214" y="610" width="148" height="66" rx="6" fill="rgba(120,53,15,.35)" stroke="#fbbf24" stroke-width="1.6"/>
-<text x="288" y="631" fill="#f8fafc" font-family="'JetBrains Mono',monospace" font-size="11" font-weight="700" text-anchor="middle">Spark Word2Vec</text>
-<text x="288" y="647" fill="#94a3b8" font-family="'JetBrains Mono',monospace" font-size="9" text-anchor="middle">ItemEmbeddingJob</text>
-<text x="288" y="663" fill="#64748b" font-family="'JetBrains Mono',monospace" font-size="8" text-anchor="middle">ratings.txt → embeddings</text>
+<!-- VectorIndex -->
+<rect x="40" y="358" width="220" height="110" rx="6" fill="#0f172a"/>
+<rect x="40" y="358" width="220" height="110" rx="6" fill="rgba(6,78,59,.4)" stroke="#34d399" stroke-width="1.6"/>
+<text x="150" y="379" fill="#f8fafc" font-family="'JetBrains Mono',monospace" font-size="11" font-weight="700" text-anchor="middle">VectorIndex</text>
+<text x="150" y="395" fill="#94a3b8" font-family="'JetBrains Mono',monospace" font-size="9" text-anchor="middle">LSH (default) — SimHash + rerank</text>
+<text x="150" y="409" fill="#64748b" font-family="'JetBrains Mono',monospace" font-size="8" text-anchor="middle">Exact — full-scan min-heap top-k</text>
+<text x="150" y="421" fill="#64748b" font-family="'JetBrains Mono',monospace" font-size="8" text-anchor="middle">FAISS — native Linux  (→ lsh fallback)</text>
+<text x="150" y="433" fill="#64748b" font-family="'JetBrains Mono',monospace" font-size="8" text-anchor="middle">RECSYS_VECTOR_BACKEND=lsh|exact</text>
+<text x="150" y="447" fill="#64748b" font-family="'JetBrains Mono',monospace" font-size="8" text-anchor="middle">k capped at 200</text>
 
-<!-- MODEL ARTIFACTS (files) -->
-<rect x="590" y="618" width="210" height="66" rx="6" fill="#0f172a"/>
-<rect x="590" y="618" width="210" height="66" rx="6" fill="rgba(76,29,149,.4)" stroke="#a78bfa" stroke-width="1.6"/>
-<text x="695" y="639" fill="#f8fafc" font-family="'JetBrains Mono',monospace" font-size="11" font-weight="700" text-anchor="middle">Model Artifacts</text>
-<text x="695" y="655" fill="#94a3b8" font-family="'JetBrains Mono',monospace" font-size="9" text-anchor="middle">item_embeddings.json</text>
-<text x="695" y="669" fill="#64748b" font-family="'JetBrains Mono',monospace" font-size="8" text-anchor="middle">metadata.json  feature_config.json</text>
+<!-- DataManager -->
+<rect x="278" y="358" width="130" height="110" rx="6" fill="#0f172a"/>
+<rect x="278" y="358" width="130" height="110" rx="6" fill="rgba(76,29,149,.4)" stroke="#a78bfa" stroke-width="1.6"/>
+<text x="343" y="379" fill="#f8fafc" font-family="'JetBrains Mono',monospace" font-size="11" font-weight="700" text-anchor="middle">DataManager</text>
+<text x="343" y="395" fill="#94a3b8" font-family="'JetBrains Mono',monospace" font-size="9" text-anchor="middle">singleton · read-only</text>
+<text x="343" y="409" fill="#64748b" font-family="'JetBrains Mono',monospace" font-size="8" text-anchor="middle">topRatedMovies</text>
+<text x="343" y="421" fill="#64748b" font-family="'JetBrains Mono',monospace" font-size="8" text-anchor="middle">latestMovies</text>
+<text x="343" y="433" fill="#64748b" font-family="'JetBrains Mono',monospace" font-size="8" text-anchor="middle">moviesByGenre</text>
+<text x="343" y="447" fill="#64748b" font-family="'JetBrains Mono',monospace" font-size="8" text-anchor="middle">DataLoader → classpath</text>
 
-<!-- LEGEND -->
-<rect x="28" y="716" width="860" height="44" rx="6" fill="rgba(15,23,42,.7)" stroke="#1e293b" stroke-width="1"/>
-<text x="46" y="731" fill="#64748b" font-family="'JetBrains Mono',monospace" font-size="9" font-weight="600">LEGEND</text>
-<rect x="112" y="722" width="11" height="11" rx="2" fill="rgba(8,51,68,.45)"  stroke="#22d3ee" stroke-width="1.3"/>
-<text x="127" y="732" fill="#94a3b8" font-family="'JetBrains Mono',monospace" font-size="8">Client / Ingress</text>
-<rect x="220" y="722" width="11" height="11" rx="2" fill="rgba(6,78,59,.4)"  stroke="#34d399" stroke-width="1.3"/>
-<text x="235" y="732" fill="#94a3b8" font-family="'JetBrains Mono',monospace" font-size="8">Online Service</text>
-<rect x="330" y="722" width="11" height="11" rx="2" fill="rgba(76,29,149,.4)" stroke="#a78bfa" stroke-width="1.3"/>
-<text x="345" y="732" fill="#94a3b8" font-family="'JetBrains Mono',monospace" font-size="8">Storage / Artifacts</text>
-<rect x="452" y="722" width="11" height="11" rx="2" fill="rgba(251,146,60,.28)" stroke="#fb923c" stroke-width="1.3"/>
-<text x="467" y="732" fill="#94a3b8" font-family="'JetBrains Mono',monospace" font-size="8">Streaming (Kafka / Flink)</text>
-<rect x="598" y="722" width="11" height="11" rx="2" fill="rgba(120,53,15,.35)" stroke="#fbbf24" stroke-width="1.3"/>
-<text x="613" y="732" fill="#94a3b8" font-family="'JetBrains Mono',monospace" font-size="8">Offline / Batch (Spark)</text>
-<line x1="720" y1="728" x2="740" y2="728" stroke="#475569" stroke-width="1.4" marker-end="url(#a)"/>
-<text x="744" y="732" fill="#94a3b8" font-family="'JetBrains Mono',monospace" font-size="8">Sync</text>
-<line x1="784" y1="728" x2="804" y2="728" stroke="#94a3b8" stroke-width="1.4" stroke-dasharray="4,2" marker-end="url(#a)"/>
-<text x="808" y="732" fill="#94a3b8" font-family="'JetBrains Mono',monospace" font-size="8">Async</text>
-<text x="112" y="750" fill="#475569" font-family="'JetBrains Mono',monospace" font-size="8">Jetty :6010  ·  Spring Boot :8080  ·  Flink UI :8081  ·  Zookeeper  ·  Docker Compose  ·  Java 17 / Maven</text>
+<!-- RedisEmbeddingStore (Jetty) -->
+<rect x="40" y="490" width="368" height="80" rx="6" fill="#0f172a"/>
+<rect x="40" y="490" width="368" height="80" rx="6" fill="rgba(76,29,149,.4)" stroke="#a78bfa" stroke-width="1.6"/>
+<text x="224" y="511" fill="#f8fafc" font-family="'JetBrains Mono',monospace" font-size="11" font-weight="700" text-anchor="middle">RedisEmbeddingStore</text>
+<text x="224" y="527" fill="#94a3b8" font-family="'JetBrains Mono',monospace" font-size="9" text-anchor="middle">i2vEmb:{movieId}  ·  u2vEmb:{userId}  ·  topk:last_hour/day/month</text>
+<text x="224" y="541" fill="#64748b" font-family="'JetBrains Mono',monospace" font-size="8" text-anchor="middle">getEmbedding · setEmbedding · setEmbeddings · scanIds</text>
+<text x="224" y="555" fill="#64748b" font-family="'JetBrains Mono',monospace" font-size="8" text-anchor="middle">bulk reads: SCAN+MGET  ·  bulk writes: Jedis pipeline  ·  TTL 86400s</text>
+
+<!-- ═══ SPRING BOOT TWO-TOWER ═══ -->
+<!-- TwoTowerApplication -->
+<rect x="448" y="140" width="364" height="88" rx="6" fill="#0f172a"/>
+<rect x="448" y="140" width="364" height="88" rx="6" fill="rgba(8,51,68,.45)" stroke="#22d3ee" stroke-width="1.6"/>
+<text x="630" y="161" fill="#f8fafc" font-family="'JetBrains Mono',monospace" font-size="11" font-weight="700" text-anchor="middle">TwoTowerApplication  :8080</text>
+<text x="630" y="177" fill="#94a3b8" font-family="'JetBrains Mono',monospace" font-size="9" text-anchor="middle">POST /recommend  ·  GET /health</text>
+<text x="630" y="191" fill="#64748b" font-family="'JetBrains Mono',monospace" font-size="8" text-anchor="middle">RecommendationController  ·  GlobalExceptionHandler (400)</text>
+<text x="630" y="205" fill="#64748b" font-family="'JetBrains Mono',monospace" font-size="8" text-anchor="middle">excludeItemIds  ·  k param  ·  modelVersion in response</text>
+<text x="630" y="219" fill="#64748b" font-family="'JetBrains Mono',monospace" font-size="8" text-anchor="middle">RECSYS_MODEL_ARTIFACTS_DIR  ·  RECSYS_SPARK_ARTIFACTS_DIR</text>
+
+<!-- FeatureEncoder -->
+<rect x="448" y="248" width="172" height="88" rx="6" fill="#0f172a"/>
+<rect x="448" y="248" width="172" height="88" rx="6" fill="rgba(8,51,68,.45)" stroke="#22d3ee" stroke-width="1.6"/>
+<text x="534" y="269" fill="#f8fafc" font-family="'JetBrains Mono',monospace" font-size="11" font-weight="700" text-anchor="middle">FeatureEncoder</text>
+<text x="534" y="285" fill="#94a3b8" font-family="'JetBrains Mono',monospace" font-size="9" text-anchor="middle">userId → vocab index</text>
+<text x="534" y="299" fill="#64748b" font-family="'JetBrains Mono',monospace" font-size="8" text-anchor="middle">__UNK__ (index 0)</text>
+<text x="534" y="313" fill="#64748b" font-family="'JetBrains Mono',monospace" font-size="8" text-anchor="middle">feature_config.json</text>
+<text x="534" y="327" fill="#64748b" font-family="'JetBrains Mono',monospace" font-size="8" text-anchor="middle">FeatureEncoderTest</text>
+
+<!-- CandidateSelectionService -->
+<rect x="636" y="248" width="184" height="88" rx="6" fill="#0f172a"/>
+<rect x="636" y="248" width="184" height="88" rx="6" fill="rgba(8,51,68,.45)" stroke="#22d3ee" stroke-width="1.6"/>
+<text x="728" y="264" fill="#f8fafc" font-family="'JetBrains Mono',monospace" font-size="10" font-weight="700" text-anchor="middle">CandidateSelection</text>
+<text x="728" y="278" fill="#f8fafc" font-family="'JetBrains Mono',monospace" font-size="10" font-weight="700" text-anchor="middle">Service</text>
+<text x="728" y="294" fill="#94a3b8" font-family="'JetBrains Mono',monospace" font-size="9" text-anchor="middle">user-history genres</text>
+<text x="728" y="308" fill="#64748b" font-family="'JetBrains Mono',monospace" font-size="8" text-anchor="middle">global top pools</text>
+<text x="728" y="320" fill="#64748b" font-family="'JetBrains Mono',monospace" font-size="8" text-anchor="middle">RetrievalService recall</text>
+<text x="728" y="332" fill="#64748b" font-family="'JetBrains Mono',monospace" font-size="8" text-anchor="middle">RecommendationServiceTest</text>
+
+<!-- ONNX Runtime -->
+<rect x="448" y="358" width="172" height="110" rx="6" fill="#0f172a"/>
+<rect x="448" y="358" width="172" height="110" rx="6" fill="rgba(8,51,68,.45)" stroke="#22d3ee" stroke-width="1.6"/>
+<text x="534" y="379" fill="#f8fafc" font-family="'JetBrains Mono',monospace" font-size="11" font-weight="700" text-anchor="middle">ONNX Runtime</text>
+<text x="534" y="395" fill="#94a3b8" font-family="'JetBrains Mono',monospace" font-size="9" text-anchor="middle">user_tower.onnx</text>
+<text x="534" y="409" fill="#64748b" font-family="'JetBrains Mono',monospace" font-size="8" text-anchor="middle">live user inference</text>
+<text x="534" y="421" fill="#64748b" font-family="'JetBrains Mono',monospace" font-size="8" text-anchor="middle">float[] embedding</text>
+<text x="534" y="433" fill="#64748b" font-family="'JetBrains Mono',monospace" font-size="8" text-anchor="middle">input: user_id</text>
+<text x="534" y="447" fill="#64748b" font-family="'JetBrains Mono',monospace" font-size="8" text-anchor="middle">ModelArtifactServiceTest</text>
+
+<!-- RankingService -->
+<rect x="636" y="358" width="184" height="110" rx="6" fill="#0f172a"/>
+<rect x="636" y="358" width="184" height="110" rx="6" fill="rgba(8,51,68,.45)" stroke="#22d3ee" stroke-width="1.6"/>
+<text x="728" y="379" fill="#f8fafc" font-family="'JetBrains Mono',monospace" font-size="11" font-weight="700" text-anchor="middle">RankingService</text>
+<text x="728" y="395" fill="#94a3b8" font-family="'JetBrains Mono',monospace" font-size="9" text-anchor="middle">inner-product sort</text>
+<text x="728" y="409" fill="#64748b" font-family="'JetBrains Mono',monospace" font-size="8" text-anchor="middle">k-truncation</text>
+<text x="728" y="421" fill="#64748b" font-family="'JetBrains Mono',monospace" font-size="8" text-anchor="middle">dedup  ·  skip missing</text>
+<text x="728" y="433" fill="#64748b" font-family="'JetBrains Mono',monospace" font-size="8" text-anchor="middle">RankingServiceTest</text>
+<text x="728" y="447" fill="#64748b" font-family="'JetBrains Mono',monospace" font-size="8" text-anchor="middle">RetrievalServiceTest</text>
+
+<!-- ModelArtifactLocator -->
+<rect x="448" y="490" width="372" height="108" rx="6" fill="#0f172a"/>
+<rect x="448" y="490" width="372" height="108" rx="6" fill="rgba(76,29,149,.4)" stroke="#a78bfa" stroke-width="1.6"/>
+<text x="634" y="511" fill="#f8fafc" font-family="'JetBrains Mono',monospace" font-size="11" font-weight="700" text-anchor="middle">ModelArtifactLocator  +  ModelArtifactService</text>
+<text x="634" y="527" fill="#94a3b8" font-family="'JetBrains Mono',monospace" font-size="9" text-anchor="middle">model group:  user_tower.onnx · feature_config.json · item_embeddings.json · metadata.json</text>
+<text x="634" y="541" fill="#64748b" font-family="'JetBrains Mono',monospace" font-size="8" text-anchor="middle">spark group:  classpath:artifacts/pyspark/  override → RECSYS_SPARK_ARTIFACTS_DIR</text>
+<text x="634" y="555" fill="#64748b" font-family="'JetBrains Mono',monospace" font-size="8" text-anchor="middle">@PostConstruct load  ·  ConcurrentHashMap  ·  immutable after startup</text>
+<text x="634" y="569" fill="#64748b" font-family="'JetBrains Mono',monospace" font-size="8" text-anchor="middle">item_embeddings.faiss  ·  item_ids.json  (optional FAISS IndexFlatIP)</text>
+<text x="634" y="583" fill="#64748b" font-family="'JetBrains Mono',monospace" font-size="8" text-anchor="middle">ModelArtifactLocatorTest  ·  ModelArtifactServiceTest</text>
+
+<!-- ═══ DOCKER COMPOSE ═══ -->
+<!-- Kafka -->
+<rect x="856" y="142" width="132" height="68" rx="6" fill="#0f172a"/>
+<rect x="856" y="142" width="132" height="68" rx="6" fill="rgba(251,146,60,.28)" stroke="#fb923c" stroke-width="1.6"/>
+<text x="922" y="163" fill="#f8fafc" font-family="'JetBrains Mono',monospace" font-size="11" font-weight="700" text-anchor="middle">Kafka</text>
+<text x="922" y="179" fill="#94a3b8" font-family="'JetBrains Mono',monospace" font-size="9" text-anchor="middle">movie_events topic</text>
+<text x="922" y="201" fill="#64748b" font-family="'JetBrains Mono',monospace" font-size="8" text-anchor="middle">Zookeeper</text>
+
+<!-- Flink -->
+<rect x="1010" y="142" width="188" height="68" rx="6" fill="#0f172a"/>
+<rect x="1010" y="142" width="188" height="68" rx="6" fill="rgba(251,146,60,.28)" stroke="#fb923c" stroke-width="1.6"/>
+<text x="1104" y="163" fill="#f8fafc" font-family="'JetBrains Mono',monospace" font-size="11" font-weight="700" text-anchor="middle">Flink</text>
+<text x="1104" y="179" fill="#94a3b8" font-family="'JetBrains Mono',monospace" font-size="9" text-anchor="middle">streaming top-k</text>
+<text x="1104" y="193" fill="#64748b" font-family="'JetBrains Mono',monospace" font-size="8" text-anchor="middle">UI :8081  ·  sliding windows</text>
+<text x="1104" y="205" fill="#64748b" font-family="'JetBrains Mono',monospace" font-size="8" text-anchor="middle">→ Redis ZADD</text>
+
+<!-- Redis -->
+<rect x="856" y="232" width="342" height="96" rx="6" fill="#0f172a"/>
+<rect x="856" y="232" width="342" height="96" rx="6" fill="rgba(76,29,149,.4)" stroke="#a78bfa" stroke-width="1.6"/>
+<text x="1027" y="253" fill="#f8fafc" font-family="'JetBrains Mono',monospace" font-size="11" font-weight="700" text-anchor="middle">Redis  :6379</text>
+<text x="1027" y="269" fill="#94a3b8" font-family="'JetBrains Mono',monospace" font-size="9" text-anchor="middle">i2vEmb:{movieId}  ·  u2vEmb:{userId}</text>
+<text x="1027" y="283" fill="#64748b" font-family="'JetBrains Mono',monospace" font-size="8" text-anchor="middle">topk:last_hour  ·  topk:last_day  ·  topk:last_month  (ZADD)</text>
+<text x="1027" y="297" fill="#64748b" font-family="'JetBrains Mono',monospace" font-size="8" text-anchor="middle">seeded on startup if keys empty  ·  TTL 86400s default</text>
+<text x="1027" y="311" fill="#64748b" font-family="'JetBrains Mono',monospace" font-size="8" text-anchor="middle">online_features: user:&lt;id&gt;:last_3_movies  ·  movie:&lt;id&gt;:views_1h</text>
+
+<!-- ═══ OFFLINE PIPELINES ═══ -->
+<!-- Rule-based Spark -->
+<rect x="856" y="384" width="192" height="108" rx="6" fill="#0f172a"/>
+<rect x="856" y="384" width="192" height="108" rx="6" fill="rgba(120,53,15,.35)" stroke="#fbbf24" stroke-width="1.6"/>
+<text x="952" y="404" fill="#f8fafc" font-family="'JetBrains Mono',monospace" font-size="10" font-weight="700" text-anchor="middle">Rule-Based Spark</text>
+<text x="952" y="419" fill="#f8fafc" font-family="'JetBrains Mono',monospace" font-size="10" font-weight="700" text-anchor="middle">Word2Vec</text>
+<text x="952" y="435" fill="#94a3b8" font-family="'JetBrains Mono',monospace" font-size="9" text-anchor="middle">ItemEmbeddingJob</text>
+<text x="952" y="449" fill="#64748b" font-family="'JetBrains Mono',monospace" font-size="8" text-anchor="middle">ratings.txt → embeddings</text>
+<text x="952" y="461" fill="#64748b" font-family="'JetBrains Mono',monospace" font-size="8" text-anchor="middle">--save-to-redis=true</text>
+<text x="952" y="473" fill="#64748b" font-family="'JetBrains Mono',monospace" font-size="8" text-anchor="middle">-Poffline-embedding profile</text>
+<text x="952" y="485" fill="#64748b" font-family="'JetBrains Mono',monospace" font-size="8" text-anchor="middle">Jedis pipeline bulk write</text>
+
+<!-- Model-Based Two-Tower training -->
+<rect x="1064" y="384" width="132" height="108" rx="6" fill="#0f172a"/>
+<rect x="1064" y="384" width="132" height="108" rx="6" fill="rgba(120,53,15,.35)" stroke="#fbbf24" stroke-width="1.6"/>
+<text x="1130" y="404" fill="#f8fafc" font-family="'JetBrains Mono',monospace" font-size="10" font-weight="700" text-anchor="middle">Model-Based</text>
+<text x="1130" y="418" fill="#f8fafc" font-family="'JetBrains Mono',monospace" font-size="10" font-weight="700" text-anchor="middle">Two-Tower</text>
+<text x="1130" y="434" fill="#94a3b8" font-family="'JetBrains Mono',monospace" font-size="9" text-anchor="middle">any ML framework</text>
+<text x="1130" y="448" fill="#64748b" font-family="'JetBrains Mono',monospace" font-size="8" text-anchor="middle">export artifacts:</text>
+<text x="1130" y="460" fill="#64748b" font-family="'JetBrains Mono',monospace" font-size="8" text-anchor="middle">user_tower.onnx</text>
+<text x="1130" y="472" fill="#64748b" font-family="'JetBrains Mono',monospace" font-size="8" text-anchor="middle">item_embeddings.json</text>
+<text x="1130" y="484" fill="#64748b" font-family="'JetBrains Mono',monospace" font-size="8" text-anchor="middle">item_embeddings.faiss</text>
+
+<!-- LLM Integration Ideas (future) -->
+<rect x="1064" y="508" width="132" height="78" rx="6" fill="#0f172a"/>
+<rect x="1064" y="508" width="132" height="78" rx="6" fill="rgba(136,19,55,.2)" stroke="#fb7185" stroke-width="1.4" stroke-dasharray="5,3"/>
+<text x="1130" y="528" fill="#fb7185" font-family="'JetBrains Mono',monospace" font-size="9" font-weight="700" text-anchor="middle">LLM Integration</text>
+<text x="1130" y="543" fill="#94a3b8" font-family="'JetBrains Mono',monospace" font-size="8" text-anchor="middle">(future ideas)</text>
+<text x="1130" y="557" fill="#64748b" font-family="'JetBrains Mono',monospace" font-size="8" text-anchor="middle">text embeddings</text>
+<text x="1130" y="569" fill="#64748b" font-family="'JetBrains Mono',monospace" font-size="8" text-anchor="middle">zero-shot ranker</text>
+<text x="1130" y="581" fill="#64748b" font-family="'JetBrains Mono',monospace" font-size="8" text-anchor="middle">conversational rec</text>
+
+<!-- ═══ EMBEDDING STORAGE PATHS ═══ -->
+<!-- Path 1: Rule-Based Redis -->
+<rect x="40" y="648" width="290" height="140" rx="6" fill="#0f172a"/>
+<rect x="40" y="648" width="290" height="140" rx="6" fill="rgba(120,53,15,.3)" stroke="#fbbf24" stroke-width="1.6"/>
+<text x="185" y="668" fill="#fbbf24" font-family="'JetBrains Mono',monospace" font-size="10" font-weight="700" text-anchor="middle">PATH 1 — Rule-Based → Redis</text>
+<text x="185" y="684" fill="#94a3b8" font-family="'JetBrains Mono',monospace" font-size="8" text-anchor="middle">Spark Word2Vec  →  Jedis pipeline  →  Redis</text>
+<text x="185" y="698" fill="#64748b" font-family="'JetBrains Mono',monospace" font-size="8" text-anchor="middle">key: i2vEmb:{movieId}  val: space-sep floats</text>
+<text x="185" y="712" fill="#64748b" font-family="'JetBrains Mono',monospace" font-size="8" text-anchor="middle">SimilarMovieService: candidates → MGET → rank</text>
+<text x="185" y="726" fill="#64748b" font-family="'JetBrains Mono',monospace" font-size="8" text-anchor="middle">User vector: NOT produced by this path</text>
+<text x="185" y="740" fill="#64748b" font-family="'JetBrains Mono',monospace" font-size="8" text-anchor="middle">Retrieval: metadata candidate set → exact IP</text>
+<text x="185" y="754" fill="#64748b" font-family="'JetBrains Mono',monospace" font-size="8" text-anchor="middle">TTL: 86400s (configurable)</text>
+
+<!-- Path 2: Model-Based Classpath -->
+<rect x="350" y="648" width="330" height="140" rx="6" fill="#0f172a"/>
+<rect x="350" y="648" width="330" height="140" rx="6" fill="rgba(8,51,68,.4)" stroke="#22d3ee" stroke-width="1.6"/>
+<text x="515" y="668" fill="#22d3ee" font-family="'JetBrains Mono',monospace" font-size="10" font-weight="700" text-anchor="middle">PATH 2 — Model-Based → JVM Heap</text>
+<text x="515" y="684" fill="#94a3b8" font-family="'JetBrains Mono',monospace" font-size="8" text-anchor="middle">Modeling pipeline  →  artifact export  →  classpath/dir</text>
+<text x="515" y="698" fill="#64748b" font-family="'JetBrains Mono',monospace" font-size="8" text-anchor="middle">ModelArtifactService @PostConstruct → ConcurrentHashMap</text>
+<text x="515" y="712" fill="#64748b" font-family="'JetBrains Mono',monospace" font-size="8" text-anchor="middle">User vector: live ONNX inference at request time</text>
+<text x="515" y="726" fill="#64748b" font-family="'JetBrains Mono',monospace" font-size="8" text-anchor="middle">Retrieval: embedding+metadata recall → optional FAISS</text>
+<text x="515" y="740" fill="#64748b" font-family="'JetBrains Mono',monospace" font-size="8" text-anchor="middle">item_embeddings.faiss + item_ids.json (IndexFlatIP)</text>
+<text x="515" y="754" fill="#64748b" font-family="'JetBrains Mono',monospace" font-size="8" text-anchor="middle">TTL: none — reloads on service restart</text>
+
+<!-- Path 3: Movie API Classpath -->
+<rect x="700" y="648" width="250" height="140" rx="6" fill="#0f172a"/>
+<rect x="700" y="648" width="250" height="140" rx="6" fill="rgba(6,78,59,.35)" stroke="#34d399" stroke-width="1.6"/>
+<text x="825" y="668" fill="#34d399" font-family="'JetBrains Mono',monospace" font-size="10" font-weight="700" text-anchor="middle">PATH 3 — Movie API → JVM Heap</text>
+<text x="825" y="684" fill="#94a3b8" font-family="'JetBrains Mono',monospace" font-size="8" text-anchor="middle">movie_embeddings.txt + user_embeddings.txt</text>
+<text x="825" y="698" fill="#64748b" font-family="'JetBrains Mono',monospace" font-size="8" text-anchor="middle">DataLoader → CandidateGenerator (JVM heap)</text>
+<text x="825" y="712" fill="#64748b" font-family="'JetBrains Mono',monospace" font-size="8" text-anchor="middle">byEmbedding(userId, k) → VectorIndex</text>
+<text x="825" y="726" fill="#64748b" font-family="'JetBrains Mono',monospace" font-size="8" text-anchor="middle">mode=embedding → lsh | exact backend</text>
+<text x="825" y="740" fill="#64748b" font-family="'JetBrains Mono',monospace" font-size="8" text-anchor="middle">seeded into Redis on first start</text>
+<text x="825" y="754" fill="#64748b" font-family="'JetBrains Mono',monospace" font-size="8" text-anchor="middle">TTL: none — reloads on restart</text>
+
+<!-- Future rankers note -->
+<rect x="970" y="648" width="242" height="140" rx="6" fill="#0f172a"/>
+<rect x="970" y="648" width="242" height="140" rx="6" fill="rgba(136,19,55,.18)" stroke="#fb7185" stroke-width="1.4" stroke-dasharray="5,3"/>
+<text x="1091" y="668" fill="#fb7185" font-family="'JetBrains Mono',monospace" font-size="10" font-weight="700" text-anchor="middle">Future Rankers</text>
+<text x="1091" y="684" fill="#94a3b8" font-family="'JetBrains Mono',monospace" font-size="8" text-anchor="middle">swap embedding-similarity for:</text>
+<text x="1091" y="698" fill="#64748b" font-family="'JetBrains Mono',monospace" font-size="8" text-anchor="middle">LR · GBDT · DNN</text>
+<text x="1091" y="712" fill="#64748b" font-family="'JetBrains Mono',monospace" font-size="8" text-anchor="middle">Wide &amp; Deep · DIN</text>
+<text x="1091" y="726" fill="#64748b" font-family="'JetBrains Mono',monospace" font-size="8" text-anchor="middle">ANN: OpenSearch kNN</text>
+<text x="1091" y="740" fill="#64748b" font-family="'JetBrains Mono',monospace" font-size="8" text-anchor="middle">Vespa · Milvus</text>
+<text x="1091" y="754" fill="#64748b" font-family="'JetBrains Mono',monospace" font-size="8" text-anchor="middle">LLM zero-shot reranker</text>
+
+<!-- ═══ LEGEND ═══ -->
+<rect x="28" y="858" width="980" height="44" rx="6" fill="rgba(15,23,42,.7)" stroke="#1e293b" stroke-width="1"/>
+<text x="46" y="873" fill="#64748b" font-family="'JetBrains Mono',monospace" font-size="9" font-weight="600">LEGEND</text>
+<rect x="112" y="864" width="11" height="11" rx="2" fill="rgba(8,51,68,.45)"  stroke="#22d3ee" stroke-width="1.3"/>
+<text x="127" y="874" fill="#94a3b8" font-family="'JetBrains Mono',monospace" font-size="8">Client / Spring Boot</text>
+<rect x="248" y="864" width="11" height="11" rx="2" fill="rgba(6,78,59,.4)"  stroke="#34d399" stroke-width="1.3"/>
+<text x="263" y="874" fill="#94a3b8" font-family="'JetBrains Mono',monospace" font-size="8">Jetty Online Serving</text>
+<rect x="378" y="864" width="11" height="11" rx="2" fill="rgba(76,29,149,.4)" stroke="#a78bfa" stroke-width="1.3"/>
+<text x="393" y="874" fill="#94a3b8" font-family="'JetBrains Mono',monospace" font-size="8">Storage / Redis</text>
+<rect x="474" y="864" width="11" height="11" rx="2" fill="rgba(251,146,60,.28)" stroke="#fb923c" stroke-width="1.3"/>
+<text x="489" y="874" fill="#94a3b8" font-family="'JetBrains Mono',monospace" font-size="8">Streaming (Kafka/Flink)</text>
+<rect x="618" y="864" width="11" height="11" rx="2" fill="rgba(120,53,15,.35)" stroke="#fbbf24" stroke-width="1.3"/>
+<text x="633" y="874" fill="#94a3b8" font-family="'JetBrains Mono',monospace" font-size="8">Offline / Batch</text>
+<rect x="712" y="864" width="11" height="11" rx="2" fill="rgba(136,19,55,.18)" stroke="#fb7185" stroke-width="1.3" stroke-dasharray="4,2"/>
+<text x="727" y="874" fill="#94a3b8" font-family="'JetBrains Mono',monospace" font-size="8">Future / Planned</text>
+<line x1="820" y1="870" x2="840" y2="870" stroke="#475569" stroke-width="1.4" marker-end="url(#a)"/>
+<text x="844" y="874" fill="#94a3b8" font-family="'JetBrains Mono',monospace" font-size="8">Sync</text>
+<line x1="886" y1="870" x2="906" y2="870" stroke="#94a3b8" stroke-width="1.4" stroke-dasharray="4,2" marker-end="url(#a)"/>
+<text x="910" y="874" fill="#94a3b8" font-family="'JetBrains Mono',monospace" font-size="8">Async</text>
+
+<text x="112" y="894" fill="#475569" font-family="'JetBrains Mono',monospace" font-size="8">Jetty :6010  ·  Spring Boot :8080  ·  Flink UI :8081  ·  Redis :6379  ·  Java 17  ·  Maven  ·  docker-compose.streaming.yml  ·  47 commits</text>
 </svg>
 </div>
 
 <div class="cards">
   <div class="card">
-    <div class="card-header"><div class="card-dot dot-green"></div><h3>Online Serving — Jetty :6010</h3></div>
+    <div class="card-header"><div class="card-dot dot-green"></div><h3>Jetty Movie API — Full Endpoint Surface</h3></div>
     <ul>
-      <li>• Multi-strategy recall: genre, user-history, embedding</li>
-      <li>• VectorIndex: LSH (default), Exact full-scan, FAISS</li>
-      <li>• SimilarMovieService: inner-product top-k via Redis MGET pipeline</li>
-      <li>• Trending pools from Redis sorted sets (topk:last_hour/day/month)</li>
-      <li>• DataManager: singleton with immutable topRated/latest/byGenre</li>
+      <li>• GET /health · /getmovie · /getuser — lookup endpoints</li>
+      <li>• GET /getrecommendation — 4 modes: default / seedMovieId / embedding / topk</li>
+      <li>• GET /getsimilarmovie — Redis MGET + inner-product top-k</li>
+      <li>• POST /v1/models/recmodel:predict — batched pair scoring</li>
+      <li>• POST /setembedding — raw/form/query param, TTL configurable (0=no expiry)</li>
+      <li>• BaseApiServlet: Jackson serialization, 400/404 error handling</li>
     </ul>
   </div>
   <div class="card">
-    <div class="card-header"><div class="card-dot dot-violet"></div><h3>Two-Tower Serving — Spring Boot :8080</h3></div>
+    <div class="card-header"><div class="card-dot dot-cyan"></div><h3>Two-Tower — Updated Artifact Contract</h3></div>
     <ul>
-      <li>• Live ONNX inference: user_tower.onnx → float[] embedding</li>
-      <li>• Precomputed item embeddings in JVM ConcurrentHashMap heap</li>
-      <li>• Pipeline: CandidateSelectionSvc → RetrievalService → RankingService</li>
-      <li>• ModelArtifactLocator: classpath or external dir, @PostConstruct load</li>
-      <li>• FeatureEncoder: userId → vocab index with __UNK__ fallback</li>
+      <li>• ModelArtifactLocator: model group + spark group (two independent overrides)</li>
+      <li>• RECSYS_MODEL_ARTIFACTS_DIR → user_tower.onnx + item_embeddings.json + FAISS</li>
+      <li>• RECSYS_SPARK_ARTIFACTS_DIR → PySpark artifacts (separate override)</li>
+      <li>• item_embeddings.faiss + item_ids.json → auto-picked FAISS IndexFlatIP</li>
+      <li>• GlobalExceptionHandler: IllegalArgumentException → HTTP 400</li>
+      <li>• 7 test classes covering full pipeline end-to-end</li>
     </ul>
   </div>
   <div class="card">
-    <div class="card-header"><div class="card-dot dot-orange"></div><h3>Streaming &amp; Offline Pipeline</h3></div>
+    <div class="card-header"><div class="card-dot dot-amber"></div><h3>Three Embedding Storage Paths</h3></div>
     <ul>
-      <li>• Kafka movie_events → Flink → Redis topk:* sliding windows</li>
-      <li>• Spark Word2Vec: ItemEmbeddingJob on ratings.txt → embeddings</li>
-      <li>• Jedis pipeline: bulk-write i2vEmb:{id} to Redis, TTL 86400s</li>
-      <li>• Docker Compose: Kafka + Zookeeper + Flink UI at :8081</li>
-      <li>• Classpath seeds: movie_embeddings.txt + user_embeddings.txt</li>
+      <li>• PATH 1 Rule-based: Spark Word2Vec → Jedis pipeline → Redis (i2vEmb:{id})</li>
+      <li>• PATH 2 Model-based: pipeline export → classpath/dir → JVM ConcurrentHashMap</li>
+      <li>• PATH 3 Movie API: bundled .txt → DataLoader → CandidateGenerator heap</li>
+      <li>• Online events: online_features.txt models Flink → Redis aggregates</li>
+      <li>• Future rankers: LR, GBDT, DNN, Wide&amp;Deep, DIN, OpenSearch/Vespa/Milvus</li>
+      <li>• LLM ideas: text embeddings, zero-shot reranker, conversational rec</li>
     </ul>
   </div>
 </div>
 
-<div class="footer">RecSys Backend Service · Java 17 · Maven · Docker Compose · lingduoduo/Recsys-Backend-Service</div>
+<div class="footer">RecSys Backend Service · Java 17 · Maven · Docker Compose · Java 100% · 47 commits · lingduoduo/Recsys-Backend-Service</div>
 </body>
 </html>
