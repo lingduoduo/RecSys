@@ -14,7 +14,7 @@ import java.util.List;
 import java.util.Map;
 import java.util.Objects;
 
-public class RecommendationOrchestrator {
+public class RecommendationOrchestrator implements RecommendationPipeline {
     private static final int DEFAULT_RECALL_MULTIPLIER = 5;
 
     private final MultiChannelRecallService recallService;
