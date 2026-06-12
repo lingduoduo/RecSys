@@ -1,6 +1,7 @@
 package com.recsys.service.recommendation;
 
 import com.recsys.domain.RecommendationQuery;
+import com.recsys.model.exception.PipelineNotImplementedException;
 import org.junit.jupiter.api.Test;
 
 import java.util.Set;
@@ -10,11 +11,11 @@ import static org.assertj.core.api.Assertions.assertThatThrownBy;
 class SequentialRecommendationPipelineTest {
 
     @Test
-    void recommend_throwsUnsupportedOperationException() {
+    void recommend_throwsPipelineNotImplementedException() {
         RecommendationPipeline pipeline = new SequentialRecommendationPipeline();
         assertThatThrownBy(() -> pipeline.recommend(
                 new RecommendationQuery("u1", 5, Set.of(), null)))
-                .isInstanceOf(UnsupportedOperationException.class)
+                .isInstanceOf(PipelineNotImplementedException.class)
                 .hasMessageContaining("not yet implemented");
     }
 }

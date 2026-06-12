@@ -2,12 +2,13 @@ package com.recsys.service.recommendation;
 
 import com.recsys.domain.RecommendationQuery;
 import com.recsys.domain.RecommendationResult;
+import com.recsys.model.exception.PipelineNotImplementedException;
 
 public final class SequentialRecommendationPipeline implements RecommendationPipeline {
 
     @Override
     public RecommendationResult recommend(RecommendationQuery query) {
-        throw new UnsupportedOperationException(
+        throw new PipelineNotImplementedException(
                 "Sequential/LLM recommendation is not yet implemented. " +
                 "Future: SASRec / BERT4Rec / LLM-based path.");
     }

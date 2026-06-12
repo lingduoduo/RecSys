@@ -1,6 +1,7 @@
 package com.recsys.config;
 
 import com.recsys.model.dto.ApiError;
+import com.recsys.model.exception.PipelineNotImplementedException;
 import com.recsys.model.exception.RateLimitExceededException;
 import com.recsys.model.exception.ServiceOverloadedException;
 import com.recsys.model.exception.SubmitTokenException;
@@ -83,9 +84,9 @@ public class GlobalExceptionHandler {
                 .body(new ApiError(ex.getMessage(), List.of()));
     }
 
-    @ExceptionHandler(UnsupportedOperationException.class)
+    @ExceptionHandler(PipelineNotImplementedException.class)
     @ResponseStatus(HttpStatus.NOT_IMPLEMENTED)
-    public ApiError handleNotImplemented(UnsupportedOperationException ex) {
+    public ApiError handleNotImplemented(PipelineNotImplementedException ex) {
         return new ApiError(ex.getMessage(), List.of());
     }
 
