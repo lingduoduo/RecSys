@@ -1,6 +1,7 @@
 package com.recsys.config;
 
 import com.recsys.model.dto.ApiError;
+import com.recsys.model.exception.PipelineNotImplementedException;
 import com.recsys.model.exception.RateLimitExceededException;
 import com.recsys.model.exception.ServiceOverloadedException;
 import com.recsys.model.exception.SubmitTokenException;
@@ -81,6 +82,12 @@ public class GlobalExceptionHandler {
     public ResponseEntity<ApiError> handleSubmitToken(SubmitTokenException ex) {
         return ResponseEntity.status(HttpStatus.CONFLICT)
                 .body(new ApiError(ex.getMessage(), List.of()));
+    }
+
+    @ExceptionHandler(PipelineNotImplementedException.class)
+    @ResponseStatus(HttpStatus.NOT_IMPLEMENTED)
+    public ApiError handleNotImplemented(PipelineNotImplementedException ex) {
+        return new ApiError(ex.getMessage(), List.of());
     }
 
     // Catch-all: unexpected inference or runtime errors

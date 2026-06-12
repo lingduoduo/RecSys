@@ -14,7 +14,7 @@ import java.util.List;
 import java.util.Map;
 import java.util.Objects;
 
-public class RecommendationOrchestrator {
+public class RecommendationOrchestrator implements RecommendationPipeline {
     private static final int DEFAULT_RECALL_MULTIPLIER = 5;
 
     private final MultiChannelRecallService recallService;
@@ -46,6 +46,7 @@ public class RecommendationOrchestrator {
         this.recallMultiplier = Math.max(1, recallMultiplier);
     }
 
+    @Override
     public RecommendationResult recommend(RecommendationQuery query) {
         Objects.requireNonNull(query, "query");
         int windowLimit = query.limit() * recallMultiplier;

@@ -13,6 +13,10 @@ import com.recsys.infrastructure.redis.RedisConnectionFactory;
 import com.recsys.infrastructure.redis.RedisEmbeddingStore;
 import com.recsys.infrastructure.redis.ShardedTopKStore;
 import com.recsys.infrastructure.vectordb.CandidateGenerator;
+import com.recsys.service.hydrator.RecommendationHydrator;
+import com.recsys.service.pagination.CursorPaginationService;
+import com.recsys.service.ranking.ScoreRanker;
+import com.recsys.service.recommendation.RecommendationOrchestrator;
 import com.recsys.service.retrieval.EmbeddingChannel;
 import com.recsys.service.retrieval.GenreHistoryChannel;
 import com.recsys.service.retrieval.MultiChannelRecallService;
@@ -37,6 +41,7 @@ public class RecSysServer {
     private static final String ROUTE_SET_USER_EMBEDDING = "/setuserembedding";
     private static final String ROUTE_HEALTH = "/health";
     private static final String ROUTE_PREDICT = "/v1/models/recmodel:predict";
+    private static final String ROUTE_V2_RECOMMEND = "/v2/recommend";
     // REST-style aliases used when requests arrive via the API gateway
     // (gateway strips /api/users, /api/movies, etc., leaving these suffixes).
     private static final String ROUTE_USER_ALIAS = "/user";
@@ -79,6 +84,13 @@ public class RecSysServer {
                     new PopularityChannel(dataManager)
             ));
 
+            RecommendationOrchestrator orchestrator = new RecommendationOrchestrator(
+                    recallService,
+                    new ScoreRanker(),
+                    RecommendationHydrator.IDENTITY,
+                    new CursorPaginationService()
+            );
+
             MovieService movieService = new MovieService(dataManager);
             UserService userService = new UserService(dataManager);
             RecommendationService recommendationService =
@@ -98,6 +110,7 @@ public class RecSysServer {
                     .service(ROUTE_SET_EMBEDDING, new SetEmbeddingService(embCache, candidateGenerator))
                     .service(ROUTE_SET_USER_EMBEDDING, new SetUserEmbeddingService(userEmbCache))
                     .service(ROUTE_HEALTH, new HealthService())
+                    .service(ROUTE_V2_RECOMMEND, new RecommendV2Service(orchestrator))
                     // exact() encodes ':' as '%3A' so the literal path never matches;
                     // regex routing matches against the decoded path.
                     .service(Route.builder()

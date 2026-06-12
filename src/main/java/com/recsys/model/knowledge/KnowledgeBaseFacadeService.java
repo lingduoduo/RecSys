@@ -1,14 +1,6 @@
-package com.recsys.model.service;
+package com.recsys.model.knowledge;
 
 import com.fasterxml.jackson.core.JsonProcessingException;
-import com.recsys.model.converter.KnowledgeBaseConverter;
-import com.recsys.model.dto.KnowledgeBaseDTO;
-import com.recsys.model.vo.KnowledgeBaseVO;
-import com.recsys.model.request.CreateKnowledgeBaseRequest;
-import com.recsys.model.request.UpdateKnowledgeBaseRequest;
-import com.recsys.model.response.CreateKnowledgeBaseResponse;
-import com.recsys.model.response.GetKnowledgeBasesResponse;
-import com.recsys.model.entity.KnowledgeBase;
 import org.springframework.stereotype.Service;
 
 import java.util.ArrayList;

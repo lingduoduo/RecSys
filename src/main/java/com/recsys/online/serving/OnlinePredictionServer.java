@@ -53,6 +53,7 @@ public final class OnlinePredictionServer {
             OnlineLearner onlineLearner = new OnlineLearner();
             OnlineRecommendationService recommendationService =
                     new OnlineRecommendationService(dataManager, engine, candidateGenerator, onlineLearner);
+            OnlineBlendingPipeline blendingPipeline = new OnlineBlendingPipeline(recommendationService);
             learnerFlushScheduler =
                     new LearnerFlushScheduler(onlineLearner, jedisPool, "bias:item", 30L);
             learnerFlushScheduler.start();
@@ -95,6 +96,7 @@ public final class OnlinePredictionServer {
               .service("/online/ops",
                       new OnlineOpsService(metricsService, loadShedder, capacityService,
                               redisRateLimiter, asyncEventPublisher))
+              .service("/v2/recommend", new OnlineRecommendV2Service(blendingPipeline))
               .service(Route.builder().pathPrefix("/shards/").build(),
                       new ShardedRecordService(shardedRecordStore));
 

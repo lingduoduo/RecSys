@@ -89,18 +89,31 @@ class MicroserviceRouteTest {
 
         // LLM routes are opt-in (only registered when LLM_SERVICE_URL / LLM_EXPLANATION_SERVICE_URL
         // env vars are set), so they are not asserted here.
+        // Production recommendation routes
+        assertTrue(names.containsAll(List.of(
+                "embed-recall",
+                "model-inference",
+                "online-blend",
+                "sequential",
+                "knowledge"
+        )), "production recommendation routes must be present");
+        // Data / catalog routes
         assertTrue(names.containsAll(List.of(
                 "user-profile",
                 "movie-metadata",
-                "feature",
-                "recommendation-retrieval",
-                "ranking",
-                "agent-workflow",
-                "observability",
+                "feature"
+        )), "data routes must be present");
+        // Backward-compatible routes
+        assertTrue(names.containsAll(List.of(
                 "catalog",
                 "model",
                 "online"
-        )));
+        )), "backward-compatible routes must be present");
+        // Dead routes must be gone
+        assertFalse(names.contains("recommendation-retrieval"), "dead route recommendation-retrieval must be removed");
+        assertFalse(names.contains("ranking"),                  "dead route ranking must be removed");
+        assertFalse(names.contains("agent-workflow"),           "dead route agent-workflow must be removed");
+        assertFalse(names.contains("observability"),            "dead route observability must be removed");
         assertFalse(names.contains("llm"),             "llm route must not appear without LLM_SERVICE_URL");
         assertFalse(names.contains("llm-explanation"), "llm-explanation must not appear without LLM_EXPLANATION_SERVICE_URL");
     }

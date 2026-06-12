@@ -1,11 +1,6 @@
-package com.recsys.model.converter;
+package com.recsys.model.knowledge;
 
 import com.fasterxml.jackson.databind.ObjectMapper;
-import com.recsys.model.dto.KnowledgeBaseDTO;
-import com.recsys.model.entity.KnowledgeBase;
-import com.recsys.model.request.CreateKnowledgeBaseRequest;
-import com.recsys.model.request.UpdateKnowledgeBaseRequest;
-import com.recsys.model.vo.KnowledgeBaseVO;
 import org.junit.jupiter.api.BeforeEach;
 import org.junit.jupiter.api.Test;
 

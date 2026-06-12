@@ -15,18 +15,20 @@ record MicroserviceRoute(String name,
 
     private static List<MicroserviceRoute> buildDefaults() {
         List<MicroserviceRoute> routes = new java.util.ArrayList<>();
-        // Domain-facing routes. These are the preferred API Gateway surface.
-        routes.add(fromEnv("user-profile", "/api/users", "USER_PROFILE_SERVICE_URL", "http://localhost:6010", "/health"));
-        routes.add(fromEnv("movie-metadata", "/api/movies", "MOVIE_METADATA_SERVICE_URL", "http://localhost:6010", "/health"));
-        routes.add(fromEnv("feature", "/api/features", "FEATURE_SERVICE_URL", "http://localhost:7010", "/health"));
-        routes.add(fromEnv("recommendation-retrieval", "/api/retrieval", "RECOMMENDATION_RETRIEVAL_SERVICE_URL", "http://localhost:8080", "/health/ready"));
-        routes.add(fromEnv("ranking", "/api/ranking", "RANKING_SERVICE_URL", "http://localhost:8080", "/health/ready"));
-        routes.add(fromEnv("agent-workflow", "/api/agents", "AGENT_WORKFLOW_SERVICE_URL", "http://localhost:8080", "/health/ready"));
-        routes.add(fromEnv("observability", "/api/observability", "OBSERVABILITY_SERVICE_URL", "http://localhost:8080", "/health/ready"));
+        // Production recommendation routes
+        routes.add(fromEnv("embed-recall",    "/api/recommend/embedding",   "EMBED_RECALL_SERVICE_URL",    "http://localhost:6010", "/health"));
+        routes.add(fromEnv("model-inference", "/api/recommend/model",       "MODEL_INFERENCE_SERVICE_URL", "http://localhost:8080", "/health/ready"));
+        routes.add(fromEnv("online-blend",    "/api/recommend/online",      "ONLINE_BLEND_SERVICE_URL",    "http://localhost:7010", "/health"));
+        routes.add(fromEnv("sequential",      "/api/recommend/sequential",  "SEQUENTIAL_SERVICE_URL",      "http://localhost:8080", "/health/ready"));
+        // Data / catalog routes
+        routes.add(fromEnv("user-profile",    "/api/users",    "USER_PROFILE_SERVICE_URL",    "http://localhost:6010", "/health"));
+        routes.add(fromEnv("movie-metadata",  "/api/movies",   "MOVIE_METADATA_SERVICE_URL",  "http://localhost:6010", "/health"));
+        routes.add(fromEnv("feature",         "/api/features", "FEATURE_SERVICE_URL",          "http://localhost:7010", "/health"));
+        routes.add(fromEnv("knowledge",       "/api/knowledge","KNOWLEDGE_SERVICE_URL",        "http://localhost:8080", "/health/ready"));
         // Backward-compatible routes kept for existing clients and smoke tests.
         routes.add(fromEnv("catalog", "/api/catalog", "CATALOG_SERVICE_URL", "http://localhost:6010", "/health"));
-        routes.add(fromEnv("model", "/api/model", "MODEL_SERVICE_URL", "http://localhost:8080", "/health/ready"));
-        routes.add(fromEnv("online", "/api/online", "ONLINE_SERVICE_URL", "http://localhost:7010", "/health"));
+        routes.add(fromEnv("model",   "/api/model",   "MODEL_SERVICE_URL",   "http://localhost:8080", "/health/ready"));
+        routes.add(fromEnv("online",  "/api/online",  "ONLINE_SERVICE_URL",  "http://localhost:7010", "/health"));
         // LLM routes are optional — only registered when the env var is explicitly set.
         // To enable: export LLM_SERVICE_URL=http://localhost:11434 (requires Ollama or compatible endpoint).
         fromEnvOptional("llm-explanation", "/api/explanations", "LLM_EXPLANATION_SERVICE_URL", "/api/tags").ifPresent(routes::add);
