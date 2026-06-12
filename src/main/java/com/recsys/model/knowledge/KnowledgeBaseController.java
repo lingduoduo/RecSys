@@ -1,11 +1,6 @@
-package com.recsys.model.controller;
+package com.recsys.model.knowledge;
 
 import com.recsys.model.dto.ApiResponse;
-import com.recsys.model.request.CreateKnowledgeBaseRequest;
-import com.recsys.model.request.UpdateKnowledgeBaseRequest;
-import com.recsys.model.response.CreateKnowledgeBaseResponse;
-import com.recsys.model.response.GetKnowledgeBasesResponse;
-import com.recsys.model.service.KnowledgeBaseFacadeService;
 import jakarta.validation.Valid;
 import org.springframework.web.bind.annotation.DeleteMapping;
 import org.springframework.web.bind.annotation.GetMapping;

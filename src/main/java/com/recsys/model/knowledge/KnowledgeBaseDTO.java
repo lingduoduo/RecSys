@@ -1,4 +1,4 @@
-package com.recsys.model.dto;
+package com.recsys.model.knowledge;
 
 import java.time.LocalDateTime;
 

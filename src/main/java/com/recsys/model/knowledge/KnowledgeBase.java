@@ -1,4 +1,4 @@
-package com.recsys.model.entity;
+package com.recsys.model.knowledge;
 
 import java.time.LocalDateTime;
 import java.util.Objects;

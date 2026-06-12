@@ -1,4 +1,4 @@
-package com.recsys.model.request;
+package com.recsys.model.knowledge;
 
 import jakarta.validation.constraints.NotBlank;
 import jakarta.validation.constraints.Size;
