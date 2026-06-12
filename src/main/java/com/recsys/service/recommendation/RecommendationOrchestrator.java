@@ -46,6 +46,7 @@ public class RecommendationOrchestrator implements RecommendationPipeline {
         this.recallMultiplier = Math.max(1, recallMultiplier);
     }
 
+    @Override
     public RecommendationResult recommend(RecommendationQuery query) {
         Objects.requireNonNull(query, "query");
         int windowLimit = query.limit() * recallMultiplier;
