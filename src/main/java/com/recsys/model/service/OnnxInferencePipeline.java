@@ -29,7 +29,7 @@ public final class OnnxInferencePipeline implements RecommendationPipeline {
                 abTestService.getAssignmentForUser(query.userId());
         RecommendRequest request = toRequest(query);
         RecommendResponse response = recommendationService.recommend(request, assignment);
-        return toResult(query.userId(), response);
+        return toResult(query.userId(), response, assignment.variant());
     }
 
     private static RecommendRequest toRequest(RecommendationQuery query) {
@@ -42,7 +42,7 @@ public final class OnnxInferencePipeline implements RecommendationPipeline {
         return request;
     }
 
-    private static RecommendationResult toResult(String userId, RecommendResponse response) {
+    private static RecommendationResult toResult(String userId, RecommendResponse response, String assignmentVariant) {
         List<ScoredItem> raw = response.recommendations();
         List<RankedMovie> items = new ArrayList<>(raw.size());
         for (int i = 0; i < raw.size(); i++) {
@@ -50,7 +50,7 @@ public final class OnnxInferencePipeline implements RecommendationPipeline {
             items.add(new RankedMovie(item.itemId(), item.score(), i + 1, Map.of()));
         }
         Map<String, String> trace = Map.of(
-                "abTestVariant", response.abTestVariant() != null ? response.abTestVariant() : "",
+                "abTestVariant", assignmentVariant != null ? assignmentVariant : "",
                 "modelVersion",  response.modelVersion()  != null ? response.modelVersion()  : "");
         return new RecommendationResult(userId, items, null, trace);
     }
