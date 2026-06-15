@@ -1,10 +1,11 @@
-package com.recsys.service.retrieval;
+package com.recsys.service.retrieval.multichannel;
 
 import com.recsys.domain.MovieCandidate;
 import com.recsys.domain.RecommendationQuery;
 import com.recsys.infrastructure.vectordb.EmbeddingStore;
 import com.recsys.online.ops.FaultInjector;
 import com.recsys.online.ops.WorkerBulkhead;
+import com.recsys.service.retrieval.RecallChannel;
 import org.junit.jupiter.api.Test;
 
 import java.util.List;

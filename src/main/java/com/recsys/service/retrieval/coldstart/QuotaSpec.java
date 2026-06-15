@@ -1,4 +1,4 @@
-package com.recsys.service.retrieval;
+package com.recsys.service.retrieval.coldstart;
 
 import java.util.Map;
 import java.util.Objects;

@@ -1,4 +1,4 @@
-package com.recsys.service.retrieval;
+package com.recsys.service.retrieval.channels;
 
 import com.recsys.domain.MovieCandidate;
 import com.recsys.domain.RecommendationQuery;

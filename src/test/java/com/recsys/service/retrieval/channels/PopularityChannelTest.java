@@ -1,13 +1,15 @@
-package com.recsys.service.retrieval;
+package com.recsys.service.retrieval.channels;
 
-import com.recsys.infrastructure.DataManager;
-import com.recsys.infrastructure.redis.GlobalPopularityStore;
 import com.recsys.domain.Movie;
 import com.recsys.domain.MovieCandidate;
 import com.recsys.domain.RecommendationQuery;
+import com.recsys.infrastructure.DataManager;
+import com.recsys.infrastructure.redis.GlobalPopularityStore;
 import org.junit.jupiter.api.Test;
+
 import java.util.List;
 import java.util.Set;
+
 import static org.assertj.core.api.Assertions.assertThat;
 import static org.assertj.core.api.Assertions.within;
 import static org.mockito.ArgumentMatchers.anyInt;

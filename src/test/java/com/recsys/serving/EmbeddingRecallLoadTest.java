@@ -7,7 +7,7 @@ import com.recsys.service.pagination.Page;
 import com.recsys.service.ranking.CandidateRanker;
 import com.recsys.service.recommendation.RecommendationOrchestrator;
 import com.recsys.service.recommendation.RecommendationPipeline;
-import com.recsys.service.retrieval.MultiChannelRecallService;
+import com.recsys.service.retrieval.multichannel.MultiChannelRecallService;
 import org.junit.jupiter.api.Tag;
 import org.junit.jupiter.api.Test;
 import org.junit.jupiter.api.Timeout;

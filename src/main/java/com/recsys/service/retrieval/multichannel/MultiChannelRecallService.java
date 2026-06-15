@@ -1,9 +1,11 @@
-package com.recsys.service.retrieval;
+package com.recsys.service.retrieval.multichannel;
 
 import com.recsys.domain.MovieCandidate;
 import com.recsys.domain.RecommendationQuery;
 import com.recsys.infrastructure.vectordb.EmbeddingStore;
 import com.recsys.online.ops.FaultInjector;
+import com.recsys.service.retrieval.RecallChannel;
+import com.recsys.service.retrieval.coldstart.QuotaSpec;
 import org.slf4j.Logger;
 import org.slf4j.LoggerFactory;
 

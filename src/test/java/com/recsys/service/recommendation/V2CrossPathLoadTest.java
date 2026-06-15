@@ -14,7 +14,7 @@ import com.recsys.service.hydrator.RecommendationHydrator;
 import com.recsys.service.pagination.CursorPaginationService;
 import com.recsys.service.pagination.Page;
 import com.recsys.service.ranking.CandidateRanker;
-import com.recsys.service.retrieval.MultiChannelRecallService;
+import com.recsys.service.retrieval.multichannel.MultiChannelRecallService;
 import org.junit.jupiter.api.Tag;
 import org.junit.jupiter.api.Test;
 import org.junit.jupiter.api.Timeout;

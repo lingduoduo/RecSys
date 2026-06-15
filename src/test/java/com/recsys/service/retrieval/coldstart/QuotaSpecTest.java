@@ -1,4 +1,4 @@
-package com.recsys.service.retrieval;
+package com.recsys.service.retrieval.coldstart;
 
 import org.junit.jupiter.api.Test;
 import org.junit.jupiter.params.ParameterizedTest;

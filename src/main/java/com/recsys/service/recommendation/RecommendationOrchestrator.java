@@ -8,7 +8,7 @@ import com.recsys.service.hydrator.RecommendationHydrator;
 import com.recsys.service.pagination.CursorPaginationService;
 import com.recsys.service.pagination.Page;
 import com.recsys.service.ranking.CandidateRanker;
-import com.recsys.service.retrieval.MultiChannelRecallService;
+import com.recsys.service.retrieval.multichannel.MultiChannelRecallService;
 
 import java.util.List;
 import java.util.Map;

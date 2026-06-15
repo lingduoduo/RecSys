@@ -1,9 +1,10 @@
-package com.recsys.service.retrieval;
+package com.recsys.service.retrieval.channels;
 
-import com.recsys.infrastructure.vectordb.CandidateGenerator;
 import com.recsys.domain.Movie;
 import com.recsys.domain.MovieCandidate;
 import com.recsys.domain.RecommendationQuery;
+import com.recsys.infrastructure.vectordb.CandidateGenerator;
+import com.recsys.service.retrieval.RecallChannel;
 
 import java.util.List;
 import java.util.Map;

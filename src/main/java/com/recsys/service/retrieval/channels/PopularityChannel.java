@@ -1,10 +1,11 @@
-package com.recsys.service.retrieval;
+package com.recsys.service.retrieval.channels;
 
-import com.recsys.infrastructure.DataManager;
-import com.recsys.infrastructure.redis.GlobalPopularityStore;
 import com.recsys.domain.Movie;
 import com.recsys.domain.MovieCandidate;
 import com.recsys.domain.RecommendationQuery;
+import com.recsys.infrastructure.DataManager;
+import com.recsys.infrastructure.redis.GlobalPopularityStore;
+import com.recsys.service.retrieval.RecallChannel;
 
 import java.util.ArrayList;
 import java.util.LinkedHashMap;
