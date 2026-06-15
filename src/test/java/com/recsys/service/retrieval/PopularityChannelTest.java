@@ -56,7 +56,7 @@ class PopularityChannelTest {
     void recall_usesRedisWhenGlobalPopStoreNonEmpty() {
         DataManager dm = mock(DataManager.class);
         GlobalPopularityStore popStore = mock(GlobalPopularityStore.class);
-        when(popStore.getTopIds(5)).thenReturn(List.of("10", "20", "30"));
+        when(popStore.getTopIds(anyInt())).thenReturn(List.of("10", "20", "30"));
 
         PopularityChannel channel = new PopularityChannel(dm, popStore);
         List<MovieCandidate> results = channel.recall(
