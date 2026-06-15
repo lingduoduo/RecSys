@@ -1,0 +1,57 @@
+package com.recsys.service.retrieval;
+
+import com.recsys.domain.MovieCandidate;
+import com.recsys.domain.RecommendationQuery;
+import com.recsys.infrastructure.redis.GlobalPopularityStore;
+import com.recsys.online.store.TrendingStore;
+
+import java.util.LinkedHashMap;
+import java.util.List;
+import java.util.Map;
+
+public class ColdStartChannel implements RecallChannel {
+
+    private static final Map<String, Double> WINDOW_WEIGHTS = Map.of(
+            "last_day",   0.7,
+            "last_month", 0.5
+    );
+    private static final double POPULARITY_WEIGHT = 0.4;
+
+    private final TrendingStore trendingStore;
+    private final GlobalPopularityStore globalPopularityStore;
+
+    public ColdStartChannel(TrendingStore trendingStore, GlobalPopularityStore globalPopularityStore) {
+        this.trendingStore = trendingStore;
+        this.globalPopularityStore = globalPopularityStore;
+    }
+
+    @Override
+    public String name() {
+        return "cold_start";
+    }
+
+    @Override
+    public List<MovieCandidate> recall(RecommendationQuery query, int limit) {
+        Map<String, Double> blended = new LinkedHashMap<>();
+
+        for (Map.Entry<String, Double> entry : WINDOW_WEIGHTS.entrySet()) {
+            List<String> ids = trendingStore.getTopKIds(entry.getKey(), limit);
+            double weight = entry.getValue();
+            for (int i = 0; i < ids.size(); i++) {
+                blended.merge(ids.get(i), weight * (1.0 / (i + 1.0)), Double::sum);
+            }
+        }
+
+        List<String> popIds = globalPopularityStore.getTopIds(limit);
+        for (int i = 0; i < popIds.size(); i++) {
+            blended.merge(popIds.get(i), POPULARITY_WEIGHT * (1.0 / (i + 1.0)), Double::sum);
+        }
+
+        return blended.entrySet().stream()
+                .filter(e -> !query.excludedItemIds().contains(e.getKey()))
+                .sorted(Map.Entry.<String, Double>comparingByValue().reversed())
+                .limit(limit)
+                .map(e -> new MovieCandidate(e.getKey(), e.getValue(), name(), Map.of()))
+                .toList();
+    }
+}
