@@ -1,8 +1,11 @@
 package com.recsys.service.retrieval;
 
 import org.junit.jupiter.api.Test;
+import org.junit.jupiter.params.ParameterizedTest;
+import org.junit.jupiter.params.provider.ValueSource;
 
 import static org.assertj.core.api.Assertions.assertThat;
+import static org.assertj.core.api.Assertions.assertThatThrownBy;
 
 class QuotaSpecTest {
 
@@ -59,5 +62,32 @@ class QuotaSpecTest {
         QuotaSpec q = QuotaSpec.warm(20);
         assertThat(q.slotsFor("embedding")).isEqualTo(12);
         assertThat(q.slotsFor("trending")).isEqualTo(4);
+    }
+
+    @ParameterizedTest
+    @ValueSource(ints = {1, 3, 5, 7, 9, 10, 11, 13, 20, 100})
+    void cold_totalSlotsAlwaysEqualsLimit(int limit) {
+        QuotaSpec q = QuotaSpec.cold(limit);
+        int total = q.slotsFor("cold_start") + q.slotsFor("trending")
+                + q.slotsFor("popularity") + q.slotsFor("genre_history");
+        assertThat(total).isEqualTo(limit);
+    }
+
+    @Test
+    void slotsFor_nullThrowsNPE() {
+        assertThatThrownBy(() -> QuotaSpec.warm(10).slotsFor(null))
+                .isInstanceOf(NullPointerException.class);
+    }
+
+    @Test
+    void warm_zeroLimitThrows() {
+        assertThatThrownBy(() -> QuotaSpec.warm(0))
+                .isInstanceOf(IllegalArgumentException.class);
+    }
+
+    @Test
+    void cold_negativeLimitThrows() {
+        assertThatThrownBy(() -> QuotaSpec.cold(-1))
+                .isInstanceOf(IllegalArgumentException.class);
     }
 }
