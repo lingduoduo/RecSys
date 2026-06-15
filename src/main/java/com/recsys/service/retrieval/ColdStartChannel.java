@@ -8,6 +8,7 @@ import com.recsys.online.store.TrendingStore;
 import java.util.LinkedHashMap;
 import java.util.List;
 import java.util.Map;
+import java.util.Objects;
 
 public class ColdStartChannel implements RecallChannel {
 
@@ -21,8 +22,8 @@ public class ColdStartChannel implements RecallChannel {
     private final GlobalPopularityStore globalPopularityStore;
 
     public ColdStartChannel(TrendingStore trendingStore, GlobalPopularityStore globalPopularityStore) {
-        this.trendingStore = trendingStore;
-        this.globalPopularityStore = globalPopularityStore;
+        this.trendingStore = Objects.requireNonNull(trendingStore, "trendingStore");
+        this.globalPopularityStore = Objects.requireNonNull(globalPopularityStore, "globalPopularityStore");
     }
 
     @Override
