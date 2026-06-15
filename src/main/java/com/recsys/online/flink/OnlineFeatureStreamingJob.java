@@ -282,14 +282,18 @@ public final class OnlineFeatureStreamingJob {
             double[] vector = current == null ? new double[dimensions] : parseVector(current.vector, dimensions);
             int bucket = Math.floorMod(event.movieId, dimensions);
             vector[bucket] += Math.max(1L, event.engagementWeight());
-            String encoded = encodeVector(vector);
+
+            // Store raw counts in state so accumulation is always on the same scale.
+            String rawEncoded = encodeRaw(vector);
             UserEmbeddingState next = new UserEmbeddingState();
-            next.vector = encoded;
+            next.vector = rawEncoded;                   // raw counts, not normalised
             next.updatedAtMillis = event.eventTimeMillis;
             state.update(next);
+
+            // Normalise only for the Redis output so the serving layer gets a unit vector.
             out.collect(new StringFeatureUpdate(
                     "u2vEmb:" + event.userId,
-                    encoded,
+                    encodeVector(vector),               // normalised for Redis
                     event.eventTimeMillis,
                     ttlSeconds
             ));
@@ -322,6 +326,15 @@ public final class OnlineFeatureStreamingJob {
                 if (i > 0) builder.append(' ');
                 double value = norm > 0.0 ? vector[i] / norm : 0.0;
                 builder.append(String.format(java.util.Locale.ROOT, "%.6f", value));
+            }
+            return builder.toString();
+        }
+
+        static String encodeRaw(double[] vector) {
+            StringBuilder builder = new StringBuilder(vector.length * 10);
+            for (int i = 0; i < vector.length; i++) {
+                if (i > 0) builder.append(' ');
+                builder.append(String.format(java.util.Locale.ROOT, "%.6f", vector[i]));
             }
             return builder.toString();
         }
