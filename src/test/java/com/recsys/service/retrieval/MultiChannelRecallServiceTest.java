@@ -2,6 +2,7 @@ package com.recsys.service.retrieval;
 
 import com.recsys.domain.MovieCandidate;
 import com.recsys.domain.RecommendationQuery;
+import com.recsys.infrastructure.vectordb.EmbeddingStore;
 import com.recsys.online.ops.FaultInjector;
 import com.recsys.online.ops.WorkerBulkhead;
 import org.junit.jupiter.api.Test;
@@ -9,10 +10,13 @@ import org.junit.jupiter.api.Test;
 import java.util.List;
 import java.util.Map;
 import java.util.Set;
+import java.util.concurrent.ForkJoinPool;
 import java.util.concurrent.atomic.AtomicInteger;
 
 import static org.assertj.core.api.Assertions.assertThat;
 import static org.junit.jupiter.api.Assertions.assertEquals;
+import static org.mockito.Mockito.mock;
+import static org.mockito.Mockito.when;
 
 class MultiChannelRecallServiceTest {
 
@@ -105,6 +109,129 @@ class MultiChannelRecallServiceTest {
         service.recall(query, 10);
         assertThat(callCount.get()).isEqualTo(callsBeforeBackoff);
         bulkhead.close();
+    }
+
+    @Test
+    void coldUser_zeroEmbeddingQuota_coldStartFillsQuota() {
+        EmbeddingStore userEmb = mock(EmbeddingStore.class);
+        when(userEmb.getEmbedding(1)).thenReturn(null); // no embedding → cold user
+
+        RecallChannel embChannel   = channel("embedding",
+                new MovieCandidate("10", 0.9, "embedding",    Map.of()),
+                new MovieCandidate("11", 0.8, "embedding",    Map.of()));
+        RecallChannel coldCh       = channel("cold_start",
+                new MovieCandidate("20", 0.6, "cold_start",   Map.of()),
+                new MovieCandidate("21", 0.5, "cold_start",   Map.of()),
+                new MovieCandidate("22", 0.4, "cold_start",   Map.of()));
+        RecallChannel trendingCh   = channel("trending",
+                new MovieCandidate("30", 0.3, "trending",     Map.of()));
+        RecallChannel genreCh      = channel("genre_history",
+                new MovieCandidate("40", 0.2, "genre_history", Map.of()));
+        RecallChannel popCh        = channel("popularity",
+                new MovieCandidate("50", 0.1, "popularity",  Map.of()));
+
+        MultiChannelRecallService service = new MultiChannelRecallService(
+                List.of(embChannel, coldCh, trendingCh, genreCh, popCh),
+                new ChannelHealthMonitor(),
+                ForkJoinPool.commonPool(),
+                200L,
+                FaultInjector.NOOP,
+                userEmb);
+
+        // cold quota limit=10: cold_start=5, trending=2, popularity=2, genre_history=1, embedding=0
+        // Quota fill: cold_start→"20","21","22" (3 of 5); trending→"30" (1 of 2); genre→"40"; pop→"50"
+        // Gap fill: "10","11" from embedding (0 quota but unselected)
+        List<MovieCandidate> recalled = service.recall(
+                new RecommendationQuery("1", 10, Set.of(), null), 10);
+
+        assertThat(recalled).extracting(MovieCandidate::itemId)
+                .containsExactlyInAnyOrder("10", "11", "20", "21", "22", "30", "40", "50");
+        assertThat(recalled).filteredOn(c -> "cold_start".equals(c.channel())).hasSize(3);
+        assertThat(recalled).filteredOn(c -> "embedding".equals(c.channel())).hasSize(2);
+    }
+
+    @Test
+    void warmUser_embeddingChannelGets60PercentQuota() {
+        EmbeddingStore userEmb = mock(EmbeddingStore.class);
+        when(userEmb.getEmbedding(1)).thenReturn(new float[]{0.1f}); // has embedding → warm
+
+        RecallChannel embChannel = channel("embedding",
+                new MovieCandidate("10", 0.9, "embedding", Map.of()),
+                new MovieCandidate("11", 0.8, "embedding", Map.of()),
+                new MovieCandidate("12", 0.7, "embedding", Map.of()),
+                new MovieCandidate("13", 0.6, "embedding", Map.of()),
+                new MovieCandidate("14", 0.5, "embedding", Map.of()),
+                new MovieCandidate("15", 0.4, "embedding", Map.of()));
+        RecallChannel trendingCh = channel("trending",
+                new MovieCandidate("30", 0.3, "trending", Map.of()),
+                new MovieCandidate("31", 0.2, "trending", Map.of()));
+
+        MultiChannelRecallService service = new MultiChannelRecallService(
+                List.of(embChannel, trendingCh),
+                new ChannelHealthMonitor(),
+                ForkJoinPool.commonPool(),
+                200L,
+                FaultInjector.NOOP,
+                userEmb);
+
+        // warm quota limit=10: embedding=6, trending=2, genre_history=2, popularity=0
+        List<MovieCandidate> recalled = service.recall(
+                new RecommendationQuery("1", 10, Set.of(), null), 10);
+
+        assertThat(recalled).filteredOn(c -> "embedding".equals(c.channel())).hasSize(6);
+        assertThat(recalled).filteredOn(c -> "trending".equals(c.channel())).hasSize(2);
+    }
+
+    @Test
+    void nullUserEmbeddingStore_fallsBackToLegacyMaxScoreMerge() {
+        // 1-arg constructor passes null userEmbeddingStore → old behavior preserved
+        RecallChannel ch1 = channel("ch1",
+                new MovieCandidate("A", 0.9, "ch1", Map.of()));
+        RecallChannel ch2 = channel("ch2",
+                new MovieCandidate("A", 0.5, "ch2", Map.of()),
+                new MovieCandidate("B", 0.7, "ch2", Map.of()));
+
+        MultiChannelRecallService service = new MultiChannelRecallService(List.of(ch1, ch2));
+
+        List<MovieCandidate> recalled = service.recall(
+                new RecommendationQuery("1", 10, Set.of(), null), 10);
+
+        // Legacy merge: "A" keeps ch1 score 0.9 (higher), "B" from ch2 0.7
+        assertThat(recalled).extracting(MovieCandidate::itemId).containsExactly("A", "B");
+        assertThat(recalled.get(0).score()).isEqualTo(0.9);
+        assertThat(recalled.get(0).channel()).isEqualTo("ch1");
+    }
+
+    @Test
+    void quotaMerge_gapFillWhenChannelReturnsFewerThanQuota() {
+        EmbeddingStore userEmb = mock(EmbeddingStore.class);
+        when(userEmb.getEmbedding(1)).thenReturn(new float[]{0.1f}); // warm
+
+        // embedding has 6 quota slots but only returns 2 candidates
+        RecallChannel embChannel = channel("embedding",
+                new MovieCandidate("10", 0.9, "embedding", Map.of()),
+                new MovieCandidate("11", 0.8, "embedding", Map.of()));
+        // trending has 2 quota slots, returns 3 (one spills to gap fill)
+        RecallChannel trendingCh = channel("trending",
+                new MovieCandidate("30", 0.7, "trending", Map.of()),
+                new MovieCandidate("31", 0.6, "trending", Map.of()),
+                new MovieCandidate("32", 0.5, "trending", Map.of()));
+
+        MultiChannelRecallService service = new MultiChannelRecallService(
+                List.of(embChannel, trendingCh),
+                new ChannelHealthMonitor(),
+                ForkJoinPool.commonPool(),
+                200L,
+                FaultInjector.NOOP,
+                userEmb);
+
+        List<MovieCandidate> recalled = service.recall(
+                new RecommendationQuery("1", 10, Set.of(), null), 10);
+
+        // Quota fill: embedding→"10","11" (2 of 6); trending→"30","31" (2 of 2)
+        // Gap fill: "32" from trending leftover
+        assertThat(recalled).extracting(MovieCandidate::itemId)
+                .containsExactlyInAnyOrder("10", "11", "30", "31", "32");
     }
 
     private static RecallChannel channel(String name, MovieCandidate... candidates) {
