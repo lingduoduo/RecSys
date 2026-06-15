@@ -69,10 +69,10 @@ public final class OnlineFeatureStreamingJob {
 
         StreamExecutionEnvironment env = StreamExecutionEnvironment.getExecutionEnvironment();
         env.enableCheckpointing(Math.max(5_000L, windowSeconds * 1_000L));
-        String checkpointDir = System.getenv("FLINK_CHECKPOINT_DIR");
+        String checkpointDir = params.get("checkpoint-dir", System.getenv("FLINK_CHECKPOINT_DIR"));
         if (checkpointDir != null && !checkpointDir.isBlank()) {
-            env.getCheckpointConfig().setCheckpointStorage(checkpointDir);
             env.setStateBackend(new EmbeddedRocksDBStateBackend(true));
+            env.getCheckpointConfig().setCheckpointStorage(checkpointDir);
         }
 
         DataStream<MovieEvent> events = buildEventStream(env, params)
