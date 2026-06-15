@@ -2,6 +2,7 @@ package com.recsys.infrastructure.redis;
 
 import org.junit.jupiter.api.Test;
 import redis.clients.jedis.Jedis;
+import redis.clients.jedis.JedisPool;
 import redis.clients.jedis.util.Pool;
 
 import java.util.List;
@@ -10,13 +11,13 @@ import static org.assertj.core.api.Assertions.assertThat;
 import static org.mockito.ArgumentMatchers.anyLong;
 import static org.mockito.ArgumentMatchers.eq;
 import static org.mockito.Mockito.mock;
+import static org.mockito.Mockito.verify;
 import static org.mockito.Mockito.when;
 
 class GlobalPopularityStoreTest {
 
-    @SuppressWarnings("unchecked")
     private static Pool<Jedis> mockPool(Jedis jedis) {
-        Pool<Jedis> pool = mock(Pool.class);
+        Pool<Jedis> pool = mock(JedisPool.class);
         when(pool.getResource()).thenReturn(jedis);
         return pool;
     }
@@ -31,6 +32,7 @@ class GlobalPopularityStoreTest {
         List<String> ids = store.getTopIds(3);
 
         assertThat(ids).containsExactly("5", "3", "1");
+        verify(jedis).close();
     }
 
     @Test

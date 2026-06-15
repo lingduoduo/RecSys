@@ -3,7 +3,6 @@ package com.recsys.infrastructure.redis;
 import redis.clients.jedis.Jedis;
 import redis.clients.jedis.util.Pool;
 
-import java.util.ArrayList;
 import java.util.List;
 
 public class GlobalPopularityStore {
@@ -19,7 +18,7 @@ public class GlobalPopularityStore {
     public List<String> getTopIds(int limit) {
         if (limit <= 0) return List.of();
         try (Jedis jedis = pool.getResource()) {
-            return new ArrayList<>(jedis.zrevrange(KEY, 0, limit - 1));
+            return jedis.zrevrange(KEY, 0, limit - 1);
         }
     }
 }
