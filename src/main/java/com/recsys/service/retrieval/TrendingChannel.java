@@ -4,6 +4,7 @@ import com.recsys.domain.MovieCandidate;
 import com.recsys.domain.RecommendationQuery;
 import com.recsys.online.store.TrendingStore;
 
+import java.util.HashMap;
 import java.util.LinkedHashMap;
 import java.util.List;
 import java.util.Map;
@@ -28,6 +29,7 @@ public class TrendingChannel implements RecallChannel {
         this.trendingStore = Objects.requireNonNull(trendingStore, "trendingStore");
         Map<String, Double> weights = new LinkedHashMap<>();
         for (String w : Objects.requireNonNull(windows, "windows")) {
+            Objects.requireNonNull(w, "windows element");
             weights.put(w, PREDEFINED_WEIGHTS.getOrDefault(w, 1.0));
         }
         this.windowWeights = Map.copyOf(weights);
@@ -40,7 +42,7 @@ public class TrendingChannel implements RecallChannel {
 
     @Override
     public List<MovieCandidate> recall(RecommendationQuery query, int limit) {
-        Map<String, Double> blended = new LinkedHashMap<>();
+        Map<String, Double> blended = new HashMap<>();
         for (Map.Entry<String, Double> entry : windowWeights.entrySet()) {
             List<String> ids = trendingStore.getTopKIds(entry.getKey(), limit);
             double weight = entry.getValue();
