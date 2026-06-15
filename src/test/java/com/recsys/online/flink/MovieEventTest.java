@@ -51,6 +51,17 @@ class MovieEventTest {
     }
 
     @Test
+    void blankSuffixReturnsZero() throws Exception {
+        String json = """
+                {"event_id":"e-blank","user_id":"user_","item_id":"movie_",
+                 "event_type":"click","timestamp_ms":1000}
+                """;
+        MovieEvent e = MAPPER.readValue(json, MovieEvent.class);
+        assertThat(e.userId).isEqualTo(0);
+        assertThat(e.movieId).isEqualTo(0);
+    }
+
+    @Test
     void sessionIdFallsBackToFeaturesMap() throws Exception {
         String json = """
                 {"eventId":"e1","userId":1,"movieId":1,"eventType":"click",

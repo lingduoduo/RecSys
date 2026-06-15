@@ -2,6 +2,7 @@ package com.recsys.online.flink;
 
 import com.fasterxml.jackson.annotation.JsonAlias;
 import com.fasterxml.jackson.annotation.JsonIgnoreProperties;
+import com.fasterxml.jackson.annotation.JsonProperty;
 import com.fasterxml.jackson.annotation.JsonSetter;
 
 import java.util.Map;
@@ -22,7 +23,8 @@ public class MovieEvent {
     public long eventTimeMillis;
     public String source;
     public Map<String, String> features;
-    private String sessionIdField;
+    @JsonProperty("session_id")
+    public String sessionIdField;
 
     public MovieEvent() {}
 
@@ -41,17 +43,13 @@ public class MovieEvent {
         this.eventTimeMillis = ms;
     }
 
-    @JsonSetter("session_id")
-    public void setSessionIdField(String sessionId) {
-        this.sessionIdField = sessionId;
-    }
-
     private static int parseIdSuffix(String raw) {
         if (raw == null || raw.isBlank()) return 0;
         int lastUnderscore = raw.lastIndexOf('_');
         String suffix = lastUnderscore >= 0 ? raw.substring(lastUnderscore + 1) : raw;
+        if (suffix.isBlank()) return 0;
         try {
-            return Math.abs(Integer.parseInt(suffix));
+            return (int) Math.abs((long) Integer.parseInt(suffix));
         } catch (NumberFormatException e) {
             return Math.abs(raw.hashCode()) % Integer.MAX_VALUE;
         }
