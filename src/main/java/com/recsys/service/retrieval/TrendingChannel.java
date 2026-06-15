@@ -4,17 +4,33 @@ import com.recsys.domain.MovieCandidate;
 import com.recsys.domain.RecommendationQuery;
 import com.recsys.online.store.TrendingStore;
 
+import java.util.LinkedHashMap;
 import java.util.List;
 import java.util.Map;
+import java.util.Objects;
 
 public class TrendingChannel implements RecallChannel {
 
-    static final double SCORE = 0.6;
+    private static final Map<String, Double> PREDEFINED_WEIGHTS = Map.of(
+            "last_hour",  1.0,
+            "last_day",   0.6,
+            "last_month", 0.4
+    );
 
     private final TrendingStore trendingStore;
+    private final Map<String, Double> windowWeights;
 
     public TrendingChannel(TrendingStore trendingStore) {
-        this.trendingStore = trendingStore;
+        this(trendingStore, List.of("last_hour"));
+    }
+
+    public TrendingChannel(TrendingStore trendingStore, List<String> windows) {
+        this.trendingStore = Objects.requireNonNull(trendingStore, "trendingStore");
+        Map<String, Double> weights = new LinkedHashMap<>();
+        for (String w : Objects.requireNonNull(windows, "windows")) {
+            weights.put(w, PREDEFINED_WEIGHTS.getOrDefault(w, 1.0));
+        }
+        this.windowWeights = Map.copyOf(weights);
     }
 
     @Override
@@ -24,8 +40,18 @@ public class TrendingChannel implements RecallChannel {
 
     @Override
     public List<MovieCandidate> recall(RecommendationQuery query, int limit) {
-        return trendingStore.getTopKIds("last_hour", limit).stream()
-                .map(id -> new MovieCandidate(id, SCORE, name(), Map.of()))
+        Map<String, Double> blended = new LinkedHashMap<>();
+        for (Map.Entry<String, Double> entry : windowWeights.entrySet()) {
+            List<String> ids = trendingStore.getTopKIds(entry.getKey(), limit);
+            double weight = entry.getValue();
+            for (int i = 0; i < ids.size(); i++) {
+                blended.merge(ids.get(i), weight * (1.0 / (i + 1.0)), Double::sum);
+            }
+        }
+        return blended.entrySet().stream()
+                .sorted(Map.Entry.<String, Double>comparingByValue().reversed())
+                .limit(limit)
+                .map(e -> new MovieCandidate(e.getKey(), e.getValue(), name(), Map.of()))
                 .toList();
     }
 }
