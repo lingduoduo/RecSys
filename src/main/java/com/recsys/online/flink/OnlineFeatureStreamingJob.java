@@ -519,6 +519,22 @@ public final class OnlineFeatureStreamingJob {
                 return 1
                 """;
 
+        private static final String SET_IF_NEWER_WITH_LINEAGE_SCRIPT = """
+                local current = redis.call('GET', KEYS[2])
+                if current and tonumber(current) > tonumber(ARGV[1]) then
+                  return 0
+                end
+                redis.call('SETEX', KEYS[1], tonumber(ARGV[2]), ARGV[3])
+                redis.call('SETEX', KEYS[2], tonumber(ARGV[2]), ARGV[1])
+                redis.call('SETEX', KEYS[3], tonumber(ARGV[2]), ARGV[4])
+                redis.call('RPUSH', KEYS[4], ARGV[4])
+                redis.call('LTRIM', KEYS[4], -5, -1)
+                redis.call('EXPIRE', KEYS[4], tonumber(ARGV[2]))
+                redis.call('SADD', KEYS[5], KEYS[1])
+                redis.call('EXPIRE', KEYS[5], tonumber(ARGV[2]))
+                return 1
+                """;
+
         private static final String ZSET_IF_NEWER_SCRIPT = """
                 local current = redis.call('GET', KEYS[2])
                 if current and tonumber(current) > tonumber(ARGV[1]) then
@@ -560,6 +576,22 @@ public final class OnlineFeatureStreamingJob {
             );
         }
 
+        void setStringIfNewerWithLineage(Jedis jedis, String redisKey, String value,
+                                          long updatedAtMillis, int ttlSeconds, String eventId) {
+            jedis.eval(
+                    SET_IF_NEWER_WITH_LINEAGE_SCRIPT,
+                    List.of(redisKey,
+                            redisKey + ":updated_at",
+                            redisKey + ":last_event",
+                            redisKey + ":event_history",
+                            "lineage:event:" + eventId),
+                    List.of(Long.toString(updatedAtMillis),
+                            Integer.toString(ttlSeconds),
+                            value,
+                            eventId)
+            );
+        }
+
         void setTopKIfNewer(Jedis jedis, TopKSnapshot value) {
             List<String> args = new ArrayList<>(2 + value.movies.size() * 2);
             args.add(Long.toString(value.updatedAtMillis));
@@ -582,7 +614,8 @@ public final class OnlineFeatureStreamingJob {
         @Override
         public void invoke(StringFeatureUpdate value, Context context) {
             try (Jedis jedis = pool.getResource()) {
-                setStringIfNewer(jedis, value.redisKey, value.value, value.updatedAtMillis, value.ttlSeconds);
+                setStringIfNewerWithLineage(jedis, value.redisKey, value.value,
+                        value.updatedAtMillis, value.ttlSeconds, value.eventId);
             }
         }
     }
@@ -593,7 +626,8 @@ public final class OnlineFeatureStreamingJob {
         @Override
         public void invoke(UserRecentMoviesUpdate value, Context context) {
             try (Jedis jedis = pool.getResource()) {
-                setStringIfNewer(jedis, value.redisKey, value.value, value.updatedAtMillis, value.ttlSeconds);
+                setStringIfNewerWithLineage(jedis, value.redisKey, value.value,
+                        value.updatedAtMillis, value.ttlSeconds, value.eventId);
             }
         }
     }
