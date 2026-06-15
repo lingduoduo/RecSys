@@ -33,7 +33,7 @@ import redis.clients.jedis.Jedis;
 import redis.clients.jedis.util.Pool;
 import java.util.List;
 import java.util.concurrent.ExecutorService;
-import java.util.concurrent.ForkJoinPool;
+import java.util.concurrent.Executors;
 
 public class RecSysServer {
 
@@ -85,7 +85,9 @@ public class RecSysServer {
             CandidateGenerator candidateGenerator = new CandidateGenerator(dataManager, userEmbCache);
 
             GlobalPopularityStore globalPopStore = new GlobalPopularityStore(jedisPool);
-            ExecutorService executor = ForkJoinPool.commonPool();
+            ExecutorService executor = Executors.newFixedThreadPool(
+                    Runtime.getRuntime().availableProcessors() * 2,
+                    r -> new Thread(r, "recall-channel"));
 
             MultiChannelRecallService recallService = new MultiChannelRecallService(
                     List.of(
@@ -149,6 +151,7 @@ public class RecSysServer {
             Server server = sb.build();
             Runtime.getRuntime().addShutdownHook(new Thread(() -> {
                 server.stop().join();
+                executor.shutdown();
                 jedisPool.close();
             }, "recsys-shutdown"));
             log.info("Starting RecSys serving API on port {}", port);
