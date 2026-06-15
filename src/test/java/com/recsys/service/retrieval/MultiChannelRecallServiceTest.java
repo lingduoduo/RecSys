@@ -148,6 +148,11 @@ class MultiChannelRecallServiceTest {
                 .containsExactlyInAnyOrder("10", "11", "20", "21", "22", "30", "40", "50");
         assertThat(recalled).filteredOn(c -> "cold_start".equals(c.channel())).hasSize(3);
         assertThat(recalled).filteredOn(c -> "embedding".equals(c.channel())).hasSize(2);
+
+        // Verify embedding items came via gap fill: at limit=6 (quota-fill only), embedding contributes 0
+        List<MovieCandidate> quotaFillOnly = service.recall(
+                new RecommendationQuery("1", 6, Set.of(), null), 6);
+        assertThat(quotaFillOnly).filteredOn(c -> "embedding".equals(c.channel())).isEmpty();
     }
 
     @Test

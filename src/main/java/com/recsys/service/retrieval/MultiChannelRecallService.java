@@ -69,9 +69,13 @@ public class MultiChannelRecallService {
 
         QuotaSpec quota = null;
         if (userEmbeddingStore != null) {
-            int userId = Integer.parseInt(query.userId());
-            boolean isCold = userEmbeddingStore.getEmbedding(userId) == null;
-            quota = isCold ? QuotaSpec.cold(limit) : QuotaSpec.warm(limit);
+            try {
+                int userId = Integer.parseInt(query.userId());
+                boolean isCold = userEmbeddingStore.getEmbedding(userId) == null;
+                quota = isCold ? QuotaSpec.cold(limit) : QuotaSpec.warm(limit);
+            } catch (NumberFormatException e) {
+                quota = QuotaSpec.cold(limit);
+            }
         }
 
         List<CompletableFuture<ChannelResult>> futures = new ArrayList<>(channels.size());
@@ -84,6 +88,7 @@ public class MultiChannelRecallService {
             CompletableFuture<ChannelResult> future = CompletableFuture
                     .supplyAsync(() -> {
                         faultInjector.maybeInject("channel:" + name);
+                        // Over-fetch to limit so gap fill can pick unselected candidates
                         return new ChannelResult(name, channel.recall(query, limit), null);
                     }, executor)
                     .orTimeout(channelTimeoutMs, TimeUnit.MILLISECONDS)
