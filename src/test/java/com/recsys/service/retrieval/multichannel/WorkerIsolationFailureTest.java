@@ -1,10 +1,10 @@
-// src/test/java/com/recsys/service/retrieval/WorkerIsolationFailureTest.java
-package com.recsys.service.retrieval;
+package com.recsys.service.retrieval.multichannel;
 
 import com.recsys.domain.MovieCandidate;
 import com.recsys.domain.RecommendationQuery;
 import com.recsys.online.ops.FaultInjector;
 import com.recsys.online.ops.WorkerBulkhead;
+import com.recsys.service.retrieval.RecallChannel;
 import org.junit.jupiter.api.AfterEach;
 import org.junit.jupiter.api.Test;
 

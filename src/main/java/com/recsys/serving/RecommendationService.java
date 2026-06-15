@@ -10,7 +10,7 @@ import com.recsys.domain.MovieCandidate;
 import com.recsys.domain.RecommendationQuery;
 import com.recsys.domain.RecommendationResponse;
 import com.recsys.domain.User;
-import com.recsys.service.retrieval.MultiChannelRecallService;
+import com.recsys.service.retrieval.multichannel.MultiChannelRecallService;
 
 import java.util.List;
 import java.util.Objects;

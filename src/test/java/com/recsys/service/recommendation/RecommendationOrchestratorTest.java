@@ -7,7 +7,7 @@ import com.recsys.domain.RecommendationResult;
 import com.recsys.service.hydrator.RecommendationHydrator;
 import com.recsys.service.pagination.CursorPaginationService;
 import com.recsys.service.ranking.ScoreRanker;
-import com.recsys.service.retrieval.MultiChannelRecallService;
+import com.recsys.service.retrieval.multichannel.MultiChannelRecallService;
 import com.recsys.service.retrieval.RecallChannel;
 import org.junit.jupiter.api.Test;
 

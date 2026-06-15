@@ -1,4 +1,4 @@
-package com.recsys.service.retrieval;
+package com.recsys.service.retrieval.multichannel;
 
 import java.util.Map;
 import java.util.Objects;

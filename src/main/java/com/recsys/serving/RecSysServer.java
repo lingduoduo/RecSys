@@ -9,30 +9,37 @@ import com.recsys.infrastructure.DataLoader;
 import com.recsys.infrastructure.DataManager;
 import com.recsys.infrastructure.PairPredictionService;
 import com.recsys.infrastructure.cache.LocalEmbeddingCache;
+import com.recsys.infrastructure.redis.GlobalPopularityStore;
 import com.recsys.infrastructure.redis.RedisConnectionFactory;
 import com.recsys.infrastructure.redis.RedisEmbeddingStore;
 import com.recsys.infrastructure.redis.ShardedTopKStore;
 import com.recsys.infrastructure.vectordb.CandidateGenerator;
+import com.recsys.online.ops.FaultInjector;
 import com.recsys.service.hydrator.RecommendationHydrator;
 import com.recsys.service.pagination.CursorPaginationService;
 import com.recsys.service.ranking.ScoreRanker;
 import com.recsys.service.recommendation.RecommendationOrchestrator;
-import com.recsys.service.retrieval.EmbeddingChannel;
-import com.recsys.service.retrieval.GenreHistoryChannel;
-import com.recsys.service.retrieval.MultiChannelRecallService;
-import com.recsys.service.retrieval.PopularityChannel;
-import com.recsys.service.retrieval.TrendingChannel;
+import com.recsys.service.retrieval.channels.EmbeddingChannel;
+import com.recsys.service.retrieval.channels.GenreHistoryChannel;
+import com.recsys.service.retrieval.channels.PopularityChannel;
+import com.recsys.service.retrieval.channels.TrendingChannel;
+import com.recsys.service.retrieval.coldstart.ColdStartChannel;
+import com.recsys.service.retrieval.multichannel.ChannelHealthMonitor;
+import com.recsys.service.retrieval.multichannel.MultiChannelRecallService;
 import com.recsys.online.store.TrendingStore;
 import org.slf4j.Logger;
 import org.slf4j.LoggerFactory;
 import redis.clients.jedis.Jedis;
 import redis.clients.jedis.util.Pool;
 import java.util.List;
+import java.util.concurrent.ExecutorService;
+import java.util.concurrent.Executors;
 
 public class RecSysServer {
 
     private static final Logger log = LoggerFactory.getLogger(RecSysServer.class);
     private static final int DEFAULT_PORT = 6010;
+    private static final long DEFAULT_CHANNEL_TIMEOUT_MS = 200L;
     private static final String ROUTE_ITEM = "/item";
     private static final String ROUTE_USER = "/getuser";
     private static final String ROUTE_SIMILAR = "/similar";
@@ -77,12 +84,25 @@ public class RecSysServer {
 
             CandidateGenerator candidateGenerator = new CandidateGenerator(dataManager, userEmbCache);
 
-            MultiChannelRecallService recallService = new MultiChannelRecallService(List.of(
-                    new EmbeddingChannel(candidateGenerator),
-                    new TrendingChannel(topkStore),
-                    new GenreHistoryChannel(candidateGenerator),
-                    new PopularityChannel(dataManager)
-            ));
+            GlobalPopularityStore globalPopStore = new GlobalPopularityStore(jedisPool);
+            ExecutorService executor = Executors.newFixedThreadPool(
+                    Runtime.getRuntime().availableProcessors() * 2,
+                    r -> new Thread(r, "recall-channel"));
+
+            MultiChannelRecallService recallService = new MultiChannelRecallService(
+                    List.of(
+                            new EmbeddingChannel(candidateGenerator),
+                            new TrendingChannel(topkStore, List.of("last_hour", "last_day")),
+                            new GenreHistoryChannel(candidateGenerator),
+                            new PopularityChannel(dataManager, globalPopStore),
+                            new ColdStartChannel(topkStore, globalPopStore)
+                    ),
+                    new ChannelHealthMonitor(),
+                    executor,
+                    DEFAULT_CHANNEL_TIMEOUT_MS,
+                    FaultInjector.NOOP,
+                    userEmbCache
+            );
 
             RecommendationOrchestrator orchestrator = new RecommendationOrchestrator(
                     recallService,
@@ -131,6 +151,7 @@ public class RecSysServer {
             Server server = sb.build();
             Runtime.getRuntime().addShutdownHook(new Thread(() -> {
                 server.stop().join();
+                executor.shutdown();
                 jedisPool.close();
             }, "recsys-shutdown"));
             log.info("Starting RecSys serving API on port {}", port);

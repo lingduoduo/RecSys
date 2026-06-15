@@ -1,12 +1,14 @@
-package com.recsys.service.retrieval;
+package com.recsys.service.retrieval.channels;
 
-import com.recsys.infrastructure.vectordb.CandidateGenerator;
 import com.recsys.domain.Movie;
 import com.recsys.domain.MovieCandidate;
 import com.recsys.domain.RecommendationQuery;
+import com.recsys.infrastructure.vectordb.CandidateGenerator;
 import org.junit.jupiter.api.Test;
+
 import java.util.List;
 import java.util.Set;
+
 import static org.assertj.core.api.Assertions.assertThat;
 import static org.mockito.Mockito.mock;
 import static org.mockito.Mockito.when;
