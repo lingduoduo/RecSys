@@ -255,7 +255,8 @@ public final class OnlineFeatureStreamingJob {
                     "user:" + event.userId + ":recent_movies",
                     joinMovieIds(movies),
                     event.eventTimeMillis,
-                    ttlSeconds
+                    ttlSeconds,
+                    event.eventId
             ));
         }
 
@@ -301,7 +302,8 @@ public final class OnlineFeatureStreamingJob {
                     "u2vEmb:" + event.userId,
                     encodeVector(vector),               // normalised for Redis
                     event.eventTimeMillis,
-                    ttlSeconds
+                    ttlSeconds,
+                    event.eventId
             ));
         }
 
@@ -385,7 +387,8 @@ public final class OnlineFeatureStreamingJob {
                     "feature:user:" + event.userId + ":session:" + current.sessionId,
                     current.encode(),
                     event.eventTimeMillis,
-                    ttlSeconds
+                    ttlSeconds,
+                    event.eventId
             ));
         }
     }
@@ -636,12 +639,15 @@ public final class OnlineFeatureStreamingJob {
         final String value;
         final long updatedAtMillis;
         final int ttlSeconds;
+        final String eventId;
 
-        UserRecentMoviesUpdate(String redisKey, String value, long updatedAtMillis, int ttlSeconds) {
+        UserRecentMoviesUpdate(String redisKey, String value, long updatedAtMillis,
+                               int ttlSeconds, String eventId) {
             this.redisKey = redisKey;
             this.value = value;
             this.updatedAtMillis = updatedAtMillis;
             this.ttlSeconds = ttlSeconds;
+            this.eventId = eventId;
         }
     }
 
@@ -666,12 +672,15 @@ public final class OnlineFeatureStreamingJob {
         final String value;
         final long updatedAtMillis;
         final int ttlSeconds;
+        final String eventId;
 
-        StringFeatureUpdate(String redisKey, String value, long updatedAtMillis, int ttlSeconds) {
+        StringFeatureUpdate(String redisKey, String value, long updatedAtMillis,
+                            int ttlSeconds, String eventId) {
             this.redisKey = redisKey;
             this.value = value;
             this.updatedAtMillis = updatedAtMillis;
             this.ttlSeconds = ttlSeconds;
+            this.eventId = eventId;
         }
     }
 

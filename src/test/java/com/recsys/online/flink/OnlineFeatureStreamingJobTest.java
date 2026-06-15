@@ -31,6 +31,18 @@ class OnlineFeatureStreamingJobTest {
     }
 
     @Test
+    void stringFeatureUpdateCarriesEventId() throws Exception {
+        // NoSuchMethodException before the 5-arg constructor is added
+        var ctor = OnlineFeatureStreamingJob.StringFeatureUpdate.class
+                .getDeclaredConstructor(String.class, String.class, long.class, int.class, String.class);
+        ctor.setAccessible(true);
+        var update = ctor.newInstance("u2vEmb:1", "0.5 0.5", 1000L, 3600, "evt-test");
+        var field = OnlineFeatureStreamingJob.StringFeatureUpdate.class.getDeclaredField("eventId");
+        field.setAccessible(true);
+        assertThat(field.get(update)).isEqualTo("evt-test");
+    }
+
+    @Test
     void accumulatesRawCountsNotNormalisedValues() throws Exception {
         // encodeRaw must produce parseable space-separated values
         var rawMethod = OnlineFeatureStreamingJob.UserEmbeddingFunction.class
