@@ -44,6 +44,11 @@
             <exclude>com/recsys/training/rulebased/**</exclude>
             <exclude>com/recsys/online/flink/**</exclude>
           </excludes>
+          <!-- Mirror the main-source exclusions so flink test classes don't fail
+               to compile in the default (non streaming-flink) profile. -->
+          <testExcludes>
+            <testExclude>com/recsys/online/flink/**</testExclude>
+          </testExcludes>
         </configuration>
       </plugin>
       <plugin>
@@ -275,6 +280,8 @@
               <excludes combine.self="override">
                 <exclude>com/recsys/training/rulebased/**</exclude>
               </excludes>
+              <!-- Clear the default testExcludes so flink test classes compile. -->
+              <testExcludes combine.self="override"/>
             </configuration>
           </plugin>
         </plugins>

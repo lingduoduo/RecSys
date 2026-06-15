@@ -288,7 +288,7 @@ public final class OnlineFeatureStreamingJob {
             next.updatedAtMillis = event.eventTimeMillis;
             state.update(next);
             out.collect(new StringFeatureUpdate(
-                    "feature:user:" + event.userId + ":embedding",
+                    "u2vEmb:" + event.userId,
                     encoded,
                     event.eventTimeMillis,
                     ttlSeconds
@@ -300,7 +300,7 @@ public final class OnlineFeatureStreamingJob {
             if (encoded == null || encoded.isBlank()) {
                 return vector;
             }
-            String[] parts = encoded.split(",");
+            String[] parts = encoded.split("\\s+");
             for (int i = 0; i < Math.min(parts.length, dimensions); i++) {
                 try {
                     vector[i] = Double.parseDouble(parts[i]);
@@ -319,7 +319,7 @@ public final class OnlineFeatureStreamingJob {
             norm = Math.sqrt(norm);
             StringBuilder builder = new StringBuilder(vector.length * 6);
             for (int i = 0; i < vector.length; i++) {
-                if (i > 0) builder.append(',');
+                if (i > 0) builder.append(' ');
                 double value = norm > 0.0 ? vector[i] / norm : 0.0;
                 builder.append(String.format(java.util.Locale.ROOT, "%.6f", value));
             }
