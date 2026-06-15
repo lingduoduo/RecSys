@@ -1,22 +1,30 @@
 package com.recsys.service.retrieval;
 
 import com.recsys.infrastructure.DataManager;
+import com.recsys.infrastructure.redis.GlobalPopularityStore;
 import com.recsys.domain.Movie;
 import com.recsys.domain.MovieCandidate;
 import com.recsys.domain.RecommendationQuery;
 
+import java.util.ArrayList;
 import java.util.LinkedHashMap;
 import java.util.List;
 import java.util.Map;
 
 public class PopularityChannel implements RecallChannel {
 
-    static final double SCORE = 0.4;
+    static final double FALLBACK_SCORE = 0.4;
 
     private final DataManager dataManager;
+    private final GlobalPopularityStore globalPopularityStore;
 
     public PopularityChannel(DataManager dataManager) {
+        this(dataManager, null);
+    }
+
+    public PopularityChannel(DataManager dataManager, GlobalPopularityStore globalPopularityStore) {
         this.dataManager = dataManager;
+        this.globalPopularityStore = globalPopularityStore;
     }
 
     @Override
@@ -26,11 +34,22 @@ public class PopularityChannel implements RecallChannel {
 
     @Override
     public List<MovieCandidate> recall(RecommendationQuery query, int limit) {
+        if (globalPopularityStore != null) {
+            List<String> ids = globalPopularityStore.getTopIds(limit);
+            if (!ids.isEmpty()) {
+                List<MovieCandidate> candidates = new ArrayList<>(ids.size());
+                for (int i = 0; i < ids.size(); i++) {
+                    candidates.add(new MovieCandidate(ids.get(i), 1.0 / (i + 1.0), name(), Map.of()));
+                }
+                return candidates;
+            }
+        }
+        // DataManager fallback
         Map<Integer, Movie> deduped = new LinkedHashMap<>();
         for (Movie m : dataManager.getTopRatedMovies(limit)) deduped.put(m.id(), m);
         for (Movie m : dataManager.getLatestMovies(limit)) deduped.put(m.id(), m);
         return deduped.values().stream()
-                .map(m -> new MovieCandidate(String.valueOf(m.id()), SCORE, name(), Map.of()))
+                .map(m -> new MovieCandidate(String.valueOf(m.id()), FALLBACK_SCORE, name(), Map.of()))
                 .toList();
     }
 }
