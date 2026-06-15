@@ -2,6 +2,7 @@ package com.recsys.online.flink;
 
 import com.fasterxml.jackson.databind.DeserializationFeature;
 import com.fasterxml.jackson.databind.ObjectMapper;
+import org.apache.flink.contrib.streaming.state.EmbeddedRocksDBStateBackend;
 import org.apache.flink.api.common.eventtime.WatermarkStrategy;
 import org.slf4j.Logger;
 import org.slf4j.LoggerFactory;
@@ -68,6 +69,11 @@ public final class OnlineFeatureStreamingJob {
 
         StreamExecutionEnvironment env = StreamExecutionEnvironment.getExecutionEnvironment();
         env.enableCheckpointing(Math.max(5_000L, windowSeconds * 1_000L));
+        String checkpointDir = System.getenv("FLINK_CHECKPOINT_DIR");
+        if (checkpointDir != null && !checkpointDir.isBlank()) {
+            env.getCheckpointConfig().setCheckpointStorage(checkpointDir);
+            env.setStateBackend(new EmbeddedRocksDBStateBackend(true));
+        }
 
         DataStream<MovieEvent> events = buildEventStream(env, params)
                 .filter(OnlineFeatureStreamingJob::requiresEventIdentity)
@@ -138,13 +144,13 @@ public final class OnlineFeatureStreamingJob {
     private static DataStream<MovieEvent> buildEventStream(StreamExecutionEnvironment env,
                                                            ParameterTool params) throws IOException {
         String bootstrapServers = params.get("bootstrap.servers");
-        String topic = params.get("topic", "movie_events");
+        String topic = params.get("topic", "recsys_events");
 
         if (!StringUtils.isNullOrWhitespaceOnly(bootstrapServers)) {
             KafkaSource<String> source = KafkaSource.<String>builder()
                     .setBootstrapServers(bootstrapServers)
                     .setTopics(topic)
-                    .setGroupId(params.get("group.id", "recsys-online-feature-job"))
+                    .setGroupId(params.get("group.id", "online-features"))
                     .setStartingOffsets(OffsetsInitializer.earliest())
                     .setValueOnlyDeserializer(new SimpleStringSchema())
                     .setProperties(kafkaProperties(params))
