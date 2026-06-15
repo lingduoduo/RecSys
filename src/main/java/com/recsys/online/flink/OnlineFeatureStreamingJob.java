@@ -2,6 +2,7 @@ package com.recsys.online.flink;
 
 import com.fasterxml.jackson.databind.DeserializationFeature;
 import com.fasterxml.jackson.databind.ObjectMapper;
+import org.apache.flink.contrib.streaming.state.EmbeddedRocksDBStateBackend;
 import org.apache.flink.api.common.eventtime.WatermarkStrategy;
 import org.slf4j.Logger;
 import org.slf4j.LoggerFactory;
@@ -68,6 +69,11 @@ public final class OnlineFeatureStreamingJob {
 
         StreamExecutionEnvironment env = StreamExecutionEnvironment.getExecutionEnvironment();
         env.enableCheckpointing(Math.max(5_000L, windowSeconds * 1_000L));
+        String checkpointDir = params.get("checkpoint-dir", System.getenv("FLINK_CHECKPOINT_DIR"));
+        if (checkpointDir != null && !checkpointDir.isBlank()) {
+            env.setStateBackend(new EmbeddedRocksDBStateBackend(true));
+            env.getCheckpointConfig().setCheckpointStorage(checkpointDir);
+        }
 
         DataStream<MovieEvent> events = buildEventStream(env, params)
                 .filter(OnlineFeatureStreamingJob::requiresEventIdentity)
@@ -138,13 +144,13 @@ public final class OnlineFeatureStreamingJob {
     private static DataStream<MovieEvent> buildEventStream(StreamExecutionEnvironment env,
                                                            ParameterTool params) throws IOException {
         String bootstrapServers = params.get("bootstrap.servers");
-        String topic = params.get("topic", "movie_events");
+        String topic = params.get("topic", "recsys_events");
 
         if (!StringUtils.isNullOrWhitespaceOnly(bootstrapServers)) {
             KafkaSource<String> source = KafkaSource.<String>builder()
                     .setBootstrapServers(bootstrapServers)
                     .setTopics(topic)
-                    .setGroupId(params.get("group.id", "recsys-online-feature-job"))
+                    .setGroupId(params.get("group.id", "online-features"))
                     .setStartingOffsets(OffsetsInitializer.earliest())
                     .setValueOnlyDeserializer(new SimpleStringSchema())
                     .setProperties(kafkaProperties(params))
@@ -249,7 +255,8 @@ public final class OnlineFeatureStreamingJob {
                     "user:" + event.userId + ":recent_movies",
                     joinMovieIds(movies),
                     event.eventTimeMillis,
-                    ttlSeconds
+                    ttlSeconds,
+                    event.eventId
             ));
         }
 
@@ -282,16 +289,21 @@ public final class OnlineFeatureStreamingJob {
             double[] vector = current == null ? new double[dimensions] : parseVector(current.vector, dimensions);
             int bucket = Math.floorMod(event.movieId, dimensions);
             vector[bucket] += Math.max(1L, event.engagementWeight());
-            String encoded = encodeVector(vector);
+
+            // Store raw counts in state so accumulation is always on the same scale.
+            String rawEncoded = encodeRaw(vector);
             UserEmbeddingState next = new UserEmbeddingState();
-            next.vector = encoded;
+            next.vector = rawEncoded;                   // raw counts, not normalised
             next.updatedAtMillis = event.eventTimeMillis;
             state.update(next);
+
+            // Normalise only for the Redis output so the serving layer gets a unit vector.
             out.collect(new StringFeatureUpdate(
-                    "feature:user:" + event.userId + ":embedding",
-                    encoded,
+                    "u2vEmb:" + event.userId,
+                    encodeVector(vector),               // normalised for Redis
                     event.eventTimeMillis,
-                    ttlSeconds
+                    ttlSeconds,
+                    event.eventId
             ));
         }
 
@@ -300,7 +312,7 @@ public final class OnlineFeatureStreamingJob {
             if (encoded == null || encoded.isBlank()) {
                 return vector;
             }
-            String[] parts = encoded.split(",");
+            String[] parts = encoded.split("\\s+");
             for (int i = 0; i < Math.min(parts.length, dimensions); i++) {
                 try {
                     vector[i] = Double.parseDouble(parts[i]);
@@ -319,9 +331,18 @@ public final class OnlineFeatureStreamingJob {
             norm = Math.sqrt(norm);
             StringBuilder builder = new StringBuilder(vector.length * 6);
             for (int i = 0; i < vector.length; i++) {
-                if (i > 0) builder.append(',');
+                if (i > 0) builder.append(' ');
                 double value = norm > 0.0 ? vector[i] / norm : 0.0;
                 builder.append(String.format(java.util.Locale.ROOT, "%.6f", value));
+            }
+            return builder.toString();
+        }
+
+        static String encodeRaw(double[] vector) {
+            StringBuilder builder = new StringBuilder(vector.length * 10);
+            for (int i = 0; i < vector.length; i++) {
+                if (i > 0) builder.append(' ');
+                builder.append(String.format(java.util.Locale.ROOT, "%.6f", vector[i]));
             }
             return builder.toString();
         }
@@ -366,7 +387,8 @@ public final class OnlineFeatureStreamingJob {
                     "feature:user:" + event.userId + ":session:" + current.sessionId,
                     current.encode(),
                     event.eventTimeMillis,
-                    ttlSeconds
+                    ttlSeconds,
+                    event.eventId
             ));
         }
     }
@@ -497,6 +519,22 @@ public final class OnlineFeatureStreamingJob {
                 return 1
                 """;
 
+        private static final String SET_IF_NEWER_WITH_LINEAGE_SCRIPT = """
+                local current = redis.call('GET', KEYS[2])
+                if current and tonumber(current) > tonumber(ARGV[1]) then
+                  return 0
+                end
+                redis.call('SETEX', KEYS[1], tonumber(ARGV[2]), ARGV[3])
+                redis.call('SETEX', KEYS[2], tonumber(ARGV[2]), ARGV[1])
+                redis.call('SETEX', KEYS[3], tonumber(ARGV[2]), ARGV[4])
+                redis.call('RPUSH', KEYS[4], ARGV[4])
+                redis.call('LTRIM', KEYS[4], -5, -1)
+                redis.call('EXPIRE', KEYS[4], tonumber(ARGV[2]))
+                redis.call('SADD', KEYS[5], KEYS[1])
+                redis.call('EXPIRE', KEYS[5], tonumber(ARGV[2]))
+                return 1
+                """;
+
         private static final String ZSET_IF_NEWER_SCRIPT = """
                 local current = redis.call('GET', KEYS[2])
                 if current and tonumber(current) > tonumber(ARGV[1]) then
@@ -538,6 +576,22 @@ public final class OnlineFeatureStreamingJob {
             );
         }
 
+        void setStringIfNewerWithLineage(Jedis jedis, String redisKey, String value,
+                                          long updatedAtMillis, int ttlSeconds, String eventId) {
+            jedis.eval(
+                    SET_IF_NEWER_WITH_LINEAGE_SCRIPT,
+                    List.of(redisKey,
+                            redisKey + ":updated_at",
+                            redisKey + ":last_event",
+                            redisKey + ":event_history",
+                            "lineage:event:" + eventId),
+                    List.of(Long.toString(updatedAtMillis),
+                            Integer.toString(ttlSeconds),
+                            value,
+                            eventId)
+            );
+        }
+
         void setTopKIfNewer(Jedis jedis, TopKSnapshot value) {
             List<String> args = new ArrayList<>(2 + value.movies.size() * 2);
             args.add(Long.toString(value.updatedAtMillis));
@@ -560,7 +614,8 @@ public final class OnlineFeatureStreamingJob {
         @Override
         public void invoke(StringFeatureUpdate value, Context context) {
             try (Jedis jedis = pool.getResource()) {
-                setStringIfNewer(jedis, value.redisKey, value.value, value.updatedAtMillis, value.ttlSeconds);
+                setStringIfNewerWithLineage(jedis, value.redisKey, value.value,
+                        value.updatedAtMillis, value.ttlSeconds, value.eventId);
             }
         }
     }
@@ -571,7 +626,8 @@ public final class OnlineFeatureStreamingJob {
         @Override
         public void invoke(UserRecentMoviesUpdate value, Context context) {
             try (Jedis jedis = pool.getResource()) {
-                setStringIfNewer(jedis, value.redisKey, value.value, value.updatedAtMillis, value.ttlSeconds);
+                setStringIfNewerWithLineage(jedis, value.redisKey, value.value,
+                        value.updatedAtMillis, value.ttlSeconds, value.eventId);
             }
         }
     }
@@ -617,12 +673,15 @@ public final class OnlineFeatureStreamingJob {
         final String value;
         final long updatedAtMillis;
         final int ttlSeconds;
+        final String eventId;
 
-        UserRecentMoviesUpdate(String redisKey, String value, long updatedAtMillis, int ttlSeconds) {
+        UserRecentMoviesUpdate(String redisKey, String value, long updatedAtMillis,
+                               int ttlSeconds, String eventId) {
             this.redisKey = redisKey;
             this.value = value;
             this.updatedAtMillis = updatedAtMillis;
             this.ttlSeconds = ttlSeconds;
+            this.eventId = eventId;
         }
     }
 
@@ -647,12 +706,15 @@ public final class OnlineFeatureStreamingJob {
         final String value;
         final long updatedAtMillis;
         final int ttlSeconds;
+        final String eventId;
 
-        StringFeatureUpdate(String redisKey, String value, long updatedAtMillis, int ttlSeconds) {
+        StringFeatureUpdate(String redisKey, String value, long updatedAtMillis,
+                            int ttlSeconds, String eventId) {
             this.redisKey = redisKey;
             this.value = value;
             this.updatedAtMillis = updatedAtMillis;
             this.ttlSeconds = ttlSeconds;
+            this.eventId = eventId;
         }
     }
 

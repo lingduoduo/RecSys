@@ -125,6 +125,9 @@ services:
     command: jobmanager
     environment:
       - JOB_MANAGER_RPC_ADDRESS=jobmanager
+      # FLINK_CHECKPOINT_DIR is read by the job's main() on the client side (e.g. mvn exec:java).
+      # Pass --checkpoint-dir=<path> as a CLI arg to flink run, or set this var on the submitting machine.
+      - FLINK_CHECKPOINT_DIR=/tmp/flink-checkpoints
     healthcheck:
       test: ["CMD", "curl", "-fsS", "http://localhost:8081/overview"]
       interval: 15s
@@ -141,6 +144,9 @@ services:
     environment:
       - JOB_MANAGER_RPC_ADDRESS=jobmanager
       - TASK_MANAGER_NUMBER_OF_TASK_SLOTS=4
+      # FLINK_CHECKPOINT_DIR is read by the job's main() on the client side (e.g. mvn exec:java).
+      # Pass --checkpoint-dir=<path> as a CLI arg to flink run, or set this var on the submitting machine.
+      - FLINK_CHECKPOINT_DIR=/tmp/flink-checkpoints
 
 volumes:
   redis-primary-data:

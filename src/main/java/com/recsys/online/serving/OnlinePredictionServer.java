@@ -10,6 +10,7 @@ import com.linecorp.armeria.common.metric.PrometheusMeterRegistries;
 import io.micrometer.prometheus.PrometheusMeterRegistry;
 import com.recsys.infrastructure.DataManager;
 import com.recsys.infrastructure.redis.RedisConnectionFactory;
+import com.recsys.infrastructure.redis.RedisEmbeddingStore;
 import com.recsys.infrastructure.redis.ShardedTopKStore;
 import com.recsys.infrastructure.redis.sharding.ConsistentHashRing;
 import com.recsys.infrastructure.redis.sharding.SequenceGenerator;
@@ -46,7 +47,8 @@ public final class OnlinePredictionServer {
 
         try {
             DataManager dataManager = DataManager.getInstance();
-            CandidateGenerator candidateGenerator = new CandidateGenerator(dataManager);
+            RedisEmbeddingStore userEmbeddingStore = new RedisEmbeddingStore(jedisPool, "u2vEmb");
+            CandidateGenerator candidateGenerator = new CandidateGenerator(dataManager, userEmbeddingStore);
             TrendingStore topkStore = new ShardedTopKStore(jedisPool, "topk:");
             OnlineFeatureStore onlineFeatureStore = new OnlineFeatureStore(jedisPool);
             OnlineRecommendationEngine engine = new OnlineRecommendationEngine(dataManager, topkStore, onlineFeatureStore);
