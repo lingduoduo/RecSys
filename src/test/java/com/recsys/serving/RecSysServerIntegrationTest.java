@@ -51,6 +51,12 @@ class RecSysServerIntegrationTest {
             when(cg.byUserHistory(anyInt(), anyInt())).thenReturn(List.of());
             when(cg.byEmbedding(anyInt(), anyInt())).thenReturn(List.of());
             when(cg.byGenre(any(), anyInt())).thenReturn(List.of());
+            // Mirror the real CandidateGenerator: reject non-6-dim vectors so we can assert
+            // SetEmbeddingService maps the IllegalArgumentException to 400 (not 500).
+            org.mockito.Mockito.doThrow(
+                            new IllegalArgumentException("vector dimension mismatch: expected 6, got 3"))
+                    .when(cg).updateEmbedding(anyInt(), org.mockito.ArgumentMatchers.argThat(
+                            v -> v != null && v.length != 6));
 
             MultiChannelRecallService recallService = mock(MultiChannelRecallService.class);
             when(recallService.recall(any(), anyInt())).thenReturn(List.of());
@@ -133,6 +139,19 @@ class RecSysServerIntegrationTest {
     @Test void setEmbeddingEmptyBody() {
         AggregatedHttpResponse r = server.blockingWebClient().post("/setembedding?movieId=1", "");
         assertThat(r.status()).isEqualTo(HttpStatus.BAD_REQUEST);
+    }
+
+    @Test void setEmbeddingDimensionMismatchReturns400() {
+        AggregatedHttpResponse r = server.blockingWebClient().post("/setembedding?movieId=1", "0.1 0.3 0.6");
+        assertThat(r.status()).isEqualTo(HttpStatus.BAD_REQUEST);
+        assertThat(r.contentUtf8()).contains("dimension mismatch");
+    }
+
+    @Test void setEmbeddingValidDimensionReturns200() {
+        AggregatedHttpResponse r = server.blockingWebClient().post(
+                "/setembedding?movieId=1", "0.1 0.3 0.6 0.0 0.0 0.0");
+        assertThat(r.status()).isEqualTo(HttpStatus.OK);
+        assertThat(r.contentUtf8()).contains("\"ok\":true");
     }
 
     @Test void restAliasMovie() {
