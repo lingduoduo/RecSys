@@ -253,29 +253,20 @@ curl "http://localhost:6010/recommendation?userId=123"   # REST alias
 curl "http://localhost:6010/getrecommendation?userId=123&k=10"
 ```
 
-> **The user must exist in the catalog.** `/getrecommendation` looks up the user first and returns `404 {"error":"user not found"}` for an unknown id. The bundled seed data has users **123–127** only — `userId=999` is not a "cold user", it's a missing user (404).
+> **The user must exist in the catalog.** `/getrecommendation` looks up the user first and returns `404 {"error":"user not found"}` for an unknown id. The bundled seed data has users **123–127** (warm — all have embeddings) plus **`200` ("New User")**, a built-in **cold** user with no embedding. `userId=999` is not a cold user, it's a missing user (404).
 
-**Cold-start vs. warm — same endpoint, different recall mix.** A *cold* user is one that **exists in the catalog but has no `u2vEmb:<id>` embedding**: its results come from the cold-start, trending, and popularity channels (embedding contributes nothing). A *warm* user has an embedding, so embedding ANN takes 60% of the slots.
-
-With the default seed data all five users (123–127) already have embeddings, so **every seeded user is warm** — there is no cold user to curl out of the box. To exercise the cold path, add a cataloged user *without* seeding their embedding, then rebuild:
+**Cold-start vs. warm — same endpoint, different recall mix.** A *cold* user **exists in the catalog but has no `u2vEmb:<id>` embedding**: its results come from the cold-start, trending, and popularity channels (embedding contributes nothing). A *warm* user has an embedding, so embedding ANN takes 60% of the slots.
 
 ```bash
-# 1. Add a user to the catalog WITHOUT a row in user_embeddings.txt → cold user
-echo "200,Frank" >> src/main/java/com/recsys/data/users.txt
-mvn -q exec:java -Dexec.mainClass=com.recsys.serving.RecSysServer   # restart 6010
+# Warm seeded user — embedding-led (60% of slots from embedding ANN)
+curl "http://localhost:6010/getrecommendation?userId=123&k=10"
 
-# 2. Cold user (in catalog, no embedding) — cold_start / trending / popularity dominate
+# Built-in COLD user (200 = "New User", no embedding) — cold_start / trending / popularity dominate
 curl "http://localhost:6010/getrecommendation?userId=200&k=10"
 
-# 3. Seed an embedding to flip the same user warm — embedding ANN now gets 60% of slots
+# Flip the cold user warm by seeding an embedding — embedding ANN now contributes
 curl -X POST "http://localhost:6010/setuserembedding?userId=200&vec=0.1+0.5+0.4"
 curl "http://localhost:6010/getrecommendation?userId=200&k=10"
-```
-
-A warm seeded user (always available) returns recommendations immediately:
-
-```bash
-curl "http://localhost:6010/getrecommendation?userId=123&k=10"   # warm — embedding-led
 ```
 
 ```json
@@ -427,7 +418,7 @@ curl "http://localhost:7010/online/recommendation?userId=124&window=last_month&k
 
 The `strategy` field is `"online+model"` when embedding recall fires, `"online"` for cold-start users (cataloged user whose embedding recall returns nothing → behavioral/trending signals only). Returns `404` if `userId` is not found; `429` (with `Retry-After` header) when the load shedder is active.
 
-> Like 6010, this endpoint 404s on unknown users, and all seeded users (123–127) have embeddings — so with the default data `strategy` is always `"online+model"`. To observe the `"online"` cold-start fallback, add a cataloged user without an embedding (see the 6010 cold-start example, `userId=200`) and call it here:
+> Like 6010, this endpoint 404s on unknown users. Seeded users 123–127 have embeddings, so they return `strategy:"online+model"`; the built-in cold user **200 ("New User")** has no embedding, so it exercises the `"online"` trending-only fallback:
 
 ```bash
 curl "http://localhost:7010/online/recommendation?userId=200&window=last_hour&k=5"
