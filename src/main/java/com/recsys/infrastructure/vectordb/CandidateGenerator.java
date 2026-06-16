@@ -23,6 +23,7 @@ public class CandidateGenerator {
     private final Map<Integer, float[]> movieEmbeddings;
     private final EmbeddingStore userEmbeddingStore;
     private final VectorIndex embeddingIndex;
+    private final int embeddingDim;
 
     /** Classpath-only constructor — user embeddings are loaded once from the file system. */
     public CandidateGenerator(DataManager dataManager) {
@@ -40,6 +41,9 @@ public class CandidateGenerator {
         this.movieEmbeddings = DataLoader.loadMovieEmbeddings();
         this.userEmbeddingStore = userEmbeddingStore;
         this.embeddingIndex = createEmbeddingIndex(movieEmbeddings);
+        this.embeddingDim = movieEmbeddings.isEmpty()
+                ? 0
+                : movieEmbeddings.values().iterator().next().length;
         log.info("Embedding backend={}, movies={}, userStore={}",
                 embeddingIndex.name(), movieEmbeddings.size(),
                 userEmbeddingStore != null ? "cache+redis" : "classpath");
@@ -104,7 +108,22 @@ public class CandidateGenerator {
     // so they don't interleave at the LshVectorIndex level (three non-atomic steps:
     // embeddings map + lsh buckets + allIds). Reads are concurrent and correct.
     public synchronized void updateEmbedding(int id, float[] vec) {
+        if (vec == null) {
+            throw new IllegalArgumentException("vector must not be null");
+        }
+        // The ANN index is built for the seed embedding dimension; a mismatched vector would
+        // overrun the hyperplane arrays (ArrayIndexOutOfBounds) deep inside the index. Reject
+        // it here with a clear message so the API can surface a 400 instead of a 500.
+        if (embeddingDim > 0 && vec.length != embeddingDim) {
+            throw new IllegalArgumentException(
+                    "vector dimension mismatch: expected " + embeddingDim + ", got " + vec.length);
+        }
         embeddingIndex.addOrUpdate(id, vec);
+    }
+
+    /** Embedding dimension the index expects, or 0 if no seed embeddings were loaded. */
+    public int embeddingDimension() {
+        return embeddingDim;
     }
 
     private static VectorIndex createEmbeddingIndex(Map<Integer, float[]> embeddings) {

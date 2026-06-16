@@ -264,8 +264,9 @@ curl "http://localhost:6010/getrecommendation?userId=123&k=10"
 # Built-in COLD user (200 = "New User", no embedding) — cold_start / trending / popularity dominate
 curl "http://localhost:6010/getrecommendation?userId=200&k=10"
 
-# Flip the cold user warm by seeding an embedding — embedding ANN now contributes
-curl -X POST "http://localhost:6010/setuserembedding?userId=200&vec=0.1+0.5+0.4"
+# Flip the cold user warm by seeding an embedding — embedding ANN now contributes.
+# The vector must match the seed embedding dimension (6); a mismatch returns 400.
+curl -X POST "http://localhost:6010/setuserembedding?userId=200&vec=0.1+0.5+0.4+0.0+0.0+0.0"
 curl "http://localhost:6010/getrecommendation?userId=200&k=10"
 ```
 
@@ -347,33 +348,35 @@ Returns `400` when `instances` is empty, IDs are non-positive, or an embedding i
 
 #### Set / update an item embedding
 
-Stores or updates a movie embedding in Redis (default TTL 24 h; `ttl=0` for no expiry):
+Stores or updates a movie embedding in Redis (default TTL 24 h; `ttl=0` for no expiry).
+
+> The vector **must be 6-dimensional** — it has to match the seed embedding dimension so the ANN index can hash it. A mismatched dimension returns `400 {"error":"vector dimension mismatch: expected 6, got 3"}`. Pass it either as the request body (space-separated) or as the `vec` query param (`+` = space). Do **not** use `--data-urlencode "vec=..."` — that sends a `vec=` prefix and percent-encodes the spaces, which the parser can't read.
 
 ```bash
-# Raw body
+# Raw plain-text body (just the numbers)
 curl -X POST "http://localhost:6010/setembedding?movieId=4" \
-  -H "Content-Type: text/plain" --data-binary "0.2 0.2 0.6"
+  -H "Content-Type: text/plain" --data-binary "0.2 0.2 0.6 0.0 0.0 0.0"
 
-# Form body
-curl -X POST "http://localhost:6010/setembedding?movieId=5" \
-  --data-urlencode "vec=0.1 0.3 0.6"
+# Vector as a query param (+ = space)
+curl -X POST "http://localhost:6010/setembedding?movieId=5&vec=0.1+0.3+0.6+0.0+0.0+0.0"
 
 # Query param with custom TTL (seconds)
-curl -X POST "http://localhost:6010/setembedding?movieId=6&ttl=3600&vec=0.5+0.5+0.0"
+curl -X POST "http://localhost:6010/setembedding?movieId=6&ttl=3600&vec=0.5+0.5+0.0+0.0+0.0+0.0"
+# {"ok":true,"movieId":6,"dim":6,"ttl":3600}
 ```
 
 #### Set / update a user embedding
 
-Stores or updates a user embedding in Redis (`u2vEmb:<userId>`). Same calling conventions as the item endpoint:
+Stores or updates a user embedding in Redis (`u2vEmb:<userId>`). Same calling conventions as the item endpoint; the vector must also be **6-dimensional** to match the seed embeddings:
 
 ```bash
-# Raw body
+# Raw plain-text body (just the numbers)
 curl -X POST "http://localhost:6010/setuserembedding?userId=123" \
-  -H "Content-Type: text/plain" --data-binary "0.1 0.5 0.4"
+  -H "Content-Type: text/plain" --data-binary "0.1 0.5 0.4 0.0 0.0 0.0"
 
 # Query param with custom TTL (seconds)
-curl -X POST "http://localhost:6010/setuserembedding?userId=123&ttl=3600&vec=0.1+0.5+0.4"
-# {"ok":true,"userId":123,"dim":3,"ttl":3600}
+curl -X POST "http://localhost:6010/setuserembedding?userId=123&ttl=3600&vec=0.1+0.5+0.4+0.0+0.0+0.0"
+# {"ok":true,"userId":123,"dim":6,"ttl":3600}
 ```
 
 ---

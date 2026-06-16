@@ -39,6 +39,9 @@ public class SetEmbeddingService extends BaseApiService {
                 return writeError(HttpStatus.BAD_REQUEST, e.getMessage());
             } catch (NumberFormatException e) {
                 return writeError(HttpStatus.BAD_REQUEST, "invalid vector format: could not parse float");
+            } catch (IllegalArgumentException e) {
+                // Dimension mismatch, non-finite/blank vector — bad client input, not a server fault.
+                return writeError(HttpStatus.BAD_REQUEST, e.getMessage());
             } catch (Exception e) {
                 log.error("Unexpected error in SetEmbeddingService", e);
                 return writeError(HttpStatus.INTERNAL_SERVER_ERROR, "internal server error");
