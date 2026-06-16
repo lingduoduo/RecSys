@@ -196,7 +196,19 @@ Three independent recommendation paths share a common Redis-backed data layer wr
 
 ### Port 6010 — Catalog & Recommendation Serving
 
-Armeria service at the tail of the Kafka → Flink → Redis pipeline. At startup it seeds item and user embeddings from classpath files if Redis is empty, ensuring cold-start recommendations are available before the Flink job delivers live data. Every `/getrecommendation` call runs all four recall channels — embedding ANN, trending Top-K, genre history, and global popularity — in parallel, then merges and returns the top-K.
+Armeria service at the tail of the Kafka → Flink → Redis pipeline. At startup it seeds item and user embeddings from classpath files if Redis is empty, ensuring cold-start recommendations are available before the Flink job delivers live data. Every `/getrecommendation` call fans out across **five recall channels** — embedding ANN, trending Top-K (multi-window), genre history, global popularity, and a dedicated cold-start channel — running each in parallel on a bounded thread pool with per-channel timeouts and circuit-breaker backoff.
+
+Per request, the service probes the user's embedding (`u2vEmb:<userId>`, one heap lookup → Redis fallthrough) to classify the user as **warm** or **cold**, then merges channels with a **quota-aware two-phase merge**:
+
+| Channel | Warm quota | Cold quota |
+|---|---:|---:|
+| embedding | 60% | 0% |
+| trending | 20% | 20% |
+| genre_history | 15% | 10% |
+| popularity | 5% | 20% |
+| cold_start | 0% | 50% |
+
+Phase 1 fills each channel's quota by score; phase 2 gap-fills any shortfall (e.g. a backed-off channel's slots) from the remaining pool. A malformed/blank `userId` defaults to the cold quota.
 
 #### Health check
 
@@ -231,7 +243,7 @@ curl "http://localhost:6010/movie?id=1"               # REST alias
 
 #### Recommendations
 
-Runs all four recall channels in parallel — embedding-based ANN recall, trending Top-K, genre history expansion, and global popularity — then merges results by highest score per candidate. Already-watched movies are automatically excluded.
+Runs all five recall channels in parallel, classifies the user as warm/cold from their embedding, and merges with the quota-aware two-phase merge described above. Already-watched movies are automatically excluded.
 
 ```bash
 curl "http://localhost:6010/getrecommendation?userId=123"
@@ -239,6 +251,19 @@ curl "http://localhost:6010/recommendation?userId=123"   # REST alias
 
 # Limit results (default 20, max 100)
 curl "http://localhost:6010/getrecommendation?userId=123&k=10"
+```
+
+**Cold-start vs. warm — same endpoint, different recall mix.** A user with no `u2vEmb:<id>` embedding is cold: results come mostly from the cold-start, trending, and popularity channels (embedding contributes nothing). Seed an embedding to flip the same user warm and watch embedding-based recall take over:
+
+```bash
+# 1. Cold user (no embedding yet) — cold_start / trending / popularity dominate
+curl "http://localhost:6010/getrecommendation?userId=999&k=10"
+
+# 2. Seed a user embedding (makes userId=999 "warm")
+curl -X POST "http://localhost:6010/setuserembedding?userId=999&vec=0.1+0.5+0.4"
+
+# 3. Warm user — embedding ANN now gets 60% of the slots
+curl "http://localhost:6010/getrecommendation?userId=999&k=10"
 ```
 
 ```json
@@ -262,6 +287,35 @@ RECSYS_VECTOR_BACKEND=lsh mvn exec:java -Dexec.mainClass=com.recsys.serving.RecS
 # Exact — full-scan inner-product top-k (deterministic, slower)
 RECSYS_VECTOR_BACKEND=exact mvn exec:java -Dexec.mainClass=com.recsys.serving.RecSysServer
 ```
+
+#### Recommendations v2 — cursor pagination (`/v2/recommend`)
+
+`POST /v2/recommend` drives the same multi-channel recall through the recall → rank → hydrate → paginate pipeline (`RecommendationOrchestrator`). It takes a JSON `RecommendationQuery` and returns a cursor for million-scale, stable pagination. Cold/warm channel selection is identical to `/getrecommendation`.
+
+```bash
+# First page
+curl -X POST "http://localhost:6010/v2/recommend" \
+  -H "Content-Type: application/json" \
+  -d '{"userId":"123","limit":10,"excludedItemIds":["1","2"]}'
+
+# Next page — pass back the nextCursor from the previous response
+curl -X POST "http://localhost:6010/v2/recommend" \
+  -H "Content-Type: application/json" \
+  -d '{"userId":"123","limit":10,"cursor":"<nextCursor>"}'
+```
+
+```json
+{
+  "userId": "123",
+  "items": [
+    {"itemId": "4", "score": 0.93, "rank": 1, "features": {"title": "The Matrix", "year": 1999}}
+  ],
+  "nextCursor": "eyJvZmZzZXQiOjEwfQ==",
+  "trace": {"candidateCount": "50", "rankedCount": "50"}
+}
+```
+
+`limit` must be 1–100; a blank `userId` returns `400`. When there are no more results `nextCursor` is `null`. The `trace` map reports `candidateCount` (recalled) and `rankedCount` for debugging.
 
 #### Similar movies
 
@@ -359,7 +413,13 @@ curl "http://localhost:7010/online/recommendation?userId=124&window=last_month&k
 }
 ```
 
-The `strategy` field is `"online+model"` when embedding recall fires, `"online"` for cold-start users. Returns `404` if `userId` is not found; `429` (with `Retry-After` header) when the load shedder is active.
+The `strategy` field is `"online+model"` when embedding recall fires, `"online"` for cold-start users (no `u2vEmb:<id>` → behavioral/trending signals only). Returns `404` if `userId` is not found; `429` (with `Retry-After` header) when the load shedder is active.
+
+```bash
+# Cold-start user: no embedding → strategy falls back to trending-only ("online")
+curl "http://localhost:7010/online/recommendation?userId=999&window=last_hour&k=5"
+# {... "strategy":"online", "recommendations":[ ...trending items... ]}
+```
 
 #### Feature snapshot
 
@@ -464,6 +524,17 @@ The response includes `X-Capacity-Weight: <0–100>` so load balancers can adjus
 | `userId` | string | yes | non-blank, max 50 chars |
 | `k` | integer | no | 1–100, default `5` |
 | `excludeItemIds` | string[] | no | max 500 entries; each ID non-blank, max 50 chars |
+
+**Cold-start (users not in the model vocabulary).** When `coldStartEnabled` is on (default) and the `userId` is unknown to the runtime, the request is served from a shared, pre-scored cold-start pool (per A/B variant + model version) instead of per-user inference — capped at `coldStartMaxK` (default 100) and cached for `coldStartTtlSeconds` (default 3600). The call shape is identical; only the candidate source differs:
+
+```bash
+# Unknown user → served from the shared cold-start pool, same response shape
+curl -X POST http://localhost:8080/api/v1/recommend \
+  -H "Content-Type: application/json" \
+  -d '{"userId": "brand-new-user", "k": 5}'
+```
+
+Cold-start hit/miss counters are exposed at `GET /health/cache`; tune the pool via `recsys.recommendation-cache.cold-start-*` in `application.yml`.
 
 #### Model version management
 
