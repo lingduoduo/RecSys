@@ -253,17 +253,20 @@ curl "http://localhost:6010/recommendation?userId=123"   # REST alias
 curl "http://localhost:6010/getrecommendation?userId=123&k=10"
 ```
 
-**Cold-start vs. warm — same endpoint, different recall mix.** A user with no `u2vEmb:<id>` embedding is cold: results come mostly from the cold-start, trending, and popularity channels (embedding contributes nothing). Seed an embedding to flip the same user warm and watch embedding-based recall take over:
+> **The user must exist in the catalog.** `/getrecommendation` looks up the user first and returns `404 {"error":"user not found"}` for an unknown id. The bundled seed data has users **123–127** (warm — all have embeddings) plus **`200` ("New User")**, a built-in **cold** user with no embedding. `userId=999` is not a cold user, it's a missing user (404).
+
+**Cold-start vs. warm — same endpoint, different recall mix.** A *cold* user **exists in the catalog but has no `u2vEmb:<id>` embedding**: its results come from the cold-start, trending, and popularity channels (embedding contributes nothing). A *warm* user has an embedding, so embedding ANN takes 60% of the slots.
 
 ```bash
-# 1. Cold user (no embedding yet) — cold_start / trending / popularity dominate
-curl "http://localhost:6010/getrecommendation?userId=999&k=10"
+# Warm seeded user — embedding-led (60% of slots from embedding ANN)
+curl "http://localhost:6010/getrecommendation?userId=123&k=10"
 
-# 2. Seed a user embedding (makes userId=999 "warm")
-curl -X POST "http://localhost:6010/setuserembedding?userId=999&vec=0.1+0.5+0.4"
+# Built-in COLD user (200 = "New User", no embedding) — cold_start / trending / popularity dominate
+curl "http://localhost:6010/getrecommendation?userId=200&k=10"
 
-# 3. Warm user — embedding ANN now gets 60% of the slots
-curl "http://localhost:6010/getrecommendation?userId=999&k=10"
+# Flip the cold user warm by seeding an embedding — embedding ANN now contributes
+curl -X POST "http://localhost:6010/setuserembedding?userId=200&vec=0.1+0.5+0.4"
+curl "http://localhost:6010/getrecommendation?userId=200&k=10"
 ```
 
 ```json
@@ -315,7 +318,7 @@ curl -X POST "http://localhost:6010/v2/recommend" \
 }
 ```
 
-`limit` must be 1–100; a blank `userId` returns `400`. When there are no more results `nextCursor` is `null`. The `trace` map reports `candidateCount` (recalled) and `rankedCount` for debugging.
+`limit` must be 1–100; a blank `userId` returns `400`. Unlike `/getrecommendation`, this pipeline does **not** look up the user in the catalog, so an unknown (non-blank) `userId` does not 404 — it runs recall directly (cold quota if it has no embedding). When there are no more results `nextCursor` is `null`. The `trace` map reports `candidateCount` (recalled) and `rankedCount` for debugging.
 
 #### Similar movies
 
@@ -413,11 +416,12 @@ curl "http://localhost:7010/online/recommendation?userId=124&window=last_month&k
 }
 ```
 
-The `strategy` field is `"online+model"` when embedding recall fires, `"online"` for cold-start users (no `u2vEmb:<id>` → behavioral/trending signals only). Returns `404` if `userId` is not found; `429` (with `Retry-After` header) when the load shedder is active.
+The `strategy` field is `"online+model"` when embedding recall fires, `"online"` for cold-start users (cataloged user whose embedding recall returns nothing → behavioral/trending signals only). Returns `404` if `userId` is not found; `429` (with `Retry-After` header) when the load shedder is active.
+
+> Like 6010, this endpoint 404s on unknown users. Seeded users 123–127 have embeddings, so they return `strategy:"online+model"`; the built-in cold user **200 ("New User")** has no embedding, so it exercises the `"online"` trending-only fallback:
 
 ```bash
-# Cold-start user: no embedding → strategy falls back to trending-only ("online")
-curl "http://localhost:7010/online/recommendation?userId=999&window=last_hour&k=5"
+curl "http://localhost:7010/online/recommendation?userId=200&window=last_hour&k=5"
 # {... "strategy":"online", "recommendations":[ ...trending items... ]}
 ```
 
