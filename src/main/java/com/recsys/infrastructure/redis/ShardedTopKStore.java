@@ -72,7 +72,8 @@ public final class ShardedTopKStore implements TrendingStore {
      * Preserved for backwards compatibility and non-replicated deployments.
      */
     public ShardedTopKStore(Pool<Jedis> pool, String keyPrefix) {
-        this(pool, pool, keyPrefix, DEFAULT_SHARD_COUNT, DEFAULT_CACHE_TTL_MS,
+        this(pool, pool, keyPrefix, DEFAULT_SHARD_COUNT,
+                readLongEnv("ONLINE_TOPK_CACHE_TTL_MS", DEFAULT_CACHE_TTL_MS),
                 readLongEnv("ONLINE_TOPK_STALE_TTL_MS", DEFAULT_STALE_TTL_MS), new HotKeyDetector());
     }
 
@@ -81,7 +82,8 @@ public final class ShardedTopKStore implements TrendingStore {
      * (primary), reads (getTopKIds) go to {@code readPool} (AZ-local replica).
      */
     public ShardedTopKStore(Pool<Jedis> writePool, Pool<Jedis> readPool, String keyPrefix) {
-        this(writePool, readPool, keyPrefix, DEFAULT_SHARD_COUNT, DEFAULT_CACHE_TTL_MS,
+        this(writePool, readPool, keyPrefix, DEFAULT_SHARD_COUNT,
+                readLongEnv("ONLINE_TOPK_CACHE_TTL_MS", DEFAULT_CACHE_TTL_MS),
                 readLongEnv("ONLINE_TOPK_STALE_TTL_MS", DEFAULT_STALE_TTL_MS), new HotKeyDetector());
     }
 
@@ -241,7 +243,7 @@ public final class ShardedTopKStore implements TrendingStore {
         return keyPrefix + window;
     }
 
-    private static long readLongEnv(String envName, long defaultValue) {
+    static long readLongEnv(String envName, long defaultValue) {
         String raw = System.getenv(envName);
         if (raw == null || raw.isBlank()) return defaultValue;
         try {
