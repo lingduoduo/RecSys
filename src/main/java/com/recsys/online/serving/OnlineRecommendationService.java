@@ -48,7 +48,7 @@ public final class OnlineRecommendationService {
     public OnlineRecommendationResult recommend(OnlineRecommendationRequest request) {
         User user = requireUser(request.userId());
         int k = Math.max(1, request.k());
-        int recallLimit = Math.max(k * 4, 12);
+        int recallLimit = Math.min(Math.max(k * 4, 12), 100);
         String window = normalizeWindow(request.window());
 
         List<Integer> recentIds = recentHistoryStore.getRecentMovieIds(request.userId(), RECENT_HISTORY_LIMIT);

@@ -152,4 +152,12 @@ class OnlineRecommendationServiceTest {
         assertThrows(IllegalArgumentException.class,
                 () -> service.recommend(new OnlineRecommendationRequest(USER.userId(), "bad_window", 5)));
     }
+
+    @Test
+    void recallLimitClampedToHundredForLargeK() {
+        when(recallService.recall(any(RecommendationQuery.class), anyInt())).thenReturn(List.of());
+        service.recommend(new OnlineRecommendationRequest(USER.userId(), "last_hour", 30));
+        // k=30 → unclamped would be 120; must be clamped to 100
+        verify(recallService).recall(any(RecommendationQuery.class), eq(100));
+    }
 }
