@@ -9,8 +9,10 @@ import com.linecorp.armeria.common.metric.MeterIdPrefixFunction;
 import com.linecorp.armeria.common.metric.PrometheusMeterRegistries;
 import io.micrometer.prometheus.PrometheusMeterRegistry;
 import com.recsys.infrastructure.DataManager;
+import com.recsys.infrastructure.cache.LogicalExpiryEmbeddingCache;
 import com.recsys.infrastructure.redis.RedisConnectionFactory;
 import com.recsys.infrastructure.redis.RedisEmbeddingStore;
+import com.recsys.infrastructure.vectordb.EmbeddingStore;
 import com.recsys.infrastructure.redis.ShardedTopKStore;
 import com.recsys.infrastructure.redis.sharding.ConsistentHashRing;
 import com.recsys.infrastructure.redis.sharding.SequenceGenerator;
@@ -48,7 +50,13 @@ public final class OnlinePredictionServer {
         try {
             DataManager dataManager = DataManager.getInstance();
             RedisEmbeddingStore userEmbeddingStore = new RedisEmbeddingStore(jedisPool, "u2vEmb");
-            CandidateGenerator candidateGenerator = new CandidateGenerator(dataManager, userEmbeddingStore);
+            // u2vEmb is continuously rewritten by Flink: use a soft-TTL cache (serve-stale +
+            // background refresh, no Bloom guard) so new users are still found and updates land
+            // within ~one soft TTL. Default 30s, overridable for tuning.
+            int userEmbSoftTtlSeconds = readIntEnv("ONLINE_USER_EMB_SOFT_TTL_SECONDS", 30);
+            EmbeddingStore userEmbCache =
+                    new LogicalExpiryEmbeddingCache(userEmbeddingStore, userEmbSoftTtlSeconds);
+            CandidateGenerator candidateGenerator = new CandidateGenerator(dataManager, userEmbCache);
             TrendingStore topkStore = new ShardedTopKStore(jedisPool, "topk:");
             OnlineFeatureStore onlineFeatureStore = new OnlineFeatureStore(jedisPool);
             OnlineRecommendationEngine engine = new OnlineRecommendationEngine(dataManager, topkStore, onlineFeatureStore);

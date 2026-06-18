@@ -160,6 +160,171 @@ class LogicalExpiryEmbeddingCacheTest {
         assertThat(cache.getEmbeddings(List.of())).isEmpty();
     }
 
+    @Test
+    void absentId_isNegativeCached_andNotRefetchedWithinSentinelTtl() {
+        var backing = new TrackingStore(); // id 7 absent
+        var cache = new LogicalExpiryEmbeddingCache(backing, 60_000L, 60_000L, SYNC_EXECUTOR);
+
+        assertThat(cache.getEmbedding(7)).isNull();
+        assertThat(backing.getCount).isEqualTo(1);
+        assertThat(cache.hasNullSentinel(7)).isTrue();
+
+        assertThat(cache.getEmbedding(7)).isNull(); // served from sentinel
+        assertThat(backing.getCount).isEqualTo(1);  // no second backing call
+    }
+
+    @Test
+    void sentinelExpiry_reQueriesBackingStore() throws Exception {
+        var backing = new TrackingStore(); // id 7 absent initially
+        // 1ms sentinel TTL so it expires almost instantly.
+        var cache = new LogicalExpiryEmbeddingCache(backing, 60_000L, 1L, SYNC_EXECUTOR);
+
+        assertThat(cache.getEmbedding(7)).isNull();
+        assertThat(backing.getCount).isEqualTo(1);
+
+        Thread.sleep(5); // sentinel expires
+        backing.put(7, new float[]{7f});
+        assertThat(cache.getEmbedding(7)).containsExactly(7f); // re-queried after expiry
+        assertThat(backing.getCount).isEqualTo(2);
+    }
+
+    @Test
+    void setEmbedding_clearsNullSentinel() {
+        var backing = new TrackingStore();
+        var cache = new LogicalExpiryEmbeddingCache(backing, 60_000L, 60_000L, SYNC_EXECUTOR);
+
+        assertThat(cache.getEmbedding(7)).isNull(); // sentinel recorded
+        assertThat(cache.hasNullSentinel(7)).isTrue();
+
+        cache.setEmbedding(7, new float[]{1f, 2f}, 300L);
+
+        assertThat(cache.hasNullSentinel(7)).isFalse();
+        assertThat(cache.getEmbedding(7)).containsExactly(1f, 2f);
+    }
+
+    @Test
+    void backingException_doesNotRecordSentinel() {
+        var backing = new ThrowingThenValueStore(new float[]{4f});
+        var cache = new LogicalExpiryEmbeddingCache(backing, 60_000L, 60_000L, SYNC_EXECUTOR);
+
+        // First call: backing throws -> propagates, NO sentinel recorded.
+        try {
+            cache.getEmbedding(7);
+            org.junit.jupiter.api.Assertions.fail("expected exception");
+        } catch (RuntimeException expected) {
+            // expected
+        }
+        assertThat(cache.hasNullSentinel(7)).isFalse();
+
+        // Second call: backing now returns a value (would be null if a sentinel had been set).
+        assertThat(cache.getEmbedding(7)).containsExactly(4f);
+    }
+
+    @Test
+    void getEmbeddings_recordsSentinelForBatchAbsentIds() {
+        var backing = new TrackingStore();
+        backing.put(1, new float[]{1f});
+        var cache = new LogicalExpiryEmbeddingCache(backing, 60_000L, 60_000L, SYNC_EXECUTOR);
+
+        Map<Integer, float[]> result = cache.getEmbeddings(List.of(1, 2));
+        assertThat(result).containsKey(1).doesNotContainKey(2);
+        assertThat(cache.hasNullSentinel(2)).isTrue();
+
+        // Single-key read for the absent id is now served from the sentinel.
+        int before = backing.getCount;
+        assertThat(cache.getEmbedding(2)).isNull();
+        assertThat(backing.getCount).isEqualTo(before);
+    }
+
+    @Test
+    void backgroundRefreshResolvingNull_removesEntryAndRecordsSentinel() throws Exception {
+        var backing = new TrackingStore();
+        backing.put(1, new float[]{1f});
+        // 1ms soft TTL, 60s sentinel, inline executor so refresh runs synchronously.
+        var cache = new LogicalExpiryEmbeddingCache(backing, 1L, 60_000L, SYNC_EXECUTOR);
+
+        assertThat(cache.getEmbedding(1)).containsExactly(1f); // cold miss populates
+        Thread.sleep(5); // soft expiry passes
+        backing.data.remove(1); // key vanished in backing (e.g. Redis TTL elapsed)
+
+        // Past soft expiry: returns stale value once, schedules refresh (runs inline) which finds null.
+        float[] stale = cache.getEmbedding(1);
+        assertThat(stale).containsExactly(1f);
+
+        // Entry removed, sentinel recorded -> subsequent read returns null without re-hitting backing.
+        assertThat(cache.hasNullSentinel(1)).isTrue();
+        int before = backing.getCount;
+        assertThat(cache.getEmbedding(1)).isNull();
+        assertThat(backing.getCount).isEqualTo(before);
+    }
+
+    @Test
+    void backgroundRefreshNull_doesNotClobberConcurrentSetEmbedding() throws Exception {
+        // Arrange: a backing store whose getEmbedding blocks on a latch then returns null,
+        // simulating a key that vanished in the backing store mid-flight.
+        CountDownLatch refreshStarted = new CountDownLatch(1);
+        CountDownLatch releaseRefresh = new CountDownLatch(1);
+        float[] freshVec = {7f, 8f};
+
+        EmbeddingStore blockingNullStore = new EmbeddingStore() {
+            @Override public float[] getEmbedding(int id) {
+                refreshStarted.countDown();
+                try { releaseRefresh.await(2, TimeUnit.SECONDS); } catch (InterruptedException e) { Thread.currentThread().interrupt(); }
+                return null; // backing store returns null (key vanished)
+            }
+            @Override public Map<Integer, float[]> getEmbeddings(Collection<Integer> ids) { return Map.of(); }
+            @Override public void setEmbedding(int id, float[] v, long ttl) {}
+            @Override public void setEmbeddings(Map<Integer, float[]> v, long ttl) {}
+            @Override public Set<Integer> scanIds(int maxKeys) { return Set.of(); }
+        };
+
+        ExecutorService refreshThread = Executors.newSingleThreadExecutor();
+        // 5ms soft TTL so the initial entry expires quickly; 100ms sentinel TTL.
+        // Use real single-thread executor so background refresh runs concurrently with main thread.
+        var cache = new LogicalExpiryEmbeddingCache(blockingNullStore, 5L, 100L, refreshThread);
+
+        // Seed a positive entry directly into the cache.
+        cache.setEmbedding(1, new float[]{1f}, -1L);
+
+        Thread.sleep(10); // let soft TTL (5ms) expire so next read schedules background refresh
+
+        // getEmbedding returns stale value and submits the refresh to refreshThread.
+        float[] stale = cache.getEmbedding(1);
+        assertThat(stale).isNotNull();
+
+        // Wait for refresh task to have entered the blocking backing call.
+        assertThat(refreshStarted.await(2, TimeUnit.SECONDS)).isTrue();
+
+        // While the refresh is blocked and will return null, write a fresh positive entry.
+        // setEmbedding updates the cache map to a NEW LogicalEntry object.
+        cache.setEmbedding(1, freshVec, -1L);
+
+        // Release the blocked refresh — it finds null, tries CAS remove with the stale entry,
+        // but setEmbedding already replaced the mapping so CAS fails → fresh entry survives.
+        releaseRefresh.countDown();
+        refreshThread.shutdown();
+        assertThat(refreshThread.awaitTermination(2, TimeUnit.SECONDS)).isTrue();
+
+        // Assert: fresh entry is still present and no null sentinel was planted.
+        assertThat(cache.hasNullSentinel(1)).isFalse();
+        assertThat(cache.cacheSize()).isEqualTo(1);
+    }
+
+    // Backing stub that throws on the first getEmbedding, then returns a fixed value.
+    private static final class ThrowingThenValueStore implements EmbeddingStore {
+        private final float[] value;
+        private boolean thrown = false;
+        ThrowingThenValueStore(float[] value) { this.value = value; }
+        @Override public float[] getEmbedding(int id) {
+            if (!thrown) { thrown = true; throw new RuntimeException("redis down"); }
+            return value;
+        }
+        @Override public Map<Integer, float[]> getEmbeddings(Collection<Integer> ids) { return Map.of(); }
+        @Override public void setEmbedding(int id, float[] v, long ttl) {}
+        @Override public void setEmbeddings(Map<Integer, float[]> v, long ttl) {}
+        @Override public Set<Integer> scanIds(int maxKeys) { return Set.of(); }
+    }
+
     // ── minimal in-memory EmbeddingStore stub ──────────────────────────────
 
     private static final class TrackingStore implements EmbeddingStore {
