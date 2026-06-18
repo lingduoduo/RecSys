@@ -274,7 +274,7 @@ Append to `src/test/java/com/recsys/service/retrieval/multichannel/MultiChannelR
 
         // popularity got all 3 slots; embedding (0 quota, no gap left) contributes nothing.
         assertThat(recalled).extracting(MovieCandidate::itemId).containsExactly("p1", "p2", "p3");
-        assertThat(recalled).extracting(MovieCandidate::source).containsOnly("popularity");
+        assertThat(recalled).extracting(MovieCandidate::channel).containsOnly("popularity");
     }
 
     // Stub: any id resolves to a non-null vector, so cold-start detection treats the user as warm.
