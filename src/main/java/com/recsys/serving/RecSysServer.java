@@ -24,8 +24,10 @@ import com.recsys.service.retrieval.channels.GenreHistoryChannel;
 import com.recsys.service.retrieval.channels.PopularityChannel;
 import com.recsys.service.retrieval.channels.TrendingChannel;
 import com.recsys.service.retrieval.coldstart.ColdStartChannel;
+import com.recsys.service.retrieval.coldstart.QuotaPolicy;
 import com.recsys.service.retrieval.multichannel.ChannelHealthMonitor;
 import com.recsys.service.retrieval.multichannel.MultiChannelRecallService;
+import com.recsys.service.retrieval.multichannel.RecallConfig;
 import com.recsys.online.store.TrendingStore;
 import org.slf4j.Logger;
 import org.slf4j.LoggerFactory;
@@ -89,20 +91,21 @@ public class RecSysServer {
                     Runtime.getRuntime().availableProcessors() * 2,
                     r -> new Thread(r, "recall-channel"));
 
-            MultiChannelRecallService recallService = new MultiChannelRecallService(
-                    List.of(
-                            new EmbeddingChannel(candidateGenerator),
-                            new TrendingChannel(topkStore, List.of("last_hour", "last_day")),
-                            new GenreHistoryChannel(candidateGenerator),
-                            new PopularityChannel(dataManager, globalPopStore),
-                            new ColdStartChannel(topkStore, globalPopStore)
-                    ),
-                    new ChannelHealthMonitor(),
-                    executor,
-                    DEFAULT_CHANNEL_TIMEOUT_MS,
-                    FaultInjector.NOOP,
-                    userEmbCache
-            );
+            MultiChannelRecallService recallService = MultiChannelRecallService.from(
+                    RecallConfig.builder()
+                            .channels(List.of(
+                                    new EmbeddingChannel(candidateGenerator),
+                                    new TrendingChannel(topkStore, List.of("last_hour", "last_day")),
+                                    new GenreHistoryChannel(candidateGenerator),
+                                    new PopularityChannel(dataManager, globalPopStore),
+                                    new ColdStartChannel(topkStore, globalPopStore)))
+                            .quotaPolicy(QuotaPolicy.defaultMovie())
+                            .healthMonitor(new ChannelHealthMonitor())
+                            .executor(executor)
+                            .channelTimeoutMs(DEFAULT_CHANNEL_TIMEOUT_MS)
+                            .faultInjector(FaultInjector.NOOP)
+                            .userEmbeddingStore(userEmbCache)
+                            .build());
 
             RecommendationOrchestrator orchestrator = new RecommendationOrchestrator(
                     recallService,

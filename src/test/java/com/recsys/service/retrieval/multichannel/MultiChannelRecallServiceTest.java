@@ -6,8 +6,11 @@ import com.recsys.infrastructure.vectordb.EmbeddingStore;
 import com.recsys.online.ops.FaultInjector;
 import com.recsys.online.ops.WorkerBulkhead;
 import com.recsys.service.retrieval.RecallChannel;
+import com.recsys.service.retrieval.coldstart.QuotaPolicy;
 import org.junit.jupiter.api.Test;
 
+import java.util.Collection;
+import java.util.LinkedHashMap;
 import java.util.List;
 import java.util.Map;
 import java.util.Set;
@@ -238,6 +241,54 @@ class MultiChannelRecallServiceTest {
         // Gap fill: "32" from trending leftover
         assertThat(recalled).extracting(MovieCandidate::itemId)
                 .containsExactlyInAnyOrder("10", "11", "30", "31", "32");
+    }
+
+    @Test
+    void injectedQuotaPolicy_drivesMerge() {
+        // Custom WARM policy: popularity takes everything, embedding is residual (0 slots).
+        LinkedHashMap<String, Double> warm = new LinkedHashMap<>();
+        warm.put("popularity", 1.0);
+        LinkedHashMap<String, Double> cold = new LinkedHashMap<>();
+        cold.put("popularity", 1.0);
+        QuotaPolicy popularityFirst = new QuotaPolicy(warm, "embedding", cold, "embedding");
+
+        RecallChannel embedding = channel("embedding",
+                new MovieCandidate("e1", 0.95, "embedding", java.util.Map.of()),
+                new MovieCandidate("e2", 0.85, "embedding", java.util.Map.of()));
+        RecallChannel popularity = channel("popularity",
+                new MovieCandidate("p1", 0.50, "popularity", java.util.Map.of()),
+                new MovieCandidate("p2", 0.40, "popularity", java.util.Map.of()),
+                new MovieCandidate("p3", 0.30, "popularity", java.util.Map.of()));
+
+        // Warm user: stub store returns a non-null vector for any id.
+        EmbeddingStore warmStore = new AlwaysWarmStore();
+
+        MultiChannelRecallService service = new MultiChannelRecallService(
+                java.util.List.of(embedding, popularity),
+                new ChannelHealthMonitor(),
+                java.util.concurrent.ForkJoinPool.commonPool(),
+                200L,
+                FaultInjector.NOOP,
+                warmStore,
+                popularityFirst);
+
+        List<MovieCandidate> recalled = service.recall(
+                new RecommendationQuery("1", 3, java.util.Set.of(), null), 3);
+
+        // popularity got all 3 slots; embedding (0 quota, no gap left) contributes nothing.
+        assertThat(recalled).extracting(MovieCandidate::itemId).containsExactly("p1", "p2", "p3");
+        assertThat(recalled).extracting(MovieCandidate::channel).containsOnly("popularity");
+    }
+
+    // Stub: any id resolves to a non-null vector, so cold-start detection treats the user as warm.
+    private static final class AlwaysWarmStore implements EmbeddingStore {
+        @Override public float[] getEmbedding(int id) { return new float[]{1f}; }
+        @Override public java.util.Map<Integer, float[]> getEmbeddings(java.util.Collection<Integer> ids) {
+            return java.util.Map.of();
+        }
+        @Override public void setEmbedding(int id, float[] v, long ttl) {}
+        @Override public void setEmbeddings(java.util.Map<Integer, float[]> v, long ttl) {}
+        @Override public java.util.Set<Integer> scanIds(int maxKeys) { return java.util.Set.of(); }
     }
 
     private static RecallChannel channel(String name, MovieCandidate... candidates) {
