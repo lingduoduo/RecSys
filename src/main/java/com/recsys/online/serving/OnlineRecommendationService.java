@@ -1,42 +1,47 @@
 package com.recsys.online.serving;
 
-import com.recsys.infrastructure.vectordb.CandidateGenerator;
+import com.recsys.domain.Movie;
+import com.recsys.domain.MovieCandidate;
+import com.recsys.domain.RecommendationQuery;
+import com.recsys.domain.User;
 import com.recsys.infrastructure.DataManager;
 import com.recsys.online.learner.OnlineLearner;
-import com.recsys.domain.Movie;
-import com.recsys.domain.User;
+import com.recsys.online.store.RecentHistoryStore;
+import com.recsys.online.store.TrendingStore;
+import com.recsys.service.retrieval.multichannel.MultiChannelRecallService;
 
+import java.util.ArrayList;
 import java.util.Comparator;
-import java.util.HashMap;
+import java.util.LinkedHashSet;
 import java.util.List;
-import java.util.Map;
 import java.util.Objects;
 import java.util.Set;
 
+/**
+ * Online recommendation = recall (shared MultiChannelRecallService) -> re-rank (OnlineLearner) ->
+ * response snapshot (recent history + per-request trending window). Cold-start detection is handled
+ * inside the recall service via the injected user-embedding store.
+ */
 public final class OnlineRecommendationService {
 
-    // Online behavioral signals are the primary rank signal; embedding adds a secondary boost.
-    private static final double ONLINE_WEIGHT = 1.0;
-    private static final double MODEL_WEIGHT  = 0.5;
+    private static final Set<String> ALLOWED_WINDOWS = Set.of("last_hour", "last_day", "last_month");
+    private static final int RECENT_HISTORY_LIMIT = 3;
 
     private final DataManager dataManager;
-    private final OnlineRecommendationEngine onlineEngine;
-    private final CandidateGenerator candidateGenerator;
+    private final MultiChannelRecallService recallService;
+    private final RecentHistoryStore recentHistoryStore;
+    private final TrendingStore topkStore;
     private final OnlineLearner onlineLearner;
 
     public OnlineRecommendationService(DataManager dataManager,
-                                       OnlineRecommendationEngine onlineEngine,
-                                       CandidateGenerator candidateGenerator) {
-        this(dataManager, onlineEngine, candidateGenerator, new OnlineLearner());
-    }
-
-    public OnlineRecommendationService(DataManager dataManager,
-                                       OnlineRecommendationEngine onlineEngine,
-                                       CandidateGenerator candidateGenerator,
+                                       MultiChannelRecallService recallService,
+                                       RecentHistoryStore recentHistoryStore,
+                                       TrendingStore topkStore,
                                        OnlineLearner onlineLearner) {
-        this.dataManager = dataManager;
-        this.onlineEngine = onlineEngine;
-        this.candidateGenerator = candidateGenerator;
+        this.dataManager = Objects.requireNonNull(dataManager, "dataManager");
+        this.recallService = Objects.requireNonNull(recallService, "recallService");
+        this.recentHistoryStore = Objects.requireNonNull(recentHistoryStore, "recentHistoryStore");
+        this.topkStore = Objects.requireNonNull(topkStore, "topkStore");
         this.onlineLearner = onlineLearner == null ? new OnlineLearner() : onlineLearner;
     }
 
@@ -44,81 +49,77 @@ public final class OnlineRecommendationService {
         User user = requireUser(request.userId());
         int k = Math.max(1, request.k());
         int recallLimit = Math.max(k * 4, 12);
+        String window = normalizeWindow(request.window());
 
-        // Online path: recent history + trending signals, fetched with headroom for blending.
-        OnlineRecommendationEngine.OnlineRecommendationResult online =
-                onlineEngine.recommend(request.userId(), request.window(), recallLimit);
+        List<Integer> recentIds = recentHistoryStore.getRecentMovieIds(request.userId(), RECENT_HISTORY_LIMIT);
+        Set<String> excluded = new LinkedHashSet<>();
+        for (int id : recentIds) excluded.add(String.valueOf(id));
 
-        // Model path: embedding-based ANN recall.
-        List<Movie> modelCandidates = candidateGenerator.byEmbedding(request.userId(), recallLimit);
+        RecommendationQuery query =
+                new RecommendationQuery(String.valueOf(request.userId()), recallLimit, excluded, null);
+        List<MovieCandidate> candidates = recallService.recall(query, recallLimit);
 
-        List<Movie> recommendations;
-        String strategy;
+        List<Movie> recentMovies = mapMovies(recentIds);
+        List<Movie> trendingMovies = mapMovies(parseIds(topkStore.getTopKIds(window, k)));
 
-        if (modelCandidates.isEmpty()) {
-            // No user embedding available: fall back to online signals only.
-            List<Movie> onlineRecs = online.recommendations();
-            recommendations = onlineRecs.subList(0, Math.min(k, onlineRecs.size()));
-            strategy = "online";
-        } else {
-            recommendations = blend(online.recommendations(), modelCandidates,
-                    online.recentMovies(), k);
-            strategy = "online+model";
+        List<Movie> recommendations = rerank(candidates, excluded, k);
+        if (recommendations.isEmpty()) {
+            recommendations = trendingMovies.stream().limit(k).toList();
         }
 
         return new OnlineRecommendationResult(
-                user,
-                online.window(),
-                strategy,
-                online.recentMovies(),
-                online.trendingMovies(),
-                recommendations
-        );
+                user, window, "multichannel", recentMovies, trendingMovies, recommendations);
     }
 
-    /**
-     * Merges two ranked candidate lists using normalized reciprocal-rank scores so
-     * movies that rank well in both paths float to the top.
-     *
-     * online score for rank i of n  = ONLINE_WEIGHT * (n - i) / n
-     * model score  for rank i of m  = MODEL_WEIGHT  * (m - i) / m
-     *
-     * Recently-watched movies are excluded from the final output.
-     */
-    private List<Movie> blend(List<Movie> onlineRecs,
-                              List<Movie> modelCandidates,
-                              List<Movie> recentMovies,
-                              int k) {
-        int capacity = (int) ((onlineRecs.size() + modelCandidates.size()) / 0.75f) + 2;
-        Map<Integer, Movie> movieById = new HashMap<>(capacity);
-        Map<Integer, Double> scores   = new HashMap<>(capacity);
-
-        int nOnline = onlineRecs.size();
-        for (int i = 0; i < nOnline; i++) {
-            Movie m = onlineRecs.get(i);
-            movieById.put(m.id(), m);
-            scores.put(m.id(), ONLINE_WEIGHT * (nOnline - i) / (double) nOnline);
+    private List<Movie> rerank(List<MovieCandidate> candidates, Set<String> excluded, int k) {
+        record Scored(int movieId, double score) {}
+        List<Scored> scored = new ArrayList<>(candidates.size());
+        for (MovieCandidate c : candidates) {
+            if (excluded.contains(c.itemId())) continue;
+            int movieId;
+            try {
+                movieId = Integer.parseInt(c.itemId());
+            } catch (NumberFormatException e) {
+                continue;
+            }
+            scored.add(new Scored(movieId, c.score() + onlineLearner.scoreAdjustment(movieId)));
         }
-
-        int nModel = modelCandidates.size();
-        for (int i = 0; i < nModel; i++) {
-            Movie m = modelCandidates.get(i);
-            movieById.put(m.id(), m);
-            scores.merge(m.id(), MODEL_WEIGHT * (nModel - i) / (double) nModel, Double::sum);
-        }
-
-        Set<Integer> recentIds = new java.util.HashSet<>(recentMovies.size() * 2);
-        for (Movie m : recentMovies) recentIds.add(m.id());
-        scores.keySet().removeIf(recentIds::contains);
-        scores.replaceAll((movieId, score) -> score + onlineLearner.scoreAdjustment(movieId));
-
-        return scores.entrySet().stream()
-                .sorted(Map.Entry.<Integer, Double>comparingByValue(Comparator.reverseOrder())
-                        .thenComparing(Map.Entry::getKey))
-                .map(e -> movieById.get(e.getKey()))
+        return scored.stream()
+                .sorted(Comparator.comparingDouble(Scored::score).reversed()
+                        .thenComparingInt(Scored::movieId))
+                .map(s -> dataManager.getMovieById(s.movieId()))
                 .filter(Objects::nonNull)
                 .limit(k)
                 .toList();
+    }
+
+    private List<Movie> mapMovies(List<Integer> ids) {
+        List<Movie> movies = new ArrayList<>(ids.size());
+        for (int id : ids) {
+            Movie m = dataManager.getMovieById(id);
+            if (m != null) movies.add(m);
+        }
+        return List.copyOf(movies);
+    }
+
+    private static List<Integer> parseIds(List<String> raw) {
+        List<Integer> ids = new ArrayList<>(raw.size());
+        for (String s : raw) {
+            try {
+                ids.add(Integer.parseInt(s));
+            } catch (NumberFormatException ignore) {
+                // skip malformed ids from Redis
+            }
+        }
+        return ids;
+    }
+
+    private static String normalizeWindow(String window) {
+        String normalized = (window == null || window.isBlank()) ? "last_hour" : window.trim();
+        if (!ALLOWED_WINDOWS.contains(normalized)) {
+            throw new IllegalArgumentException("invalid window: " + normalized);
+        }
+        return normalized;
     }
 
     private User requireUser(int userId) {

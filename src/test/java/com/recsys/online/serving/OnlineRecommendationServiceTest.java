@@ -1,11 +1,15 @@
 package com.recsys.online.serving;
 
-import com.recsys.infrastructure.vectordb.CandidateGenerator;
-import com.recsys.infrastructure.DataManager;
 import com.recsys.domain.Movie;
+import com.recsys.domain.MovieCandidate;
+import com.recsys.domain.RecommendationQuery;
 import com.recsys.domain.User;
+import com.recsys.infrastructure.DataManager;
 import com.recsys.online.event.ExperienceCollector;
 import com.recsys.online.learner.OnlineLearner;
+import com.recsys.online.store.RecentHistoryStore;
+import com.recsys.online.store.TrendingStore;
+import com.recsys.service.retrieval.multichannel.MultiChannelRecallService;
 import org.junit.jupiter.api.BeforeEach;
 import org.junit.jupiter.api.Test;
 
@@ -16,8 +20,8 @@ import static org.junit.jupiter.api.Assertions.assertEquals;
 import static org.junit.jupiter.api.Assertions.assertFalse;
 import static org.junit.jupiter.api.Assertions.assertThrows;
 import static org.junit.jupiter.api.Assertions.assertTrue;
+import static org.mockito.ArgumentMatchers.any;
 import static org.mockito.ArgumentMatchers.anyInt;
-import static org.mockito.ArgumentMatchers.anyString;
 import static org.mockito.ArgumentMatchers.eq;
 import static org.mockito.Mockito.mock;
 import static org.mockito.Mockito.verify;
@@ -26,103 +30,113 @@ import static org.mockito.Mockito.when;
 class OnlineRecommendationServiceTest {
 
     private static final User USER = new User(123, "Alice");
-    private static final Movie M1  = new Movie(1,  "A", 2020, List.of("Drama"));
-    private static final Movie M2  = new Movie(2,  "B", 2021, List.of("Drama"));
-    private static final Movie M3  = new Movie(3,  "C", 2022, List.of("Action"));
-    private static final Movie M4  = new Movie(4,  "D", 2019, List.of("Action"));
-    private static final Movie M5  = new Movie(5,  "E", 2018, List.of("Comedy"));
-    private static final Movie M6  = new Movie(6,  "F", 2017, List.of("Comedy"));
 
     private DataManager dataManager;
-    private OnlineRecommendationEngine engine;
-    private CandidateGenerator candidateGenerator;
-    private OnlineRecommendationService service;
+    private MultiChannelRecallService recallService;
+    private RecentHistoryStore recentHistoryStore;
+    private TrendingStore topkStore;
     private OnlineLearner onlineLearner;
+    private OnlineRecommendationService service;
+
+    private static Movie movie(int id) { return new Movie(id, "M" + id, 2020, List.of("Drama")); }
+    private static MovieCandidate cand(int id, double score) {
+        return new MovieCandidate(String.valueOf(id), score, "embedding", Map.of());
+    }
 
     @BeforeEach
     void setUp() {
-        dataManager      = mock(DataManager.class);
-        engine           = mock(OnlineRecommendationEngine.class);
-        candidateGenerator = mock(CandidateGenerator.class);
+        dataManager = mock(DataManager.class);
+        recallService = mock(MultiChannelRecallService.class);
+        recentHistoryStore = mock(RecentHistoryStore.class);
+        topkStore = mock(TrendingStore.class);
         onlineLearner = new OnlineLearner();
-        service          = new OnlineRecommendationService(dataManager, engine, candidateGenerator, onlineLearner);
+        service = new OnlineRecommendationService(
+                dataManager, recallService, recentHistoryStore, topkStore, onlineLearner);
 
         when(dataManager.getUserById(USER.userId())).thenReturn(USER);
         when(dataManager.getUserById(999)).thenReturn(null);
+        // identity movie lookups for ids used below
+        for (int id : new int[]{3, 4, 5, 6}) when(dataManager.getMovieById(id)).thenReturn(movie(id));
+        when(recentHistoryStore.getRecentMovieIds(eq(USER.userId()), anyInt())).thenReturn(List.of());
+        when(topkStore.getTopKIds(eq("last_hour"), anyInt())).thenReturn(List.of());
     }
 
     @Test
-    void blendsMergesOnlineAndModelCandidates() {
-        // Online: [M3, M4] ranked; recently watched [M1, M2]
-        stubEngine(List.of(M1, M2), List.of(M3), List.of(M3, M4));
-        // Model: [M5, M6, M3] — M3 appears in both, should rank highest
-        when(candidateGenerator.byEmbedding(eq(USER.userId()), anyInt()))
-                .thenReturn(List.of(M5, M6, M3));
+    void recommendationsComeFromRecallServiceInScoreOrder() {
+        when(recallService.recall(any(RecommendationQuery.class), anyInt()))
+                .thenReturn(List.of(cand(5, 0.9), cand(4, 0.7), cand(3, 0.5)));
 
-        OnlineRecommendationResult result = service.recommend(new OnlineRecommendationRequest(USER.userId(), "last_hour", 5));
+        OnlineRecommendationResult result =
+                service.recommend(new OnlineRecommendationRequest(USER.userId(), "last_hour", 3));
 
-        assertEquals("online+model", result.strategy());
-        // M3 ranks in both lists — it must come first
-        assertEquals(M3.id(), result.recommendations().get(0).id());
-        // Recently watched must be excluded
-        assertTrue(result.recommendations().stream().noneMatch(m -> m.id() == M1.id() || m.id() == M2.id()));
+        assertEquals("multichannel", result.strategy());
+        assertEquals(List.of(5, 4, 3),
+                result.recommendations().stream().map(Movie::id).toList());
     }
 
     @Test
-    void fallsBackToOnlineOnlyWhenNoEmbedding() {
-        stubEngine(List.of(), List.of(M3), List.of(M3, M4, M5));
-        when(candidateGenerator.byEmbedding(eq(USER.userId()), anyInt()))
-                .thenReturn(List.of());
-
-        OnlineRecommendationResult result = service.recommend(new OnlineRecommendationRequest(USER.userId(), "last_hour", 2));
-
-        assertEquals("online", result.strategy());
-        assertEquals(2, result.recommendations().size());
-    }
-
-    @Test
-    void fetchesRecallHeadroomForSmallRecommendationRequests() {
-        stubEngine(List.of(), List.of(M3), List.of(M3, M4, M5));
-        when(candidateGenerator.byEmbedding(eq(USER.userId()), anyInt()))
-                .thenReturn(List.of());
-
+    void recallLimitHasHeadroomForSmallK() {
+        when(recallService.recall(any(RecommendationQuery.class), anyInt())).thenReturn(List.of());
         service.recommend(new OnlineRecommendationRequest(USER.userId(), "last_hour", 1));
-
-        verify(engine).recommend(USER.userId(), "last_hour", 12);
-        verify(candidateGenerator).byEmbedding(USER.userId(), 12);
+        // recallLimit = max(k*4, 12) = 12
+        verify(recallService).recall(any(RecommendationQuery.class), eq(12));
     }
 
     @Test
-    void excludesRecentlyWatchedFromBlendedOutput() {
-        // M3 is in recently watched; it must not appear in recommendations
-        stubEngine(List.of(M3), List.of(M3), List.of(M4, M5));
-        when(candidateGenerator.byEmbedding(eq(USER.userId()), anyInt()))
-                .thenReturn(List.of(M3, M6));
+    void excludesRecentlyWatched() {
+        when(recentHistoryStore.getRecentMovieIds(eq(USER.userId()), anyInt())).thenReturn(List.of(3));
+        when(recallService.recall(any(RecommendationQuery.class), anyInt()))
+                .thenReturn(List.of(cand(3, 0.9), cand(4, 0.5)));
 
-        OnlineRecommendationResult result = service.recommend(new OnlineRecommendationRequest(USER.userId(), "last_hour", 5));
+        OnlineRecommendationResult result =
+                service.recommend(new OnlineRecommendationRequest(USER.userId(), "last_hour", 5));
 
-        assertFalse(result.recommendations().stream().anyMatch(m -> m.id() == M3.id()),
+        assertFalse(result.recommendations().stream().anyMatch(m -> m.id() == 3),
                 "recently-watched movie must be excluded");
     }
 
     @Test
-    void learnedOnlineParametersCanInfluenceBlendedRanking() {
+    void onlineLearnerReweightsRanking() {
         onlineLearner = new OnlineLearner(2.0, 0.0, 2.0);
-        service = new OnlineRecommendationService(dataManager, engine, candidateGenerator, onlineLearner);
-        stubEngine(List.of(), List.of(), List.of(M4, M3));
-        when(candidateGenerator.byEmbedding(eq(USER.userId()), anyInt()))
-                .thenReturn(List.of(M4, M3));
+        service = new OnlineRecommendationService(
+                dataManager, recallService, recentHistoryStore, topkStore, onlineLearner);
+        when(recallService.recall(any(RecommendationQuery.class), anyInt()))
+                .thenReturn(List.of(cand(4, 0.9), cand(3, 0.8)));
         onlineLearner.learn(new ExperienceCollector.RecommendationExperience(
-                "req-1",
-                USER.userId(),
-                100L,
-                3,
-                List.of(new ExperienceCollector.ItemFeedback(M3.id(), 1, 3, "order", Map.of()))
-        ));
+                "req-1", USER.userId(), 100L, 3,
+                List.of(new ExperienceCollector.ItemFeedback(3, 1, 3, "order", Map.of()))));
 
-        OnlineRecommendationResult result = service.recommend(new OnlineRecommendationRequest(USER.userId(), "last_hour", 2));
+        OnlineRecommendationResult result =
+                service.recommend(new OnlineRecommendationRequest(USER.userId(), "last_hour", 2));
 
-        assertEquals(M3.id(), result.recommendations().get(0).id());
+        assertEquals(3, result.recommendations().get(0).id(),
+                "learner boost on movie 3 should lift it above movie 4");
+    }
+
+    @Test
+    void emptyRecallFallsBackToTrendingSnapshot() {
+        when(recallService.recall(any(RecommendationQuery.class), anyInt())).thenReturn(List.of());
+        when(topkStore.getTopKIds(eq("last_hour"), anyInt())).thenReturn(List.of("5", "6"));
+
+        OnlineRecommendationResult result =
+                service.recommend(new OnlineRecommendationRequest(USER.userId(), "last_hour", 2));
+
+        assertEquals("multichannel", result.strategy());
+        assertEquals(List.of(5, 6), result.recommendations().stream().map(Movie::id).toList());
+    }
+
+    @Test
+    void responseCarriesRecentAndTrendingSnapshot() {
+        when(recentHistoryStore.getRecentMovieIds(eq(USER.userId()), anyInt())).thenReturn(List.of(3));
+        when(topkStore.getTopKIds(eq("last_day"), anyInt())).thenReturn(List.of("4", "5"));
+        when(recallService.recall(any(RecommendationQuery.class), anyInt())).thenReturn(List.of(cand(6, 0.9)));
+
+        OnlineRecommendationResult result =
+                service.recommend(new OnlineRecommendationRequest(USER.userId(), "last_day", 5));
+
+        assertEquals("last_day", result.window());
+        assertEquals(List.of(3), result.recentMovies().stream().map(Movie::id).toList());
+        assertEquals(List.of(4, 5), result.trendingMovies().stream().map(Movie::id).toList());
     }
 
     @Test
@@ -134,19 +148,8 @@ class OnlineRecommendationServiceTest {
     }
 
     @Test
-    void propagatesWindowValidationFromEngine() {
-        when(engine.recommend(eq(USER.userId()), eq("bad_window"), anyInt()))
-                .thenThrow(new IllegalArgumentException("invalid window: bad_window"));
-
+    void rejectsInvalidWindow() {
         assertThrows(IllegalArgumentException.class,
                 () -> service.recommend(new OnlineRecommendationRequest(USER.userId(), "bad_window", 5)));
-    }
-
-    // ---- helpers ----
-
-    private void stubEngine(List<Movie> recent, List<Movie> trending, List<Movie> recs) {
-        when(engine.recommend(eq(USER.userId()), anyString(), anyInt()))
-                .thenReturn(new OnlineRecommendationEngine.OnlineRecommendationResult(
-                        "last_hour", recent, trending, recs));
     }
 }
