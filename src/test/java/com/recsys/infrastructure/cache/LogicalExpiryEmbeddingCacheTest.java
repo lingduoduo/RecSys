@@ -258,6 +258,58 @@ class LogicalExpiryEmbeddingCacheTest {
         assertThat(backing.getCount).isEqualTo(before);
     }
 
+    @Test
+    void backgroundRefreshNull_doesNotClobberConcurrentSetEmbedding() throws Exception {
+        // Arrange: a backing store whose getEmbedding blocks on a latch then returns null,
+        // simulating a key that vanished in the backing store mid-flight.
+        CountDownLatch refreshStarted = new CountDownLatch(1);
+        CountDownLatch releaseRefresh = new CountDownLatch(1);
+        float[] freshVec = {7f, 8f};
+
+        EmbeddingStore blockingNullStore = new EmbeddingStore() {
+            @Override public float[] getEmbedding(int id) {
+                refreshStarted.countDown();
+                try { releaseRefresh.await(2, TimeUnit.SECONDS); } catch (InterruptedException e) { Thread.currentThread().interrupt(); }
+                return null; // backing store returns null (key vanished)
+            }
+            @Override public Map<Integer, float[]> getEmbeddings(Collection<Integer> ids) { return Map.of(); }
+            @Override public void setEmbedding(int id, float[] v, long ttl) {}
+            @Override public void setEmbeddings(Map<Integer, float[]> v, long ttl) {}
+            @Override public Set<Integer> scanIds(int maxKeys) { return Set.of(); }
+        };
+
+        ExecutorService refreshThread = Executors.newSingleThreadExecutor();
+        // 5ms soft TTL so the initial entry expires quickly; 100ms sentinel TTL.
+        // Use real single-thread executor so background refresh runs concurrently with main thread.
+        var cache = new LogicalExpiryEmbeddingCache(blockingNullStore, 5L, 100L, refreshThread);
+
+        // Seed a positive entry directly into the cache.
+        cache.setEmbedding(1, new float[]{1f}, -1L);
+
+        Thread.sleep(10); // let soft TTL (5ms) expire so next read schedules background refresh
+
+        // getEmbedding returns stale value and submits the refresh to refreshThread.
+        float[] stale = cache.getEmbedding(1);
+        assertThat(stale).isNotNull();
+
+        // Wait for refresh task to have entered the blocking backing call.
+        assertThat(refreshStarted.await(2, TimeUnit.SECONDS)).isTrue();
+
+        // While the refresh is blocked and will return null, write a fresh positive entry.
+        // setEmbedding updates the cache map to a NEW LogicalEntry object.
+        cache.setEmbedding(1, freshVec, -1L);
+
+        // Release the blocked refresh — it finds null, tries CAS remove with the stale entry,
+        // but setEmbedding already replaced the mapping so CAS fails → fresh entry survives.
+        releaseRefresh.countDown();
+        refreshThread.shutdown();
+        assertThat(refreshThread.awaitTermination(2, TimeUnit.SECONDS)).isTrue();
+
+        // Assert: fresh entry is still present and no null sentinel was planted.
+        assertThat(cache.hasNullSentinel(1)).isFalse();
+        assertThat(cache.cacheSize()).isEqualTo(1);
+    }
+
     // Backing stub that throws on the first getEmbedding, then returns a fixed value.
     private static final class ThrowingThenValueStore implements EmbeddingStore {
         private final float[] value;

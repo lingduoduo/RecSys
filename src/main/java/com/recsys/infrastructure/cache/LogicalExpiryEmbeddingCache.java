@@ -164,12 +164,12 @@ public final class LogicalExpiryEmbeddingCache implements EmbeddingStore {
         if (refreshing.putIfAbsent(id, Boolean.TRUE) != null) return;
         refreshExecutor.execute(() -> {
             try {
+                LogicalEntry stale = cache.get(id);            // capture before refresh
                 float[] fresh = backingStore.getEmbedding(id);
                 if (fresh != null) {
                     cache.put(id, new LogicalEntry(fresh, System.currentTimeMillis() + softTtlMs));
-                } else {
-                    // Key vanished in the backing store: stop serving the stale vector.
-                    cache.remove(id);
+                } else if (stale != null && cache.remove(id, stale)) {
+                    // Only evict when no concurrent write replaced the stale entry.
                     nullSentinels.put(id, System.currentTimeMillis() + nullSentinelTtlMs);
                 }
             } catch (Exception e) {
