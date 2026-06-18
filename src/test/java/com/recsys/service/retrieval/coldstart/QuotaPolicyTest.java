@@ -76,4 +76,30 @@ class QuotaPolicyTest {
         assertThatThrownBy(() -> new QuotaPolicy(ok, null, ok, "popularity"))
                 .isInstanceOf(NullPointerException.class);
     }
+
+    @Test
+    void defaultOnlineWarm_slotsForLimit10() {
+        QuotaSpec q = QuotaPolicy.defaultOnline().warm(10);
+        assertThat(q.slotsFor("embedding")).isEqualTo(5);
+        assertThat(q.slotsFor("online_recent_history")).isEqualTo(3);
+        assertThat(q.slotsFor("trending")).isEqualTo(2);
+        assertThat(q.slotsFor("popularity")).isEqualTo(0);
+        assertThat(q.slotsFor("cold_start")).isEqualTo(0);
+        int total = q.slotsFor("embedding") + q.slotsFor("online_recent_history")
+                + q.slotsFor("trending") + q.slotsFor("popularity");
+        assertThat(total).isEqualTo(10);
+    }
+
+    @Test
+    void defaultOnlineCold_slotsForLimit10() {
+        QuotaSpec q = QuotaPolicy.defaultOnline().cold(10);
+        assertThat(q.slotsFor("cold_start")).isEqualTo(5);
+        assertThat(q.slotsFor("trending")).isEqualTo(2);
+        assertThat(q.slotsFor("popularity")).isEqualTo(2);
+        assertThat(q.slotsFor("online_recent_history")).isEqualTo(1);
+        assertThat(q.slotsFor("embedding")).isEqualTo(0);
+        int total = q.slotsFor("cold_start") + q.slotsFor("trending")
+                + q.slotsFor("popularity") + q.slotsFor("online_recent_history");
+        assertThat(total).isEqualTo(10);
+    }
 }
