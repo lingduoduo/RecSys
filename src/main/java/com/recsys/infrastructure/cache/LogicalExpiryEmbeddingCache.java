@@ -41,8 +41,14 @@ public final class LogicalExpiryEmbeddingCache implements EmbeddingStore {
 
     private record LogicalEntry(float[] value, long softExpiresAtMs) {}
 
+    public static final long DEFAULT_NULL_SENTINEL_TTL_MS = 30_000L;
+
     private final EmbeddingStore backingStore;
     private final long softTtlMs;
+    private final long nullSentinelTtlMs;
+    // Negative cache: absent ID → sentinel expiry timestamp (ms). Skips the backing store
+    // for recently-confirmed-absent IDs so brand-new users do not re-hit Redis each request.
+    private final ConcurrentHashMap<Integer, Long> nullSentinels = new ConcurrentHashMap<>();
     private final ConcurrentHashMap<Integer, LogicalEntry> cache = new ConcurrentHashMap<>();
     // Tracks IDs with in-flight background refreshes to avoid duplicate tasks.
     private final ConcurrentHashMap<Integer, Boolean> refreshing = new ConcurrentHashMap<>();
@@ -50,13 +56,19 @@ public final class LogicalExpiryEmbeddingCache implements EmbeddingStore {
     private final Executor refreshExecutor;
 
     public LogicalExpiryEmbeddingCache(EmbeddingStore backingStore, long softTtlSeconds) {
-        this(backingStore, softTtlSeconds * 1_000L, ForkJoinPool.commonPool());
+        this(backingStore, softTtlSeconds * 1_000L, DEFAULT_NULL_SENTINEL_TTL_MS, ForkJoinPool.commonPool());
     }
 
     // softTtlMs is in milliseconds — allows sub-second TTLs for testing.
     LogicalExpiryEmbeddingCache(EmbeddingStore backingStore, long softTtlMs, Executor refreshExecutor) {
+        this(backingStore, softTtlMs, DEFAULT_NULL_SENTINEL_TTL_MS, refreshExecutor);
+    }
+
+    LogicalExpiryEmbeddingCache(EmbeddingStore backingStore, long softTtlMs,
+                                long nullSentinelTtlMs, Executor refreshExecutor) {
         this.backingStore = backingStore;
         this.softTtlMs = Math.max(1L, softTtlMs);
+        this.nullSentinelTtlMs = Math.max(1L, nullSentinelTtlMs);
         this.refreshExecutor = refreshExecutor;
     }
 
@@ -65,16 +77,22 @@ public final class LogicalExpiryEmbeddingCache implements EmbeddingStore {
         long now = System.currentTimeMillis();
         LogicalEntry entry = cache.get(id);
 
-        if (entry == null) {
-            // Cold miss: synchronous fetch, deduped across concurrent callers.
-            return coldMissSingleFlight.execute(id, () -> loadColdMiss(id));
+        if (entry != null) {
+            if (entry.softExpiresAtMs() <= now) {
+                // Past soft expiry: return stale value and schedule one background refresh.
+                scheduleRefresh(id);
+            }
+            return entry.value();
         }
 
-        if (entry.softExpiresAtMs() <= now) {
-            // Past soft expiry: return stale value and schedule one background refresh.
-            scheduleRefresh(id);
+        // No positive entry — check the negative cache before hitting the backing store.
+        Long sentinelExpiry = nullSentinels.get(id);
+        if (sentinelExpiry != null && sentinelExpiry > now) {
+            return null;
         }
-        return entry.value();
+
+        // Cold miss: synchronous fetch, deduped across concurrent callers.
+        return coldMissSingleFlight.execute(id, () -> loadColdMiss(id));
     }
 
     @Override
@@ -91,6 +109,8 @@ public final class LogicalExpiryEmbeddingCache implements EmbeddingStore {
                 if (entry.softExpiresAtMs() <= now) scheduleRefresh(id);
                 result.put(id, entry.value());
             } else {
+                Long sentinelExpiry = nullSentinels.get(id);
+                if (sentinelExpiry != null && sentinelExpiry > now) continue; // known absent
                 coldMisses.add(id);
             }
         }
@@ -100,12 +120,16 @@ public final class LogicalExpiryEmbeddingCache implements EmbeddingStore {
         // coldMissSingleFlight; concurrent batch callers may race on writes, but those are idempotent.
         if (!coldMisses.isEmpty()) {
             Map<Integer, float[]> batchResult = backingStore.getEmbeddings(coldMisses);
-            long softExpiry = System.currentTimeMillis() + softTtlMs;
+            long writeNow = System.currentTimeMillis();
+            long softExpiry = writeNow + softTtlMs;
+            long sentinelExpiry = writeNow + nullSentinelTtlMs;
             for (int id : coldMisses) {
                 float[] value = batchResult.get(id);
                 if (value != null) {
                     cache.put(id, new LogicalEntry(value, softExpiry));
                     result.put(id, value);
+                } else {
+                    nullSentinels.put(id, sentinelExpiry);
                 }
             }
         }
@@ -116,6 +140,7 @@ public final class LogicalExpiryEmbeddingCache implements EmbeddingStore {
     @Override
     public void setEmbedding(int id, float[] vector, long ttlSeconds) {
         backingStore.setEmbedding(id, vector, ttlSeconds);
+        nullSentinels.remove(id);
         cache.put(id, new LogicalEntry(vector, System.currentTimeMillis() + softTtlMs));
     }
 
@@ -123,7 +148,10 @@ public final class LogicalExpiryEmbeddingCache implements EmbeddingStore {
     public void setEmbeddings(Map<Integer, float[]> vectors, long ttlSeconds) {
         backingStore.setEmbeddings(vectors, ttlSeconds);
         long softExpiry = System.currentTimeMillis() + softTtlMs;
-        vectors.forEach((id, vec) -> cache.put(id, new LogicalEntry(vec, softExpiry)));
+        vectors.forEach((id, vec) -> {
+            nullSentinels.remove(id);
+            cache.put(id, new LogicalEntry(vec, softExpiry));
+        });
     }
 
     @Override
@@ -139,6 +167,10 @@ public final class LogicalExpiryEmbeddingCache implements EmbeddingStore {
                 float[] fresh = backingStore.getEmbedding(id);
                 if (fresh != null) {
                     cache.put(id, new LogicalEntry(fresh, System.currentTimeMillis() + softTtlMs));
+                } else {
+                    // Key vanished in the backing store: stop serving the stale vector.
+                    cache.remove(id);
+                    nullSentinels.put(id, System.currentTimeMillis() + nullSentinelTtlMs);
                 }
             } catch (Exception e) {
                 log.warn("Background refresh failed for embedding {}: {}", id, e.toString());
@@ -152,9 +184,11 @@ public final class LogicalExpiryEmbeddingCache implements EmbeddingStore {
         LogicalEntry cached = cache.get(id);
         if (cached != null) return cached.value();
 
-        float[] value = backingStore.getEmbedding(id);
+        float[] value = backingStore.getEmbedding(id); // throws → propagates, no sentinel recorded
         if (value != null) {
             cache.put(id, new LogicalEntry(value, System.currentTimeMillis() + softTtlMs));
+        } else {
+            nullSentinels.put(id, System.currentTimeMillis() + nullSentinelTtlMs);
         }
         return value;
     }
@@ -162,4 +196,8 @@ public final class LogicalExpiryEmbeddingCache implements EmbeddingStore {
     int cacheSize() { return cache.size(); }
     boolean isRefreshing(int id) { return refreshing.containsKey(id); }
     int inflightColdMisses() { return coldMissSingleFlight.inflightCount(); }
+    boolean hasNullSentinel(int id) {
+        Long expiry = nullSentinels.get(id);
+        return expiry != null && expiry > System.currentTimeMillis();
+    }
 }
