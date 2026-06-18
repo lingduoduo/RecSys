@@ -79,6 +79,19 @@ public class MultiChannelRecallService {
         this.quotaPolicy         = quotaPolicy == null ? QuotaPolicy.defaultMovie() : quotaPolicy;
     }
 
+    /** Builds a service from a per-port {@link RecallConfig}. */
+    public static MultiChannelRecallService from(RecallConfig config) {
+        java.util.Objects.requireNonNull(config, "config");
+        return new MultiChannelRecallService(
+                config.channels(),
+                config.healthMonitor(),
+                config.executor(),
+                config.channelTimeoutMs(),
+                config.faultInjector(),
+                config.userEmbeddingStore(),
+                config.quotaPolicy());
+    }
+
     public List<MovieCandidate> recall(RecommendationQuery query, int limit) {
         Objects.requireNonNull(query, "query");
         if (limit <= 0) return List.of();
