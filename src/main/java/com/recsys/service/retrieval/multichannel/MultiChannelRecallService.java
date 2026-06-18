@@ -5,6 +5,7 @@ import com.recsys.domain.RecommendationQuery;
 import com.recsys.infrastructure.vectordb.EmbeddingStore;
 import com.recsys.online.ops.FaultInjector;
 import com.recsys.service.retrieval.RecallChannel;
+import com.recsys.service.retrieval.coldstart.QuotaPolicy;
 import com.recsys.service.retrieval.coldstart.QuotaSpec;
 import org.slf4j.Logger;
 import org.slf4j.LoggerFactory;
@@ -32,6 +33,7 @@ public class MultiChannelRecallService {
     private final long channelTimeoutMs;
     private final FaultInjector faultInjector;
     private final EmbeddingStore userEmbeddingStore;
+    private final QuotaPolicy quotaPolicy;
 
     // Convenience constructor for tests. Production callers should supply a WorkerBulkhead
     // via the 5-arg constructor — ForkJoinPool.commonPool() is unsuitable for blocking I/O.
@@ -54,6 +56,17 @@ public class MultiChannelRecallService {
                                      long channelTimeoutMs,
                                      FaultInjector faultInjector,
                                      EmbeddingStore userEmbeddingStore) {
+        this(channels, healthMonitor, executor, channelTimeoutMs, faultInjector,
+                userEmbeddingStore, QuotaPolicy.defaultMovie());
+    }
+
+    public MultiChannelRecallService(List<RecallChannel> channels,
+                                     ChannelHealthMonitor healthMonitor,
+                                     ExecutorService executor,
+                                     long channelTimeoutMs,
+                                     FaultInjector faultInjector,
+                                     EmbeddingStore userEmbeddingStore,
+                                     QuotaPolicy quotaPolicy) {
         if (channels == null || channels.isEmpty()) {
             throw new IllegalArgumentException("at least one recall channel is required");
         }
@@ -63,6 +76,7 @@ public class MultiChannelRecallService {
         this.channelTimeoutMs    = Math.max(1L, channelTimeoutMs);
         this.faultInjector       = faultInjector == null ? FaultInjector.NOOP : faultInjector;
         this.userEmbeddingStore  = userEmbeddingStore;
+        this.quotaPolicy         = quotaPolicy == null ? QuotaPolicy.defaultMovie() : quotaPolicy;
     }
 
     public List<MovieCandidate> recall(RecommendationQuery query, int limit) {
@@ -74,9 +88,9 @@ public class MultiChannelRecallService {
             try {
                 int userId = Integer.parseInt(query.userId());
                 boolean isCold = userEmbeddingStore.getEmbedding(userId) == null;
-                quota = isCold ? QuotaSpec.cold(limit) : QuotaSpec.warm(limit);
+                quota = isCold ? quotaPolicy.cold(limit) : quotaPolicy.warm(limit);
             } catch (NumberFormatException e) {
-                quota = QuotaSpec.cold(limit);
+                quota = quotaPolicy.cold(limit);
             }
         }
 
