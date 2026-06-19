@@ -105,6 +105,13 @@ recsys:
     enabled: ${RECSYS_SUBMIT_TOKEN_ENABLED:false}
     ttl-seconds: ${RECSYS_SUBMIT_TOKEN_TTL_SECONDS:300}
     key-prefix: ${RECSYS_SUBMIT_TOKEN_KEY_PREFIX:submit_token:}
+  events:
+    # A/B exposure events ship to Kafka only when enabled=true AND bootstrap-servers is non-blank;
+    # otherwise the publisher falls back to the log-only base (local/dev/tests need no broker).
+    kafka:
+      enabled: ${RECSYS_EVENTS_KAFKA_ENABLED:false}
+      bootstrap-servers: ${RECSYS_EVENTS_KAFKA_BOOTSTRAP_SERVERS:}   # blank disables Kafka even when enabled=true
+      exposure-topic: ${RECSYS_EVENTS_KAFKA_EXPOSURE_TOPIC:ab_exposures}
 
 management:
   endpoints:
