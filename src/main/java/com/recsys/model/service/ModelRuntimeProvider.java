@@ -144,7 +144,6 @@ public class ModelRuntimeProvider implements SmartInitializingSingleton {
      * a request-time recall miss falls back to CandidateSelectionService in RecommendationService.
      */
     private void ensureRecallInfra() {
-        if (candidateGenerator != null) return;
         synchronized (recallLock) {
             if (candidateGenerator != null) return;
             recallPool = RedisConnectionFactory.fromEnv();
