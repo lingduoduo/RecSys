@@ -44,6 +44,13 @@ public class ModelRuntimeProvider implements SmartInitializingSingleton {
 
     private static final Logger log = LoggerFactory.getLogger(ModelRuntimeProvider.class);
 
+    /**
+     * Connect/socket timeout cap for the recall Jedis pool. Set below the 200 ms
+     * per-channel recall budget so a down or slow Redis fails fast to the in-memory
+     * fallback instead of stalling recall-executor threads.
+     */
+    private static final int RECALL_REDIS_TIMEOUT_MS = 150;
+
     private final ModelArtifactLocator artifactLocator;
     private final ABTestConfig abTestConfig;
     private final String modelFile;
@@ -146,7 +153,7 @@ public class ModelRuntimeProvider implements SmartInitializingSingleton {
     private void ensureRecallInfra() {
         synchronized (recallLock) {
             if (candidateGenerator != null) return;
-            recallPool = RedisConnectionFactory.fromEnv();
+            recallPool = RedisConnectionFactory.fromEnv(RECALL_REDIS_TIMEOUT_MS);
             DataManager dataManager = DataManager.getInstance();
             candidateGenerator = new CandidateGenerator(dataManager, new RedisEmbeddingStore(recallPool, "u2vEmb"));
             topkStore = new ShardedTopKStore(recallPool, "topk:");

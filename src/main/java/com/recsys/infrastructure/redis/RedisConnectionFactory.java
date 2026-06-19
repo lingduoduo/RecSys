@@ -32,6 +32,20 @@ public final class RedisConnectionFactory {
         return create(env, defaultPoolConfig(env));
     }
 
+    /**
+     * Latency-sensitive variant of {@link #fromEnv()} that caps the Jedis connect/socket
+     * timeout to {@code maxTimeoutMs}. Intended for model-serving recall pools where a
+     * down or slow Redis must fail fast so recall falls back to the in-memory path instead
+     * of stalling recall-executor threads beyond the per-channel recall budget.
+     *
+     * @param maxTimeoutMs upper bound on the connect/socket timeout; the effective timeout
+     *                     is {@code min(REDIS_TIMEOUT_MS env var, maxTimeoutMs)}
+     */
+    public static Pool<Jedis> fromEnv(int maxTimeoutMs) {
+        Map<String, String> env = System.getenv();
+        return create(env, defaultPoolConfig(env), maxTimeoutMs);
+    }
+
     /** Creates a pool from Spring-managed {@link RedisProperties}. */
     public static Pool<Jedis> from(RedisProperties props) {
         GenericObjectPoolConfig<Jedis> poolCfg = poolConfig(props.getPool());
@@ -109,9 +123,24 @@ public final class RedisConnectionFactory {
     }
 
     static Pool<Jedis> create(Map<String, String> env, GenericObjectPoolConfig<Jedis> poolCfg) {
+        return create(env, poolCfg, Integer.MAX_VALUE);
+    }
+
+    /**
+     * Computes the effective connect/socket timeout for a Jedis pool.
+     * Returns {@code min(REDIS_TIMEOUT_MS env var, maxTimeoutMs)}, floored to 1.
+     * Extracted as a package-private helper so unit tests can verify the cap logic
+     * without touching the network.
+     */
+    static int effectiveTimeoutMs(Map<String, String> env, int maxTimeoutMs) {
+        int envTimeout = readPositiveInt(env, "REDIS_TIMEOUT_MS", Protocol.DEFAULT_TIMEOUT);
+        return Math.min(envTimeout, Math.max(1, maxTimeoutMs));
+    }
+
+    static Pool<Jedis> create(Map<String, String> env, GenericObjectPoolConfig<Jedis> poolCfg, int maxTimeoutMs) {
         String mode     = env.getOrDefault("REDIS_MODE", "standalone");
         String password = env.getOrDefault("REDIS_PASSWORD", "");
-        int timeoutMs   = readPositiveInt(env, "REDIS_TIMEOUT_MS", Protocol.DEFAULT_TIMEOUT);
+        int timeoutMs   = effectiveTimeoutMs(env, maxTimeoutMs);
         JedisClientConfig clientCfg = clientConfig(timeoutMs, password);
         if ("sentinel".equalsIgnoreCase(mode)) {
             String master = env.getOrDefault("REDIS_SENTINEL_MASTER", "mymaster");

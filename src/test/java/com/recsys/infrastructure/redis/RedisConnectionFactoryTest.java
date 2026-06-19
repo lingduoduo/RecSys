@@ -97,6 +97,34 @@ class RedisConnectionFactoryTest {
     }
 
     @Test
+    void effectiveTimeoutMs_capsToMaxWhenEnvUnset() {
+        // No REDIS_TIMEOUT_MS in env → default (~2000ms) is clamped to the supplied cap.
+        int result = RedisConnectionFactory.effectiveTimeoutMs(Map.of(), 150);
+        assertEquals(150, result);
+    }
+
+    @Test
+    void effectiveTimeoutMs_usesSmallerOfEnvAndCap() {
+        // REDIS_TIMEOUT_MS=100 < cap 150 → env value wins.
+        int result = RedisConnectionFactory.effectiveTimeoutMs(Map.of("REDIS_TIMEOUT_MS", "100"), 150);
+        assertEquals(100, result);
+    }
+
+    @Test
+    void effectiveTimeoutMs_capsWhenEnvExceedsCap() {
+        // REDIS_TIMEOUT_MS=500 > cap 150 → cap wins.
+        int result = RedisConnectionFactory.effectiveTimeoutMs(Map.of("REDIS_TIMEOUT_MS", "500"), 150);
+        assertEquals(150, result);
+    }
+
+    @Test
+    void effectiveTimeoutMs_noCapWhenMaxIsIntMax() {
+        // fromEnv() delegates with Integer.MAX_VALUE → env value is used as-is.
+        int result = RedisConnectionFactory.effectiveTimeoutMs(Map.of("REDIS_TIMEOUT_MS", "300"), Integer.MAX_VALUE);
+        assertEquals(300, result);
+    }
+
+    @Test
     void sentinelModeCreatesJedisSentinelPool() {
         Map<String, String> env = Map.of(
             "REDIS_MODE", "sentinel",
