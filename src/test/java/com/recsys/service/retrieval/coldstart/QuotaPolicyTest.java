@@ -104,13 +104,14 @@ class QuotaPolicyTest {
     }
 
     @Test
-    void defaultModelRetrieval_warmIsEmbeddingLed() {
+    void defaultModelRetrieval_warmIncludesRecentHistory() {
         QuotaSpec warm = QuotaPolicy.defaultModelRetrieval().warm(20);
-        assertThat(warm.slots().get("embedding")).isEqualTo(14);   // round(0.70 * 20)
-        assertThat(warm.slots().get("trending")).isEqualTo(3);     // round(0.15 * 20)
-        assertThat(warm.slots().get("popularity")).isEqualTo(3);   // residual 20-14-3
+        assertThat(warm.slots().get("embedding")).isEqualTo(11);              // round(0.55 * 20)
+        assertThat(warm.slots().get("online_recent_history")).isEqualTo(4);   // round(0.20 * 20)
+        assertThat(warm.slots().get("trending")).isEqualTo(2);               // round(0.10 * 20)
+        assertThat(warm.slots().get("popularity")).isEqualTo(3);            // residual 20-11-4-2
         assertThat(warm.slots().values().stream().mapToInt(Integer::intValue).sum()).isEqualTo(20);
-        assertThat(warm.slots()).doesNotContainKey("cold_start");  // cold_start has 0 warm slots
+        assertThat(warm.slots()).doesNotContainKey("cold_start");
     }
 
     @Test
@@ -120,5 +121,6 @@ class QuotaPolicyTest {
         assertThat(cold.slots().get("trending")).isEqualTo(5);     // round(0.25 * 20)
         assertThat(cold.slots().get("popularity")).isEqualTo(5);   // residual 20-10-5
         assertThat(cold.slots()).doesNotContainKey("embedding");   // embedding has 0 cold slots
+        assertThat(cold.slots()).doesNotContainKey("online_recent_history");
     }
 }
