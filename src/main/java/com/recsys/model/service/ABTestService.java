@@ -9,8 +9,6 @@ import org.springframework.stereotype.Service;
 public class ABTestService {
 
     private static final Logger log = LoggerFactory.getLogger(ABTestService.class);
-    private static final int VARIANT_A_BUCKET = 0;
-    private static final int VARIANT_B_BUCKET = 1;
 
     private final ABTestConfig config;
 
@@ -29,9 +27,10 @@ public class ABTestService {
     /**
      * Deterministically assigns a user to a variant for the given layer.
      * The hash key is {@code userId + ":" + layerName}, so two layers with different names
-     * produce independent bucket assignments for the same user.
+     * produce independent slot assignments for the same user.
      *
-     * Bucket 0 → variant A, bucket 1 → variant B, all others → default (control).
+     * Slot [0, aPercent*100) → variant A, [aPercent*100, (aPercent+bPercent)*100) → variant B,
+     * remainder → default (control).
      * Returns the default variant when A/B testing is disabled or userId is blank.
      */
     public String getVariantForUser(String userId, String layerName) {
@@ -47,48 +46,45 @@ public class ABTestService {
 
     /**
      * Returns the full deterministic assignment for the provided user and layer.
-     * This is useful when downstream callers need the chosen variant and the bucket metadata
+     * This is useful when downstream callers need the chosen variant and the slot metadata
      * without recomputing the hash more than once.
      */
     public Assignment getAssignmentForUser(String userId, String layerName) {
-        String effectiveLayerName = normalizeLayerName(layerName);
-        String defaultVariant = config.getDefaultVariant();
-        if (!config.isEnabled() || userId == null || userId.isBlank()) {
-            return Assignment.control(defaultVariant, effectiveLayerName);
+        Snapshot s = snapshot();
+        String layer = (layerName == null || layerName.isBlank()) ? s.layerName() : layerName;
+        if (!s.enabled() || userId == null || userId.isBlank()) {
+            return Assignment.control(s.defaultVariant(), layer);
         }
-
-        int bucket = resolveBucket(userId, effectiveLayerName);
-        if (bucket == VARIANT_A_BUCKET) {
-            String variant = config.getBucketAVariant();
-            log.debug("user {} in layer '{}' bucketed into A ({})", userId, effectiveLayerName, variant);
-            return new Assignment(variant, bucket, effectiveLayerName, true);
+        int slot = StableBucketer.slot(userId, layer);
+        int aEnd = s.bucketAPercent() * (StableBucketer.KEYSPACE / 100);
+        int bEnd = aEnd + s.bucketBPercent() * (StableBucketer.KEYSPACE / 100);
+        if (slot < aEnd) {
+            log.debug("user {} layer '{}' slot {} -> A ({})", userId, layer, slot, s.bucketAVariant());
+            return new Assignment(s.bucketAVariant(), slot, layer, true);
         }
-        if (bucket == VARIANT_B_BUCKET) {
-            String variant = config.getBucketBVariant();
-            log.debug("user {} in layer '{}' bucketed into B ({})", userId, effectiveLayerName, variant);
-            return new Assignment(variant, bucket, effectiveLayerName, true);
+        if (slot < bEnd) {
+            log.debug("user {} layer '{}' slot {} -> B ({})", userId, layer, slot, s.bucketBVariant());
+            return new Assignment(s.bucketBVariant(), slot, layer, true);
         }
-        return new Assignment(defaultVariant, bucket, effectiveLayerName, false);
+        return new Assignment(s.defaultVariant(), slot, layer, false);
     }
 
-    private int resolveBucket(String userId, String layerName) {
-        int split = config.getTrafficSplitNumber();
-        if (split <= 0) {
-            return -1;
-        }
-        String key = userId + ":" + layerName;
-        return (key.hashCode() & Integer.MAX_VALUE) % split;
+    /** Default/control variant from config — used by VariantRuntimeResolver for fallback. */
+    public String defaultVariant() {
+        return config.getDefaultVariant();
     }
 
-    private String normalizeLayerName(String layerName) {
-        if (layerName == null || layerName.isBlank()) {
-            return config.getLayerName();
-        }
-        return layerName;
+    private Snapshot snapshot() {
+        return new Snapshot(config.isEnabled(), config.getBucketAPercent(), config.getBucketBPercent(),
+                config.getBucketAVariant(), config.getBucketBVariant(), config.getDefaultVariant(),
+                config.getLayerName());
     }
 
-    public record Assignment(String variant, int bucket, String layerName, boolean inExperiment) {
+    private record Snapshot(boolean enabled, int bucketAPercent, int bucketBPercent,
+                            String bucketAVariant, String bucketBVariant, String defaultVariant,
+                            String layerName) {}
 
+    public record Assignment(String variant, int slot, String layerName, boolean inExperiment) {
         public static Assignment control(String variant, String layerName) {
             return new Assignment(variant, -1, layerName, false);
         }

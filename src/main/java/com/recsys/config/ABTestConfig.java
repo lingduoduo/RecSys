@@ -11,8 +11,11 @@ public class ABTestConfig {
 
     private boolean enabled = false;
 
-    @Min(2)
-    private int trafficSplitNumber = 5;
+    @Min(0)
+    private int bucketAPercent = 20;
+
+    @Min(0)
+    private int bucketBPercent = 20;
 
     @NotBlank
     private String bucketAVariant = "test";
@@ -21,7 +24,7 @@ public class ABTestConfig {
     private String bucketBVariant = "training";
 
     @NotBlank
-    private volatile String defaultVariant = "training";
+    private String defaultVariant = "training";
 
     @NotBlank
     private String layerName = "default";
@@ -29,8 +32,11 @@ public class ABTestConfig {
     public boolean isEnabled() { return enabled; }
     public void setEnabled(boolean enabled) { this.enabled = enabled; }
 
-    public int getTrafficSplitNumber() { return trafficSplitNumber; }
-    public void setTrafficSplitNumber(int trafficSplitNumber) { this.trafficSplitNumber = trafficSplitNumber; }
+    public int getBucketAPercent() { return bucketAPercent; }
+    public void setBucketAPercent(int bucketAPercent) { this.bucketAPercent = bucketAPercent; }
+
+    public int getBucketBPercent() { return bucketBPercent; }
+    public void setBucketBPercent(int bucketBPercent) { this.bucketBPercent = bucketBPercent; }
 
     public String getBucketAVariant() { return bucketAVariant; }
     public void setBucketAVariant(String bucketAVariant) { this.bucketAVariant = bucketAVariant; }
@@ -43,4 +49,9 @@ public class ABTestConfig {
 
     public String getLayerName() { return layerName; }
     public void setLayerName(String layerName) { this.layerName = layerName; }
+
+    @jakarta.validation.constraints.AssertTrue(message = "bucketAPercent + bucketBPercent must be <= 100")
+    public boolean isAllocationWithinBounds() {
+        return bucketAPercent + bucketBPercent <= 100;
+    }
 }

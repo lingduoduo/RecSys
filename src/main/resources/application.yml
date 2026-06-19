@@ -31,7 +31,8 @@ recsys:
   ab-test:
     enabled: false
     layer-name: default
-    traffic-split-number: 5
+    bucket-a-percent: ${RECSYS_AB_BUCKET_A_PERCENT:20}
+    bucket-b-percent: ${RECSYS_AB_BUCKET_B_PERCENT:20}
     bucket-a-variant: test
     bucket-b-variant: training
     default-variant: training
