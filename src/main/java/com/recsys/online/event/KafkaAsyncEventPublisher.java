@@ -29,6 +29,7 @@ public class KafkaAsyncEventPublisher extends AsyncEventPublisher {
 
     public KafkaAsyncEventPublisher(String bootstrapServers, String topic) {
         super();
+        Objects.requireNonNull(bootstrapServers, "bootstrapServers");
         this.topic = Objects.requireNonNull(topic, "topic");
         this.producer = new KafkaProducer<>(producerProps(bootstrapServers));
     }
@@ -76,7 +77,7 @@ public class KafkaAsyncEventPublisher extends AsyncEventPublisher {
         super.close();                    // drains the final batch synchronously through sendBatch
         try {
             producer.close(CLOSE_TIMEOUT); // bounded — don't block shutdown if the broker is down
-        } catch (RuntimeException e) {
+        } catch (Exception e) {
             log.warn("error closing Kafka exposure producer", e);
         }
     }
