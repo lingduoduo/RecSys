@@ -125,6 +125,12 @@ class RedisConnectionFactoryTest {
     }
 
     @Test
+    void effectiveTimeoutMs_flooredWhenCapNonPositive() {
+        assertEquals(1, RedisConnectionFactory.effectiveTimeoutMs(Map.of(), 0));
+        assertEquals(1, RedisConnectionFactory.effectiveTimeoutMs(Map.of(), -5));
+    }
+
+    @Test
     void sentinelModeCreatesJedisSentinelPool() {
         Map<String, String> env = Map.of(
             "REDIS_MODE", "sentinel",

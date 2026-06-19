@@ -255,6 +255,7 @@ class RecommendationServiceTest {
                 (org.mockito.ArgumentCaptor<?>) org.mockito.ArgumentCaptor.forClass(List.class);
         verify(rankingStage).rank(eq(encoded), captor.capture(), anyInt());
         assertThat(captor.getValue()).isNotEmpty();
+        assertThat(captor.getValue()).allMatch(c -> "fallback".equals(c.channel()));
         assertThat(response.recommendations()).isNotEmpty();
     }
 

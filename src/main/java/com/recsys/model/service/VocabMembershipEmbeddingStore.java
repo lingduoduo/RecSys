@@ -16,6 +16,8 @@ import java.util.Set;
  */
 public class VocabMembershipEmbeddingStore implements EmbeddingStore {
 
+    // Sentinel: callers MUST only null-check the returned array, never read or mutate it
+    // (MultiChannelRecallService uses it solely for warm/cold presence detection).
     private static final float[] PRESENT = new float[]{1.0f};
 
     private final Set<String> members;
