@@ -1,5 +1,7 @@
 package com.recsys.model.service;
 
+import com.recsys.domain.MovieCandidate;
+import com.recsys.domain.RecommendationQuery;
 import com.recsys.featureflags.FeatureFlagService;
 import com.recsys.featureflags.Flags;
 import com.recsys.config.RecommendationCacheProperties;
@@ -10,6 +12,7 @@ import com.recsys.model.dto.ScoredItem;
 import org.springframework.beans.factory.annotation.Autowired;
 import org.springframework.stereotype.Service;
 
+import java.util.ArrayList;
 import java.util.HashSet;
 import java.util.List;
 import java.util.Map;
@@ -20,7 +23,8 @@ import java.util.Set;
 public class RecommendationService {
 
     private static final int RECALL_MULTIPLIER = 5;
-    private static final int MAX_RECALL_SIZE = 500;
+    private static final int MIN_RECALL_SIZE = 50;
+    private static final int MAX_RECALL_LIMIT = 100; // shared RecommendationQuery cap
 
     private final ModelRuntimeProvider modelRuntimeProvider;
     private final ABTestService abTestService;
@@ -178,21 +182,6 @@ public class RecommendationService {
         return limitAndExclude(pool, excludedItemIds, request.getK());
     }
 
-    private List<ScoredItem> computeColdStartPool(RecommendRequest request, ModelRuntime runtime) {
-        var coldStartRequest = new RecommendRequest();
-        coldStartRequest.setUserId(request.getUserId());
-        coldStartRequest.setK(cache.coldStartMaxK());
-
-        FeatureEncoder.EncodedFeatures encoded = runtime.featureEncoder().encode(coldStartRequest);
-        Set<String> candidates = runtime.candidateSelectionService().selectCandidates(null, Set.of());
-        int scoringSize = Math.min(MAX_RECALL_SIZE, cache.coldStartMaxK() * RECALL_MULTIPLIER);
-        return runtime.inferenceService()
-                .scoreCandidates(encoded, runtime.featureEncoder(), candidates, scoringSize)
-                .stream()
-                .limit(cache.coldStartMaxK())
-                .toList();
-    }
-
     private List<ScoredItem> computeRecommendations(
             RecommendRequest request,
             ModelRuntime runtime,
@@ -200,14 +189,43 @@ public class RecommendationService {
     ) {
         FeatureEncoder.EncodedFeatures encoded = runtime.featureEncoder().encode(request);
         Set<String> excluded = excludedItemIds.isEmpty() ? Set.of() : new HashSet<>(excludedItemIds);
-        Integer numericUserId = parseUserId(request.getUserId());
-        Set<String> candidates = runtime.candidateSelectionService().selectCandidates(numericUserId, excluded);
-        int scoringSize = Math.min(MAX_RECALL_SIZE, request.getK() * RECALL_MULTIPLIER);
-        return runtime.inferenceService()
-                .scoreCandidates(encoded, runtime.featureEncoder(), candidates, scoringSize)
-                .stream()
-                .limit(request.getK())
-                .toList();
+        int recallLimit = Math.min(Math.max(request.getK() * RECALL_MULTIPLIER, MIN_RECALL_SIZE), MAX_RECALL_LIMIT);
+        var query = new RecommendationQuery(request.getUserId(), recallLimit, excluded, null);
+
+        List<MovieCandidate> candidates = runtime.retrievalStage().retrieve(query, recallLimit);
+        if (candidates.isEmpty()) {
+            candidates = fallbackCandidates(runtime, parseUserId(request.getUserId()), excluded);
+        }
+        return runtime.rankingStage().rank(encoded, candidates, request.getK());
+    }
+
+    private List<ScoredItem> computeColdStartPool(RecommendRequest request, ModelRuntime runtime) {
+        var coldStartRequest = new RecommendRequest();
+        coldStartRequest.setUserId(request.getUserId());
+        coldStartRequest.setK(cache.coldStartMaxK());
+
+        FeatureEncoder.EncodedFeatures encoded = runtime.featureEncoder().encode(coldStartRequest);
+        int recallLimit = Math.min(Math.max(cache.coldStartMaxK(), MIN_RECALL_SIZE), MAX_RECALL_LIMIT);
+        var query = new RecommendationQuery(request.getUserId(), recallLimit, Set.of(), null);
+
+        List<MovieCandidate> candidates = runtime.retrievalStage().retrieve(query, recallLimit);
+        if (candidates.isEmpty()) {
+            candidates = fallbackCandidates(runtime, null, Set.of());
+        }
+        return runtime.rankingStage().rank(encoded, candidates, cache.coldStartMaxK());
+    }
+
+    /**
+     * Redis-down fallback: the in-memory CandidateSelectionService pool, wrapped as MovieCandidates
+     * (score 0.0 — these are all in-vocab so the RankingStage re-scores them via ONNX, tier 1).
+     */
+    private static List<MovieCandidate> fallbackCandidates(ModelRuntime runtime, Integer numericUserId, Set<String> excluded) {
+        Set<String> ids = new CandidateSelectionService(runtime.artifactService()).selectCandidates(numericUserId, excluded);
+        List<MovieCandidate> out = new ArrayList<>(ids.size());
+        for (String id : ids) {
+            out.add(new MovieCandidate(id, 0.0, "fallback", Map.of()));
+        }
+        return out;
     }
 
     private static Integer parseUserId(String userId) {

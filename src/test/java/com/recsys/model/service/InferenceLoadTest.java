@@ -42,6 +42,9 @@ class InferenceLoadTest {
                 runtimeProvider,
                 new ABTestService(new com.recsys.config.ABTestConfig())
         );
+        // Mirror ModelRuntimeProvider.afterSingletonsInstantiated() so the timed loop
+        // measures steady-state serving rather than cold first-build latency.
+        runtimeProvider.warmUp();
     }
 
     @AfterAll

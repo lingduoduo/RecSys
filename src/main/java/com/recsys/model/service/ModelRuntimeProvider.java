@@ -4,6 +4,20 @@ import ai.onnxruntime.OrtException;
 import com.recsys.infrastructure.redis.RedisConnectionFactory;
 import com.recsys.infrastructure.redis.RedisEmbeddingStore;
 import com.recsys.config.ABTestConfig;
+import com.recsys.infrastructure.DataManager;
+import com.recsys.infrastructure.vectordb.CandidateGenerator;
+import com.recsys.online.ops.FaultInjector;
+import com.recsys.online.store.TrendingStore;
+import com.recsys.infrastructure.redis.GlobalPopularityStore;
+import com.recsys.infrastructure.redis.ShardedTopKStore;
+import com.recsys.service.retrieval.channels.EmbeddingChannel;
+import com.recsys.service.retrieval.channels.PopularityChannel;
+import com.recsys.service.retrieval.channels.TrendingChannel;
+import com.recsys.service.retrieval.coldstart.ColdStartChannel;
+import com.recsys.service.retrieval.coldstart.QuotaPolicy;
+import com.recsys.service.retrieval.multichannel.ChannelHealthMonitor;
+import com.recsys.service.retrieval.multichannel.MultiChannelRecallService;
+import com.recsys.service.retrieval.multichannel.RecallConfig;
 import jakarta.annotation.PreDestroy;
 import org.springframework.beans.factory.SmartInitializingSingleton;
 import org.springframework.beans.factory.annotation.Autowired;
@@ -21,12 +35,21 @@ import java.util.Map;
 import java.util.Set;
 import java.util.concurrent.CompletableFuture;
 import java.util.concurrent.ConcurrentHashMap;
+import java.util.concurrent.ExecutorService;
+import java.util.concurrent.Executors;
 import java.util.stream.Collectors;
 
 @Service
 public class ModelRuntimeProvider implements SmartInitializingSingleton {
 
     private static final Logger log = LoggerFactory.getLogger(ModelRuntimeProvider.class);
+
+    /**
+     * Connect/socket timeout cap for the recall Jedis pool. Set below the 200 ms
+     * per-channel recall budget so a down or slow Redis fails fast to the in-memory
+     * fallback instead of stalling recall-executor threads.
+     */
+    private static final int RECALL_REDIS_TIMEOUT_MS = 150;
 
     private final ModelArtifactLocator artifactLocator;
     private final ABTestConfig abTestConfig;
@@ -35,6 +58,13 @@ public class ModelRuntimeProvider implements SmartInitializingSingleton {
     private final String redisItemEmbeddingPrefix;
     private final Map<String, ModelRuntime> runtimes = new ConcurrentHashMap<>();
     private Pool<Jedis> redisItemEmbeddingPool;
+    private Pool<Jedis> recallPool;
+    private CandidateGenerator candidateGenerator;
+    private TrendingStore topkStore;
+    private GlobalPopularityStore globalPopStore;
+    private ExecutorService recallExecutor;
+    private ChannelHealthMonitor sharedHealthMonitor;
+    private final Object recallLock = new Object();
 
     public ModelRuntimeProvider(ModelArtifactLocator artifactLocator, ABTestConfig abTestConfig) {
         this(artifactLocator, abTestConfig, "dssm_model.onnx", "classpath", "i2vEmb");
@@ -115,6 +145,43 @@ public class ModelRuntimeProvider implements SmartInitializingSingleton {
         return runtimes.values().stream().allMatch(r -> r.inferenceService().isReady());
     }
 
+    /**
+     * Builds the recall stores once and shares them across variants. Jedis pools and the
+     * Redis-backed stores connect lazily, so this never fails when Redis is unavailable —
+     * a request-time recall miss falls back to CandidateSelectionService in RecommendationService.
+     */
+    private void ensureRecallInfra() {
+        synchronized (recallLock) {
+            if (candidateGenerator != null) return;
+            recallPool = RedisConnectionFactory.fromEnv(RECALL_REDIS_TIMEOUT_MS);
+            DataManager dataManager = DataManager.getInstance();
+            candidateGenerator = new CandidateGenerator(dataManager, new RedisEmbeddingStore(recallPool, "u2vEmb"));
+            topkStore = new ShardedTopKStore(recallPool, "topk:");
+            globalPopStore = new GlobalPopularityStore(recallPool);
+            recallExecutor = Executors.newFixedThreadPool(
+                    Runtime.getRuntime().availableProcessors() * 2,
+                    r -> new Thread(r, "model-recall-channel"));
+            sharedHealthMonitor = new ChannelHealthMonitor();
+        }
+    }
+
+    private MultiChannelRecallService buildRecallService(ModelArtifactService artifactService) {
+        ensureRecallInfra();
+        return MultiChannelRecallService.from(
+                RecallConfig.builder()
+                        .channels(java.util.List.of(
+                                new EmbeddingChannel(candidateGenerator),
+                                new TrendingChannel(topkStore, java.util.List.of("last_hour", "last_day")),
+                                new PopularityChannel(DataManager.getInstance(), globalPopStore),
+                                new ColdStartChannel(topkStore, globalPopStore)))
+                        .quotaPolicy(QuotaPolicy.defaultModelRetrieval())
+                        .healthMonitor(sharedHealthMonitor)
+                        .executor(recallExecutor)
+                        .faultInjector(FaultInjector.NOOP)
+                        .userEmbeddingStore(new VocabMembershipEmbeddingStore(artifactService.getUserVocab()))
+                        .build());
+    }
+
     private ModelRuntime buildRuntime(String variant) {
         try {
             ModelArtifactService artifactService = new ModelArtifactService(
@@ -126,11 +193,16 @@ public class ModelRuntimeProvider implements SmartInitializingSingleton {
             UserTowerInferenceService inferenceService = new UserTowerInferenceService(artifactLocator, variant, modelFile);
             inferenceService.init();
 
+            FeatureEncoder featureEncoder = new FeatureEncoder(artifactService);
+            ModelRetrievalStage retrievalStage = new ModelRetrievalStage(buildRecallService(artifactService));
+            RankingStage rankingStage = new RankingStage(inferenceService, featureEncoder, artifactService);
+
             return new ModelRuntime(
                     variant,
                     artifactService,
-                    new CandidateSelectionService(artifactService),
-                    new FeatureEncoder(artifactService),
+                    retrievalStage,
+                    rankingStage,
+                    featureEncoder,
                     inferenceService
             );
         } catch (IOException e) {
@@ -152,6 +224,14 @@ public class ModelRuntimeProvider implements SmartInitializingSingleton {
             }
         }
         runtimes.clear();
+        if (recallExecutor != null) {
+            recallExecutor.shutdownNow();
+            recallExecutor = null;
+        }
+        if (recallPool != null) {
+            recallPool.close();
+            recallPool = null;
+        }
         if (redisItemEmbeddingPool != null) {
             redisItemEmbeddingPool.close();
             redisItemEmbeddingPool = null;

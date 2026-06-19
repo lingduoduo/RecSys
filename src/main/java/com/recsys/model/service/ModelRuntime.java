@@ -3,7 +3,8 @@ package com.recsys.model.service;
 record ModelRuntime(
         String variant,
         ModelArtifactService artifactService,
-        CandidateSelectionService candidateSelectionService,
+        ModelRetrievalStage retrievalStage,
+        RankingStage rankingStage,
         FeatureEncoder featureEncoder,
         UserTowerInferenceService inferenceService
 ) {

@@ -1,5 +1,6 @@
 package com.recsys.model.service;
 
+import com.recsys.domain.MovieCandidate;
 import com.recsys.featureflags.FeatureFlagService;
 import com.recsys.featureflags.Flags;
 import com.recsys.config.RecommendationCacheProperties;
@@ -25,7 +26,8 @@ import static org.mockito.Mockito.when;
 
 class RecommendationServiceTest {
 
-    private CandidateSelectionService candidateSelectionService;
+    private ModelRetrievalStage retrievalStage;
+    private RankingStage rankingStage;
     private FeatureEncoder featureEncoder;
     private UserTowerInferenceService inferenceService;
     private ModelArtifactService artifactService;
@@ -36,7 +38,8 @@ class RecommendationServiceTest {
 
     @BeforeEach
     void setUp() {
-        candidateSelectionService = mock(CandidateSelectionService.class);
+        retrievalStage = mock(ModelRetrievalStage.class);
+        rankingStage = mock(RankingStage.class);
         featureEncoder = mock(FeatureEncoder.class);
         inferenceService = mock(UserTowerInferenceService.class);
         artifactService = mock(ModelArtifactService.class);
@@ -48,7 +51,8 @@ class RecommendationServiceTest {
         runtime = new ModelRuntime(
                 "training",
                 artifactService,
-                candidateSelectionService,
+                retrievalStage,
+                rankingStage,
                 featureEncoder,
                 inferenceService
         );
@@ -91,11 +95,16 @@ class RecommendationServiceTest {
     @Test
     void recommend_validRequest_returnsRankedItems() {
         var encoded = new FeatureEncoder.EncodedFeatures(1L);
+        var candidates = List.of(
+                new MovieCandidate("1", 0.9, "embedding", Map.of()),
+                new MovieCandidate("2", 0.8, "embedding", Map.of()),
+                new MovieCandidate("3", 0.7, "embedding", Map.of())
+        );
         var ranked = List.of(new ScoredItem("1", 0.95), new ScoredItem("3", 0.72));
 
         when(featureEncoder.encode(any())).thenReturn(encoded);
-        when(candidateSelectionService.selectCandidates(any(), any())).thenReturn(Set.of("1", "2", "3"));
-        when(inferenceService.scoreCandidates(eq(encoded), eq(featureEncoder), any(), anyInt())).thenReturn(ranked);
+        when(retrievalStage.retrieve(any(), anyInt())).thenReturn(candidates);
+        when(rankingStage.rank(eq(encoded), eq(candidates), anyInt())).thenReturn(ranked);
         when(artifactService.getModelVersion()).thenReturn("v1");
 
         var response = service.recommend(request("123", 2));
@@ -109,31 +118,40 @@ class RecommendationServiceTest {
     @Test
     void recommend_sameRequest_returnsCachedItemsWithoutRescoring() {
         var encoded = new FeatureEncoder.EncodedFeatures(1L);
+        var candidates = List.of(
+                new MovieCandidate("1", 0.9, "embedding", Map.of()),
+                new MovieCandidate("3", 0.7, "embedding", Map.of())
+        );
         var ranked = List.of(new ScoredItem("1", 0.95), new ScoredItem("3", 0.72));
 
         when(artifactService.getUserVocab()).thenReturn(Map.of("123", 1));
         when(featureEncoder.encode(any())).thenReturn(encoded);
-        when(candidateSelectionService.selectCandidates(any(), any())).thenReturn(Set.of("1", "2", "3"));
-        when(inferenceService.scoreCandidates(eq(encoded), eq(featureEncoder), any(), anyInt())).thenReturn(ranked);
+        when(retrievalStage.retrieve(any(), anyInt())).thenReturn(candidates);
+        when(rankingStage.rank(eq(encoded), eq(candidates), anyInt())).thenReturn(ranked);
         when(artifactService.getModelVersion()).thenReturn("v1");
 
         var first = service.recommend(request("123", 2));
         var second = service.recommend(request("123", 2));
 
         assertThat(second.recommendations()).isEqualTo(first.recommendations());
-        verify(inferenceService, times(1)).scoreCandidates(eq(encoded), eq(featureEncoder), any(), anyInt());
-        verify(candidateSelectionService, times(1)).selectCandidates(123, Set.of());
+        // Cache hit: rank called only once despite two recommend() calls
+        verify(rankingStage, times(1)).rank(eq(encoded), eq(candidates), anyInt());
     }
 
     @Test
     void recommend_unknownUsers_shareColdStartCache() {
         var encoded = new FeatureEncoder.EncodedFeatures(0L);
+        var candidates = List.of(
+                new MovieCandidate("1", 0.9, "cold", Map.of()),
+                new MovieCandidate("2", 0.8, "cold", Map.of()),
+                new MovieCandidate("3", 0.7, "cold", Map.of())
+        );
         var ranked = List.of(new ScoredItem("1", 0.91), new ScoredItem("2", 0.80), new ScoredItem("3", 0.70));
 
         when(artifactService.getUserVocab()).thenReturn(Map.of("__UNK__", 0));
         when(featureEncoder.encode(any())).thenReturn(encoded);
-        when(candidateSelectionService.selectCandidates(any(), any())).thenReturn(Set.of("1", "2", "3"));
-        when(inferenceService.scoreCandidates(eq(encoded), eq(featureEncoder), any(), anyInt())).thenReturn(ranked);
+        when(retrievalStage.retrieve(any(), anyInt())).thenReturn(candidates);
+        when(rankingStage.rank(eq(encoded), eq(candidates), anyInt())).thenReturn(ranked);
         when(artifactService.getModelVersion()).thenReturn("v1");
 
         var first = service.recommend(request("new-user-a", 2));
@@ -142,36 +160,41 @@ class RecommendationServiceTest {
         assertThat(first.recommendations()).containsExactlyElementsOf(ranked.subList(0, 2));
         assertThat(second.userId()).isEqualTo("new-user-b");
         assertThat(second.recommendations()).containsExactlyElementsOf(ranked.subList(0, 2));
-        verify(inferenceService, times(1)).scoreCandidates(eq(encoded), eq(featureEncoder), any(), anyInt());
-        verify(candidateSelectionService, times(1)).selectCandidates(null, Set.of());
+        // Cold-start pool is shared — rankingStage called once for both unknown users
+        verify(rankingStage, times(1)).rank(eq(encoded), eq(candidates), anyInt());
     }
 
     @Test
-    void recommend_excludeItemIds_passedToCandidateSelection() {
+    void recommend_excludeItemIds_passedToRetrievalStage() {
         var encoded = new FeatureEncoder.EncodedFeatures(1L);
         when(artifactService.getUserVocab()).thenReturn(Map.of("123", 1));
         when(featureEncoder.encode(any())).thenReturn(encoded);
-        when(candidateSelectionService.selectCandidates(any(), any())).thenReturn(Set.of());
-        when(inferenceService.scoreCandidates(eq(encoded), eq(featureEncoder), any(), anyInt())).thenReturn(List.of());
+        when(retrievalStage.retrieve(any(), anyInt())).thenReturn(List.of());
+        // recall empty → fallback; artifactService returns empty vocab ids so fallback is also empty
+        when(artifactService.getAvailableItemIds()).thenReturn(Set.of());
         when(artifactService.getModelVersion()).thenReturn("v1");
+        when(rankingStage.rank(any(), any(), anyInt())).thenReturn(List.of());
 
         var req = request("123", 5);
         req.setExcludeItemIds(List.of("2", "5"));
         service.recommend(req);
 
-        org.mockito.Mockito.verify(candidateSelectionService)
-                .selectCandidates(123, Set.of("2", "5"));
+        // The excludedItemIds set is forwarded in the RecommendationQuery to the retrievalStage
+        var captor = org.mockito.ArgumentCaptor.forClass(com.recsys.domain.RecommendationQuery.class);
+        verify(retrievalStage).retrieve(captor.capture(), anyInt());
+        assertThat(captor.getValue().excludedItemIds()).contains("2", "5");
     }
 
     @Test
     void recommend_nonNumericUserId_treatedAsUnknown() {
         var encoded = new FeatureEncoder.EncodedFeatures(0L);
         when(featureEncoder.encode(any())).thenReturn(encoded);
-        when(candidateSelectionService.selectCandidates(any(), any())).thenReturn(Set.of());
-        when(inferenceService.scoreCandidates(eq(encoded), eq(featureEncoder), any(), anyInt())).thenReturn(List.of());
+        when(retrievalStage.retrieve(any(), anyInt())).thenReturn(List.of());
+        when(artifactService.getAvailableItemIds()).thenReturn(Set.of());
+        when(rankingStage.rank(any(), any(), anyInt())).thenReturn(List.of());
         when(artifactService.getModelVersion()).thenReturn("v1");
 
-        // non-numeric userId should not throw — null numericUserId is passed to candidate selection
+        // non-numeric userId should not throw
         var response = service.recommend(request("alice", 3));
         assertThat(response).isNotNull();
     }
@@ -188,18 +211,52 @@ class RecommendationServiceTest {
                 flagService);
 
         var encoded = new FeatureEncoder.EncodedFeatures(0L);
+        var candidates = List.of(
+                new MovieCandidate("1", 0.9, "embedding", Map.of()),
+                new MovieCandidate("2", 0.8, "embedding", Map.of())
+        );
+        var ranked = List.of(new ScoredItem("1", 0.9), new ScoredItem("2", 0.8));
+
         when(artifactService.getUserVocab()).thenReturn(Map.of("__UNK__", 0));
         when(featureEncoder.encode(any())).thenReturn(encoded);
-        when(candidateSelectionService.selectCandidates(any(), any())).thenReturn(Set.of("1", "2"));
-        when(inferenceService.scoreCandidates(eq(encoded), eq(featureEncoder), any(), anyInt()))
-                .thenReturn(List.of(new ScoredItem("1", 0.9), new ScoredItem("2", 0.8)));
+        when(retrievalStage.retrieve(any(), anyInt())).thenReturn(candidates);
+        when(rankingStage.rank(eq(encoded), eq(candidates), anyInt())).thenReturn(ranked);
         when(artifactService.getModelVersion()).thenReturn("v1");
 
         testService.recommend(request("new-user-a", 1));
         testService.recommend(request("new-user-b", 1));
 
-        // flag disabled → no cold-start pool → each unknown user triggers its own inference call
-        verify(inferenceService, times(2)).scoreCandidates(eq(encoded), eq(featureEncoder), any(), anyInt());
+        // flag disabled → no cold-start pool → each unknown user triggers its own ranking call
+        verify(rankingStage, times(2)).rank(eq(encoded), eq(candidates), anyInt());
+    }
+
+    // ---- empty-recall fallback ----
+
+    @Test
+    void recommend_emptyRecall_fallsBackToCandidateSelectionService() {
+        var encoded = new FeatureEncoder.EncodedFeatures(1L);
+        var ranked = List.of(new ScoredItem("1", 0.95), new ScoredItem("2", 0.80));
+
+        when(featureEncoder.encode(any())).thenReturn(encoded);
+        when(retrievalStage.retrieve(any(), anyInt())).thenReturn(List.of());
+        // Stub getAvailableItemIds so CandidateSelectionService has something to return
+        when(artifactService.getAvailableItemIds()).thenReturn(Set.of("1", "2", "3"));
+        when(artifactService.getUserVocab()).thenReturn(Map.of("123", 1));
+        when(artifactService.getItemVocab()).thenReturn(Map.of("1", 1, "2", 2, "3", 3));
+        when(artifactService.getModelVersion()).thenReturn("v1");
+        // rankingStage is called with a NON-EMPTY candidate list from the fallback
+        when(rankingStage.rank(eq(encoded), any(), anyInt())).thenReturn(ranked);
+
+        var response = service.recommend(request("123", 2));
+
+        // Verify rankingStage was called with a non-empty candidate list (fallback produced candidates)
+        @SuppressWarnings("unchecked")
+        var captor = (org.mockito.ArgumentCaptor<List<MovieCandidate>>)
+                (org.mockito.ArgumentCaptor<?>) org.mockito.ArgumentCaptor.forClass(List.class);
+        verify(rankingStage).rank(eq(encoded), captor.capture(), anyInt());
+        assertThat(captor.getValue()).isNotEmpty();
+        assertThat(captor.getValue()).allMatch(c -> "fallback".equals(c.channel()));
+        assertThat(response.recommendations()).isNotEmpty();
     }
 
     private static RecommendRequest request(String userId, int k) {

@@ -13,6 +13,19 @@ import static org.assertj.core.api.Assertions.assertThat;
 class ModelRuntimeProviderTest {
 
     @Test
+    void buildsRetrievalAndRankingStagesPerVariant() {
+        ModelRuntimeProvider provider = new ModelRuntimeProvider(new ModelArtifactLocator("", ""), new com.recsys.config.ABTestConfig());
+        try {
+            ModelRuntime runtime = provider.getRuntime("training");
+            assertThat(runtime.retrievalStage()).isNotNull();
+            assertThat(runtime.rankingStage()).isNotNull();
+            assertThat(runtime.artifactService()).isNotNull();
+        } finally {
+            provider.close();
+        }
+    }
+
+    @Test
     void getRuntime_classpathLoadsBundledTrainingAndTestVariants() {
         ModelRuntimeProvider provider = new ModelRuntimeProvider(new ModelArtifactLocator("", ""), new com.recsys.config.ABTestConfig());
         try {
