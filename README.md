@@ -173,14 +173,14 @@ Three independent recommendation paths share a common Redis-backed data layer wr
 **Port 6010 — Cold-start & multi-channel recall**
 
 1. On startup, `RecSysServer` seeds item and user embeddings from classpath text files if Redis is empty — providing a usable baseline before the Flink job writes live data.
-2. `MultiChannelRecallService` always runs all four recall channels in parallel: embedding-based ANN (`CandidateGenerator.byEmbedding`), windowed trending Top-K, genre history expansion (`CandidateGenerator.byGenre`), and global popularity (`CandidateGenerator.byUserHistory`).
-3. Results are merged by highest score, already-watched items are excluded, and top-K are returned.
+2. `MultiChannelRecallService` runs all **five** recall channels in parallel — embedding ANN, windowed trending Top-K, genre history, global popularity, and a dedicated cold-start channel — merged under the `QuotaPolicy.defaultMovie()` quota.
+3. Results are merged by the quota-aware two-phase merge, already-watched items are excluded, and top-K are returned.
 
-**Port 7010 — Feature store**
+**Port 7010 — Shared multi-channel recall (real-time)**
 
-1. `OnlineFeatureStore` reads per-user recent watch history from Redis (`user:<id>:recent_movies`) for behavioral recall.
-2. `ShardedTopKStore` serves windowed trending items from four Redis shards (`topk:<window>:s0..s3`).
-3. `OnlineRecommendationEngine` blends behavioral candidates with embedding recall from `CandidateGenerator.byEmbedding`; cold-start users fall back to trending-only (`strategy: "online"`). The feature snapshot endpoint (`/online/features`) exposes the raw Redis view for debugging.
+1. `OnlineFeatureStore` reads per-user recent watch history from Redis (`user:<id>:recent_movies`); `ShardedTopKStore` serves windowed trending items from sharded Redis keys (`topk:<window>:s0..s3`).
+2. `OnlineRecommendationService` runs the **same `MultiChannelRecallService`** as 6010 — five channels in parallel (embedding ANN, `online_recent_history`, trending, popularity, cold_start) under the 7010-specific `QuotaPolicy.defaultOnline()` quota, with warm/cold classification from the cache-backed user embedding.
+3. `OnlineLearner` re-ranks the merged candidates (adds a learned per-item score adjustment), recent watches are excluded, and the top-`k` are returned with `strategy: "multichannel"`. If every channel returns empty, the trending snapshot is served as a fallback. The `/online/features` endpoint still exposes the raw Redis view for debugging.
 
 **Port 8080 — ONNX model serving**
 
@@ -381,13 +381,47 @@ curl -X POST "http://localhost:6010/setuserembedding?userId=123&ttl=3600&vec=0.1
 
 ---
 
+### Shared recall core
+
+Both serving ports run the **same** `MultiChannelRecallService` — only their per-port wiring differs. That wiring is bundled in a `RecallConfig` built once at startup and handed to `MultiChannelRecallService.from(config)`:
+
+| `RecallConfig` field | Port 6010 (`RecSysServer`) | Port 7010 (`OnlinePredictionServer`) |
+|---|---|---|
+| `channels` | embedding, trending, **genre_history**, popularity, cold_start | embedding, **online_recent_history**, trending, popularity, cold_start |
+| `quotaPolicy` | `QuotaPolicy.defaultMovie()` | `QuotaPolicy.defaultOnline()` |
+| `channelTimeoutMs` | `RECALL_CHANNEL_TIMEOUT_MS` (default `200`) | `RECALL_CHANNEL_TIMEOUT_MS` (default `200`) |
+| `healthMonitor` | `ChannelHealthMonitor` (per-channel backoff) | `ChannelHealthMonitor` |
+| `userEmbeddingStore` | `u2vEmb` Redis store + heap cache | `u2vEmb` store wrapped in `LogicalExpiryEmbeddingCache` |
+
+**How a request flows through it:**
+
+1. **Classify** — probe the user embedding (cache → Redis) to label the user **warm** (has an embedding) or **cold** (none). A malformed/blank `userId` defaults to the cold quota.
+2. **Fan out** — run every channel in parallel on a bounded thread pool. Each channel has `RECALL_CHANNEL_TIMEOUT_MS` to respond; a timeout/error returns empty and trips `ChannelHealthMonitor` backoff so a sick channel is skipped on subsequent requests until it recovers.
+3. **Quota merge (two-phase)** — phase 1 fills each channel's quota by score; phase 2 gap-fills any shortfall (a backed-off channel's unused slots) from the remaining pool. Already-excluded items (`excludedItemIds`) are dropped.
+
+The per-channel timeout is the one knob shared across both ports — set `RECALL_CHANNEL_TIMEOUT_MS=<ms>` once to tune 6010 and 7010 together (unset → 200 ms, unchanged).
+
+`QuotaPolicy` encodes each port's warm/cold quota as ordered fraction maps plus a *residual* channel that absorbs leftover slots; the [6010](#port-6010--catalog--recommendation-serving) and [7010](#port-7010--online-prediction-server-feature-store) tables above show the resolved percentages.
+
 ### Port 7010 — Online Prediction Server (Feature Store)
 
-Real-time feature store that serves the per-user signals written by the Flink job. `OnlineFeatureStore` reads recent watch history (`user:<id>:recent_movies`) and `ShardedTopKStore` reads windowed trending items (`topk:<window>:s0..s3`) directly from Redis. The recommendation endpoint blends these behavioral signals with offline embedding recall; the feature snapshot endpoint exposes the raw Redis view for debugging. Responses populate once the Flink job is writing to Redis; without it the lists are empty but the API is healthy.
+Real-time serving built on the **same shared `MultiChannelRecallService`** as port 6010, plus a feature store for the per-user signals written by the Flink job. `OnlineFeatureStore` reads recent watch history (`user:<id>:recent_movies`) and `ShardedTopKStore` reads windowed trending items (`topk:<window>:s0..s3`) directly from Redis. The recommendation endpoint runs **five recall channels in parallel** — embedding ANN, recent-history similarity, trending, popularity, and cold-start — each on a bounded thread pool with a per-channel timeout (`RECALL_CHANNEL_TIMEOUT_MS`, default 200 ms) and `ChannelHealthMonitor` backoff, then re-ranks the merge with `OnlineLearner`. The feature snapshot endpoint exposes the raw Redis view for debugging. Responses populate once the Flink job is writing to Redis; without it the lists are empty but the API is healthy.
+
+Per request the user is classified **warm/cold** from their (cache-backed) embedding, then channels are merged with the **quota-aware two-phase merge** under `QuotaPolicy.defaultOnline()`:
+
+| Channel | Warm quota | Cold quota |
+|---|---:|---:|
+| embedding | 50% | 0% |
+| online_recent_history | 25% | 10% |
+| trending | 15% | 20% |
+| popularity | 10% | 20% |
+| cold_start | 0% | 50% |
+
+(The percentages that aren't a fixed fraction come from a *residual* channel that absorbs the remaining slots — `popularity` for warm, `online_recent_history` for cold.) This is the same merge engine as 6010, just a different channel set and quota — see [Shared recall core](#shared-recall-core).
 
 #### Real-time recommendations
 
-Blends behavioral signals (recent watch history + trending) with embedding-based recall:
+Runs the five-channel recall, re-ranks with `OnlineLearner`, excludes recent watches, and returns the top-`k`. The response also carries the recent-history and per-`window` trending snapshots the UI renders alongside the recommendations.
 
 ```bash
 curl "http://localhost:7010/online/recommendation?userId=123"
@@ -405,7 +439,7 @@ curl "http://localhost:7010/online/recommendation?userId=124&window=last_month&k
 {
   "user": {"userId": 123, "name": "Alice"},
   "window": "last_hour",
-  "strategy": "online+model",
+  "strategy": "multichannel",
   "recentMovies": [
     {"id": 4, "title": "The Matrix", "year": 1999, "genres": ["Sci-Fi", "Action"]}
   ],
@@ -413,19 +447,32 @@ curl "http://localhost:7010/online/recommendation?userId=124&window=last_month&k
     {"id": 11, "title": "Interstellar", "year": 2014, "genres": ["Sci-Fi", "Drama"]}
   ],
   "recommendations": [
-    {"id": 4, "title": "The Matrix", "year": 1999, "genres": ["Sci-Fi", "Action"]},
-    ...
+    {"id": 4, "title": "The Matrix", "year": 1999, "genres": ["Sci-Fi", "Action"]}
   ]
 }
 ```
 
-The `strategy` field is `"online+model"` when embedding recall fires, `"online"` for cold-start users (cataloged user whose embedding recall returns nothing → behavioral/trending signals only). Returns `404` if `userId` is not found; `429` (with `Retry-After` header) when the load shedder is active.
+`strategy` is always `"multichannel"`. The `window` parameter only affects the `trendingMovies` snapshot in the response — the recall channels themselves use fixed windows (`last_hour`, `last_day`). Returns `404` if `userId` is not found; `429` (with a `Retry-After` header) when the load shedder is active.
 
-> Like 6010, this endpoint 404s on unknown users. Seeded users 123–127 have embeddings, so they return `strategy:"online+model"`; the built-in cold user **200 ("New User")** has no embedding, so it exercises the `"online"` trending-only fallback:
+> Like 6010, this endpoint 404s on unknown users, and warm vs. cold changes the **recall mix**, not the `strategy` string. Seeded users **123–127** have embeddings, so embedding ANN leads (50% of warm slots); the built-in cold user **200 ("New User")** has no embedding, so `cold_start` / `trending` / `popularity` lead:
 
 ```bash
+# Warm user — embedding-led
+curl "http://localhost:7010/online/recommendation?userId=123&k=10"
+
+# Built-in COLD user (200) — cold_start / trending / popularity lead
 curl "http://localhost:7010/online/recommendation?userId=200&window=last_hour&k=5"
-# {... "strategy":"online", "recommendations":[ ...trending items... ]}
+# {... "strategy":"multichannel", "recommendations":[ ... ]}
+```
+
+#### Recommendations v2 — cursor pagination (`/v2/recommend`)
+
+`POST /v2/recommend` drives the same 7010 multichannel recall through the shared recall → rank → hydrate → paginate pipeline (`OnlineBlendingPipeline`), returning a cursor for stable, million-scale pagination. Same JSON `RecommendationQuery` body and cursor semantics as 6010's `/v2/recommend`.
+
+```bash
+curl -X POST "http://localhost:7010/v2/recommend" \
+  -H "Content-Type: application/json" \
+  -d '{"userId":"123","limit":10,"excludedItemIds":["1","2"]}'
 ```
 
 #### Feature snapshot
@@ -464,7 +511,7 @@ curl "http://localhost:7010/online/ops"
   "metrics": {
     "totalRequests": 42, "successCount": 41, "failureCount": 1, "rejectedCount": 0,
     "recentAvgLatencyMs": 22.5, "recentFailureRate": 0.0, "recentRejectedRate": 0.0, "qps": 0.7,
-    "p50Ms": 20, "p95Ms": 45, "p99Ms": 80, "strategies": {"online+model": {...}}
+    "p50Ms": 20, "p95Ms": 45, "p99Ms": 80, "strategies": {"multichannel": {...}}
   },
   "load": {
     "inFlightRequests": 0, "maxConcurrentRequests": 64, "utilization": 0.0, "drainUtilization": 0.9,
@@ -731,7 +778,7 @@ curl "http://localhost:8010/api/movies/movie?id=1"
 curl "http://localhost:8010/api/catalog/item?id=1"
 # {"id":1,"title":"Inception","year":2010,"genres":["Sci-Fi","Thriller"]}
 
-# Offline recommendations via gateway (all four recall channels run in parallel)
+# Offline recommendations via gateway (all five recall channels run in parallel)
 curl "http://localhost:8010/api/catalog/getrecommendation?userId=123&k=5"
 curl "http://localhost:8010/api/catalog/getrecommendation?userId=123&k=10"
 
@@ -914,6 +961,7 @@ curl -v -X POST http://localhost:8010/api/llm/api/generate \
 | `REDIS_PORT` | `6379` | Redis port |
 | `LOCAL_EMBEDDING_CACHE_MAX_ENTRIES` | `100000` | Max embeddings in JVM LRU cache |
 | `RECSYS_VECTOR_BACKEND` | `lsh` | `lsh` (approximate) or `exact` |
+| `RECALL_CHANNEL_TIMEOUT_MS` | `200` | Per-channel recall timeout (shared by both serving ports) |
 
 ### Online Prediction Server (port 7010)
 
@@ -921,6 +969,9 @@ curl -v -X POST http://localhost:8010/api/llm/api/generate \
 |---|---:|---|
 | `ONLINE_DEMO_PORT` | `7010` | Server port |
 | `ONLINE_REQUEST_TIMEOUT_MS` | `500` | End-to-end Armeria request deadline |
+| `RECALL_CHANNEL_TIMEOUT_MS` | `200` | Per-channel recall timeout for the shared `MultiChannelRecallService` (also tunes 6010) |
+| `ONLINE_USER_EMB_SOFT_TTL_SECONDS` | `30` | Soft-TTL of the `LogicalExpiryEmbeddingCache` for user embeddings (cold/warm classification) |
+| `ONLINE_TOPK_CACHE_TTL_MS` | `2000` | Local hot-key cache TTL for the sharded trending store |
 | `ONLINE_MAX_CONCURRENT_REQUESTS` | `64` | Pre-queue in-flight cap before `429`; tune against Redis pool and load tests |
 | `ONLINE_DRAIN_UTILIZATION` | `0.90` | Utilization where `/health/ready` → `503` for drain |
 | `ONLINE_REDIS_RATE_LIMIT_QPS` | `0` | Cross-instance Redis rate limit; `0` = disabled |
@@ -981,7 +1032,7 @@ src/main/java/com/recsys/
 │   ├── alb/        ALB integration helpers
 │   └── autoscaling/ Auto-scaling signal publishers
 ├── service/
-│   ├── retrieval/  MultiChannelRecallService, recall channels (Embedding, Trending, Genre, Popularity)
+│   ├── retrieval/  MultiChannelRecallService, RecallConfig, QuotaPolicy, recall channels (Embedding, Trending, GenreHistory, OnlineRecentHistory, Popularity, ColdStart)
 │   ├── ranking/    Ranking pipeline
 │   ├── recommendation/ Shared recall → rank → paginate → hydrate pipeline
 │   ├── hydrator/   Item/user hydration
@@ -1213,8 +1264,8 @@ mvn test -DexcludedGroups="" -Dgroups=load
 | `PredictionIntegrationTest` | End-to-end pipeline: ranked results, score ordering, excludeItemIds |
 | `RecommendationEndToEndTest` | Full HTTP chain; verifies metrics counters and `/health/ready` state |
 | `InferenceLoadTest` _(tag: load)_ | P95 ≤ 2000 ms, success rate ≥ 99% — 100 total requests, 10 concurrent threads |
-| `OnlineRecommendationEngineTest` | Blends history + trending; rejects unknown window values |
-| `OnlineRecommendationServiceTest` | Blended scoring, online-only fallback, recently-watched exclusion |
+| `OnlineRecentHistoryChannelTest` | Recency-boosted similar-movie recall; empty on no history / non-numeric `userId`; rank-based scores |
+| `OnlineRecommendationServiceTest` | Multichannel recall + `OnlineLearner` re-rank, `strategy:"multichannel"`, empty-recall → trending fallback, recently-watched exclusion |
 | `JvmMemoryMonitorTest` | Heap/non-heap positive bytes, usedFraction in [0,1], metaspace pool |
 | `GcEventTrackerTest` | Zero initial counters, histogram keys, `GcType.stw`, `avgPauseMs`, destroy idempotence |
 | `RedisConnectionFactoryTest` | Standalone pool, sentinel code path, `parseSentinelNodes`, `parsePort` |
@@ -1293,8 +1344,8 @@ sh streaming/online-serving/scripts/produce_movie_events.sh
 | `ExperienceCollector` | Groups samples by request into ranked list experiences for listwise training |
 | `OnlineLearner` | Updates per-item bias parameters from list experiences; persists to Redis |
 | `OnlineFeatureStreamingJob` | Flink job: reads Kafka, writes history + embeddings + trending to Redis |
-| `OnlineRecommendationEngine` | Scores candidates from per-user history + windowed trending |
-| `OnlineRecommendationService` | Blends behavioral + embedding signals; cold-start fallback |
+| `OnlineRecentHistoryChannel` | Recall channel: movies similar to the user's recent watches, recency-boosted (7010's behavioral signal) |
+| `OnlineRecommendationService` | Recall (shared `MultiChannelRecallService`) → `OnlineLearner` re-rank → recent/trending snapshot; `strategy:"multichannel"` |
 | `OnlineLoadShedder` | Caps in-flight requests; returns `429` + `Retry-After` when overloaded |
 | `OnlineCapacityService` | Exposes DAU/QPS/TPS targets, `headroomQps`, and `overloaded` flag |
 
