@@ -87,4 +87,15 @@ public record QuotaPolicy(
         cold.put("popularity", 0.20);
         return new QuotaPolicy(warm, "popularity", cold, "genre_history");
     }
+
+    /** Port-8080 model-serving retrieval quota: embedding-led warm (the ONNX ranker personalizes), cold-start led cold. */
+    public static QuotaPolicy defaultModelRetrieval() {
+        Map<String, Double> warm = new LinkedHashMap<>();
+        warm.put("embedding", 0.70);
+        warm.put("trending", 0.15);
+        Map<String, Double> cold = new LinkedHashMap<>();
+        cold.put("cold_start", 0.50);
+        cold.put("trending", 0.25);
+        return new QuotaPolicy(warm, "popularity", cold, "popularity");
+    }
 }

@@ -102,4 +102,23 @@ class QuotaPolicyTest {
                 + q.slotsFor("popularity") + q.slotsFor("online_recent_history");
         assertThat(total).isEqualTo(10);
     }
+
+    @Test
+    void defaultModelRetrieval_warmIsEmbeddingLed() {
+        QuotaSpec warm = QuotaPolicy.defaultModelRetrieval().warm(20);
+        assertThat(warm.slots().get("embedding")).isEqualTo(14);   // round(0.70 * 20)
+        assertThat(warm.slots().get("trending")).isEqualTo(3);     // round(0.15 * 20)
+        assertThat(warm.slots().get("popularity")).isEqualTo(3);   // residual 20-14-3
+        assertThat(warm.slots().values().stream().mapToInt(Integer::intValue).sum()).isEqualTo(20);
+        assertThat(warm.slots()).doesNotContainKey("cold_start");  // cold_start has 0 warm slots
+    }
+
+    @Test
+    void defaultModelRetrieval_coldIsColdStartLed() {
+        QuotaSpec cold = QuotaPolicy.defaultModelRetrieval().cold(20);
+        assertThat(cold.slots().get("cold_start")).isEqualTo(10);  // round(0.50 * 20)
+        assertThat(cold.slots().get("trending")).isEqualTo(5);     // round(0.25 * 20)
+        assertThat(cold.slots().get("popularity")).isEqualTo(5);   // residual 20-10-5
+        assertThat(cold.slots()).doesNotContainKey("embedding");   // embedding has 0 cold slots
+    }
 }
