@@ -122,7 +122,7 @@ public class RecommendationService {
             if (cache.isColdStartEnabled()
                     && isColdStartUser(request.getUserId(), runtime)
                     && featureFlagService.isEnabled(Flags.COLD_START_ENABLED, request.getUserId())) {
-                return coldStartItems(request, runtime, assignment, modelVersion, excludedItemIds);
+                return coldStartItems(request, runtime, servedVariant, modelVersion, excludedItemIds);
             }
             return computeRecommendations(request, runtime, excludedItemIds);
         });
@@ -192,11 +192,11 @@ public class RecommendationService {
     private List<ScoredItem> coldStartItems(
             RecommendRequest request,
             ModelRuntime runtime,
-            ABTestService.Assignment assignment,
+            String servedVariant,
             String modelVersion,
             List<String> excludedItemIds
     ) {
-        var coldStartKey = new RecommendationCache.ColdStartKey(assignment.variant(), modelVersion);
+        var coldStartKey = new RecommendationCache.ColdStartKey(servedVariant, modelVersion);
         // All unknown users share one pool per variant+modelVersion; compute it once.
         List<ScoredItem> pool = cache.getOrComputeColdStart(coldStartKey,
                 () -> computeColdStartPool(request, runtime));
