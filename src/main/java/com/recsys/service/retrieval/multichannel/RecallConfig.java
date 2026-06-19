@@ -25,10 +25,20 @@ public record RecallConfig(
 
     public static Builder builder() { return new Builder(); }
 
+    static long readLongEnv(String name, long defaultValue) {
+        String raw = System.getenv(name);
+        if (raw == null || raw.isBlank()) return defaultValue;
+        try {
+            return Long.parseLong(raw.trim());
+        } catch (NumberFormatException e) {
+            return defaultValue;
+        }
+    }
+
     public static final class Builder {
         private List<RecallChannel> channels;
         private QuotaPolicy quotaPolicy = QuotaPolicy.defaultMovie();
-        private long channelTimeoutMs = 200L;
+        private long channelTimeoutMs = readLongEnv("RECALL_CHANNEL_TIMEOUT_MS", 200L);
         private ExecutorService executor;
         private ChannelHealthMonitor healthMonitor = new ChannelHealthMonitor();
         private FaultInjector faultInjector = FaultInjector.NOOP;
