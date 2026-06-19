@@ -9,6 +9,7 @@ import com.recsys.model.converter.RecommendationConverter;
 import com.recsys.model.request.RecommendRequest;
 import com.recsys.model.response.RecommendResponse;
 import com.recsys.model.dto.ScoredItem;
+import io.micrometer.core.instrument.simple.SimpleMeterRegistry;
 import org.springframework.beans.factory.annotation.Autowired;
 import org.springframework.stereotype.Service;
 
@@ -31,6 +32,7 @@ public class RecommendationService {
     private final RecommendationCache cache;
     private final FeatureFlagService featureFlagService;
     private final RecommendationConverter converter;
+    private final VariantRuntimeResolver variantRuntimeResolver;
 
     private static final FeatureFlagService NOOP_FLAGS =
             new FeatureFlagService((flag, id, props) -> Optional.empty());
@@ -59,7 +61,6 @@ public class RecommendationService {
         this(modelRuntimeProvider, abTestService, cacheProperties, featureFlagService, new RecommendationConverter());
     }
 
-    @Autowired
     public RecommendationService(
             ModelRuntimeProvider modelRuntimeProvider,
             ABTestService abTestService,
@@ -67,11 +68,25 @@ public class RecommendationService {
             FeatureFlagService featureFlagService,
             RecommendationConverter converter
     ) {
+        this(modelRuntimeProvider, abTestService, cacheProperties, featureFlagService, converter,
+                new VariantRuntimeResolver(modelRuntimeProvider, new SimpleMeterRegistry()));
+    }
+
+    @Autowired
+    public RecommendationService(
+            ModelRuntimeProvider modelRuntimeProvider,
+            ABTestService abTestService,
+            RecommendationCacheProperties cacheProperties,
+            FeatureFlagService featureFlagService,
+            RecommendationConverter converter,
+            VariantRuntimeResolver variantRuntimeResolver
+    ) {
         this.modelRuntimeProvider = modelRuntimeProvider;
         this.abTestService = abTestService;
         this.cache = new RecommendationCache(cacheProperties);
         this.featureFlagService = featureFlagService;
         this.converter = converter;
+        this.variantRuntimeResolver = variantRuntimeResolver;
     }
 
     public RecommendResponse recommend(RecommendRequest request) {
@@ -90,12 +105,15 @@ public class RecommendationService {
      * is not recalculated on the error path.
      */
     public RecommendResponse recommend(RecommendRequest request, ABTestService.Assignment assignment) {
-        ModelRuntime runtime = modelRuntimeProvider.getRuntime(assignment.variant());
+        VariantRuntimeResolver.Resolved resolved =
+                variantRuntimeResolver.resolve(assignment.variant(), abTestService.defaultVariant());
+        ModelRuntime runtime = resolved.runtime();
+        String servedVariant = resolved.servedVariant();
         String modelVersion = runtime.modelVersion();
         List<String> excludedItemIds = converter.normalizedExcludeItemIds(request);
 
         var cacheKey = new RecommendationCache.RecommendationKey(
-                request.getUserId(), request.getK(), excludedItemIds, assignment.variant(), modelVersion);
+                request.getUserId(), request.getK(), excludedItemIds, servedVariant, modelVersion);
 
         // getOrCompute ensures concurrent misses for the same key share a single computation.
         List<ScoredItem> items = cache.getOrCompute(cacheKey, () -> {
@@ -109,7 +127,7 @@ public class RecommendationService {
             return computeRecommendations(request, runtime, excludedItemIds);
         });
 
-        return converter.toResponse(request, modelVersion, assignment, items);
+        return converter.toResponse(request, modelVersion, servedVariant, items);
     }
 
     /** Returns a human-readable snapshot of cache hit/miss rates for monitoring. */
@@ -154,14 +172,14 @@ public class RecommendationService {
                 request.getUserId(), request.getK(), excludedItemIds, assignment.variant(), modelVersion);
         List<ScoredItem> items = cache.get(cacheKey);
         if (items != null) {
-            return Optional.of(converter.toResponse(request, modelVersion, assignment, items));
+            return Optional.of(converter.toResponse(request, modelVersion, assignment.variant(), items));
         }
 
         if (cache.isColdStartEnabled()) {
             var coldStartKey = new RecommendationCache.ColdStartKey(assignment.variant(), modelVersion);
             List<ScoredItem> pool = cache.getColdStart(coldStartKey);
             if (pool != null) {
-                return Optional.of(converter.toResponse(request, modelVersion, assignment,
+                return Optional.of(converter.toResponse(request, modelVersion, assignment.variant(),
                         limitAndExclude(pool, excludedItemIds, request.getK())));
             }
         }

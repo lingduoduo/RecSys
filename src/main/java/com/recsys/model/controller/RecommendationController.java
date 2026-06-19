@@ -5,6 +5,7 @@ import com.recsys.model.response.RecommendResponse;
 import com.recsys.model.response.SubmitTokenResponse;
 import java.util.Optional;
 import com.recsys.model.service.ABTestService;
+import com.recsys.model.service.AbExposureLogger;
 import com.recsys.model.service.InferenceMetricsService;
 import com.recsys.model.service.LoadShedder;
 import com.recsys.model.service.ModelRateLimiter;
@@ -28,19 +29,22 @@ public class RecommendationController {
     private final LoadShedder loadShedder;
     private final ModelRateLimiter modelRateLimiter;
     private final SubmitTokenService submitTokenService;
+    private final AbExposureLogger abExposureLogger;
 
     public RecommendationController(RecommendationService recommendationService,
                                     InferenceMetricsService metricsService,
                                     ABTestService abTestService,
                                     LoadShedder loadShedder,
                                     ModelRateLimiter modelRateLimiter,
-                                    SubmitTokenService submitTokenService) {
+                                    SubmitTokenService submitTokenService,
+                                    AbExposureLogger abExposureLogger) {
         this.recommendationService = recommendationService;
         this.metricsService = metricsService;
         this.abTestService = abTestService;
         this.loadShedder = loadShedder;
         this.modelRateLimiter = modelRateLimiter;
         this.submitTokenService = submitTokenService;
+        this.abExposureLogger = abExposureLogger;
     }
 
     @GetMapping(
@@ -75,9 +79,12 @@ public class RecommendationController {
             // Degradation: serve stale cache or cold-start popular items before failing.
             Optional<RecommendResponse> fallback = recommendationService.tryServeFromCache(request, assignment);
             if (fallback.isPresent()) {
+                RecommendResponse degraded = fallback.get();
+                abExposureLogger.log(request.getUserId(), assignment, degraded.abTestVariant(),
+                        !degraded.abTestVariant().equals(assignment.variant()), degraded.modelVersion());
                 HttpHeaders headers = new HttpHeaders();
                 headers.set("X-Served-From", "degraded-cache");
-                return ResponseEntity.ok().headers(headers).body(fallback.get());
+                return ResponseEntity.ok().headers(headers).body(degraded);
             }
             metricsService.recordFailure(0L, assignment.variant());
             throw new ServiceOverloadedException(retryAfterSeconds(metricsService.snapshot()));
@@ -85,6 +92,8 @@ public class RecommendationController {
         try {
             RecommendResponse response = recommendationService.recommend(request, assignment);
             metricsService.recordSuccess(elapsedMs(startNs), response.abTestVariant(), response.modelVersion());
+            abExposureLogger.log(request.getUserId(), assignment, response.abTestVariant(),
+                    !response.abTestVariant().equals(assignment.variant()), response.modelVersion());
             // Publish current capacity so load balancers can adjust routing weight in real time
             // without waiting for the next /health/ready poll (e.g. Envoy, Consul, NGINX Plus).
             HttpHeaders headers = new HttpHeaders();

@@ -5,6 +5,7 @@ import com.recsys.featureflags.FeatureFlagService;
 import com.recsys.featureflags.Flags;
 import com.recsys.config.RecommendationCacheProperties;
 import com.recsys.model.request.RecommendRequest;
+import com.recsys.model.response.RecommendResponse;
 import com.recsys.model.dto.ScoredItem;
 import org.junit.jupiter.api.BeforeEach;
 import org.junit.jupiter.api.Test;
@@ -257,6 +258,35 @@ class RecommendationServiceTest {
         assertThat(captor.getValue()).isNotEmpty();
         assertThat(captor.getValue()).allMatch(c -> "fallback".equals(c.channel()));
         assertThat(response.recommendations()).isNotEmpty();
+    }
+
+    @Test
+    void servedVariantFromResolverDrivesResponse() {
+        VariantRuntimeResolver resolver = mock(VariantRuntimeResolver.class);
+        when(resolver.resolve(eq("test"), any()))
+                .thenReturn(new VariantRuntimeResolver.Resolved(runtime, "training", true));
+        when(abTestService.defaultVariant()).thenReturn("training");
+        when(abTestService.getAssignmentForUser(any()))
+                .thenReturn(new ABTestService.Assignment("test", 10, "default", true));
+
+        // reuse existing stubs so recommend() returns items
+        var encoded = new FeatureEncoder.EncodedFeatures(1L);
+        var candidates = List.of(new MovieCandidate("1", 0.9, "embedding", Map.of()));
+        var ranked = List.of(new ScoredItem("1", 0.95));
+        when(featureEncoder.encode(any())).thenReturn(encoded);
+        when(retrievalStage.retrieve(any(), anyInt())).thenReturn(candidates);
+        when(rankingStage.rank(eq(encoded), eq(candidates), anyInt())).thenReturn(ranked);
+        when(artifactService.getModelVersion()).thenReturn("v1");
+
+        // Build the service with the mocked resolver via the full 6-arg constructor.
+        RecommendationService svc = new RecommendationService(
+                modelRuntimeProvider, abTestService, new RecommendationCacheProperties(),
+                org.mockito.Mockito.mock(com.recsys.featureflags.FeatureFlagService.class),
+                new com.recsys.model.converter.RecommendationConverter(), resolver);
+
+        RecommendResponse response = svc.recommend(request("123", 5));
+
+        assertThat(response.abTestVariant()).isEqualTo("training"); // served, not assigned
     }
 
     private static RecommendRequest request(String userId, int k) {
