@@ -171,13 +171,14 @@ public class ModelRuntimeProvider implements SmartInitializingSingleton {
 
     private MultiChannelRecallService buildRecallService(ModelArtifactService artifactService) {
         ensureRecallInfra();
+        DataManager dataManager = DataManager.getInstance();
         return MultiChannelRecallService.from(
                 RecallConfig.builder()
                         .channels(java.util.List.of(
                                 new EmbeddingChannel(candidateGenerator),
-                                new OnlineRecentHistoryChannel(onlineFeatureStore, DataManager.getInstance()),
+                                new OnlineRecentHistoryChannel(onlineFeatureStore, dataManager),
                                 new TrendingChannel(topkStore, java.util.List.of("last_hour", "last_day")),
-                                new PopularityChannel(DataManager.getInstance(), globalPopStore),
+                                new PopularityChannel(dataManager, globalPopStore),
                                 new ColdStartChannel(topkStore, globalPopStore)))
                         .quotaPolicy(QuotaPolicy.defaultModelRetrieval())
                         .healthMonitor(sharedHealthMonitor)

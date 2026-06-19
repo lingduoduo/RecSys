@@ -32,6 +32,10 @@ class ModelRetrievalStageTest {
         when(recall.recall(query, 50)).thenReturn(expected);
 
         assertThat(stage.retrieve(query, 50)).isEqualTo(expected);
+
+        ArgumentCaptor<RecommendationQuery> captor = ArgumentCaptor.forClass(RecommendationQuery.class);
+        verify(recall).recall(captor.capture(), eq(50));
+        assertThat(captor.getValue().excludedItemIds()).containsExactly("1");  // unchanged, no augmentation
     }
 
     @Test
