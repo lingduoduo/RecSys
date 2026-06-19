@@ -21,12 +21,15 @@ import java.util.function.Supplier;
 @Service
 public class AbExposureLogger {
 
+    // Canonical Kafka topic for A/B exposure events. The injected AsyncEventPublisher.publish(String)
+    // is transport-agnostic (see ModelEventConfig); a deployment-specific transport subclass routes
+    // events to this topic. Kept as the single source of truth for that topic name.
     static final String TOPIC = "ab_exposures";
     private static final Logger log = LoggerFactory.getLogger(AbExposureLogger.class);
+    private static final ObjectMapper MAPPER = new ObjectMapper();
 
     private final AsyncEventPublisher publisher;
     private final ABTestConfig config;
-    private final ObjectMapper mapper = new ObjectMapper();
     private final Supplier<String> idGenerator;
     private final LongSupplier clock;
 
@@ -60,7 +63,7 @@ public class AbExposureLogger {
                 idGenerator.get(),
                 clock.getAsLong());
         try {
-            publisher.publish(mapper.writeValueAsString(event));
+            publisher.publish(MAPPER.writeValueAsString(event));
         } catch (Exception e) {   // serialization OR a misbehaving publisher — never break the request
             log.warn("failed to publish A/B exposure event for user {}", userId, e);
         }

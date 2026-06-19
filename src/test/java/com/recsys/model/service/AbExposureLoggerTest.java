@@ -58,6 +58,7 @@ class AbExposureLoggerTest {
         ArgumentCaptor<String> json = ArgumentCaptor.forClass(String.class);
         verify(publisher).publish(json.capture());
         JsonNode e = mapper.readTree(json.getValue());
+        assertThat(e.get("assignedVariant").asText()).isEqualTo("test");
         assertThat(e.get("servedVariant").asText()).isEqualTo("training");
         assertThat(e.get("fellBackFrom").asText()).isEqualTo("test");
     }
