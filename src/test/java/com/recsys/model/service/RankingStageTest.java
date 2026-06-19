@@ -64,4 +64,19 @@ class RankingStageTest {
         assertThat(stage.rank(new FeatureEncoder.EncodedFeatures(0),
                 List.of(new MovieCandidate("1", 0.5, "c", Map.of())), 0)).isEmpty();
     }
+
+    @Test
+    void duplicateItemIdAppearsOnceInOutput() {
+        RankingStage stage = stageWith(
+                Map.of("1", 1, "2", 2),                                  // 1,2 in vocab
+                List.of(new ScoredItem("1", 9.0), new ScoredItem("2", 5.0)));
+        List<MovieCandidate> candidates = List.of(
+                new MovieCandidate("1", 0.3, "embedding", Map.of()),
+                new MovieCandidate("1", 0.9, "trending", Map.of()),     // duplicate itemId
+                new MovieCandidate("2", 0.2, "embedding", Map.of()));
+
+        List<ScoredItem> ranked = stage.rank(new FeatureEncoder.EncodedFeatures(0), candidates, 5);
+
+        assertThat(ranked).extracting(ScoredItem::itemId).containsExactly("1", "2");  // "1" once, ONNX order
+    }
 }
