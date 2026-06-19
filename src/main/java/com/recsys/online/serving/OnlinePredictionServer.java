@@ -90,7 +90,6 @@ public final class OnlinePredictionServer {
                             .quotaPolicy(QuotaPolicy.defaultOnline())
                             .healthMonitor(new ChannelHealthMonitor())
                             .executor(recallExecutor)
-                            .channelTimeoutMs(200L)
                             .faultInjector(FaultInjector.NOOP)
                             .userEmbeddingStore(userEmbCache)
                             .build());

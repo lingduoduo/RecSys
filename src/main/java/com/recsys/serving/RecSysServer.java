@@ -41,7 +41,6 @@ public class RecSysServer {
 
     private static final Logger log = LoggerFactory.getLogger(RecSysServer.class);
     private static final int DEFAULT_PORT = 6010;
-    private static final long DEFAULT_CHANNEL_TIMEOUT_MS = 200L;
     private static final String ROUTE_ITEM = "/item";
     private static final String ROUTE_USER = "/getuser";
     private static final String ROUTE_SIMILAR = "/similar";
@@ -102,7 +101,6 @@ public class RecSysServer {
                             .quotaPolicy(QuotaPolicy.defaultMovie())
                             .healthMonitor(new ChannelHealthMonitor())
                             .executor(executor)
-                            .channelTimeoutMs(DEFAULT_CHANNEL_TIMEOUT_MS)
                             .faultInjector(FaultInjector.NOOP)
                             .userEmbeddingStore(userEmbCache)
                             .build());
