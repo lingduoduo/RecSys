@@ -48,7 +48,7 @@ mvn exec:java -Dexec.mainClass=com.recsys.online.serving.OnlinePredictionServer
 mvn exec:java -Dexec.mainClass=com.recsys.microservice.MicroserviceGatewayServer
 ```
 
-Key env vars: `REDIS_HOST`, `REDIS_PORT`, `PORT`/`ONLINE_DEMO_PORT`/`GATEWAY_PORT`, `SERVER_PORT`.
+Key env vars: `REDIS_HOST`, `REDIS_PORT`, `PORT`/`ONLINE_DEMO_PORT`/`GATEWAY_PORT`, `SERVER_PORT`, `RECALL_CHANNEL_TIMEOUT_MS` (per-channel recall timeout for both serving ports; default 200).
 
 ## Architecture
 

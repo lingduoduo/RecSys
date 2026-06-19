@@ -59,4 +59,36 @@ class RecallConfigTest {
                 new RecommendationQuery("1", 5, Set.of(), null), 5);
         assertThat(recalled).extracting(MovieCandidate::itemId).containsExactlyInAnyOrder("1", "2");
     }
+
+    @Test
+    void defaultChannelTimeoutIs200WhenEnvUnset() {
+        RecallConfig config = RecallConfig.builder()
+                .channels(List.of(channel("c", new MovieCandidate("1", 1.0, "c", Map.of()))))
+                .executor(ForkJoinPool.commonPool())
+                .build();
+        assertThat(config.channelTimeoutMs()).isEqualTo(200L);
+    }
+
+    @Test
+    void readLongEnvReturnsSuppliedDefaultWhenVarUnset() {
+        // RECALL_CHANNEL_TIMEOUT_MS is not set in the test environment; the helper returns the default.
+        assertThat(RecallConfig.readLongEnv("RECALL_CHANNEL_TIMEOUT_MS", 200L)).isEqualTo(200L);
+        assertThat(RecallConfig.readLongEnv("RECALL_CHANNEL_TIMEOUT_MS", 1500L)).isEqualTo(1500L);
+    }
+
+    @Test
+    void parseLongOrDefault_parsesValidAndTrims() {
+        // The parse seam behind readLongEnv: the env-set override is unreachable in-process
+        // (Java env is immutable at runtime), but the parse/trim logic is directly testable.
+        assertThat(RecallConfig.parseLongOrDefault("1500", 200L)).isEqualTo(1500L);
+        assertThat(RecallConfig.parseLongOrDefault("  7  ", 200L)).isEqualTo(7L);
+    }
+
+    @Test
+    void parseLongOrDefault_fallsBackOnNullBlankOrGarbage() {
+        assertThat(RecallConfig.parseLongOrDefault(null, 200L)).isEqualTo(200L);
+        assertThat(RecallConfig.parseLongOrDefault("", 200L)).isEqualTo(200L);
+        assertThat(RecallConfig.parseLongOrDefault("   ", 200L)).isEqualTo(200L);
+        assertThat(RecallConfig.parseLongOrDefault("abc", 200L)).isEqualTo(200L);
+    }
 }
