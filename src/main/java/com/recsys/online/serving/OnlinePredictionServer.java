@@ -60,6 +60,7 @@ public final class OnlinePredictionServer {
         Pool<Jedis> jedisPool = RedisConnectionFactory.fromEnv();
         AsyncEventPublisher asyncEventPublisher = new AsyncEventPublisher();
         LearnerFlushScheduler learnerFlushScheduler = null;
+        ExecutorService recallExecutor = null;
 
         try {
             DataManager dataManager = DataManager.getInstance();
@@ -75,7 +76,7 @@ public final class OnlinePredictionServer {
             OnlineFeatureStore onlineFeatureStore = new OnlineFeatureStore(jedisPool);
             OnlineLearner onlineLearner = new OnlineLearner();
             GlobalPopularityStore globalPopStore = new GlobalPopularityStore(jedisPool);
-            ExecutorService recallExecutor = Executors.newFixedThreadPool(
+            recallExecutor = Executors.newFixedThreadPool(
                     Runtime.getRuntime().availableProcessors() * 2,
                     r -> new Thread(r, "online-recall-channel"));
             MultiChannelRecallService recallService = MultiChannelRecallService.from(
@@ -160,6 +161,7 @@ public final class OnlinePredictionServer {
         } catch (Exception e) {
             asyncEventPublisher.close();
             if (learnerFlushScheduler != null) learnerFlushScheduler.close();
+            if (recallExecutor != null) recallExecutor.shutdownNow();
             jedisPool.close();
             throw e;
         }
