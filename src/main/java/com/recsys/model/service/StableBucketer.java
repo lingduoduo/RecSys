@@ -31,7 +31,7 @@ public final class StableBucketer {
         h ^= (h >>> 33);
         h *= 0xff51afd7ed558ccdL;
         h ^= (h >>> 33);
-        h *= 0xc4ceb9fe1a85ec53L;
+        h *= 0xc4ceb9fe1a85ec53L;   // murmur3 x64-128 finalizer constant (avalanche-equivalent fmix64 variant)
         h ^= (h >>> 33);
         return h;
     }

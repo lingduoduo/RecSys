@@ -9,6 +9,8 @@ import static org.assertj.core.api.Assertions.assertThat;
 
 class StableBucketerTest {
 
+    private static final int GOLDEN_123_DEFAULT = 8397;
+
     @Test
     void slotIsDeterministic() {
         assertThat(StableBucketer.slot("123", "default"))
@@ -44,5 +46,19 @@ class StableBucketerTest {
             }
         }
         assertThat(differ).isGreaterThan(900);
+    }
+
+    @Test
+    void nullInputsAreHandledAsEmpty() {
+        // Null userId/layer must not throw and must stay within the keyspace.
+        assertThat(StableBucketer.slot(null, "default")).isGreaterThanOrEqualTo(0).isLessThan(StableBucketer.KEYSPACE);
+        assertThat(StableBucketer.slot("123", null)).isGreaterThanOrEqualTo(0).isLessThan(StableBucketer.KEYSPACE);
+        assertThat(StableBucketer.slot(null, null)).isGreaterThanOrEqualTo(0).isLessThan(StableBucketer.KEYSPACE);
+    }
+
+    @Test
+    void slotIsStableForKnownInput() {
+        // Golden value: pins the algorithm so a future refactor that changes bucketing is caught.
+        assertThat(StableBucketer.slot("123", "default")).isEqualTo(GOLDEN_123_DEFAULT);
     }
 }
