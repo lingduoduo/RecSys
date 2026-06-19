@@ -62,6 +62,19 @@ public record QuotaPolicy(
         return new QuotaSpec(slots);
     }
 
+    /** Port-7010 quota: embedding + online-recent-history led when warm; cold-start led when cold. */
+    public static QuotaPolicy defaultOnline() {
+        Map<String, Double> warm = new LinkedHashMap<>();
+        warm.put("embedding", 0.50);
+        warm.put("online_recent_history", 0.25);
+        warm.put("trending", 0.15);
+        Map<String, Double> cold = new LinkedHashMap<>();
+        cold.put("cold_start", 0.50);
+        cold.put("trending", 0.20);
+        cold.put("popularity", 0.20);
+        return new QuotaPolicy(warm, "popularity", cold, "online_recent_history");
+    }
+
     /** The port-6010 quota numbers, reproducing the legacy {@link QuotaSpec} statics exactly. */
     public static QuotaPolicy defaultMovie() {
         Map<String, Double> warm = new LinkedHashMap<>();

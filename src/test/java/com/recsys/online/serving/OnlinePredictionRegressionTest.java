@@ -33,7 +33,7 @@ class OnlinePredictionRegressionTest {
 
     static {
         OnlineRecommendationResult result = new OnlineRecommendationResult(
-                new User(1, "Alice"), "last_hour", "online+model",
+                new User(1, "Alice"), "last_hour", "multichannel",
                 List.of(new Movie(5, "Interstellar", 2014, List.of("Sci-Fi"))),
                 List.of(new Movie(7, "The Matrix", 1999, List.of("Sci-Fi"))),
                 List.of(new Movie(10, "Inception", 2010, List.of("Sci-Fi"))));
@@ -68,7 +68,7 @@ class OnlinePredictionRegressionTest {
         assertThat(json.has("window")).isTrue();
         assertThat(json.get("window").asText()).isEqualTo("last_hour");
         assertThat(json.has("strategy")).isTrue();
-        assertThat(json.get("strategy").asText()).isEqualTo("online+model");
+        assertThat(json.get("strategy").asText()).isEqualTo("multichannel");
         assertThat(json.has("recommendations")).isTrue();
         assertThat(json.get("recommendations").isArray()).isTrue();
         assertThat(json.get("recommendations").size()).isEqualTo(1);

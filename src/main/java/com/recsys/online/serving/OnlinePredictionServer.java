@@ -10,6 +10,7 @@ import com.linecorp.armeria.common.metric.PrometheusMeterRegistries;
 import io.micrometer.prometheus.PrometheusMeterRegistry;
 import com.recsys.infrastructure.DataManager;
 import com.recsys.infrastructure.cache.LogicalExpiryEmbeddingCache;
+import com.recsys.infrastructure.redis.GlobalPopularityStore;
 import com.recsys.infrastructure.redis.RedisConnectionFactory;
 import com.recsys.infrastructure.redis.RedisEmbeddingStore;
 import com.recsys.infrastructure.vectordb.EmbeddingStore;
@@ -21,6 +22,7 @@ import com.recsys.infrastructure.vectordb.CandidateGenerator;
 import com.recsys.online.event.AsyncEventPublisher;
 import com.recsys.online.learner.LearnerFlushScheduler;
 import com.recsys.online.learner.OnlineLearner;
+import com.recsys.online.ops.FaultInjector;
 import com.recsys.online.ops.OnlineAdmissionControl;
 import com.recsys.online.ops.OnlineCapacityService;
 import com.recsys.online.ops.OnlineHealthService;
@@ -31,6 +33,18 @@ import com.recsys.online.store.ShardedRecordService;
 import com.recsys.online.redis.RedisRateLimiter;
 import com.recsys.online.store.OnlineFeatureStore;
 import com.recsys.online.store.TrendingStore;
+import com.recsys.service.retrieval.channels.EmbeddingChannel;
+import com.recsys.service.retrieval.channels.OnlineRecentHistoryChannel;
+import com.recsys.service.retrieval.channels.PopularityChannel;
+import com.recsys.service.retrieval.channels.TrendingChannel;
+import com.recsys.service.retrieval.coldstart.ColdStartChannel;
+import com.recsys.service.retrieval.coldstart.QuotaPolicy;
+import com.recsys.service.retrieval.multichannel.ChannelHealthMonitor;
+import com.recsys.service.retrieval.multichannel.MultiChannelRecallService;
+import com.recsys.service.retrieval.multichannel.RecallConfig;
+import java.util.List;
+import java.util.concurrent.ExecutorService;
+import java.util.concurrent.Executors;
 import redis.clients.jedis.Jedis;
 import redis.clients.jedis.util.Pool;
 
@@ -46,6 +60,7 @@ public final class OnlinePredictionServer {
         Pool<Jedis> jedisPool = RedisConnectionFactory.fromEnv();
         AsyncEventPublisher asyncEventPublisher = new AsyncEventPublisher();
         LearnerFlushScheduler learnerFlushScheduler = null;
+        ExecutorService recallExecutor = null;
 
         try {
             DataManager dataManager = DataManager.getInstance();
@@ -59,10 +74,28 @@ public final class OnlinePredictionServer {
             CandidateGenerator candidateGenerator = new CandidateGenerator(dataManager, userEmbCache);
             TrendingStore topkStore = new ShardedTopKStore(jedisPool, "topk:");
             OnlineFeatureStore onlineFeatureStore = new OnlineFeatureStore(jedisPool);
-            OnlineRecommendationEngine engine = new OnlineRecommendationEngine(dataManager, topkStore, onlineFeatureStore);
             OnlineLearner onlineLearner = new OnlineLearner();
-            OnlineRecommendationService recommendationService =
-                    new OnlineRecommendationService(dataManager, engine, candidateGenerator, onlineLearner);
+            GlobalPopularityStore globalPopStore = new GlobalPopularityStore(jedisPool);
+            recallExecutor = Executors.newFixedThreadPool(
+                    Runtime.getRuntime().availableProcessors() * 2,
+                    r -> new Thread(r, "online-recall-channel"));
+            MultiChannelRecallService recallService = MultiChannelRecallService.from(
+                    RecallConfig.builder()
+                            .channels(List.of(
+                                    new EmbeddingChannel(candidateGenerator),
+                                    new OnlineRecentHistoryChannel(onlineFeatureStore, dataManager),
+                                    new TrendingChannel(topkStore, List.of("last_hour", "last_day")),
+                                    new PopularityChannel(dataManager, globalPopStore),
+                                    new ColdStartChannel(topkStore, globalPopStore)))
+                            .quotaPolicy(QuotaPolicy.defaultOnline())
+                            .healthMonitor(new ChannelHealthMonitor())
+                            .executor(recallExecutor)
+                            .channelTimeoutMs(200L)
+                            .faultInjector(FaultInjector.NOOP)
+                            .userEmbeddingStore(userEmbCache)
+                            .build());
+            OnlineRecommendationService recommendationService = new OnlineRecommendationService(
+                    dataManager, recallService, onlineFeatureStore, topkStore, onlineLearner);
             OnlineBlendingPipeline blendingPipeline = new OnlineBlendingPipeline(recommendationService);
             learnerFlushScheduler =
                     new LearnerFlushScheduler(onlineLearner, jedisPool, "bias:item", 30L);
@@ -114,10 +147,12 @@ public final class OnlinePredictionServer {
             metricsService.registerGauges(registry);
             LearnerFlushScheduler activeLearnerFlushScheduler = learnerFlushScheduler;
 
+            ExecutorService activeRecallExecutor = recallExecutor;
             Runtime.getRuntime().addShutdownHook(new Thread(() -> {
                 server.stop().join();
                 asyncEventPublisher.close();
                 activeLearnerFlushScheduler.close();
+                activeRecallExecutor.shutdownNow();
                 jedisPool.close();
             }));
 
@@ -126,6 +161,7 @@ public final class OnlinePredictionServer {
         } catch (Exception e) {
             asyncEventPublisher.close();
             if (learnerFlushScheduler != null) learnerFlushScheduler.close();
+            if (recallExecutor != null) recallExecutor.shutdownNow();
             jedisPool.close();
             throw e;
         }
