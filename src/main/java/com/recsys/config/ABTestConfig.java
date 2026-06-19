@@ -1,5 +1,6 @@
 package com.recsys.config;
 
+import jakarta.validation.constraints.AssertTrue;
 import jakarta.validation.constraints.Min;
 import jakarta.validation.constraints.NotBlank;
 import org.springframework.boot.context.properties.ConfigurationProperties;
@@ -50,7 +51,7 @@ public class ABTestConfig {
     public String getLayerName() { return layerName; }
     public void setLayerName(String layerName) { this.layerName = layerName; }
 
-    @jakarta.validation.constraints.AssertTrue(message = "bucketAPercent + bucketBPercent must be <= 100")
+    @AssertTrue(message = "bucketAPercent + bucketBPercent must be <= 100")
     public boolean isAllocationWithinBounds() {
         return bucketAPercent + bucketBPercent <= 100;
     }

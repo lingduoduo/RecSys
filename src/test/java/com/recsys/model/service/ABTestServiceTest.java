@@ -49,8 +49,6 @@ class ABTestServiceTest {
             String userId = Integer.toString(i);
             ABTestService.Assignment a = service.getAssignmentForUser(userId);
             int slot = StableBucketer.slot(userId, LAYER);
-            String expected = slot < 2_000 ? "test" : slot < 4_000 ? "training-B" : "training";
-            // bucketBVariant is "training" and default is also "training"; assert by range directly:
             if (slot < 2_000) {
                 assertThat(a.variant()).isEqualTo("test");
                 assertThat(a.inExperiment()).isTrue();
@@ -88,6 +86,12 @@ class ABTestServiceTest {
         for (String u : aMembers) {
             assertThat(service.getVariantForUser(u)).as("A-member %s after B 20->30", u).isEqualTo("test");
         }
+    }
+
+    @Test
+    void blankLayerName_fallsBackToConfiguredLayer() {
+        ABTestService.Assignment a = service.getAssignmentForUser("123", "   ");
+        assertThat(a.layerName()).isEqualTo("default");
     }
 
     @Test
