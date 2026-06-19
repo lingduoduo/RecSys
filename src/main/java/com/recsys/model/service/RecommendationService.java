@@ -168,6 +168,9 @@ public class RecommendationService {
         String modelVersion = runtime.modelVersion();
         List<String> excludedItemIds = converter.normalizedExcludeItemIds(request);
 
+        // Degraded path keys on the ASSIGNED variant (not served): getLoadedRuntime never builds or
+        // falls back here, so there is no served-variant distinction. Do NOT change to servedVariant —
+        // the normal path keys on servedVariant, and these two must stay consistent per their own runtime.
         var cacheKey = new RecommendationCache.RecommendationKey(
                 request.getUserId(), request.getK(), excludedItemIds, assignment.variant(), modelVersion);
         List<ScoredItem> items = cache.get(cacheKey);

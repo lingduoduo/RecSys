@@ -235,6 +235,7 @@ class RecommendationControllerTest {
 
     @Test
     void emitsExposureWithServedVariantOnSuccess() throws Exception {
+        org.mockito.Mockito.doNothing().when(submitTokenService).validateAndConsume(org.mockito.ArgumentMatchers.any());
         when(abTestService.getAssignmentForUser(any()))
                 .thenReturn(new ABTestService.Assignment("test", 10, "default", true));
         when(recommendationService.recommend(any(), any()))
