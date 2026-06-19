@@ -26,7 +26,10 @@ public record RecallConfig(
     public static Builder builder() { return new Builder(); }
 
     static long readLongEnv(String name, long defaultValue) {
-        String raw = System.getenv(name);
+        return parseLongOrDefault(System.getenv(name), defaultValue);
+    }
+
+    static long parseLongOrDefault(String raw, long defaultValue) {
         if (raw == null || raw.isBlank()) return defaultValue;
         try {
             return Long.parseLong(raw.trim());

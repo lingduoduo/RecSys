@@ -75,4 +75,20 @@ class RecallConfigTest {
         assertThat(RecallConfig.readLongEnv("RECALL_CHANNEL_TIMEOUT_MS", 200L)).isEqualTo(200L);
         assertThat(RecallConfig.readLongEnv("RECALL_CHANNEL_TIMEOUT_MS", 1500L)).isEqualTo(1500L);
     }
+
+    @Test
+    void parseLongOrDefault_parsesValidAndTrims() {
+        // The parse seam behind readLongEnv: the env-set override is unreachable in-process
+        // (Java env is immutable at runtime), but the parse/trim logic is directly testable.
+        assertThat(RecallConfig.parseLongOrDefault("1500", 200L)).isEqualTo(1500L);
+        assertThat(RecallConfig.parseLongOrDefault("  7  ", 200L)).isEqualTo(7L);
+    }
+
+    @Test
+    void parseLongOrDefault_fallsBackOnNullBlankOrGarbage() {
+        assertThat(RecallConfig.parseLongOrDefault(null, 200L)).isEqualTo(200L);
+        assertThat(RecallConfig.parseLongOrDefault("", 200L)).isEqualTo(200L);
+        assertThat(RecallConfig.parseLongOrDefault("   ", 200L)).isEqualTo(200L);
+        assertThat(RecallConfig.parseLongOrDefault("abc", 200L)).isEqualTo(200L);
+    }
 }

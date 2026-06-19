@@ -63,6 +63,7 @@ No behavior change when `RECALL_CHANNEL_TIMEOUT_MS` is unset: `RecallConfig.Buil
 ## 5. Testing Strategy
 
 - **`RecallConfigTest` (extend):** the builder's default `channelTimeoutMs` is `200L` when the env var is unset (assert via `RecallConfig.builder().channels(...).executor(...).build().channelTimeoutMs()`); a name-contract test of `RecallConfig.readLongEnv("RECALL_CHANNEL_TIMEOUT_MS", <default>)` returning the supplied default when unset (the runtime override is documented, not unit-asserted, because Java env vars are immutable at runtime — same limitation as `ShardedTopKStoreTtlConfigTest`).
+  - _Follow-up (2026-06-19 reconciliation):_ the parse/trim/fallback logic was extracted behind a pure package-private `RecallConfig.parseLongOrDefault(String, long)` seam and is now directly unit-covered (valid, whitespace-trim, null, blank, garbage). The env-set override itself remains documented-not-asserted (env immutability), unchanged.
 - **Delete `OnlineRecommendationEngineTest`** with the engine.
 - **Full suite** green confirms nothing referenced the deleted engine (the build would fail otherwise) and both ports still wire their recall service with the inherited default. `RecSysServerIntegrationTest`/`RecSysServerRegressionTest`, `OnlinePredictionServerIntegrationTest`/`OnlinePredictionRegressionTest`, and `MultiChannelRecallServiceTest` pass unmodified.
 

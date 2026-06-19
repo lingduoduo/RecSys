@@ -66,7 +66,7 @@ public OnlineRecentHistoryChannel(RecentHistoryStore recentHistoryStore, DataMan
 public List<MovieCandidate> recall(RecommendationQuery query, int limit)
 ```
 
-Logic (ports `OnlineRecommendationEngine.scoreByRecentHistory`): read up to 3 recent movie ids via `recentHistoryStore.getRecentMovieIds(userId, 3)`; for each, fetch `dataManager.getSimilarMovies(seedId)` (cap 12); score `recencyBoost - rank` where `recencyBoost = 30.0 + seedIndex*8.0`, summed per candidate. Returns up to `limit` `MovieCandidate`s sorted by score desc, `channel` = `"online_recent_history"`. The recent watched ids themselves are NOT excluded here — the merge drops them via `excludedItemIds`. Returns `List.of()` when there is no recent history.
+Logic (ports `OnlineRecommendationEngine.scoreByRecentHistory`): read up to 3 recent movie ids via `recentHistoryStore.getRecentMovieIds(userId, 3)`; for each, fetch `dataManager.getSimilarMovies(seedId)` (cap 12); accumulate a blend weight `recencyBoost - rank` where `recencyBoost = 30.0 + seedIndex*8.0`, summed per candidate. That blend weight determines **intra-channel order only** — it is NOT the emitted score. The emitted `MovieCandidate.score()` is **rank-based, `1.0 / (rank + 1)`** (rank within this channel's ordered output), so its scale matches the other channels for the quota merge's gap fill (see the class Javadoc). Returns up to `limit` `MovieCandidate`s in that order, `channel` = `"online_recent_history"`. The recent watched ids themselves are NOT excluded here — the merge drops them via `excludedItemIds`. Returns `List.of()` when there is no recent history.
 
 `userId` parse: `Integer.parseInt(query.userId())`; on `NumberFormatException` return `List.of()` (the merge/other channels cover it).
 
@@ -119,6 +119,8 @@ OnlineRecommendationService recommendationService =
 ```
 
 `recallExecutor` is added to the shutdown hook (`recallExecutor.shutdownNow()`). `onlineFeatureStore` is already an `OnlineFeatureStore` (implements `RecentHistoryStore`); `topkStore` is the existing `ShardedTopKStore`. The `OnlineRecommendationEngine` construction is removed.
+
+> _Superseded by sub-project 3:_ the explicit `.channelTimeoutMs(200L)` shown above was later dropped from both ports' builder chains. Sub-project 3 made the per-channel timeout the env-tunable `RecallConfig.Builder` default (`RECALL_CHANNEL_TIMEOUT_MS`, default `200L`), so the shipped wiring no longer calls `.channelTimeoutMs(...)` — behavior is unchanged when the env var is unset.
 
 **Unchanged:** HTTP services (`OnlineFeaturesService`, `OnlinePredictionService`), admission control, rate limiting, metrics, the response DTO shape (`OnlineRecommendationResult`, `OnlineFeatureSnapshotResponse`).
 
