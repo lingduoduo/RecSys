@@ -167,6 +167,14 @@
       <artifactId>micrometer-registry-prometheus-simpleclient</artifactId>
     </dependency>
 
+    <!-- Kafka client for KafkaAsyncEventPublisher transport; MockProducer ships in this artifact.
+         Version pinned explicitly — Spring Boot BOM is not imported in this pom's dependencyManagement. -->
+    <dependency>
+      <groupId>org.apache.kafka</groupId>
+      <artifactId>kafka-clients</artifactId>
+      <version>3.7.1</version>
+    </dependency>
+
   </dependencies>
 
   <dependencyManagement>
