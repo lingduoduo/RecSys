@@ -3,7 +3,6 @@ package com.recsys.model.converter;
 import com.recsys.model.dto.ScoredItem;
 import com.recsys.model.request.RecommendRequest;
 import com.recsys.model.response.RecommendResponse;
-import com.recsys.model.service.ABTestService;
 import org.springframework.stereotype.Component;
 
 import java.util.List;
@@ -15,10 +14,10 @@ public class RecommendationConverter {
     public RecommendResponse toResponse(
             RecommendRequest request,
             String modelVersion,
-            ABTestService.Assignment assignment,
+            String variant,
             List<ScoredItem> items
     ) {
-        return new RecommendResponse(request.getUserId(), modelVersion, assignment.variant(), items);
+        return new RecommendResponse(request.getUserId(), modelVersion, variant, items);
     }
 
     public List<String> normalizedExcludeItemIds(RecommendRequest request) {

@@ -7,6 +7,7 @@ import com.recsys.model.request.RecommendRequest;
 import com.recsys.model.response.RecommendResponse;
 import com.recsys.model.dto.ScoredItem;
 import com.recsys.model.service.ABTestService;
+import com.recsys.model.service.AbExposureLogger;
 import com.recsys.model.service.InferenceMetricsService;
 import com.recsys.model.service.LoadShedder;
 import com.recsys.model.service.ModelRateLimiter;
@@ -28,6 +29,7 @@ import org.springframework.test.web.servlet.MockMvc;
 import java.util.List;
 
 import static org.mockito.ArgumentMatchers.any;
+import static org.mockito.ArgumentMatchers.eq;
 import static org.mockito.Mockito.doThrow;
 import static org.mockito.Mockito.verify;
 import static org.mockito.Mockito.when;
@@ -47,6 +49,7 @@ class RecommendationControllerTest {
     @MockBean LoadShedder loadShedder;
     @MockBean ModelRateLimiter modelRateLimiter;
     @MockBean SubmitTokenService submitTokenService;
+    @MockBean AbExposureLogger abExposureLogger;
     @MockBean LoginTokenService loginTokenService;
     @MockBean RequestScopeData requestScopeData;
 
@@ -228,5 +231,25 @@ class RecommendationControllerTest {
                 .andExpect(jsonPath("$.error").value("recommendation service is overloaded"));
 
         verify(metricsService).recordFailure(0L, "training");
+    }
+
+    @Test
+    void emitsExposureWithServedVariantOnSuccess() throws Exception {
+        org.mockito.Mockito.doNothing().when(submitTokenService).validateAndConsume(org.mockito.ArgumentMatchers.any());
+        when(abTestService.getAssignmentForUser(any()))
+                .thenReturn(new ABTestService.Assignment("test", 10, "default", true));
+        when(recommendationService.recommend(any(), any()))
+                .thenReturn(new RecommendResponse("123", "v9", "training", List.of())); // fell back to control
+
+        var req = new RecommendRequest();
+        req.setUserId("123");
+        req.setK(5);
+
+        mockMvc.perform(post("/api/v1/recommend")
+                        .contentType(MediaType.APPLICATION_JSON)
+                        .content(objectMapper.writeValueAsString(req)))
+                .andExpect(status().isOk());
+
+        verify(abExposureLogger).log(eq("123"), any(), eq("training"), eq(true), eq("v9"));
     }
 }
