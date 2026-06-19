@@ -105,6 +105,11 @@ recsys:
     enabled: ${RECSYS_SUBMIT_TOKEN_ENABLED:false}
     ttl-seconds: ${RECSYS_SUBMIT_TOKEN_TTL_SECONDS:300}
     key-prefix: ${RECSYS_SUBMIT_TOKEN_KEY_PREFIX:submit_token:}
+  events:
+    kafka:
+      enabled: ${RECSYS_EVENTS_KAFKA_ENABLED:false}
+      bootstrap-servers: ${RECSYS_EVENTS_KAFKA_BOOTSTRAP_SERVERS:}
+      exposure-topic: ${RECSYS_EVENTS_KAFKA_EXPOSURE_TOPIC:ab_exposures}
 
 management:
   endpoints:
