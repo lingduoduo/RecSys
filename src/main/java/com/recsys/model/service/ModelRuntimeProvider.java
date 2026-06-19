@@ -10,7 +10,9 @@ import com.recsys.online.ops.FaultInjector;
 import com.recsys.online.store.TrendingStore;
 import com.recsys.infrastructure.redis.GlobalPopularityStore;
 import com.recsys.infrastructure.redis.ShardedTopKStore;
+import com.recsys.online.store.OnlineFeatureStore;
 import com.recsys.service.retrieval.channels.EmbeddingChannel;
+import com.recsys.service.retrieval.channels.OnlineRecentHistoryChannel;
 import com.recsys.service.retrieval.channels.PopularityChannel;
 import com.recsys.service.retrieval.channels.TrendingChannel;
 import com.recsys.service.retrieval.coldstart.ColdStartChannel;
@@ -62,6 +64,7 @@ public class ModelRuntimeProvider implements SmartInitializingSingleton {
     private CandidateGenerator candidateGenerator;
     private TrendingStore topkStore;
     private GlobalPopularityStore globalPopStore;
+    private OnlineFeatureStore onlineFeatureStore;
     private ExecutorService recallExecutor;
     private ChannelHealthMonitor sharedHealthMonitor;
     private final Object recallLock = new Object();
@@ -158,6 +161,7 @@ public class ModelRuntimeProvider implements SmartInitializingSingleton {
             candidateGenerator = new CandidateGenerator(dataManager, new RedisEmbeddingStore(recallPool, "u2vEmb"));
             topkStore = new ShardedTopKStore(recallPool, "topk:");
             globalPopStore = new GlobalPopularityStore(recallPool);
+            onlineFeatureStore = new OnlineFeatureStore(recallPool);
             recallExecutor = Executors.newFixedThreadPool(
                     Runtime.getRuntime().availableProcessors() * 2,
                     r -> new Thread(r, "model-recall-channel"));
@@ -171,6 +175,7 @@ public class ModelRuntimeProvider implements SmartInitializingSingleton {
                 RecallConfig.builder()
                         .channels(java.util.List.of(
                                 new EmbeddingChannel(candidateGenerator),
+                                new OnlineRecentHistoryChannel(onlineFeatureStore, DataManager.getInstance()),
                                 new TrendingChannel(topkStore, java.util.List.of("last_hour", "last_day")),
                                 new PopularityChannel(DataManager.getInstance(), globalPopStore),
                                 new ColdStartChannel(topkStore, globalPopStore)))
@@ -194,7 +199,7 @@ public class ModelRuntimeProvider implements SmartInitializingSingleton {
             inferenceService.init();
 
             FeatureEncoder featureEncoder = new FeatureEncoder(artifactService);
-            ModelRetrievalStage retrievalStage = new ModelRetrievalStage(buildRecallService(artifactService));
+            ModelRetrievalStage retrievalStage = new ModelRetrievalStage(buildRecallService(artifactService), onlineFeatureStore);
             RankingStage rankingStage = new RankingStage(inferenceService, featureEncoder, artifactService);
 
             return new ModelRuntime(
