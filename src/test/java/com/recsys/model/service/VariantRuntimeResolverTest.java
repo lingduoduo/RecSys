@@ -83,6 +83,30 @@ class VariantRuntimeResolverTest {
     }
 
     @Test
+    void concurrentCallersDoNotStampedeTheBrokenBuild() throws Exception {
+        ModelRuntimeProvider provider = mock(ModelRuntimeProvider.class);
+        java.util.concurrent.CountDownLatch inBuild = new java.util.concurrent.CountDownLatch(1);
+        java.util.concurrent.CountDownLatch release = new java.util.concurrent.CountDownLatch(1);
+        when(provider.getRuntime("test")).thenAnswer(inv -> {
+            inBuild.countDown();
+            release.await();                       // hold the single in-flight attempt open
+            throw new IllegalStateException("missing");
+        });
+        when(provider.getRuntime("training")).thenReturn(controlRuntime);
+        VariantRuntimeResolver r = resolver(provider, new AtomicLong(0));
+
+        Thread t1 = new Thread(() -> r.resolve("test", "training"));
+        t1.start();
+        assertThat(inBuild.await(2, java.util.concurrent.TimeUnit.SECONDS)).isTrue();  // t1 is mid-build
+        VariantRuntimeResolver.Resolved t2 = r.resolve("test", "training");            // concurrent caller
+        assertThat(t2.servedVariant()).isEqualTo("training");
+        assertThat(t2.fellBack()).isTrue();
+        release.countDown();
+        t1.join(2_000);
+        verify(provider, times(1)).getRuntime("test");   // only t1 attempted the broken build
+    }
+
+    @Test
     void brokenControl_propagates() {
         ModelRuntimeProvider provider = mock(ModelRuntimeProvider.class);
         when(provider.getRuntime("test")).thenThrow(new IllegalStateException("missing"));

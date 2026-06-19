@@ -26,6 +26,7 @@ public class VariantRuntimeResolver {
     private final long cooldownMs;
     private final LongSupplier clock;
     private final ConcurrentHashMap<String, Long> failedUntilMs = new ConcurrentHashMap<>();
+    private final java.util.Set<String> attempting = java.util.concurrent.ConcurrentHashMap.newKeySet();
 
     @Autowired
     public VariantRuntimeResolver(ModelRuntimeProvider provider, MeterRegistry registry) {
@@ -45,18 +46,23 @@ public class VariantRuntimeResolver {
         }
         long now = clock.getAsLong();
         Long until = failedUntilMs.get(assignedVariant);
-        if (until == null || now >= until) {
-            failedUntilMs.remove(assignedVariant);
+        boolean inCooldown = until != null && now < until;
+        // Only one thread at a time attempts the (potentially expensive) build for a given
+        // variant: attempting.add(...) returns false if another thread already holds the claim,
+        // so a concurrent burst against a broken variant does not stampede the failing build.
+        if (!inCooldown && attempting.add(assignedVariant)) {
             try {
+                failedUntilMs.remove(assignedVariant);
                 return new Resolved(provider.getRuntime(assignedVariant), assignedVariant, false);
             } catch (RuntimeException e) {
                 failedUntilMs.put(assignedVariant, now + cooldownMs);
-                recordFallback(assignedVariant);
                 log.warn("variant '{}' failed to load; serving control '{}'", assignedVariant, defaultVariant, e);
+            } finally {
+                attempting.remove(assignedVariant);
             }
-        } else {
-            recordFallback(assignedVariant);
         }
+        // Fallback path: cooldown active, a concurrent thread is already attempting, or the build just failed.
+        recordFallback(assignedVariant);
         // Control failing here propagates — a broken control is a genuine outage, not masked.
         return new Resolved(provider.getRuntime(defaultVariant), defaultVariant, true);
     }
