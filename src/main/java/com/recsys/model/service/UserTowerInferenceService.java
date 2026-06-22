@@ -28,7 +28,7 @@ public class UserTowerInferenceService {
     public UserTowerInferenceService(ModelArtifactLocator artifactLocator, String variant, String modelFile) {
         this.artifactLocator = artifactLocator;
         this.variant = ModelVariants.trimOrEmpty(variant);
-        this.modelFile = modelFile == null || modelFile.isBlank() ? DEFAULT_MODEL_FILE : modelFile.trim();
+        this.modelFile = Strings.orDefault(modelFile, DEFAULT_MODEL_FILE);
     }
 
     public void init() throws Exception {

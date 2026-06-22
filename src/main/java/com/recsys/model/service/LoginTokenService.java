@@ -22,21 +22,20 @@ public class LoginTokenService {
     static final String KEY_PREFIX = "login:";
     public static final int TTL_SECONDS = 86_400; // 24 hours
 
-    private final Supplier<Pool<Jedis>> poolFactory;
-    private volatile Pool<Jedis> pool;
+    private final LazyJedisPool jedisPool;
 
     public LoginTokenService() {
         this(() -> RedisConnectionFactory.fromEnv());
     }
 
     LoginTokenService(Supplier<Pool<Jedis>> poolFactory) {
-        this.poolFactory = poolFactory;
+        this.jedisPool = new LazyJedisPool(poolFactory);
     }
 
     /** Creates a session token for the given userId and stores it in Redis. */
     public String create(String userId) {
         String token = UUID.randomUUID().toString();
-        try (Jedis jedis = jedis()) {
+        try (Jedis jedis = jedisPool.resource()) {
             String result = jedis.set(redisKey(token), userId,
                     SetParams.setParams().nx().ex(TTL_SECONDS));
             if (!"OK".equals(result)) {
@@ -54,7 +53,7 @@ public class LoginTokenService {
         if (token == null || token.isBlank()) {
             throw new UnauthorizedException("missing or invalid Authorization header");
         }
-        try (Jedis jedis = jedis()) {
+        try (Jedis jedis = jedisPool.resource()) {
             String userId = jedis.get(redisKey(token.trim()));
             if (userId == null) {
                 throw new UnauthorizedException("login token is invalid or expired");
@@ -66,31 +65,14 @@ public class LoginTokenService {
     /** Invalidates an existing session token (logout). */
     public void invalidate(String token) {
         if (token == null || token.isBlank()) return;
-        try (Jedis jedis = jedis()) {
+        try (Jedis jedis = jedisPool.resource()) {
             jedis.del(redisKey(token.trim()));
         }
     }
 
     @PreDestroy
     public void close() {
-        Pool<Jedis> current = pool;
-        if (current != null) {
-            current.close();
-        }
-    }
-
-    private Jedis jedis() {
-        Pool<Jedis> current = pool;
-        if (current == null) {
-            synchronized (this) {
-                current = pool;
-                if (current == null) {
-                    current = poolFactory.get();
-                    pool = current;
-                }
-            }
-        }
-        return current.getResource();
+        jedisPool.close();
     }
 
     private static String redisKey(String token) {

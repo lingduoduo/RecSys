@@ -8,7 +8,7 @@ final class ModelVariants {
     }
 
     static String normalizeOrDefault(String variant) {
-        return variant == null || variant.isBlank() ? DEFAULT : variant.trim();
+        return Strings.orDefault(variant, DEFAULT);
     }
 
     static String require(String variant) {

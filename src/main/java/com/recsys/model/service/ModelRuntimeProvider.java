@@ -78,11 +78,9 @@ public class ModelRuntimeProvider implements SmartInitializingSingleton {
                                 @Value("${recsys.model.redis.item-embedding-prefix:i2vEmb}") String redisItemEmbeddingPrefix) {
         this.artifactLocator = artifactLocator;
         this.abTestConfig = abTestConfig;
-        this.modelFile = modelFile == null || modelFile.isBlank() ? "dssm_model.onnx" : modelFile.trim();
+        this.modelFile = Strings.orDefault(modelFile, "dssm_model.onnx");
         this.itemEmbeddingsSource = itemEmbeddingsSource == null ? "classpath" : itemEmbeddingsSource.trim();
-        this.redisItemEmbeddingPrefix = redisItemEmbeddingPrefix == null || redisItemEmbeddingPrefix.isBlank()
-                ? "i2vEmb"
-                : redisItemEmbeddingPrefix.trim();
+        this.redisItemEmbeddingPrefix = Strings.orDefault(redisItemEmbeddingPrefix, "i2vEmb");
     }
 
     /**
