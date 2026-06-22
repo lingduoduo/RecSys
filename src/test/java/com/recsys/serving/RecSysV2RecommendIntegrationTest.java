@@ -38,7 +38,7 @@ class RecSysV2RecommendIntegrationTest {
     static final ServerExtension server = new ServerExtension() {
         @Override
         protected void configure(ServerBuilder sb) {
-            sb.service("/v2/recommend", new RecommendV2Service(mockPipeline));
+            sb.service("/v2/recommend", new RecommendationService.V2(mockPipeline));
         }
     };
 

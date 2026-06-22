@@ -52,7 +52,7 @@ class RecSysServerIntegrationTest {
             when(cg.byEmbedding(anyInt(), anyInt())).thenReturn(List.of());
             when(cg.byGenre(any(), anyInt())).thenReturn(List.of());
             // Mirror the real CandidateGenerator: reject non-6-dim vectors so we can assert
-            // SetEmbeddingService maps the IllegalArgumentException to 400 (not 500).
+            // EmbeddingService.SetMovie maps the IllegalArgumentException to 400 (not 500).
             org.mockito.Mockito.doThrow(
                             new IllegalArgumentException("vector dimension mismatch: expected 6, got 3"))
                     .when(cg).updateEmbedding(anyInt(), org.mockito.ArgumentMatchers.argThat(
@@ -61,20 +61,20 @@ class RecSysServerIntegrationTest {
             MultiChannelRecallService recallService = mock(MultiChannelRecallService.class);
             when(recallService.recall(any(), anyInt())).thenReturn(List.of());
 
-            MovieService movie = new MovieService(mockData);
-            UserService user = new UserService(mockData);
-            RecommendationService rec = new RecommendationService(mockData, recallService);
+            CatalogService.Movies movie = new CatalogService.Movies(mockData);
+            CatalogService.Users user = new CatalogService.Users(mockData);
+            RecommendationService.V1 rec = new RecommendationService.V1(mockData, recallService);
 
             sb.service("/item", movie)
               .service("/movie", movie)
               .service("/getuser", user)
               .service("/user", user)
-              .service("/similar", new SimilarMovieService(mockEmb, mockData))
+              .service("/similar", new RecommendationService.Similar(mockEmb, mockData))
               .service("/getrecommendation", rec)
               .service("/recommendation", rec)
-              .service("/setembedding", new SetEmbeddingService(mockEmb, cg))
-              .service("/setuserembedding", new SetUserEmbeddingService(mockUserEmb))
-              .service("/health", new HealthService())
+              .service("/setembedding", new EmbeddingService.SetMovie(mockEmb, cg))
+              .service("/setuserembedding", new EmbeddingService.SetUser(mockUserEmb))
+              .service("/health", new RecommendationService.Health())
               .service(Route.builder()
                                .regex("^/v1/models/recmodel:predict$")
                                .methods(com.linecorp.armeria.common.HttpMethod.POST)
