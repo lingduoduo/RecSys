@@ -31,7 +31,7 @@ class OnlineRecentHistoryChannelTest {
         when(dm.getSimilarMovies(10)).thenReturn(List.of(movie(1), movie(2), movie(3)));
         when(dm.getSimilarMovies(20)).thenReturn(List.of(movie(2), movie(4)));
 
-        OnlineRecentHistoryChannel channel = new OnlineRecentHistoryChannel(recent, dm);
+        Channels.OnlineRecentHistory channel = new Channels.OnlineRecentHistory(recent, dm);
         List<MovieCandidate> out = channel.recall(query("7"), 10);
 
         assertThat(out).isNotEmpty();
@@ -49,14 +49,14 @@ class OnlineRecentHistoryChannelTest {
         DataManager dm = mock(DataManager.class);
         when(recent.getRecentMovieIds(eq(7), eq(3))).thenReturn(List.of());
 
-        OnlineRecentHistoryChannel channel = new OnlineRecentHistoryChannel(recent, dm);
+        Channels.OnlineRecentHistory channel = new Channels.OnlineRecentHistory(recent, dm);
         assertThat(channel.recall(query("7"), 10)).isEmpty();
     }
 
     @Test
     void emptyWhenUserIdNotNumeric() {
-        OnlineRecentHistoryChannel channel =
-                new OnlineRecentHistoryChannel(mock(RecentHistoryStore.class), mock(DataManager.class));
+        Channels.OnlineRecentHistory channel =
+                new Channels.OnlineRecentHistory(mock(RecentHistoryStore.class), mock(DataManager.class));
         assertThat(channel.recall(query("user_7"), 10)).isEmpty();
     }
 
@@ -67,7 +67,7 @@ class OnlineRecentHistoryChannelTest {
         when(recent.getRecentMovieIds(eq(7), eq(3))).thenReturn(List.of(10));
         when(dm.getSimilarMovies(10)).thenReturn(List.of(movie(1), movie(2), movie(3), movie(4)));
 
-        OnlineRecentHistoryChannel channel = new OnlineRecentHistoryChannel(recent, dm);
+        Channels.OnlineRecentHistory channel = new Channels.OnlineRecentHistory(recent, dm);
         assertThat(channel.recall(query("7"), 2)).hasSize(2);
     }
 }

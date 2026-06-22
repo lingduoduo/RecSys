@@ -11,11 +11,7 @@ import com.recsys.online.store.TrendingStore;
 import com.recsys.infrastructure.redis.GlobalPopularityStore;
 import com.recsys.infrastructure.redis.ShardedTopKStore;
 import com.recsys.online.store.OnlineFeatureStore;
-import com.recsys.service.retrieval.channels.EmbeddingChannel;
-import com.recsys.service.retrieval.channels.OnlineRecentHistoryChannel;
-import com.recsys.service.retrieval.channels.PopularityChannel;
-import com.recsys.service.retrieval.channels.TrendingChannel;
-import com.recsys.service.retrieval.channels.UserSimilarityChannel;
+import com.recsys.service.retrieval.channels.Channels;
 import com.recsys.service.retrieval.coldstart.ColdStartChannel;
 import com.recsys.service.retrieval.coldstart.QuotaPolicy;
 import com.recsys.service.retrieval.multichannel.ChannelHealthMonitor;
@@ -176,11 +172,11 @@ public class ModelRuntimeProvider implements SmartInitializingSingleton {
         return MultiChannelRecallService.from(
                 RecallConfig.builder()
                         .channels(java.util.List.of(
-                                new EmbeddingChannel(candidateGenerator),
-                                new OnlineRecentHistoryChannel(onlineFeatureStore, dataManager),
-                                new UserSimilarityChannel(dataManager),
-                                new TrendingChannel(topkStore, java.util.List.of("last_hour", "last_day")),
-                                new PopularityChannel(dataManager, globalPopStore),
+                                new Channels.Embedding(candidateGenerator),
+                                new Channels.OnlineRecentHistory(onlineFeatureStore, dataManager),
+                                new Channels.UserSimilarity(dataManager),
+                                new Channels.Trending(topkStore, java.util.List.of("last_hour", "last_day")),
+                                new Channels.Popularity(dataManager, globalPopStore),
                                 new ColdStartChannel(topkStore, globalPopStore)))
                         .quotaPolicy(QuotaPolicy.defaultModelRetrieval())
                         .healthMonitor(sharedHealthMonitor)

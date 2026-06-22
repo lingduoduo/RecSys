@@ -19,11 +19,7 @@ import com.recsys.service.hydrator.RecommendationHydrator;
 import com.recsys.service.pagination.CursorPaginationService;
 import com.recsys.service.ranking.ScoreRanker;
 import com.recsys.service.recommendation.RecommendationOrchestrator;
-import com.recsys.service.retrieval.channels.EmbeddingChannel;
-import com.recsys.service.retrieval.channels.GenreHistoryChannel;
-import com.recsys.service.retrieval.channels.PopularityChannel;
-import com.recsys.service.retrieval.channels.TrendingChannel;
-import com.recsys.service.retrieval.channels.UserSimilarityChannel;
+import com.recsys.service.retrieval.channels.Channels;
 import com.recsys.service.retrieval.coldstart.ColdStartChannel;
 import com.recsys.service.retrieval.coldstart.QuotaPolicy;
 import com.recsys.service.retrieval.multichannel.ChannelHealthMonitor;
@@ -94,11 +90,11 @@ public class RecSysServer {
             MultiChannelRecallService recallService = MultiChannelRecallService.from(
                     RecallConfig.builder()
                             .channels(List.of(
-                                    new EmbeddingChannel(candidateGenerator),
-                                    new UserSimilarityChannel(dataManager),
-                                    new TrendingChannel(topkStore, List.of("last_hour", "last_day")),
-                                    new GenreHistoryChannel(candidateGenerator),
-                                    new PopularityChannel(dataManager, globalPopStore),
+                                    new Channels.Embedding(candidateGenerator),
+                                    new Channels.UserSimilarity(dataManager),
+                                    new Channels.Trending(topkStore, List.of("last_hour", "last_day")),
+                                    new Channels.GenreHistory(candidateGenerator),
+                                    new Channels.Popularity(dataManager, globalPopStore),
                                     new ColdStartChannel(topkStore, globalPopStore)))
                             .quotaPolicy(QuotaPolicy.defaultMovie())
                             .healthMonitor(new ChannelHealthMonitor())

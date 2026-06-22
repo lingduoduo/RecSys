@@ -5,6 +5,7 @@ import com.recsys.domain.RecommendationQuery;
 import com.recsys.infrastructure.redis.GlobalPopularityStore;
 import com.recsys.online.store.TrendingStore;
 import com.recsys.service.retrieval.RecallChannel;
+import com.recsys.service.retrieval.RecallScoring;
 
 import java.util.LinkedHashMap;
 import java.util.List;
@@ -36,18 +37,8 @@ public class ColdStartChannel implements RecallChannel {
     public List<MovieCandidate> recall(RecommendationQuery query, int limit) {
         Map<String, Double> blended = new LinkedHashMap<>();
 
-        for (Map.Entry<String, Double> entry : WINDOW_WEIGHTS.entrySet()) {
-            List<String> ids = trendingStore.getTopKIds(entry.getKey(), limit);
-            double weight = entry.getValue();
-            for (int i = 0; i < ids.size(); i++) {
-                blended.merge(ids.get(i), weight * (1.0 / (i + 1.0)), Double::sum);
-            }
-        }
-
-        List<String> popIds = globalPopularityStore.getTopIds(limit);
-        for (int i = 0; i < popIds.size(); i++) {
-            blended.merge(popIds.get(i), POPULARITY_WEIGHT * (1.0 / (i + 1.0)), Double::sum);
-        }
+        RecallScoring.blendWindows(blended, trendingStore, WINDOW_WEIGHTS, limit);
+        RecallScoring.blendRankDecay(blended, globalPopularityStore.getTopIds(limit), POPULARITY_WEIGHT);
 
         return blended.entrySet().stream()
                 .filter(e -> !query.excludedItemIds().contains(e.getKey()))

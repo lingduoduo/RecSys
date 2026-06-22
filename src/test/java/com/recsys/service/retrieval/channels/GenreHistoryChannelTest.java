@@ -21,7 +21,7 @@ class GenreHistoryChannelTest {
         Movie m = new Movie(5, "Inception", 2010, List.of("Sci-Fi"));
         when(cg.byUserHistory(7, 10)).thenReturn(List.of(m));
 
-        GenreHistoryChannel channel = new GenreHistoryChannel(cg);
+        Channels.GenreHistory channel = new Channels.GenreHistory(cg);
         List<MovieCandidate> results = channel.recall(
                 new RecommendationQuery("7", 10, Set.of(), null), 10);
 
@@ -36,7 +36,7 @@ class GenreHistoryChannelTest {
         CandidateGenerator cg = mock(CandidateGenerator.class);
         when(cg.byUserHistory(999, 5)).thenReturn(List.of());
 
-        List<MovieCandidate> results = new GenreHistoryChannel(cg).recall(
+        List<MovieCandidate> results = new Channels.GenreHistory(cg).recall(
                 new RecommendationQuery("999", 5, Set.of(), null), 5);
 
         assertThat(results).isEmpty();
@@ -44,7 +44,7 @@ class GenreHistoryChannelTest {
 
     @Test
     void name_returnsGenreHistory() {
-        assertThat(new GenreHistoryChannel(mock(CandidateGenerator.class)).name())
+        assertThat(new Channels.GenreHistory(mock(CandidateGenerator.class)).name())
                 .isEqualTo("genre_history");
     }
 }

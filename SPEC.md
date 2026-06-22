@@ -1,225 +1,214 @@
-# Spec: Consolidate `serving/` Service Classes
+# Spec: Simplify `service/retrieval/`
 
 ## Objective
 
-The offline RecSys serving layer (`com.recsys.serving`) has grown to 11 files,
-several of which are near-duplicates that differ only in an entity type or a
-parameter name. This spec consolidates them by **domain** so related endpoints
-live in one file, reducing surface area and removing copy-paste drift — **with
-zero change to runtime behavior, routes, or wire formats**.
+The multi-channel retrieval layer (`com.recsys.service.retrieval`) has grown to
+14 files with repeated scoring/merge boilerplate across its recall channels,
+plus a set of dead `QuotaSpec` factory methods left over from a pre-`QuotaPolicy`
+design. This spec removes the duplication and the dead code, and collapses the
+six `channels/` implementations into one file — **with zero change to recall
+behavior, channel `name()` keys, scores, or ordering.**
 
-This is a pure internal refactor. No new features, no endpoint changes.
+Pure internal refactor. No new channels, no scoring-policy changes.
 
 ### Who benefits
-Maintainers of the offline serving API (`RecSysServer`, port 6010). Fewer files,
-single source of truth for the lookup/embedding-write patterns.
+Maintainers of all three serving paths that wire these channels — offline
+(`RecSysServer`, 6010), model (`ModelRuntimeProvider`, 8080), online
+(`OnlinePredictionServer`, 7010). One source of truth for the rank-decay /
+blend / comparator patterns; less copy-paste drift.
 
 ### Success looks like
-- `serving/` drops from 11 files to ~6.
-- Every existing route still resolves to the same handler with identical
-  request parsing, response JSON, and status codes.
-- `mvn test` passes (after the 2 integration tests are updated to the new
-  constructor names).
+- The four duplicated patterns exist once, in a shared helper.
+- Dead `QuotaSpec.warm/cold` statics are gone.
+- `channels/` is one file instead of six.
+- Every channel still emits the same `name()`, scores, and candidate ordering.
+- `mvn test` is green (after the mechanical test updates below).
 
 ## Tech Stack
 
-- Java 17, Armeria HTTP server (`AbstractHttpService`)
-- Jackson for JSON, SLF4J for logging
-- JUnit 5 + Mockito for tests
+- Java 17, SLF4J, JUnit 5 + Mockito, AssertJ
 - Build: Maven
 
 ## Commands
 
 ```bash
-# Build (skip tests)
+# Compile
 mvn package -DskipTests
 
-# Run the serving-layer tests touched by this change
-mvn test -Dtest='RecSysServerIntegrationTest,RecSysServerRegressionTest,RecSysV2RecommendIntegrationTest'
+# Retrieval-focused tests
+mvn test -Dtest='com.recsys.service.retrieval.**,RecommendationOrchestratorTest'
 
-# Full test suite
+# Full suite
 mvn test
 ```
 
-## Current vs. Target Structure
+## Scope — three consolidations (all approved)
 
-### Current (11 files)
-```
-serving/
-  BaseApiService.java            shared base (helpers)        KEEP AS-IS
-  RecSysServer.java              server wiring                EDIT (wiring only)
-  MovieService.java              GET /item,/movie         ─┐
-  UserService.java               GET /getuser,/user        ┴─ duplicate lookup
-  SetEmbeddingService.java       POST /setembedding       ─┐
-  SetUserEmbeddingService.java   POST /setuserembedding    ┴─ duplicate vec-write
-  RecommendationService.java     GET /getrecommendation   ─┐
-  RecommendV2Service.java        POST /v2/recommend        ┤
-  SimilarMovieService.java       GET /similar              ┤  recommendation family
-  HealthService.java             GET /health              ─┘
-  PredictionService.java         POST /v1/models/...      standalone
-```
+### 1. Extract shared helpers → new `RecallScoring`
 
-### Target (~6 files)
-```
-serving/
-  BaseApiService.java            (unchanged)
-  RecSysServer.java              (wiring updated to nested classes)
-  CatalogService.java            CatalogService.Movies  → GET /item,/movie
-                                 CatalogService.Users   → GET /getuser,/user
-  EmbeddingService.java          EmbeddingService.SetMovie → POST /setembedding
-                                 EmbeddingService.SetUser  → POST /setuserembedding
-                                 (shared private vec-parse helper)
-  RecommendationService.java     RecommendationService.V1      → GET /getrecommendation
-                                 RecommendationService.V2      → POST /v2/recommend
-                                 RecommendationService.Similar → GET /similar
-                                 RecommendationService.Health  → GET /health
-  PredictionService.java         (unchanged — already standalone & cohesive)
-```
-
-`streaming/flink/` and `training/rulebased/` are excluded from the Maven compile —
-not touched here.
-
-## Mechanism: nested static services
-
-Each consolidated file is a non-instantiable container holding one `public static
-final` inner class per route. Each inner class still `extends BaseApiService`, so
-`RecSysServer` binds one instance per route exactly as today — no branching on
-path, no parameterized dispatch.
-
-## Code Style
-
-One real example — the container + nested-service pattern:
+New package-local class `com.recsys.service.retrieval.RecallScoring` (next to the
+`RecallChannel` interface). Holds the four duplicated patterns:
 
 ```java
-public final class CatalogService {
+public final class RecallScoring {
+    private RecallScoring() {}
 
-    private CatalogService() {}   // container only; never instantiated
+    /** Candidate ordering used everywhere: score desc, then itemId asc (stable, deterministic). */
+    public static final Comparator<MovieCandidate> BY_SCORE_DESC =
+            Comparator.comparingDouble(MovieCandidate::score).reversed()
+                    .thenComparing(MovieCandidate::itemId);
 
-    /** GET /item, /movie — fetch a movie by numeric id. */
-    public static final class Movies extends BaseApiService {
-        private final DataManager dataManager;
+    /** Rank-decay candidates: ids[i] -> score 1/(i+1), tagged with the channel name. */
+    public static List<MovieCandidate> rankScored(List<String> ids, String channel) { ... }
 
-        public Movies(DataManager dataManager) {
-            this.dataManager = dataManager;
-        }
+    /** Merge ids into `into` with rank-decay weighted by `weight`: into[id] += weight * 1/(rank+1). */
+    public static void blendRankDecay(Map<String, Double> into, List<String> ids, double weight) { ... }
 
-        @Override
-        protected HttpResponse doGet(ServiceRequestContext ctx, HttpRequest req) {
-            return HttpResponse.of(CompletableFuture.supplyAsync(() -> {
-                try {
-                    int movieId = requiredIntParam(ctx, "id");
-                    Movie movie = dataManager.getMovieById(movieId);
-                    if (movie == null)
-                        return writeError(HttpStatus.NOT_FOUND, "movie not found", "id", movieId);
-                    return writeJson(HttpStatus.OK, movie);
-                } catch (BadRequestException e) {
-                    return writeError(HttpStatus.BAD_REQUEST, e.getMessage());
-                } catch (Exception e) {
-                    log.error("Unexpected error in CatalogService.Movies", e);
-                    return writeError(HttpStatus.INTERNAL_SERVER_ERROR, "internal server error");
-                }
-            }, ctx.blockingTaskExecutor()));
-        }
-    }
+    /** Apply blendRankDecay across each (window -> weight) entry, pulling getTopKIds(window, limit). */
+    public static void blendWindows(Map<String, Double> into, TrendingStore store,
+                                    Map<String, Double> weights, int limit) { ... }
 
-    /** GET /getuser, /user — fetch a user by numeric id. */
-    public static final class Users extends BaseApiService { /* same shape, userId */ }
+    /** Parse the numeric user id, empty if non-numeric (the common channel guard). */
+    public static OptionalInt parseUserId(RecommendationQuery query) { ... }
 }
 ```
 
-Conventions (all preserved from the existing code):
-- Inner classes named for the resource (`Movies`, `Users`, `SetMovie`, `SetUser`,
-  `V1`, `V2`, `Similar`, `Health`).
-- Async via `CompletableFuture.supplyAsync(..., ctx.blockingTaskExecutor())` for
-  GET, `req.aggregate().thenApplyAsync(...)` for POST — unchanged per endpoint.
-- Error-handling ladder unchanged: `BadRequestException` → 400, unexpected → 500
-  with `log.error(...)`.
-- Log messages updated to the new qualified name (e.g.
-  `"Unexpected error in CatalogService.Movies"`).
-- Records that belonged to a service move with it (e.g. `SimilarMovieService`'s
-  `ScoredMovie` / `SimilarMoviesResult` become
-  `RecommendationService.Similar.ScoredMovie` etc., or nested in `Similar`).
-- De-duplicate the embedding-write body parsing (read `vec` query param, else
-  aggregated body, blank-check, `VectorMath.parseVector`) into one private static
-  helper in `EmbeddingService` used by both `SetMovie` and `SetUser`.
+Refactor call sites:
+- `BY_SCORE_DESC` → replaces the 5 inline comparators (`MultiChannelRecallService`
+  ×4, `UserSimilarityChannel` ×1).
+- `rankScored` → `Embedding`, `Popularity` (redis branch), `OnlineRecentHistory`.
+- `blendWindows` / `blendRankDecay` → `Trending` (windows) and `ColdStart`
+  (windows + popularity).
+- `parseUserId` → `UserSimilarity` and `OnlineRecentHistory` (the identical
+  `try/parseInt → List.of()` guard). `MultiChannelRecallService` keeps its own
+  parse (its non-numeric branch picks the cold quota, not empty — different
+  behavior, left as-is). `Embedding`/`GenreHistory` keep the bare `parseInt`
+  (they intentionally throw on bad input → recorded as a channel failure).
 
-## Routes — MUST stay byte-identical (hard constraint)
+### 2. Remove dead `QuotaSpec.warm(int)` / `QuotaSpec.cold(int)`
 
-The API gateway strips prefixes and forwards these exact suffixes. Do not rename,
-add, or drop any route.
+These statics are unused in production — `QuotaPolicy` supersedes them and
+`QuotaPolicy.defaultMovie()` reproduces their numbers exactly. The `QuotaSpec`
+record itself (constructor, `slots()`, `slotsFor()`) stays — it's the per-request
+slot carrier used by `QuotaPolicy` and `MultiChannelRecallService`.
 
-| Route | Today | After |
+- Delete `QuotaSpec.warm(int)` and `QuotaSpec.cold(int)`.
+- Delete `QuotaSpecTest.java` (it exclusively tests the removed statics).
+- Rewrite the one `QuotaPolicyTest` line that uses `QuotaSpec.cold(limit).slots()`
+  as a golden value — replace with the literal expected slot map.
+
+### 3. Merge `channels/` six files → one `Channels.java`
+
+Collapse the six `RecallChannel` impls into one container with public nested
+static classes (the pattern used in the serving refactor). `ColdStartChannel`
+stays in `coldstart/` (it's grouped with the quota logic, not in `channels/`).
+
+```
+channels/Channels.java
+  Channels.Embedding             (was EmbeddingChannel)
+  Channels.GenreHistory          (was GenreHistoryChannel)
+  Channels.Popularity            (was PopularityChannel)
+  Channels.Trending              (was TrendingChannel)
+  Channels.UserSimilarity        (was UserSimilarityChannel; keeps its private
+                                  Neighbor / CandidateScore records + helpers)
+  Channels.OnlineRecentHistory   (was OnlineRecentHistoryChannel)
+```
+
+Each nested class keeps its existing constructors, fields, and — critically — its
+exact `name()` string. Construction sites change from `new EmbeddingChannel(x)`
+to `new Channels.Embedding(x)`.
+
+## Project Structure (after)
+
+```
+service/retrieval/
+  RecallChannel.java                         (unchanged interface)
+  RecallScoring.java                         NEW shared helper
+  channels/Channels.java                     NEW — 6 nested channels (replaces 6 files)
+  coldstart/ColdStartChannel.java            refactored to use RecallScoring
+  coldstart/QuotaPolicy.java                 (unchanged)
+  coldstart/QuotaSpec.java                   warm/cold statics removed
+  multichannel/MultiChannelRecallService.java  uses RecallScoring.BY_SCORE_DESC
+  multichannel/RecallConfig.java             (unchanged)
+  multichannel/ChannelHealthMonitor.java     (unchanged)
+  rulebased/ItemEmbeddingJob.java            (unrelated job — untouched)
+```
+
+## Code Style
+
+- Container class is `public final` with a private constructor; channels are
+  `public static final class` extending nothing (they `implements RecallChannel`).
+- `name()` strings are the wire/quota contract — never change them; a comment in
+  `Channels.java` notes this.
+- Helper methods are `static`, side-effecting variants take the target map as the
+  first arg (`into`), matching the existing `merge`-into-map style.
+- Preserve every existing constant (`SCORE`, `FALLBACK_SCORE`, `PREDEFINED_WEIGHTS`,
+  `MAX_NEIGHBORS`, recency-boost numbers) verbatim.
+
+## Routes / Contract — MUST stay identical (hard constraints)
+
+| Channel | `name()` (unchanged) | Old type → New type |
 |---|---|---|
-| `/item`, `/movie` | `MovieService` | `CatalogService.Movies` |
-| `/getuser`, `/user` | `UserService` | `CatalogService.Users` |
-| `/similar` | `SimilarMovieService` | `RecommendationService.Similar` |
-| `/getrecommendation`, `/recommendation` | `RecommendationService` | `RecommendationService.V1` |
-| `/v2/recommend` | `RecommendV2Service` | `RecommendationService.V2` |
-| `/setembedding` | `SetEmbeddingService` | `EmbeddingService.SetMovie` |
-| `/setuserembedding` | `SetUserEmbeddingService` | `EmbeddingService.SetUser` |
-| `/health` | `HealthService` | `RecommendationService.Health` |
-| `/v1/models/recmodel:predict` | `PredictionService` | `PredictionService` (unchanged) |
+| embedding | `embedding` | `EmbeddingChannel` → `Channels.Embedding` |
+| genre history | `genre_history` | `GenreHistoryChannel` → `Channels.GenreHistory` |
+| popularity | `popularity` | `PopularityChannel` → `Channels.Popularity` |
+| trending | `trending` | `TrendingChannel` → `Channels.Trending` |
+| user similarity | `user_similarity` | `UserSimilarityChannel` → `Channels.UserSimilarity` |
+| online recent history | `online_recent_history` | `OnlineRecentHistoryChannel` → `Channels.OnlineRecentHistory` |
+
+These strings are keys in `QuotaPolicy.defaultMovie/defaultOnline/defaultModelRetrieval`
+fraction maps — a typo silently breaks quota allocation.
 
 ## Testing Strategy
 
-Framework: JUnit 5 + Mockito. No new tests are required — existing integration
-and regression tests already pin the HTTP behavior; they are the safety net.
+JUnit 5 + Mockito + AssertJ. No new tests required — existing per-channel and
+service tests are the safety net. Mechanical updates only:
 
-Two test files reference the old constructors and must be updated to the nested
-names (behavioral assertions stay the same):
+- **Production wiring** (construct channels): `serving/RecSysServer.java`,
+  `model/service/ModelRuntimeProvider.java`,
+  `online/serving/OnlinePredictionServer.java` — update `new XxxChannel(...)` →
+  `new Channels.Xxx(...)` and imports.
+- **Channel tests** (6 files, references only — assertions unchanged):
+  `EmbeddingChannelTest`, `GenreHistoryChannelTest`, `PopularityChannelTest`,
+  `TrendingChannelTest`, `UserSimilarityChannelTest`, `OnlineRecentHistoryChannelTest`.
+- **QuotaSpec cleanup:** delete `QuotaSpecTest.java`; fix one golden line in
+  `QuotaPolicyTest.java`.
 
-- `src/test/java/com/recsys/serving/RecSysServerIntegrationTest.java`
-  - `new MovieService(mockData)` → `new CatalogService.Movies(mockData)`
-  - `new UserService(mockData)` → `new CatalogService.Users(mockData)`
-  - `new RecommendationService(mockData, recallService)` → `…RecommendationService.V1(…)`
-  - `new SimilarMovieService(mockEmb, mockData)` → `new RecommendationService.Similar(mockEmb, mockData)`
-  - `new SetEmbeddingService(mockEmb, cg)` → `new EmbeddingService.SetMovie(mockEmb, cg)`
-  - `new SetUserEmbeddingService(mockUserEmb)` → `new EmbeddingService.SetUser(mockUserEmb)`
-  - `new HealthService()` → `new RecommendationService.Health()`
-  - `new PredictionService(mockPrediction)` → unchanged
-- `src/test/java/com/recsys/serving/RecSysServerRegressionTest.java`
-  - `new RecommendationService(mockData, mockRecall)` → `new RecommendationService.V1(…)`
-- `RecSysV2RecommendIntegrationTest.java` uses `new RecommendV2Service(mockPipeline)`
-  → `new RecommendationService.V2(mockPipeline)`
-
-Verification: the three serving tests above pass, then the full `mvn test` suite
-passes.
+Verification order: retrieval test subset green → full `mvn test` green.
 
 ## Boundaries
 
-- **Always:**
-  - Preserve every route path and the exact request-parsing / response-JSON / status-code behavior.
-  - Keep `BaseApiService` and `PredictionService` functionally unchanged.
-  - Update the touched tests in the same change and run them.
-- **Ask first:**
-  - Any change to a route path, response shape, or `BaseApiService` API.
-  - Splitting work across more or fewer files than the target above.
-  - Touching anything outside `com.recsys.serving` + the 3 named test files.
-- **Never:**
-  - Add new endpoints or features.
-  - Change wire formats (JSON keys, error bodies, `Retry-After`, etc.).
-  - Delete a test to make the build pass.
+- **Always:** preserve channel `name()` strings, scores, candidate ordering, and
+  all numeric constants; update wiring + tests in the same change and run them.
+- **Ask first:** changing any `name()` string, score formula, or `QuotaPolicy`
+  numbers; touching `MultiChannelRecallService`'s merge logic beyond swapping in
+  the shared comparator; touching anything outside `service/retrieval` + the named
+  wiring/test files.
+- **Never:** add/remove a channel or endpoint; change wire output; delete a test
+  that covers live code (only `QuotaSpecTest`, which covers dead code, is removed —
+  and that was explicitly approved).
 
 ## Success Criteria
 
-1. `serving/` contains exactly: `BaseApiService`, `RecSysServer`, `CatalogService`,
-   `EmbeddingService`, `RecommendationService`, `PredictionService` (6 files).
-2. `MovieService`, `UserService`, `SetEmbeddingService`, `SetUserEmbeddingService`,
-   `SimilarMovieService`, `RecommendV2Service`, `HealthService` are deleted.
-3. All 9 routes resolve to the mapped nested handlers; `git diff` on `RecSysServer`
-   shows only handler-construction changes, no route-string changes.
-4. `mvn test` is green.
-5. No production code outside `com.recsys.serving` is modified.
+1. `RecallScoring` exists and is the sole home of the comparator, `rankScored`,
+   `blendRankDecay`/`blendWindows`, and `parseUserId`.
+2. The 5 inline comparators, 3 inline rank-decay loops, and 2 window-blend loops
+   are replaced by helper calls.
+3. `QuotaSpec.warm/cold` and `QuotaSpecTest` are deleted; `QuotaSpec` record API
+   otherwise intact.
+4. `channels/` is a single `Channels.java`; the 6 old files are deleted; all
+   construction sites compile against the nested names.
+5. All 6 channel `name()` strings unchanged; `git diff` shows no edits to score
+   constants or quota fractions.
+6. `mvn test` green; no production code outside `service/retrieval` changed except
+   the 3 wiring files.
 
 ## Open Questions
 
-1. **Health placement.** The chosen "group by domain" option bundles `Health`
-   into `RecommendationService`, which is slightly off-domain (health is a
-   liveness probe, not a recommendation). Acceptable trade-off for file-count
-   reduction, but the trivially clean alternative is to keep a standalone 15-line
-   `HealthService.java` (→ 7 files). **Default: follow the chosen grouping
-   (Health nested in RecommendationService).** Flag if you'd rather keep it standalone.
-2. **Similar records location.** `ScoredMovie` / `SimilarMoviesResult` will nest
-   inside `RecommendationService.Similar`. If any external code references
-   `SimilarMovieService.ScoredMovie` it must move too — grep confirms only the
-   serving layer uses them, so this is internal.
+1. **`Channels.java` size.** Folding `UserSimilarity` (169 lines) in makes one
+   ~450-line file. Approved as "merge channel files"; flag if you'd prefer
+   `UserSimilarity` kept as its own file (it's the one heavyweight channel) and
+   only the five lightweight channels merged.
+2. **SPEC.md reuse.** This overwrites the serving-refactor `SPEC.md` (already
+   captured in PR #134). If you want both kept on disk, say so and I'll name this
+   `SPEC-retrieval.md`.

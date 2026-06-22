@@ -5,13 +5,13 @@ import com.recsys.domain.RecommendationQuery;
 import com.recsys.infrastructure.vectordb.EmbeddingStore;
 import com.recsys.online.ops.FaultInjector;
 import com.recsys.service.retrieval.RecallChannel;
+import com.recsys.service.retrieval.RecallScoring;
 import com.recsys.service.retrieval.coldstart.QuotaPolicy;
 import com.recsys.service.retrieval.coldstart.QuotaSpec;
 import org.slf4j.Logger;
 import org.slf4j.LoggerFactory;
 
 import java.util.ArrayList;
-import java.util.Comparator;
 import java.util.LinkedHashMap;
 import java.util.LinkedHashSet;
 import java.util.List;
@@ -141,8 +141,7 @@ public class MultiChannelRecallService {
             }
             healthMonitor.recordSuccess(result.channel());
             List<MovieCandidate> sorted = result.candidates().stream()
-                    .sorted(Comparator.comparingDouble(MovieCandidate::score).reversed()
-                            .thenComparing(MovieCandidate::itemId))
+                    .sorted(RecallScoring.BY_SCORE_DESC)
                     .toList();
             channelResults.put(result.channel(), sorted);
         }
@@ -165,8 +164,7 @@ public class MultiChannelRecallService {
             }
         }
         return merged.values().stream()
-                .sorted(Comparator.comparingDouble(MovieCandidate::score).reversed()
-                        .thenComparing(MovieCandidate::itemId))
+                .sorted(RecallScoring.BY_SCORE_DESC)
                 .limit(limit)
                 .toList();
     }
@@ -203,14 +201,12 @@ public class MultiChannelRecallService {
                 }
             }
             gapPool.values().stream()
-                    .sorted(Comparator.comparingDouble(MovieCandidate::score).reversed()
-                            .thenComparing(MovieCandidate::itemId))
+                    .sorted(RecallScoring.BY_SCORE_DESC)
                     .limit(limit - result.size())
                     .forEach(result::add);
         }
 
-        result.sort(Comparator.comparingDouble(MovieCandidate::score).reversed()
-                .thenComparing(MovieCandidate::itemId));
+        result.sort(RecallScoring.BY_SCORE_DESC);
         return result.size() > limit ? List.copyOf(result.subList(0, limit)) : List.copyOf(result);
     }
 

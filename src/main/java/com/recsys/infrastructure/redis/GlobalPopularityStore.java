@@ -10,7 +10,7 @@ import java.util.function.LongSupplier;
 /**
  * Reads the {@code global:item_popularity} sorted set (written by Spark
  * {@code UserEventStreamingJob} via ZINCRBY). The key is user-independent and moves on
- * minute scales, yet it is read on every recall request by both PopularityChannel and
+ * minute scales, yet it is read on every recall request by both Channels.Popularity and
  * ColdStartChannel. A {@link TtlSingleFlightCache} holds a single top-N snapshot so the
  * Redis ZREVRANGE runs at most once per fresh-TTL window across all concurrent requests.
  */
@@ -41,7 +41,7 @@ public class GlobalPopularityStore {
             top = cache.get(KEY, this::loadTopFromRedis);
         } catch (RuntimeException redisDownNoSnapshot) {
             // No usable snapshot and Redis is unavailable — let the caller fall back
-            // (PopularityChannel uses its DataManager fallback on empty).
+            // (Channels.Popularity uses its DataManager fallback on empty).
             return List.of();
         }
         if (top.size() <= limit) return top;
