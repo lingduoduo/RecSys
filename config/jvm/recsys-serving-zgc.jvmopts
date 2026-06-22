@@ -1,4 +1,4 @@
-# recsys-serving-zgc — Jetty Recommendation Serving API, ZGC (port 6010)
+# recsys-serving-zgc — Armeria Recommendation Serving API, ZGC (port 6010)
 # Requires Java 21+. Use for sub-10 ms pause SLO on the recommendation path.
 
 # ── 堆 (Heap) ─────────────────────────────────────────────────────────────────

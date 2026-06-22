@@ -15,6 +15,7 @@ import com.recsys.service.retrieval.channels.EmbeddingChannel;
 import com.recsys.service.retrieval.channels.OnlineRecentHistoryChannel;
 import com.recsys.service.retrieval.channels.PopularityChannel;
 import com.recsys.service.retrieval.channels.TrendingChannel;
+import com.recsys.service.retrieval.channels.UserSimilarityChannel;
 import com.recsys.service.retrieval.coldstart.ColdStartChannel;
 import com.recsys.service.retrieval.coldstart.QuotaPolicy;
 import com.recsys.service.retrieval.multichannel.ChannelHealthMonitor;
@@ -177,6 +178,7 @@ public class ModelRuntimeProvider implements SmartInitializingSingleton {
                         .channels(java.util.List.of(
                                 new EmbeddingChannel(candidateGenerator),
                                 new OnlineRecentHistoryChannel(onlineFeatureStore, dataManager),
+                                new UserSimilarityChannel(dataManager),
                                 new TrendingChannel(topkStore, java.util.List.of("last_hour", "last_day")),
                                 new PopularityChannel(dataManager, globalPopStore),
                                 new ColdStartChannel(topkStore, globalPopStore)))

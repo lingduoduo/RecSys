@@ -24,7 +24,7 @@ import java.util.concurrent.atomic.AtomicLong;
  *   Decoupling    — the HTTP serving path has no dependency on Kafka
  *                   availability; {@link #sendBatch} is overridable so
  *                   the transport can be swapped (Kafka, Pulsar, log, …)
- *                   without touching the servlet code.
+ *                   without touching the HTTP service code.
  */
 public class AsyncEventPublisher implements AutoCloseable {
     private static final Logger log = LoggerFactory.getLogger(AsyncEventPublisher.class);

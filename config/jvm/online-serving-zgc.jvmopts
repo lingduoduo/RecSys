@@ -1,4 +1,4 @@
-# online-serving-zgc — Jetty Online Prediction Server, ZGC (port 7010)
+# online-serving-zgc — Armeria Online Prediction Server, ZGC (port 7010)
 # Requires Java 21+.
 
 # ── 堆 (Heap) ─────────────────────────────────────────────────────────────────

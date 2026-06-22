@@ -28,10 +28,10 @@ import java.util.concurrent.TimeUnit;
 import java.util.stream.Collectors;
 
 /**
- * Armeria-based LLM reverse proxy service. Port of {@link LlmProxyServlet} using Armeria
+ * Armeria-based LLM reverse proxy service using Armeria
  * {@link WebClient} for upstream calls and {@link HttpResponseWriter} for SSE streaming.
  *
- * <p>Feature parity with the servlet:
+ * <p>Proxy responsibilities:
  * <ul>
  *   <li><b>Streaming passthrough</b> — detects {@code "stream":true} in the request body and
  *       pipes the SSE/chunked upstream response directly to the client via a reactive subscription.</li>

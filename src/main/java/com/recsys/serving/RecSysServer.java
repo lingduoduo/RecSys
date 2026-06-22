@@ -23,6 +23,7 @@ import com.recsys.service.retrieval.channels.EmbeddingChannel;
 import com.recsys.service.retrieval.channels.GenreHistoryChannel;
 import com.recsys.service.retrieval.channels.PopularityChannel;
 import com.recsys.service.retrieval.channels.TrendingChannel;
+import com.recsys.service.retrieval.channels.UserSimilarityChannel;
 import com.recsys.service.retrieval.coldstart.ColdStartChannel;
 import com.recsys.service.retrieval.coldstart.QuotaPolicy;
 import com.recsys.service.retrieval.multichannel.ChannelHealthMonitor;
@@ -94,6 +95,7 @@ public class RecSysServer {
                     RecallConfig.builder()
                             .channels(List.of(
                                     new EmbeddingChannel(candidateGenerator),
+                                    new UserSimilarityChannel(dataManager),
                                     new TrendingChannel(topkStore, List.of("last_hour", "last_day")),
                                     new GenreHistoryChannel(candidateGenerator),
                                     new PopularityChannel(dataManager, globalPopStore),
