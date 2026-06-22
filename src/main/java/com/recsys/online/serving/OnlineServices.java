@@ -10,6 +10,7 @@ import com.recsys.online.event.AsyncEventPublisher;
 import com.recsys.online.ops.OnlineLoadShedder;
 import com.recsys.online.ops.OnlineServingMetricsService;
 import com.recsys.online.redis.RedisRateLimiter;
+import com.recsys.serving.BaseApiService;
 
 import java.util.List;
 import java.util.Map;
@@ -38,7 +39,7 @@ public final class OnlineServices {
      * Shared request envelope for the admission-gated online handlers. Subclasses
      * supply {@link #render}, {@link #strategyLabel}, and optionally {@link #afterSuccess}.
      */
-    abstract static class Guarded extends ApiService {
+    abstract static class Guarded extends BaseApiService {
 
         protected final OnlineRecommendationService recommendationService;
         protected final OnlineServingMetricsService metricsService;
