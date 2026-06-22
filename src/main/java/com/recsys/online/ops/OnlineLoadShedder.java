@@ -1,5 +1,7 @@
 package com.recsys.online.ops;
 
+import com.recsys.infrastructure.EnvConfig;
+
 import java.util.concurrent.atomic.AtomicInteger;
 import java.util.concurrent.atomic.AtomicLong;
 
@@ -18,8 +20,8 @@ public final class OnlineLoadShedder {
 
     public OnlineLoadShedder() {
         this(
-                readIntEnv("ONLINE_MAX_CONCURRENT_REQUESTS", DEFAULT_MAX_CONCURRENT_REQUESTS),
-                readDoubleEnv("ONLINE_DRAIN_UTILIZATION", DEFAULT_DRAIN_UTILIZATION)
+                EnvConfig.readInt("ONLINE_MAX_CONCURRENT_REQUESTS", DEFAULT_MAX_CONCURRENT_REQUESTS),
+                EnvConfig.readDouble("ONLINE_DRAIN_UTILIZATION", DEFAULT_DRAIN_UTILIZATION)
         );
     }
 
@@ -76,26 +78,6 @@ public final class OnlineLoadShedder {
 
     private double utilization() {
         return (double) inFlightRequests.get() / maxConcurrentRequests;
-    }
-
-    private static int readIntEnv(String envName, int defaultValue) {
-        String raw = System.getenv(envName);
-        if (raw == null || raw.isBlank()) return defaultValue;
-        try {
-            return Integer.parseInt(raw.trim());
-        } catch (NumberFormatException e) {
-            return defaultValue;
-        }
-    }
-
-    private static double readDoubleEnv(String envName, double defaultValue) {
-        String raw = System.getenv(envName);
-        if (raw == null || raw.isBlank()) return defaultValue;
-        try {
-            return Double.parseDouble(raw.trim());
-        } catch (NumberFormatException e) {
-            return defaultValue;
-        }
     }
 
     public record Snapshot(
