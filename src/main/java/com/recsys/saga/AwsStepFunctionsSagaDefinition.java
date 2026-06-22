@@ -5,7 +5,7 @@ import java.util.List;
 
 /**
  * Renders an Amazon States Language definition for the same ordered saga used by
- * {@link SagaOrchestrator}. Each forward Task catches errors into reverse-order
+ * {@link SagaOrchestrators.Standard}. Each forward Task catches errors into reverse-order
  * compensation states and then fails the execution, matching the Saga pattern.
  */
 public final class AwsStepFunctionsSagaDefinition {
