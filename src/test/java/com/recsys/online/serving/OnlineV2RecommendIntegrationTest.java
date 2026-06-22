@@ -44,7 +44,7 @@ class OnlineV2RecommendIntegrationTest {
         @Override
         protected void configure(ServerBuilder sb) {
             RecommendationPipeline pipeline = new OnlineBlendingPipeline(mockService);
-            sb.service("/v2/recommend", new OnlineRecommendV2Service(pipeline));
+            sb.service("/v2/recommend", new OnlineServices.RecommendV2(pipeline));
         }
     };
 
