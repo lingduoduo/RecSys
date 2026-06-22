@@ -69,10 +69,10 @@ class OnlinePredictionServerIntegrationTest {
               .service("/health", new OnlineHealthService(metrics, shedder))
               .service("/metrics", (ctx, req) -> HttpResponse.of(HttpStatus.OK))
               .service("/online/features", new OnlineAdmissionControl(
-                      new OnlineFeaturesService(mockRec, metrics, shedder,
+                      new OnlineServices.Features(mockRec, metrics, shedder,
                               RedisRateLimiter.disabled(), null, true), shedder, metrics))
               .service("/online/recommendation", new OnlineAdmissionControl(
-                      new OnlinePredictionService(mockRec, metrics, shedder,
+                      new OnlineServices.Prediction(mockRec, metrics, shedder,
                               RedisRateLimiter.disabled(), true), shedder, metrics))
               .service("/online/ops", new OnlineOpsService(metrics, shedder, capacity))
               .service(Route.builder().pathPrefix("/shards/").build(),
