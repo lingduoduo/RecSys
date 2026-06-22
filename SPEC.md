@@ -1,128 +1,170 @@
-# Spec: Dedupe `online/ops` env-readers via a shared `EnvConfig`
+# Spec: Simplify `model/service` — dedupe Redis pool + normalization, drop dead overloads
 
 ## Objective
 
-Three `online/ops` services privately re-declare the same "read an environment
-variable, parse it, fall back to a default" helper —
-`OnlineCapacityService.readLongEnv`, `OnlineLoadShedder.readIntEnv` +
-`readDoubleEnv`, and `OnlineServingMetricsService.readIntEnv`. This spec extracts
-one shared `com.recsys.infrastructure.EnvConfig` (`readInt`/`readLong`/`readDouble`)
-and points the three `online/ops` files at it — **with zero behavior change.**
+Remove two pockets of duplication in `com.recsys.model.service` (28 files) with
+**zero behavior change**:
 
-The helper lives in `infrastructure` (not `online/ops`) so it doesn't become yet
-another local copy of a codebase-wide pattern; other files can adopt it later.
-Migrating them is **out of scope** for this change.
+- **A. Shared lazy Jedis pool** — `LoginTokenService` and `SubmitTokenService`
+  carry byte-identical lazy-pool plumbing (`volatile Pool<Jedis>`, a `Supplier`,
+  the double-checked-locking `jedis()`, and `@PreDestroy close()`). Extract it
+  into one `LazyJedisPool` helper (composition).
+- **C. Normalization idiom** — the `value == null || value.isBlank() ? default :
+  value.trim()` one-liner is copy-pasted across 5 files. Route the matching
+  copies through one shared `Strings.orDefault(value, default)` helper.
+
+> **Dropped:** removing the unused `InferenceMetricsService.recordSuccess(long)` /
+> `recordFailure(long)` overloads — they are a coherent, tested no-variant API and
+> removing them would rewrite 13 test call sites. Left in place.
 
 ### Who benefits
-Maintainers of `online/ops` (and, going forward, anyone reading env vars) — one
-correct parse-with-default implementation instead of N copies.
+`model/service` maintainers — one lazy-pool implementation, one normalization
+primitive, and less unused surface in the metrics API.
 
 ### Success looks like
-- `EnvConfig` exists with three static readers.
-- The 4 duplicated private env-readers in the 3 `online/ops` files are gone,
-  replaced by `EnvConfig.read*` calls.
-- `mvn test` stays green; defaults and parsing behave exactly as before.
+- Both token services share `LazyJedisPool`; neither declares its own pool field,
+  `jedis()`, or `close()` body.
+- The normalization idiom exists once; the 6 matching call sites use it.
+- The two dead overloads are gone (if B is kept).
+- `mvn test` stays green.
 
 ## Tech Stack
 
-- Java 17; JUnit 5 + AssertJ. Build: Maven.
+- Java 17, Spring Boot, Jedis, Micrometer; JUnit 5 + Mockito + AssertJ. Maven.
 
 ## Commands
 
 ```bash
 mvn package -DskipTests
-mvn test -Dtest='OnlineLoadShedderTest,OnlineCapacityServiceTest,OnlineServingMetricsServiceTest,EnvConfigTest'
+mvn test -Dtest='SubmitTokenServiceTest,InferenceMetricsServiceTest,ModelRateLimiterTest,UserTowerInferenceServiceTest,ModelRuntimeProviderTest,ABTestServiceTest'
 mvn test
 ```
 
-## Scope — one consolidation (as selected)
+## Scope
 
-### New `com.recsys.infrastructure.EnvConfig`
+### A. `LazyJedisPool` (recommended)
+
+New package-private helper:
 
 ```java
-public final class EnvConfig {
-    private EnvConfig() {}
+final class LazyJedisPool implements AutoCloseable {
+    private final Supplier<Pool<Jedis>> poolFactory;
+    private volatile Pool<Jedis> pool;
 
-    public static int readInt(String name, int defaultValue) {
-        String raw = System.getenv(name);
-        if (raw == null || raw.isBlank()) return defaultValue;
-        try { return Integer.parseInt(raw.trim()); }
-        catch (NumberFormatException e) { return defaultValue; }
+    LazyJedisPool(Supplier<Pool<Jedis>> poolFactory) { this.poolFactory = poolFactory; }
+
+    Jedis resource() {                       // lazy double-checked init, then borrow
+        Pool<Jedis> current = pool;
+        if (current == null) {
+            synchronized (this) {
+                current = pool;
+                if (current == null) { current = poolFactory.get(); pool = current; }
+            }
+        }
+        return current.getResource();
     }
 
-    public static long readLong(String name, long defaultValue) { /* same shape, Long.parseLong */ }
-    public static double readDouble(String name, double defaultValue) { /* same shape, Double.parseDouble */ }
+    @Override public void close() {          // idempotent pool shutdown
+        Pool<Jedis> current = pool;
+        if (current != null) current.close();
+    }
 }
 ```
 
-This reproduces the existing helpers' behavior byte-for-byte: `null`/blank →
-default; trimmed parse; `NumberFormatException` → default.
+Both services hold `private final LazyJedisPool jedisPool;` (built from the same
+`Supplier` they already receive), call `try (Jedis j = jedisPool.resource())`, and
+keep a thin `@PreDestroy public void close() { jedisPool.close(); }`. The
+per-service `redisKey(...)` (hardcoded `"login:"` vs configurable prefix) stays
+exactly as-is. Constructor signatures are unchanged, so `SubmitTokenServiceTest`
+(and the Spring beans) need no edits.
 
-### Migrate the 3 `online/ops` files
+### C. `Strings.orDefault` normalization
 
-| File | Removes | Call becomes |
-|---|---|---|
-| `OnlineCapacityService` | `readLongEnv` | `EnvConfig.readLong("ONLINE_TARGET_DAU", …)` etc. |
-| `OnlineLoadShedder` | `readIntEnv`, `readDoubleEnv` | `EnvConfig.readInt(…)`, `EnvConfig.readDouble(…)` |
-| `OnlineServingMetricsService` | `readIntEnv` | `EnvConfig.readInt("ONLINE_METRICS_WINDOW_SECONDS", …)` |
+New package-private helper:
 
-Each gains `import com.recsys.infrastructure.EnvConfig;`. No other lines change.
+```java
+final class Strings {
+    private Strings() {}
+    /** Trimmed value, or {@code defaultValue} when null/blank. */
+    static String orDefault(String value, String defaultValue) {
+        return value == null || value.isBlank() ? defaultValue : value.trim();
+    }
+}
+```
 
-### Explicitly out of scope
-- The same pattern in ~10 other files (`RecSysServer`, `OnlinePredictionServer`,
-  `RecallConfig`, `RedisRateLimiter`, `OnlineFeatureStore`, `AsyncEventPublisher`,
-  `LocalEmbeddingCache`, `RedisEmbeddingStore`, `ShardedTopKStore`) — left as-is;
-  they can adopt `EnvConfig` in future changes.
-- Everything else in `online/ops` (`FaultInjector`, `WorkerBulkhead`,
-  `OnlineAdmissionControl`, the two HTTP handlers, all `Snapshot` records) —
-  distinct and cohesive, untouched.
+Route these **exact** matches through it (all trim the value, blank → default):
+
+| Site | Becomes |
+|---|---|
+| `ModelVariants.normalizeOrDefault` body | `Strings.orDefault(variant, DEFAULT)` |
+| `ModelRateLimiter.normalizeUserId` body | `Strings.orDefault(userId, "_anonymous")` |
+| `InferenceMetricsService.normalizeVariant` body | `Strings.orDefault(variant, "unknown")` |
+| `UserTowerInferenceService` ctor (modelFile) | `Strings.orDefault(modelFile, DEFAULT_MODEL_FILE)` |
+| `ModelRuntimeProvider` ctor (modelFile) | `Strings.orDefault(modelFile, "dssm_model.onnx")` |
+| `ModelRuntimeProvider` ctor (redisItemEmbeddingPrefix) | `Strings.orDefault(redisItemEmbeddingPrefix, "i2vEmb")` |
+
+The named wrappers (`normalizeOrDefault`, `normalizeUserId`, `normalizeVariant`)
+stay as one-line delegators so their call sites and intent names are unchanged.
+
+**Deliberately NOT converted** (different behavior — must stay inline):
+- `ModelRuntimeProvider:82` `itemEmbeddingsSource == null ? "classpath" : …trim()`
+  — null-only check (blank is **not** mapped to default).
+- `ABTestService:54` `layerName == null || isBlank ? s.layerName() : layerName`
+  — value is **not** trimmed and the default is dynamic.
+- `ABTestService:55` — a boolean guard, not a normalization.
 
 ## Project Structure (after)
 
 ```
-infrastructure/EnvConfig.java              NEW — readInt/readLong/readDouble
-online/ops/OnlineCapacityService.java      uses EnvConfig.readLong
-online/ops/OnlineLoadShedder.java          uses EnvConfig.readInt/readDouble
-online/ops/OnlineServingMetricsService.java uses EnvConfig.readInt
-online/ops/* (FaultInjector, WorkerBulkhead, OnlineAdmissionControl,
-             OnlineHealthService, OnlineOpsService)   (unchanged)
+model/service/
+  LazyJedisPool.java          NEW — shared lazy Jedis pool (A)
+  Strings.java                NEW — orDefault normalization (C)
+  LoginTokenService.java      uses LazyJedisPool
+  SubmitTokenService.java     uses LazyJedisPool
+  InferenceMetricsService.java  normalizeVariant delegates (C)
+  ModelVariants.java / ModelRateLimiter.java / UserTowerInferenceService.java /
+  ModelRuntimeProvider.java   normalization delegates to Strings (C)
+  (24 other files unchanged)
 ```
 
 ## Code Style
 
-- `EnvConfig` is `public final` with a private constructor; methods `public static`.
-- Method names `readInt`/`readLong`/`readDouble` (shorter than the old
-  `read*Env`; the type name supplies the "env" context).
-- Identical semantics to the replaced helpers — no new validation, no logging.
+- Both new helpers are package-private `final` with private constructors (`Strings`)
+  / single field (`LazyJedisPool`); `LazyJedisPool` is `AutoCloseable`.
+- Preserve every Redis key prefix, TTL, default string, and metrics tag exactly.
+- Keep the domain-named wrapper methods; only their bodies collapse to a delegate.
 
 ## Testing Strategy
 
-JUnit 5 + AssertJ. The existing service tests (`OnlineLoadShedderTest`,
-`OnlineCapacityServiceTest`, `OnlineServingMetricsServiceTest`) exercise the
-default path (env unset) via the no-arg constructors and remain the safety net —
-they must stay green unchanged.
+JUnit 5 + Mockito + AssertJ. The existing tests are the safety net.
 
-Add a small `EnvConfigTest` covering the default path (the reliably testable one
-without setting process env): each reader returns the default for an absent var.
-This is more coverage than the original private helpers had.
+- **A:** no test changes — constructor signatures preserved; `SubmitTokenServiceTest`
+  passes unchanged.
+- **C:** no behavior change → existing tests for `ModelRateLimiter`,
+  `InferenceMetricsService`, `UserTowerInferenceService`, `ModelRuntimeProvider`,
+  `ABTestService` stay green unchanged.
+
+Verify: the named subset above, then full `mvn test`.
 
 ## Boundaries
 
-- **Always:** preserve env-var names, default values, and parse/fallback behavior
-  exactly; run the ops tests + full suite.
-- **Ask first:** migrating env-readers outside `online/ops`; changing any default
-  value or env-var name; adding validation/logging to the readers.
-- **Never:** change runtime behavior; delete a test to make the build pass.
+- **Always:** preserve Redis prefixes/TTLs, default strings, metrics tags, and
+  pool lifecycle; preserve constructor signatures; run the suite.
+- **Ask first:** changing any default value, key prefix, or metrics behavior;
+  converting the explicitly-excluded normalization sites; touching the other ~22
+  files.
+- **Never:** change runtime behavior; delete a test that covers live behavior to
+  make the build pass.
 
 ## Success Criteria
 
-1. `infrastructure/EnvConfig.java` exists with `readInt`/`readLong`/`readDouble`.
-2. `OnlineCapacityService`, `OnlineLoadShedder`, `OnlineServingMetricsService` no
-   longer declare private env-readers; they call `EnvConfig`.
-3. `git diff` shows no change to env-var names, defaults, or parse semantics.
-4. `mvn test` green; no file outside `online/ops/` + the new `EnvConfig` changed.
+1. `LazyJedisPool` exists; both token services use it and declare no pool field /
+   `jedis()` / `close()` body of their own.
+2. `Strings.orDefault` exists; the 6 matching sites delegate to it; the 3 excluded
+   sites are untouched.
+3. `mvn test` green; no file outside `model/service/` changed.
 
 ## Open Questions
 
-1. **Name.** `EnvConfig` chosen (matches the `*Config` names in `infrastructure`).
-   Alternative: `Env` (`Env.readInt`). Default: `EnvConfig`.
+1. **Helper names.** `LazyJedisPool` and `Strings` (package-private). Alternatives:
+   `JedisPoolHolder`, `Text`. Default as written.

@@ -76,8 +76,7 @@ public class ModelRateLimiter {
     }
 
     private static String normalizeUserId(String userId) {
-        if (userId == null || userId.isBlank()) return "_anonymous";
-        return userId.trim();
+        return Strings.orDefault(userId, "_anonymous");
     }
 
     public record Decision(boolean allowed, int limit, int remaining, Duration retryAfter) {

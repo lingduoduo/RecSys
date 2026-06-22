@@ -205,10 +205,7 @@ public class InferenceMetricsService {
     }
 
     private static String normalizeVariant(String variant) {
-        if (variant == null || variant.isBlank()) {
-            return "unknown";
-        }
-        return variant.trim();
+        return Strings.orDefault(variant, "unknown");
     }
 
     public record Snapshot(
