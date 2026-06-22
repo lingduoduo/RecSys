@@ -1,5 +1,7 @@
 package com.recsys.online.ops;
 
+import com.recsys.infrastructure.EnvConfig;
+
 /**
  * Keeps production sizing assumptions visible at runtime.
  */
@@ -14,9 +16,9 @@ public final class OnlineCapacityService {
 
     public OnlineCapacityService() {
         this(
-                readLongEnv("ONLINE_TARGET_DAU", DEFAULT_TARGET_DAU),
-                readLongEnv("ONLINE_PEAK_QPS", DEFAULT_PEAK_QPS),
-                readLongEnv("ONLINE_PEAK_TPS", DEFAULT_PEAK_TPS)
+                EnvConfig.readLong("ONLINE_TARGET_DAU", DEFAULT_TARGET_DAU),
+                EnvConfig.readLong("ONLINE_PEAK_QPS", DEFAULT_PEAK_QPS),
+                EnvConfig.readLong("ONLINE_PEAK_TPS", DEFAULT_PEAK_TPS)
         );
     }
 
@@ -44,16 +46,6 @@ public final class OnlineCapacityService {
                 load,
                 "Redis + MQ/Kafka peak shaving: Kafka absorbs bursty TPS; Flink writes compact Redis aggregates; stateless API instances serve peak QPS."
         );
-    }
-
-    private static long readLongEnv(String envName, long defaultValue) {
-        String raw = System.getenv(envName);
-        if (raw == null || raw.isBlank()) return defaultValue;
-        try {
-            return Long.parseLong(raw.trim());
-        } catch (NumberFormatException e) {
-            return defaultValue;
-        }
     }
 
     public record Snapshot(

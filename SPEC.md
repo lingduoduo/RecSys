@@ -1,183 +1,128 @@
-# Spec: Consolidate `online/serving` enveloped handlers onto a shared base
+# Spec: Dedupe `online/ops` env-readers via a shared `EnvConfig`
 
 ## Objective
 
-`OnlinePredictionService` and `OnlineFeaturesService` (port 7010) duplicate a
-near-identical request-handling envelope — admission shedding, Redis rate
-limiting, request parsing, the shared `recommend(...)` call, success/failure
-metrics, the catch ladder, the load-shedder release, and an identical
-`elapsedMs` helper. This spec extracts that envelope into one shared base and
-merges both handlers (plus the base) into a single `OnlineServices.java` as
-nested classes — **with zero change to routes, request parsing, response JSON,
-status codes, metrics, or emitted events.**
+Three `online/ops` services privately re-declare the same "read an environment
+variable, parse it, fall back to a default" helper —
+`OnlineCapacityService.readLongEnv`, `OnlineLoadShedder.readIntEnv` +
+`readDoubleEnv`, and `OnlineServingMetricsService.readIntEnv`. This spec extracts
+one shared `com.recsys.infrastructure.EnvConfig` (`readInt`/`readLong`/`readDouble`)
+and points the three `online/ops` files at it — **with zero behavior change.**
 
-Pure internal refactor. No behavior change.
+The helper lives in `infrastructure` (not `online/ops`) so it doesn't become yet
+another local copy of a codebase-wide pattern; other files can adopt it later.
+Migrating them is **out of scope** for this change.
 
 ### Who benefits
-Maintainers of the online serving path — one place to change admission/rate-limit/
-metrics/error handling instead of two copies that can drift.
+Maintainers of `online/ops` (and, going forward, anyone reading env vars) — one
+correct parse-with-default implementation instead of N copies.
 
 ### Success looks like
-- The request envelope + `elapsedMs` exist once, in a shared base.
-- The two handlers live in one file as nested classes, each contributing only its
-  response shape, metrics label, and (Features) the post-success event publish.
-- Every route resolves identically; `mvn test` stays green.
+- `EnvConfig` exists with three static readers.
+- The 4 duplicated private env-readers in the 3 `online/ops` files are gone,
+  replaced by `EnvConfig.read*` calls.
+- `mvn test` stays green; defaults and parsing behave exactly as before.
 
 ## Tech Stack
 
-- Java 17, Armeria, Jackson, Micrometer; JUnit 5 + Mockito. Build: Maven.
+- Java 17; JUnit 5 + AssertJ. Build: Maven.
 
 ## Commands
 
 ```bash
 mvn package -DskipTests
-mvn test -Dtest='OnlinePredictionRegressionTest,OnlinePredictionServerIntegrationTest,OnlineV2RecommendIntegrationTest,OnlineRecommendationServiceTest,OnlineBlendingPipelineTest'
+mvn test -Dtest='OnlineLoadShedderTest,OnlineCapacityServiceTest,OnlineServingMetricsServiceTest,EnvConfigTest'
 mvn test
 ```
 
-## Scope — one consolidation (merge into nested classes, as selected)
+## Scope — one consolidation (as selected)
 
-New `OnlineServices.java` — a non-instantiable namespace holding the shared base
-and both handlers:
+### New `com.recsys.infrastructure.EnvConfig`
 
 ```java
-public final class OnlineServices {
-    private OnlineServices() {}
+public final class EnvConfig {
+    private EnvConfig() {}
 
-    /** Shared request envelope: admission shed -> rate limit -> parse -> recommend
-     *  -> render -> success/failure metrics -> release. */
-    abstract static class Guarded extends ApiService {
-        // shared fields: recommendationService, metricsService, loadShedder,
-        //                redisRateLimiter, admissionHandledExternally
-        protected Guarded(OnlineRecommendationService rec, OnlineServingMetricsService metrics,
-                          OnlineLoadShedder shedder, RedisRateLimiter rate,
-                          boolean admissionHandledExternally) { ... }
-
-        @Override protected final HttpResponse doGet(ServiceRequestContext ctx, HttpRequest req) { ...envelope... }
-
-        /** Build the success response from the shared recall result. */
-        protected abstract HttpResponse render(int userId, int k, OnlineRecommendationResult result);
-        /** Metrics strategy label for recordSuccess. */
-        protected abstract String strategyLabel(OnlineRecommendationResult result);
-        /** Post-success side effect (default no-op; Features publishes an event). */
-        protected void afterSuccess(int userId, OnlineRecommendationResult result) {}
-
-        protected static long elapsedMs(long startedAtMs) { ... }
+    public static int readInt(String name, int defaultValue) {
+        String raw = System.getenv(name);
+        if (raw == null || raw.isBlank()) return defaultValue;
+        try { return Integer.parseInt(raw.trim()); }
+        catch (NumberFormatException e) { return defaultValue; }
     }
 
-    /** GET /online/recommendation (was OnlinePredictionService). */
-    public static final class Prediction extends Guarded {
-        // 4 public ctors + 1 package-private (rec, metrics, shedder, rate, boolean) — preserved
-        @Override protected HttpResponse render(...) { /* OnlinePredictionResponse */ }
-        @Override protected String strategyLabel(OnlineRecommendationResult r) { return r.strategy(); }
-    }
-
-    /** GET /online/features (was OnlineFeaturesService). */
-    public static final class Features extends Guarded {
-        // own asyncEventPublisher field
-        // 4 public ctors + 1 package-private (rec, metrics, shedder, rate, asyncPublisher, boolean) — preserved
-        @Override protected HttpResponse render(...) { /* OnlineFeatureSnapshotResponse */ }
-        @Override protected String strategyLabel(OnlineRecommendationResult r) { return "features"; }
-        @Override protected void afterSuccess(int userId, OnlineRecommendationResult r) { /* publish feature_view */ }
-    }
+    public static long readLong(String name, long defaultValue) { /* same shape, Long.parseLong */ }
+    public static double readDouble(String name, double defaultValue) { /* same shape, Double.parseDouble */ }
 }
 ```
 
-The `Guarded.doGet` reproduces today's envelope exactly, in this order:
-1. `startedAtMs`; if `!admissionHandledExternally && !loadShedder.tryAcquire()` →
-   `recordRejected` + 429 retry-after.
-2. `redisRateLimiter.tryAcquire("online")`; if not allowed → `recordRejected` + 429.
-3. parse `userId` (required), `k` (1–20, default 5), `window` (query param).
-4. `result = recommendationService.recommend(new OnlineRecommendationRequest(userId, window, k))`.
-5. `HttpResponse resp = render(userId, k, result)`.
-6. `recordSuccess(elapsedMs, strategyLabel(result))`; then `afterSuccess(userId, result)`.
-7. catch: `BadRequest|IllegalArgument` → 400; `UnknownUserException` → 404;
-   `Exception` → 500 — each `recordFailure`.
-8. `finally`: if `!admissionHandledExternally`, `loadShedder.release()`.
+This reproduces the existing helpers' behavior byte-for-byte: `null`/blank →
+default; trimmed parse; `NumberFormatException` → default.
 
-> Order note: today Features calls `recordSuccess` then publishes — preserved by
-> doing `afterSuccess` after `recordSuccess`.
+### Migrate the 3 `online/ops` files
 
-Delete `OnlinePredictionService.java` and `OnlineFeaturesService.java`. The
-response records (`OnlinePredictionResponse`, `OnlineFeatureSnapshotResponse`) and
-the `featureViewEvent` builder move into their respective nested classes,
-unchanged.
+| File | Removes | Call becomes |
+|---|---|---|
+| `OnlineCapacityService` | `readLongEnv` | `EnvConfig.readLong("ONLINE_TARGET_DAU", …)` etc. |
+| `OnlineLoadShedder` | `readIntEnv`, `readDoubleEnv` | `EnvConfig.readInt(…)`, `EnvConfig.readDouble(…)` |
+| `OnlineServingMetricsService` | `readIntEnv` | `EnvConfig.readInt("ONLINE_METRICS_WINDOW_SECONDS", …)` |
+
+Each gains `import com.recsys.infrastructure.EnvConfig;`. No other lines change.
 
 ### Explicitly out of scope
-- `ApiService` (the online-wide base, also extended by `OnlineHealthService`,
-  `OnlineOpsService`, `ShardedRecordService`) — kept as-is.
-- `OnlineLiveService`, `OnlineRecommendV2Service`, `OnlineBlendingPipeline`,
-  `OnlineRecommendationService`, the server, and DTOs — unchanged.
+- The same pattern in ~10 other files (`RecSysServer`, `OnlinePredictionServer`,
+  `RecallConfig`, `RedisRateLimiter`, `OnlineFeatureStore`, `AsyncEventPublisher`,
+  `LocalEmbeddingCache`, `RedisEmbeddingStore`, `ShardedTopKStore`) — left as-is;
+  they can adopt `EnvConfig` in future changes.
+- Everything else in `online/ops` (`FaultInjector`, `WorkerBulkhead`,
+  `OnlineAdmissionControl`, the two HTTP handlers, all `Snapshot` records) —
+  distinct and cohesive, untouched.
 
 ## Project Structure (after)
 
 ```
-online/serving/
-  OnlineServices.java                 NEW — Guarded + Prediction + Features (replaces 2 files)
-  ApiService.java                     (unchanged)
-  OnlineLiveService.java              (unchanged)
-  OnlineRecommendV2Service.java       (unchanged)
-  OnlineBlendingPipeline.java         (unchanged)
-  OnlineRecommendationService.java    (unchanged)
-  OnlinePredictionServer.java         (wiring: new OnlineServices.Prediction/.Features)
-  OnlineRecommendationRequest.java / OnlineRecommendationResult.java (unchanged)
+infrastructure/EnvConfig.java              NEW — readInt/readLong/readDouble
+online/ops/OnlineCapacityService.java      uses EnvConfig.readLong
+online/ops/OnlineLoadShedder.java          uses EnvConfig.readInt/readDouble
+online/ops/OnlineServingMetricsService.java uses EnvConfig.readInt
+online/ops/* (FaultInjector, WorkerBulkhead, OnlineAdmissionControl,
+             OnlineHealthService, OnlineOpsService)   (unchanged)
 ```
 
 ## Code Style
 
-- Container `public final` + private ctor; `Guarded` is package-private
-  `abstract static`; handlers are `public static final class … extends Guarded`.
-- `doGet` is `final` in `Guarded`; subclasses override only `render`/`strategyLabel`/
-  `afterSuccess`.
-- Preserve every status code, JSON field, metrics label, retry-after value, and the
-  `feature_view` event JSON exactly.
-- Keep all existing constructor signatures (public + package-private) so callers are
-  unchanged apart from the `OnlineServices.` qualifier.
-
-## Routes / contract — MUST stay identical (hard constraints)
-
-| Route | Today | After |
-|---|---|---|
-| `/online/recommendation` | `OnlinePredictionService` | `OnlineServices.Prediction` |
-| `/online/features` | `OnlineFeaturesService` | `OnlineServices.Features` |
-
-Both are wrapped by `OnlineAdmissionControl(...)` in the server — that wrapping and
-the `admissionHandledExternally=true` flag are preserved.
+- `EnvConfig` is `public final` with a private constructor; methods `public static`.
+- Method names `readInt`/`readLong`/`readDouble` (shorter than the old
+  `read*Env`; the type name supplies the "env" context).
+- Identical semantics to the replaced helpers — no new validation, no logging.
 
 ## Testing Strategy
 
-JUnit 5 + Mockito. No new tests. Existing integration/regression/load tests pin the
-HTTP behavior (status codes, 429 shedding, 404 unknown-user, JSON shape, metrics).
-Mechanical construction-site updates only (same args, new qualifier):
+JUnit 5 + AssertJ. The existing service tests (`OnlineLoadShedderTest`,
+`OnlineCapacityServiceTest`, `OnlineServingMetricsServiceTest`) exercise the
+default path (env unset) via the no-arg constructors and remain the safety net —
+they must stay green unchanged.
 
-- Server wiring (`OnlinePredictionServer`): 2 sites →
-  `new OnlineServices.Prediction(...)`, `new OnlineServices.Features(...)`.
-- Tests (4 sites): `OnlinePredictionServerIntegrationTest` (×2),
-  `OnlinePredictionRegressionTest` (×1), `OnlinePredictionLoadTest` (×1).
-  All in-package (no imports to change).
-
-Verify: the named online tests pass, then full `mvn test` green.
+Add a small `EnvConfigTest` covering the default path (the reliably testable one
+without setting process env): each reader returns the default for an absent var.
+This is more coverage than the original private helpers had.
 
 ## Boundaries
 
-- **Always:** preserve routes, parsing, JSON, status codes, metrics labels,
-  retry-after, and the feature_view event; preserve all constructor signatures;
-  update server + tests in the same change and run them.
-- **Ask first:** changing any response shape, metrics label, or the admission/
-  rate-limit order; touching `ApiService` or any non-enveloped handler.
-- **Never:** change wire output; alter the 429/404/400/500 mapping; delete a test
-  to make the build pass.
+- **Always:** preserve env-var names, default values, and parse/fallback behavior
+  exactly; run the ops tests + full suite.
+- **Ask first:** migrating env-readers outside `online/ops`; changing any default
+  value or env-var name; adding validation/logging to the readers.
+- **Never:** change runtime behavior; delete a test to make the build pass.
 
 ## Success Criteria
 
-1. `OnlineServices.java` exists with `Guarded` + `Prediction` + `Features`;
-   `OnlinePredictionService.java` and `OnlineFeaturesService.java` are deleted.
-2. The envelope + `elapsedMs` exist once (in `Guarded`).
-3. Both routes resolve to the nested handlers; server `git diff` shows only the
-   two handler-construction lines changed.
-4. `mvn test` green; no file outside `online/serving/` changed.
+1. `infrastructure/EnvConfig.java` exists with `readInt`/`readLong`/`readDouble`.
+2. `OnlineCapacityService`, `OnlineLoadShedder`, `OnlineServingMetricsService` no
+   longer declare private env-readers; they call `EnvConfig`.
+3. `git diff` shows no change to env-var names, defaults, or parse semantics.
+4. `mvn test` green; no file outside `online/ops/` + the new `EnvConfig` changed.
 
 ## Open Questions
 
-1. **Base nested name.** `Guarded` chosen for the shared base. Alternative:
-   `Base`. Default: `Guarded`. Flag if you prefer otherwise.
+1. **Name.** `EnvConfig` chosen (matches the `*Config` names in `infrastructure`).
+   Alternative: `Env` (`Env.readInt`). Default: `EnvConfig`.

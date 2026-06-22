@@ -1,5 +1,6 @@
 package com.recsys.online.ops;
 
+import com.recsys.infrastructure.EnvConfig;
 import io.micrometer.core.instrument.Gauge;
 import io.micrometer.core.instrument.MeterRegistry;
 import org.slf4j.Logger;
@@ -44,7 +45,7 @@ public final class OnlineServingMetricsService {
     private final Object strategyLock = new Object();
 
     public OnlineServingMetricsService() {
-        this(readIntEnv("ONLINE_METRICS_WINDOW_SECONDS", DEFAULT_WINDOW_SECONDS));
+        this(EnvConfig.readInt("ONLINE_METRICS_WINDOW_SECONDS", DEFAULT_WINDOW_SECONDS));
     }
 
     public OnlineServingMetricsService(int windowSeconds) {
@@ -244,16 +245,6 @@ public final class OnlineServingMetricsService {
                 copy.put(entry.getKey(), new StrategySnapshot(m.requests, m.failureCount, avgLatencyMs, failureRate, share));
             }
             return copy;
-        }
-    }
-
-    private static int readIntEnv(String envName, int defaultValue) {
-        String raw = System.getenv(envName);
-        if (raw == null || raw.isBlank()) return defaultValue;
-        try {
-            return Integer.parseInt(raw.trim());
-        } catch (NumberFormatException e) {
-            return defaultValue;
         }
     }
 
