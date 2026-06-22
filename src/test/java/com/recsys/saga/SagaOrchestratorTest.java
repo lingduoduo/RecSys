@@ -22,7 +22,7 @@ class SagaOrchestratorTest {
         InMemorySagaStateStore store = new InMemorySagaStateStore();
         List<SagaTransitionEvent> events = new ArrayList<>();
         List<String> calls = new ArrayList<>();
-        SagaOrchestrator orchestrator = new SagaOrchestrator(store, events::add, clock);
+        SagaOrchestrators.Standard orchestrator = new SagaOrchestrators.Standard(store, events::add, clock);
 
         SagaInstance result = orchestrator.execute(
                 "saga-1",
@@ -54,7 +54,7 @@ class SagaOrchestratorTest {
     void execute_isIdempotentAfterTerminalStatus() {
         InMemorySagaStateStore store = new InMemorySagaStateStore();
         AtomicInteger actionCalls = new AtomicInteger();
-        SagaOrchestrator orchestrator = new SagaOrchestrator(store, SagaEventPublisher.NOOP, clock);
+        SagaOrchestrators.Standard orchestrator = new SagaOrchestrators.Standard(store, SagaEventPublisher.NOOP, clock);
 
         SagaDefinition definition = definition();
         Map<String, SagaStepAction> actions = Map.of(
@@ -73,7 +73,7 @@ class SagaOrchestratorTest {
     @Test
     void execute_retriesTransientStepFailure() {
         InMemorySagaStateStore store = new InMemorySagaStateStore();
-        SagaOrchestrator orchestrator = new SagaOrchestrator(store, SagaEventPublisher.NOOP, clock);
+        SagaOrchestrators.Standard orchestrator = new SagaOrchestrators.Standard(store, SagaEventPublisher.NOOP, clock);
         AtomicInteger attempts = new AtomicInteger();
         SagaDefinition definition = new SagaDefinition("recommendation-refresh", List.of(
                 SagaStep.local("reserve-recommendation").withRetry(3, Duration.ZERO)
@@ -100,7 +100,7 @@ class SagaOrchestratorTest {
     void execute_compensatesCompletedStepsInReverseOrder() {
         InMemorySagaStateStore store = new InMemorySagaStateStore();
         List<String> calls = new ArrayList<>();
-        SagaOrchestrator orchestrator = new SagaOrchestrator(store, SagaEventPublisher.NOOP, clock);
+        SagaOrchestrators.Standard orchestrator = new SagaOrchestrators.Standard(store, SagaEventPublisher.NOOP, clock);
 
         SagaInstance result = orchestrator.execute(
                 "saga-4",
@@ -131,7 +131,7 @@ class SagaOrchestratorTest {
     void execute_bestEffortCompensation_continuesAfterOneCompensationFailure() {
         InMemorySagaStateStore store = new InMemorySagaStateStore();
         List<String> calls = new ArrayList<>();
-        SagaOrchestrator orchestrator = new SagaOrchestrator(store, SagaEventPublisher.NOOP, clock);
+        SagaOrchestrators.Standard orchestrator = new SagaOrchestrators.Standard(store, SagaEventPublisher.NOOP, clock);
 
         SagaDefinition definition = new SagaDefinition("recommendation-refresh", List.of(
                 SagaStep.local("step-a"),

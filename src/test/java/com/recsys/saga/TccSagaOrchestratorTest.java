@@ -22,7 +22,7 @@ class TccSagaOrchestratorTest {
         InMemorySagaStateStore store = new InMemorySagaStateStore();
         List<String> calls = new ArrayList<>();
         List<SagaTransitionEvent> events = new ArrayList<>();
-        TccSagaOrchestrator orchestrator = new TccSagaOrchestrator(store, events::add, clock);
+        SagaOrchestrators.Tcc orchestrator = new SagaOrchestrators.Tcc(store, events::add, clock);
 
         SagaInstance result = orchestrator.execute(
                 "tcc-1",
@@ -55,7 +55,7 @@ class TccSagaOrchestratorTest {
     void execute_cancelsTriedReservationsWhenLaterTryFails() {
         InMemorySagaStateStore store = new InMemorySagaStateStore();
         List<String> calls = new ArrayList<>();
-        TccSagaOrchestrator orchestrator = new TccSagaOrchestrator(store, SagaEventPublisher.NOOP, clock);
+        SagaOrchestrators.Tcc orchestrator = new SagaOrchestrators.Tcc(store, SagaEventPublisher.NOOP, clock);
 
         SagaInstance result = orchestrator.execute(
                 "tcc-2",
@@ -88,7 +88,7 @@ class TccSagaOrchestratorTest {
     @Test
     void execute_retriesTransientTryFailureBeforeConfirming() {
         InMemorySagaStateStore store = new InMemorySagaStateStore();
-        TccSagaOrchestrator orchestrator = new TccSagaOrchestrator(store, SagaEventPublisher.NOOP, clock);
+        SagaOrchestrators.Tcc orchestrator = new SagaOrchestrators.Tcc(store, SagaEventPublisher.NOOP, clock);
         AtomicInteger tries = new AtomicInteger();
         List<String> calls = new ArrayList<>();
         SagaDefinition definition = new SagaDefinition("recommendation-refresh-tcc", List.of(
@@ -124,7 +124,7 @@ class TccSagaOrchestratorTest {
     void execute_doesNotCancelAlreadyConfirmedParticipantOnLaterConfirmFailure() {
         InMemorySagaStateStore store = new InMemorySagaStateStore();
         List<String> calls = new ArrayList<>();
-        TccSagaOrchestrator orchestrator = new TccSagaOrchestrator(store, SagaEventPublisher.NOOP, clock);
+        SagaOrchestrators.Tcc orchestrator = new SagaOrchestrators.Tcc(store, SagaEventPublisher.NOOP, clock);
 
         SagaInstance result = orchestrator.execute(
                 "tcc-4",
@@ -159,7 +159,7 @@ class TccSagaOrchestratorTest {
     void execute_bestEffortCancel_continuesAfterOneCancelFailure() {
         InMemorySagaStateStore store = new InMemorySagaStateStore();
         List<String> calls = new ArrayList<>();
-        TccSagaOrchestrator orchestrator = new TccSagaOrchestrator(store, SagaEventPublisher.NOOP, clock);
+        SagaOrchestrators.Tcc orchestrator = new SagaOrchestrators.Tcc(store, SagaEventPublisher.NOOP, clock);
 
         SagaDefinition definition = new SagaDefinition("recommendation-refresh-tcc", List.of(
                 SagaStep.local("step-a"),
