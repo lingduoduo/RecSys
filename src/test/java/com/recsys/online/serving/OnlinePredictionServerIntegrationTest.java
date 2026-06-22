@@ -64,7 +64,7 @@ class OnlinePredictionServerIntegrationTest {
             OnlineLoadShedder shedder = new OnlineLoadShedder();
             OnlineCapacityService capacity = new OnlineCapacityService();
 
-            sb.service("/health/live", new OnlineLiveService())
+            sb.service("/health/live", new OnlineServices.Live())
               .service("/health/ready", new OnlineHealthService(metrics, shedder))
               .service("/health", new OnlineHealthService(metrics, shedder))
               .service("/metrics", (ctx, req) -> HttpResponse.of(HttpStatus.OK))
