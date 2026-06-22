@@ -125,12 +125,12 @@ public final class OnlinePredictionServer {
               .service("/metrics", PrometheusExpositionService.of(registry.getPrometheusRegistry()))
               .service("/online/features",
                       new OnlineAdmissionControl(
-                              new OnlineFeaturesService(recommendationService, metricsService,
+                              new OnlineServices.Features(recommendationService, metricsService,
                                       loadShedder, redisRateLimiter, asyncEventPublisher, true),
                               loadShedder, metricsService))
               .service("/online/recommendation",
                       new OnlineAdmissionControl(
-                              new OnlinePredictionService(recommendationService, metricsService,
+                              new OnlineServices.Prediction(recommendationService, metricsService,
                                       loadShedder, redisRateLimiter, true),
                               loadShedder, metricsService))
               .service("/online/ops",

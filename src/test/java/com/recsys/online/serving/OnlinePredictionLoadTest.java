@@ -57,7 +57,7 @@ class OnlinePredictionLoadTest {
 
             sb.requestTimeoutMillis(500)
               .service("/online/recommendation", new OnlineAdmissionControl(
-                      new OnlinePredictionService(mockRec, metrics, shedder,
+                      new OnlineServices.Prediction(mockRec, metrics, shedder,
                               RedisRateLimiter.disabled(), true),
                       shedder, metrics))
               .service("/online/ops", new OnlineOpsService(metrics, shedder, new OnlineCapacityService()))

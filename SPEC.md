@@ -1,185 +1,183 @@
-# Spec: Consolidate `saga/` orchestrators onto a shared base
+# Spec: Consolidate `online/serving` enveloped handlers onto a shared base
 
 ## Objective
 
-`com.recsys.saga` has two orchestrators — `SagaOrchestrator` (compensation-based
-saga) and `TccSagaOrchestrator` (Try/Confirm/Cancel) — that duplicate ~60 lines
-of identical infrastructure: the `store`/`publisher`/`clock` fields and
-constructor, `runWithRetry`, `transition`, `publish`, `now()`, and the
-find-or-create + terminal-status skeleton. This spec extracts that shared
-infrastructure into one base and merges both orchestrators into a single file as
-nested classes — **with zero change to orchestration behavior or emitted
-events.**
+`OnlinePredictionService` and `OnlineFeaturesService` (port 7010) duplicate a
+near-identical request-handling envelope — admission shedding, Redis rate
+limiting, request parsing, the shared `recommend(...)` call, success/failure
+metrics, the catch ladder, the load-shedder release, and an identical
+`elapsedMs` helper. This spec extracts that envelope into one shared base and
+merges both handlers (plus the base) into a single `OnlineServices.java` as
+nested classes — **with zero change to routes, request parsing, response JSON,
+status codes, metrics, or emitted events.**
 
-Pure internal refactor. No behavior change. The AWS Step Functions renderers are
-out of scope (not selected for this pass).
+Pure internal refactor. No behavior change.
 
 ### Who benefits
-Maintainers of the saga reference implementation — one place to change retry,
-event-publishing, and persistence wiring instead of two that can drift.
+Maintainers of the online serving path — one place to change admission/rate-limit/
+metrics/error handling instead of two copies that can drift.
 
 ### Success looks like
-- The duplicated infra exists once, in a shared base.
-- The two orchestrators live in one file as nested classes.
-- Every emitted `SagaTransitionEvent`, status transition, and exception message
-  (modulo the unchanged step-name + "compensation/cancel errors" text the tests
-  assert) is identical.
-- `mvn test` is green after the mechanical test updates.
+- The request envelope + `elapsedMs` exist once, in a shared base.
+- The two handlers live in one file as nested classes, each contributing only its
+  response shape, metrics label, and (Features) the post-success event publish.
+- Every route resolves identically; `mvn test` stays green.
 
 ## Tech Stack
 
-- Java 17, JUnit 5 + AssertJ. Build: Maven.
+- Java 17, Armeria, Jackson, Micrometer; JUnit 5 + Mockito. Build: Maven.
 
 ## Commands
 
 ```bash
-# Compile
 mvn package -DskipTests
-
-# Saga tests
-mvn test -Dtest='com.recsys.saga.*'
-
-# Full suite
+mvn test -Dtest='OnlinePredictionRegressionTest,OnlinePredictionServerIntegrationTest,OnlineV2RecommendIntegrationTest,OnlineRecommendationServiceTest,OnlineBlendingPipelineTest'
 mvn test
 ```
 
-## Scope — one consolidation (as selected)
+## Scope — one consolidation (merge into nested classes, as selected)
 
-### Extract a shared orchestrator base; merge both into `SagaOrchestrators.java`
-
-New file `SagaOrchestrators.java` — a non-instantiable namespace holding an
-abstract base plus the two concrete orchestrators as nested classes:
+New `OnlineServices.java` — a non-instantiable namespace holding the shared base
+and both handlers:
 
 ```java
-public final class SagaOrchestrators {
-    private SagaOrchestrators() {}
+public final class OnlineServices {
+    private OnlineServices() {}
 
-    /** Shared durable-orchestration infrastructure for both saga styles. */
-    abstract static class Base {
-        protected final SagaStateStore store;
-        protected final SagaEventPublisher publisher;
-        protected final Clock clock;
-        private final String retryFailureNoun;   // "step" | "TCC step"
+    /** Shared request envelope: admission shed -> rate limit -> parse -> recommend
+     *  -> render -> success/failure metrics -> release. */
+    abstract static class Guarded extends ApiService {
+        // shared fields: recommendationService, metricsService, loadShedder,
+        //                redisRateLimiter, admissionHandledExternally
+        protected Guarded(OnlineRecommendationService rec, OnlineServingMetricsService metrics,
+                          OnlineLoadShedder shedder, RedisRateLimiter rate,
+                          boolean admissionHandledExternally) { ... }
 
-        protected Base(SagaStateStore store, SagaEventPublisher publisher, Clock clock,
-                       String retryFailureNoun) { ... }
+        @Override protected final HttpResponse doGet(ServiceRequestContext ctx, HttpRequest req) { ...envelope... }
 
-        protected SagaInstance findOrCreate(String sagaId, String correlationId,
-                                            String payloadJson, SagaDefinition definition) { ... }
-        protected void runWithRetry(SagaInstance saga, SagaStep step, SagaStepAction action) { ... }
-        protected void transition(SagaInstance saga, SagaStatus status,
-                                  SagaEventType eventType, String stepName) { ... }
-        protected void publish(SagaInstance saga, SagaEventType type, String stepName) { ... }
-        protected Instant now() { return clock.instant(); }
+        /** Build the success response from the shared recall result. */
+        protected abstract HttpResponse render(int userId, int k, OnlineRecommendationResult result);
+        /** Metrics strategy label for recordSuccess. */
+        protected abstract String strategyLabel(OnlineRecommendationResult result);
+        /** Post-success side effect (default no-op; Features publishes an event). */
+        protected void afterSuccess(int userId, OnlineRecommendationResult result) {}
+
+        protected static long elapsedMs(long startedAtMs) { ... }
     }
 
-    /** Compensation-based saga (was SagaOrchestrator). */
-    public static final class Standard extends Base {
-        public Standard(SagaStateStore store, SagaEventPublisher publisher, Clock clock) {
-            super(store, publisher, clock, "step");
-        }
-        public SagaInstance execute(... actions, compensations) { ... }   // forward loop + compensate()
+    /** GET /online/recommendation (was OnlinePredictionService). */
+    public static final class Prediction extends Guarded {
+        // 4 public ctors + 1 package-private (rec, metrics, shedder, rate, boolean) — preserved
+        @Override protected HttpResponse render(...) { /* OnlinePredictionResponse */ }
+        @Override protected String strategyLabel(OnlineRecommendationResult r) { return r.strategy(); }
     }
 
-    /** Try/Confirm/Cancel (was TccSagaOrchestrator). */
-    public static final class Tcc extends Base {
-        public Tcc(SagaStateStore store, SagaEventPublisher publisher, Clock clock) {
-            super(store, publisher, clock, "TCC step");
-        }
-        public SagaInstance execute(... participants) { ... }   // tryAll/confirmAll + cancel()
+    /** GET /online/features (was OnlineFeaturesService). */
+    public static final class Features extends Guarded {
+        // own asyncEventPublisher field
+        // 4 public ctors + 1 package-private (rec, metrics, shedder, rate, asyncPublisher, boolean) — preserved
+        @Override protected HttpResponse render(...) { /* OnlineFeatureSnapshotResponse */ }
+        @Override protected String strategyLabel(OnlineRecommendationResult r) { return "features"; }
+        @Override protected void afterSuccess(int userId, OnlineRecommendationResult r) { /* publish feature_view */ }
     }
 }
 ```
 
-What moves to `Base` (identical in both today):
-- fields `store`/`publisher`/`clock` + null-defaulting constructor
-- `runWithRetry` — the only difference between the two copies is the failure noun
-  (`"step failed after…"` vs `"TCC step failed after…"`), parameterized via
-  `retryFailureNoun` passed by each subclass's constructor. The `: <stepName>`
-  suffix is preserved, so tests asserting the step name still pass.
-- `transition`, `publish`, `now`
-- `findOrCreate` (the `store.find(...).orElseGet(create + SAGA_STARTED publish)`
-  block, byte-identical in both)
+The `Guarded.doGet` reproduces today's envelope exactly, in this order:
+1. `startedAtMs`; if `!admissionHandledExternally && !loadShedder.tryAcquire()` →
+   `recordRejected` + 429 retry-after.
+2. `redisRateLimiter.tryAcquire("online")`; if not allowed → `recordRejected` + 429.
+3. parse `userId` (required), `k` (1–20, default 5), `window` (query param).
+4. `result = recommendationService.recommend(new OnlineRecommendationRequest(userId, window, k))`.
+5. `HttpResponse resp = render(userId, k, result)`.
+6. `recordSuccess(elapsedMs, strategyLabel(result))`; then `afterSuccess(userId, result)`.
+7. catch: `BadRequest|IllegalArgument` → 400; `UnknownUserException` → 404;
+   `Exception` → 500 — each `recordFailure`.
+8. `finally`: if `!admissionHandledExternally`, `loadShedder.release()`.
 
-What stays in each concrete class (genuinely different):
-- `Standard`: the forward step loop and `compensate(...)` (its `"compensation
-  errors"` wording, `markStepCompleted`/`markCompensated`).
-- `Tcc`: `tryAll`/`confirmAll`/`cancelTriedButUnconfirmed`/`participantFor` (its
-  `"cancel errors"` wording, tried/confirmed/cancelled marks).
-- The terminal-status guard (`status==COMPLETED||FAILED → return`) stays inline at
-  the top of each `execute` after `findOrCreate`.
+> Order note: today Features calls `recordSuccess` then publishes — preserved by
+> doing `afterSuccess` after `recordSuccess`.
 
-Delete `SagaOrchestrator.java` and `TccSagaOrchestrator.java`.
+Delete `OnlinePredictionService.java` and `OnlineFeaturesService.java`. The
+response records (`OnlinePredictionResponse`, `OnlineFeatureSnapshotResponse`) and
+the `featureViewEvent` builder move into their respective nested classes,
+unchanged.
 
-### Explicitly out of scope (per review)
-- The AWS renderers (`AwsStepFunctionsSagaDefinition`,
-  `AwsTccStepFunctionsSagaDefinition`) and their duplicated `escape`/PascalCase/
-  Retry-block/scan helpers — **left untouched** this pass.
-- All small value/enum/interface types (`SagaStep`, `SagaInstance`, `SagaStatus`,
-  `SagaEventType`, `SagaBackoff`, stores, exceptions) — unchanged.
+### Explicitly out of scope
+- `ApiService` (the online-wide base, also extended by `OnlineHealthService`,
+  `OnlineOpsService`, `ShardedRecordService`) — kept as-is.
+- `OnlineLiveService`, `OnlineRecommendV2Service`, `OnlineBlendingPipeline`,
+  `OnlineRecommendationService`, the server, and DTOs — unchanged.
 
 ## Project Structure (after)
 
 ```
-saga/
-  SagaOrchestrators.java                NEW — Base + Standard + Tcc (replaces 2 files)
-  SagaInstance.java / SagaStep.java / SagaDefinition.java        (unchanged)
-  SagaStateStore.java / InMemorySagaStateStore.java             (unchanged)
-  SagaStatus.java / SagaEventType.java / SagaTransitionEvent.java (unchanged)
-  SagaBackoff.java / SagaException.java / SagaConflictException.java (unchanged)
-  SagaStepAction.java / TccParticipant.java / SagaEventPublisher.java (unchanged)
-  AwsStepFunctionsSagaDefinition.java / AwsTccStepFunctionsSagaDefinition.java (unchanged)
+online/serving/
+  OnlineServices.java                 NEW — Guarded + Prediction + Features (replaces 2 files)
+  ApiService.java                     (unchanged)
+  OnlineLiveService.java              (unchanged)
+  OnlineRecommendV2Service.java       (unchanged)
+  OnlineBlendingPipeline.java         (unchanged)
+  OnlineRecommendationService.java    (unchanged)
+  OnlinePredictionServer.java         (wiring: new OnlineServices.Prediction/.Features)
+  OnlineRecommendationRequest.java / OnlineRecommendationResult.java (unchanged)
 ```
 
 ## Code Style
 
-- Container `public final` with private constructor; concretes are
-  `public static final class … extends Base`.
-- `Base` is package-private (`abstract static class Base`) — it's an internal
-  implementation detail, not public API.
-- Shared fields `protected final`; helper methods `protected`.
-- Preserve every event id format, status value, and message string exactly
-  (other than the parameterized retry noun, which reproduces today's two strings).
+- Container `public final` + private ctor; `Guarded` is package-private
+  `abstract static`; handlers are `public static final class … extends Guarded`.
+- `doGet` is `final` in `Guarded`; subclasses override only `render`/`strategyLabel`/
+  `afterSuccess`.
+- Preserve every status code, JSON field, metrics label, retry-after value, and the
+  `feature_view` event JSON exactly.
+- Keep all existing constructor signatures (public + package-private) so callers are
+  unchanged apart from the `OnlineServices.` qualifier.
+
+## Routes / contract — MUST stay identical (hard constraints)
+
+| Route | Today | After |
+|---|---|---|
+| `/online/recommendation` | `OnlinePredictionService` | `OnlineServices.Prediction` |
+| `/online/features` | `OnlineFeaturesService` | `OnlineServices.Features` |
+
+Both are wrapped by `OnlineAdmissionControl(...)` in the server — that wrapping and
+the `admissionHandledExternally=true` flag are preserved.
 
 ## Testing Strategy
 
-JUnit 5 + AssertJ. No new tests. The existing `SagaOrchestratorTest` and
-`TccSagaOrchestratorTest` are the safety net — they pin event sequences, status
-transitions, compensation/cancel ordering, idempotent replay, and the
-`"compensation errors"`/`"cancel errors"` failure messages. They need mechanical
-constructor-name updates only:
+JUnit 5 + Mockito. No new tests. Existing integration/regression/load tests pin the
+HTTP behavior (status codes, 429 shedding, 404 unknown-user, JSON shape, metrics).
+Mechanical construction-site updates only (same args, new qualifier):
 
-- `new SagaOrchestrator(...)` → `new SagaOrchestrators.Standard(...)`
-  (10 sites: `SagaOrchestratorTest` ×5, `TccSagaOrchestratorTest` ×5 → `.Tcc`)
-- variable type declarations `SagaOrchestrator x` / `TccSagaOrchestrator x`
-  → `SagaOrchestrators.Standard` / `SagaOrchestrators.Tcc`
-- the `{@link SagaOrchestrator}` javadoc in `AwsStepFunctionsSagaDefinition`
-  → `{@link SagaOrchestrators.Standard}`
+- Server wiring (`OnlinePredictionServer`): 2 sites →
+  `new OnlineServices.Prediction(...)`, `new OnlineServices.Features(...)`.
+- Tests (4 sites): `OnlinePredictionServerIntegrationTest` (×2),
+  `OnlinePredictionRegressionTest` (×1), `OnlinePredictionLoadTest` (×1).
+  All in-package (no imports to change).
 
-Verify: `mvn test -Dtest='com.recsys.saga.*'` green, then full `mvn test` green.
+Verify: the named online tests pass, then full `mvn test` green.
 
 ## Boundaries
 
-- **Always:** preserve emitted events, status transitions, ordering, and message
-  text; update the saga tests in the same change and run them.
-- **Ask first:** changing any event/status/message; touching the AWS renderers or
-  any non-orchestrator saga type; changing public constructor signatures beyond
-  the type rename.
-- **Never:** alter orchestration semantics; delete a test to make the build pass.
+- **Always:** preserve routes, parsing, JSON, status codes, metrics labels,
+  retry-after, and the feature_view event; preserve all constructor signatures;
+  update server + tests in the same change and run them.
+- **Ask first:** changing any response shape, metrics label, or the admission/
+  rate-limit order; touching `ApiService` or any non-enveloped handler.
+- **Never:** change wire output; alter the 429/404/400/500 mapping; delete a test
+  to make the build pass.
 
 ## Success Criteria
 
-1. `SagaOrchestrators.java` exists with `Base` + `Standard` + `Tcc`;
-   `SagaOrchestrator.java` and `TccSagaOrchestrator.java` are deleted.
-2. `runWithRetry`/`transition`/`publish`/`now`/`findOrCreate` exist once (in `Base`).
-3. `git diff` shows no change to event id strings, `SagaStatus`/`SagaEventType`
-   usage, or the `SagaTransitionEvent` construction.
-4. `mvn test` green; no file outside `saga/` changed except the two saga tests'
-   constructor names.
+1. `OnlineServices.java` exists with `Guarded` + `Prediction` + `Features`;
+   `OnlinePredictionService.java` and `OnlineFeaturesService.java` are deleted.
+2. The envelope + `elapsedMs` exist once (in `Guarded`).
+3. Both routes resolve to the nested handlers; server `git diff` shows only the
+   two handler-construction lines changed.
+4. `mvn test` green; no file outside `online/serving/` changed.
 
 ## Open Questions
 
-1. **Nested names.** `Standard` / `Tcc` chosen for the concretes. Alternative:
-   keep the old names as nested (`SagaOrchestrators.Saga` / `.Tcc`) or use
-   `.Compensating` / `.Tcc`. Default: `Standard` / `Tcc`. Flag if you prefer
-   different names.
+1. **Base nested name.** `Guarded` chosen for the shared base. Alternative:
+   `Base`. Default: `Guarded`. Flag if you prefer otherwise.
