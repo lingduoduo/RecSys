@@ -1,4 +1,4 @@
-# api-gateway — Jetty reverse proxy for local RecSys microservices (port 8010)
+# api-gateway — Armeria reverse proxy for local RecSys microservices (port 8010)
 
 -Xms256m
 -Xmx512m

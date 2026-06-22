@@ -54,21 +54,21 @@ Key env vars: `REDIS_HOST`, `REDIS_PORT`, `PORT`/`ONLINE_DEMO_PORT`/`GATEWAY_POR
 
 The system demonstrates two recommendation paths:
 
-**Offline/batch path** — `RecSysServer` (Jetty) uses pre-computed Word2Vec embeddings stored in Redis. Recall is embedding-based (cosine similarity via `CandidateGenerator`); embeddings are seeded from classpath text files at startup if Redis is empty. Routes: `/getrecommendation`, `/similar`, `/setembedding`, `/v1/models/recmodel:predict`.
+**Offline/batch path** — `RecSysServer` (Armeria) uses pre-computed Word2Vec embeddings stored in Redis. Recall is embedding-based (cosine similarity via `CandidateGenerator`); embeddings are seeded from classpath text files at startup if Redis is empty. Routes: `/getrecommendation`, `/similar`, `/setembedding`, `/v1/models/recmodel:predict`.
 
 **Model-based path** — `ModelApplication` (Spring Boot) runs a PyTorch two-tower ONNX model (`dssm_model.onnx` in `src/main/resources/artifacts/`). `RetrievalService` encodes the user tower; `RankingService` scores candidates. Supports variant-aware artifacts for A/B testing (`recsys.ab-test.*` in `application.yml`), result caching, submit-token CSRF protection, and load shedding.
 
-**Online path** — `OnlinePredictionServer` (Jetty) uses Redis-backed `OnlineFeatureStore` (recent history) and `ShardedTopKStore` (trending) to produce real-time recommendations without a neural model. `OnlineLearner` updates lightweight serving parameters from streaming feedback.
+**Online path** — `OnlinePredictionServer` (Armeria) uses Redis-backed `OnlineFeatureStore` (recent history) and `ShardedTopKStore` (trending) to produce real-time recommendations without a neural model. `OnlineLearner` updates lightweight serving parameters from streaming feedback.
 
-**API Gateway** — `MicroserviceGatewayServer` (Jetty) routes to the above services plus an optional LLM explanation endpoint. Has per-route circuit breakers (`RouteCircuitBreaker`), token-bucket rate limiting (`GatewayRateLimiter`), a dedicated LLM proxy with token budgets (`LlmTokenRateLimiter`, `LlmResponseCache`), and 30 s Cloud Map DNS TTL for EKS blue/green deploys.
+**API Gateway** — `MicroserviceGatewayServer` (Armeria) routes to the above services plus an optional LLM explanation endpoint. Has per-route circuit breakers (`RouteCircuitBreaker`), token-bucket rate limiting (`GatewayRateLimiter`), a dedicated LLM proxy with token budgets (`LlmTokenRateLimiter`, `LlmResponseCache`), and 30 s Cloud Map DNS TTL for EKS blue/green deploys.
 
 ## Package Map
 
 | Package | Responsibility |
 |---|---|
-| `serving/` | Jetty servlet handlers for the offline RecSys API |
+| `serving/` | Armeria HTTP services for the offline RecSys API |
 | `modelbased/` | Spring Boot ONNX model serving (controller → service → ONNX runtime) |
-| `online/` | Online feature store, learner, rate limiter, distributed lock (Redis), Jetty servlets |
+| `online/` | Online feature store, learner, rate limiter, distributed lock (Redis), Armeria services |
 | `microservice/` | API gateway: proxy, circuit breaker, rate limiter, LLM proxy |
 | `features/` | Embedding stores (Redis, local heap, multi-level L1→L2→L3), LSH index, candidate generation |
 | `models/` | Shared domain DTOs (Movie, User, Rating) |

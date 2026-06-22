@@ -12,11 +12,15 @@ import static org.assertj.core.api.Assertions.assertThatThrownBy;
 
 class QuotaPolicyTest {
 
-    @ParameterizedTest
-    @ValueSource(ints = {1, 3, 5, 7, 10, 12, 20, 50, 100})
-    void defaultMovieWarm_matchesLegacyQuotaSpec(int limit) {
-        assertThat(QuotaPolicy.defaultMovie().warm(limit).slots())
-                .isEqualTo(QuotaSpec.warm(limit).slots());
+    @Test
+    void defaultMovieWarm_includesUserSimilarity() {
+        QuotaSpec q = QuotaPolicy.defaultMovie().warm(10);
+        assertThat(q.slotsFor("embedding")).isEqualTo(5);
+        assertThat(q.slotsFor("user_similarity")).isEqualTo(2);
+        assertThat(q.slotsFor("trending")).isEqualTo(2);
+        assertThat(q.slotsFor("genre_history")).isEqualTo(1);
+        assertThat(q.slotsFor("popularity")).isEqualTo(0);
+        assertThat(q.slots().values().stream().mapToInt(Integer::intValue).sum()).isEqualTo(10);
     }
 
     @ParameterizedTest
@@ -81,12 +85,13 @@ class QuotaPolicyTest {
     void defaultOnlineWarm_slotsForLimit10() {
         QuotaSpec q = QuotaPolicy.defaultOnline().warm(10);
         assertThat(q.slotsFor("embedding")).isEqualTo(5);
-        assertThat(q.slotsFor("online_recent_history")).isEqualTo(3);
-        assertThat(q.slotsFor("trending")).isEqualTo(2);
+        assertThat(q.slotsFor("online_recent_history")).isEqualTo(2);
+        assertThat(q.slotsFor("user_similarity")).isEqualTo(2);
+        assertThat(q.slotsFor("trending")).isEqualTo(1);
         assertThat(q.slotsFor("popularity")).isEqualTo(0);
         assertThat(q.slotsFor("cold_start")).isEqualTo(0);
         int total = q.slotsFor("embedding") + q.slotsFor("online_recent_history")
-                + q.slotsFor("trending") + q.slotsFor("popularity");
+                + q.slotsFor("user_similarity") + q.slotsFor("trending") + q.slotsFor("popularity");
         assertThat(total).isEqualTo(10);
     }
 
@@ -106,10 +111,11 @@ class QuotaPolicyTest {
     @Test
     void defaultModelRetrieval_warmIncludesRecentHistory() {
         QuotaSpec warm = QuotaPolicy.defaultModelRetrieval().warm(20);
-        assertThat(warm.slots().get("embedding")).isEqualTo(11);              // round(0.55 * 20)
-        assertThat(warm.slots().get("online_recent_history")).isEqualTo(4);   // round(0.20 * 20)
+        assertThat(warm.slots().get("embedding")).isEqualTo(9);               // round(0.45 * 20)
+        assertThat(warm.slots().get("online_recent_history")).isEqualTo(3);   // round(0.15 * 20)
+        assertThat(warm.slots().get("user_similarity")).isEqualTo(3);         // round(0.15 * 20)
         assertThat(warm.slots().get("trending")).isEqualTo(2);               // round(0.10 * 20)
-        assertThat(warm.slots().get("popularity")).isEqualTo(3);            // residual 20-11-4-2
+        assertThat(warm.slots().get("popularity")).isEqualTo(3);            // residual 20-9-3-3-2
         assertThat(warm.slots().values().stream().mapToInt(Integer::intValue).sum()).isEqualTo(20);
         assertThat(warm.slots()).doesNotContainKey("cold_start");
     }

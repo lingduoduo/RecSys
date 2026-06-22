@@ -1,4 +1,4 @@
-# recsys-serving — Jetty Recommendation Serving API, G1GC (port 6010)
+# recsys-serving — Armeria Recommendation Serving API, G1GC (port 6010)
 #
 # Lighter than model-serving: no ONNX runtime; primary work is ranking, blending,
 # and Redis/MySQL fetches. Lower baseline heap footprint than model-serving.

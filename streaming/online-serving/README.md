@@ -1,6 +1,6 @@
 # Online Serving
 
-This streaming path is intentionally separate from the main Jetty movie API and the Spring Boot model-artifact service.
+This streaming path is intentionally separate from the main Armeria movie API and the Spring Boot model-artifact service.
 It shows an online or near-real-time recommendation path where:
 
 ```text
@@ -25,7 +25,7 @@ The streaming path uses:
 - `OnlineRecommendationEngine` for real-time behavioral scoring
 - `CandidateGenerator.byEmbedding` for embedding-based ANN recall
 - `OnlineRecommendationService` to blend both signals before serving
-- `OnlinePredictionServer` (Jetty, port `7010`) as the HTTP layer
+- `OnlinePredictionServer` (Armeria, port `7010`) as the HTTP layer
 
 Today the repo includes both:
 

@@ -927,7 +927,7 @@ curl -H "Authorization: Bearer secret-key-1" http://localhost:8010/api/catalog/i
 curl http://localhost:8010/health
 ```
 
-### LLM proxy (`LlmProxyServlet`)
+### LLM proxy (`LlmProxyService`)
 
 LLM routes use a dedicated `HttpClient` with a longer timeout (default 120 s). The proxy handles SSE streaming passthrough, retry-on-429, token-count-aware rate limiting, and SHA-256 response caching.
 
@@ -1038,7 +1038,7 @@ src/main/java/com/recsys/
 │   ├── hydrator/   Item/user hydration
 │   ├── feedback/   Feedback processing
 │   └── pagination/ Cursor-based result pagination
-├── serving/        Armeria servlets for port 6010 (RecSysServer)
+├── serving/        Armeria HTTP services for port 6010 (RecSysServer)
 ├── online/         Online serving layer for port 7010
 │   ├── serving/    OnlinePredictionServer, OnlinePredictionService, OnlineFeaturesService
 │   ├── flink/      Flink job — writes history + embeddings + trending to Redis

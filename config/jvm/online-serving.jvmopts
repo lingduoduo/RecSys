@@ -1,4 +1,4 @@
-# online-serving — Jetty Online Prediction Server, G1GC (port 7010)
+# online-serving — Armeria Online Prediction Server, G1GC (port 7010)
 #
 # Workload: real-time feature scoring + candidate ranking; objects are small and
 # short-lived. Similar heap profile to recsys-serving.
