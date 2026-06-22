@@ -114,10 +114,10 @@ public class RecSysServer {
                     new CursorPaginationService()
             );
 
-            MovieService movieService = new MovieService(dataManager);
-            UserService userService = new UserService(dataManager);
-            RecommendationService recommendationService =
-                    new RecommendationService(dataManager, recallService);
+            CatalogService.Movies movieService = new CatalogService.Movies(dataManager);
+            CatalogService.Users userService = new CatalogService.Users(dataManager);
+            RecommendationService.V1 recommendationService =
+                    new RecommendationService.V1(dataManager, recallService);
 
             String corsOrigin = System.getenv("CORS_ALLOWED_ORIGIN");
 
@@ -127,13 +127,13 @@ public class RecSysServer {
                     .service(ROUTE_ITEM_ALIAS, movieService)
                     .service(ROUTE_USER, userService)
                     .service(ROUTE_USER_ALIAS, userService)
-                    .service(ROUTE_SIMILAR, new SimilarMovieService(embCache))
+                    .service(ROUTE_SIMILAR, new RecommendationService.Similar(embCache))
                     .service(ROUTE_RECOMMENDATION, recommendationService)
                     .service(ROUTE_RECOMMENDATION_ALIAS, recommendationService)
-                    .service(ROUTE_SET_EMBEDDING, new SetEmbeddingService(embCache, candidateGenerator))
-                    .service(ROUTE_SET_USER_EMBEDDING, new SetUserEmbeddingService(userEmbCache))
-                    .service(ROUTE_HEALTH, new HealthService())
-                    .service(ROUTE_V2_RECOMMEND, new RecommendV2Service(orchestrator))
+                    .service(ROUTE_SET_EMBEDDING, new EmbeddingService.SetMovie(embCache, candidateGenerator))
+                    .service(ROUTE_SET_USER_EMBEDDING, new EmbeddingService.SetUser(userEmbCache))
+                    .service(ROUTE_HEALTH, new RecommendationService.Health())
+                    .service(ROUTE_V2_RECOMMEND, new RecommendationService.V2(orchestrator))
                     // exact() encodes ':' as '%3A' so the literal path never matches;
                     // regex routing matches against the decoded path.
                     .service(Route.builder()

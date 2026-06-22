@@ -43,7 +43,7 @@ class RecSysServerRegressionTest {
     static final ServerExtension server = new ServerExtension() {
         @Override
         protected void configure(ServerBuilder sb) {
-            RecommendationService rec = new RecommendationService(mockData, mockRecall);
+            RecommendationService.V1 rec = new RecommendationService.V1(mockData, mockRecall);
 
             sb.service("/getrecommendation", rec)
               .service("/recommendation", rec);
