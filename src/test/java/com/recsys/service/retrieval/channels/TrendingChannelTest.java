@@ -17,7 +17,7 @@ class TrendingChannelTest {
 
     @Test
     void name_returnsTrending() {
-        assertThat(new TrendingChannel(mock(TrendingStore.class)).name()).isEqualTo("trending");
+        assertThat(new Channels.Trending(mock(TrendingStore.class)).name()).isEqualTo("trending");
     }
 
     @Test
@@ -25,7 +25,7 @@ class TrendingChannelTest {
         TrendingStore store = mock(TrendingStore.class);
         when(store.getTopKIds("last_hour", 3)).thenReturn(List.of("10", "20", "30"));
 
-        TrendingChannel channel = new TrendingChannel(store);
+        Channels.Trending channel = new Channels.Trending(store);
         List<MovieCandidate> results = channel.recall(
                 new RecommendationQuery("1", 3, Set.of(), null), 3);
 
@@ -46,7 +46,7 @@ class TrendingChannelTest {
         // last_day weight 0.6: "10" rank0 → 0.6, "30" rank1 → 0.3
         when(store.getTopKIds("last_day", 5)).thenReturn(List.of("10", "30"));
 
-        TrendingChannel channel = new TrendingChannel(store, List.of("last_hour", "last_day"));
+        Channels.Trending channel = new Channels.Trending(store, List.of("last_hour", "last_day"));
         List<MovieCandidate> results = channel.recall(
                 new RecommendationQuery("1", 5, Set.of(), null), 5);
 
@@ -62,7 +62,7 @@ class TrendingChannelTest {
         TrendingStore store = mock(TrendingStore.class);
         when(store.getTopKIds("last_hour", 5)).thenReturn(List.of());
 
-        List<MovieCandidate> results = new TrendingChannel(store).recall(
+        List<MovieCandidate> results = new Channels.Trending(store).recall(
                 new RecommendationQuery("1", 5, Set.of(), null), 5);
 
         assertThat(results).isEmpty();

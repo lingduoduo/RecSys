@@ -25,9 +25,30 @@ class QuotaPolicyTest {
 
     @ParameterizedTest
     @ValueSource(ints = {1, 3, 5, 7, 10, 12, 20, 50, 100})
-    void defaultMovieCold_matchesLegacyQuotaSpec(int limit) {
+    void defaultMovieCold_slotMath(int limit) {
         assertThat(QuotaPolicy.defaultMovie().cold(limit).slots())
-                .isEqualTo(QuotaSpec.cold(limit).slots());
+                .isEqualTo(expectedMovieColdSlots(limit));
+    }
+
+    /**
+     * Reference slot math for the movie cold quota: cold_start .50 / trending .20 /
+     * popularity .20, with genre_history as the rounding residual. Mirrors the
+     * allocation in {@link QuotaPolicy#cold(int)}.
+     */
+    private static Map<String, Integer> expectedMovieColdSlots(int limit) {
+        int cs    = (int) Math.round(limit * 0.50);
+        int trend = (int) Math.round(limit * 0.20);
+        int pop   = (int) Math.round(limit * 0.20);
+        cs    = Math.min(cs,    limit);
+        trend = Math.min(trend, limit - cs);
+        pop   = Math.min(pop,   limit - cs - trend);
+        int genre = Math.max(0, limit - cs - trend - pop);
+        Map<String, Integer> expected = new LinkedHashMap<>();
+        expected.put("cold_start",    cs);
+        expected.put("trending",      trend);
+        expected.put("popularity",    pop);
+        expected.put("genre_history", genre);
+        return expected;
     }
 
     @Test

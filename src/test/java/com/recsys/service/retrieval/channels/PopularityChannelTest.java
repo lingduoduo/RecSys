@@ -26,7 +26,7 @@ class PopularityChannelTest {
         when(dm.getTopRatedMovies(anyInt())).thenReturn(List.of(a));
         when(dm.getLatestMovies(anyInt())).thenReturn(List.of(b));
 
-        PopularityChannel channel = new PopularityChannel(dm);
+        Channels.Popularity channel = new Channels.Popularity(dm);
         List<MovieCandidate> results = channel.recall(
                 new RecommendationQuery("1", 5, Set.of(), null), 5);
 
@@ -42,7 +42,7 @@ class PopularityChannelTest {
         when(dm.getTopRatedMovies(anyInt())).thenReturn(List.of(m));
         when(dm.getLatestMovies(anyInt())).thenReturn(List.of(m)); // same movie in both
 
-        List<MovieCandidate> results = new PopularityChannel(dm).recall(
+        List<MovieCandidate> results = new Channels.Popularity(dm).recall(
                 new RecommendationQuery("1", 5, Set.of(), null), 5);
 
         assertThat(results).hasSize(1);
@@ -51,7 +51,7 @@ class PopularityChannelTest {
 
     @Test
     void name_returnsPopularity() {
-        assertThat(new PopularityChannel(mock(DataManager.class)).name()).isEqualTo("popularity");
+        assertThat(new Channels.Popularity(mock(DataManager.class)).name()).isEqualTo("popularity");
     }
 
     @Test
@@ -60,7 +60,7 @@ class PopularityChannelTest {
         GlobalPopularityStore popStore = mock(GlobalPopularityStore.class);
         when(popStore.getTopIds(anyInt())).thenReturn(List.of("10", "20", "30"));
 
-        PopularityChannel channel = new PopularityChannel(dm, popStore);
+        Channels.Popularity channel = new Channels.Popularity(dm, popStore);
         List<MovieCandidate> results = channel.recall(
                 new RecommendationQuery("1", 5, Set.of(), null), 5);
 
@@ -81,7 +81,7 @@ class PopularityChannelTest {
         when(dm.getTopRatedMovies(anyInt())).thenReturn(List.of(m));
         when(dm.getLatestMovies(anyInt())).thenReturn(List.of());
 
-        PopularityChannel channel = new PopularityChannel(dm, popStore);
+        Channels.Popularity channel = new Channels.Popularity(dm, popStore);
         List<MovieCandidate> results = channel.recall(
                 new RecommendationQuery("1", 5, Set.of(), null), 5);
 
@@ -97,7 +97,7 @@ class PopularityChannelTest {
         when(dm.getTopRatedMovies(anyInt())).thenReturn(List.of(m));
         when(dm.getLatestMovies(anyInt())).thenReturn(List.of());
 
-        List<MovieCandidate> results = new PopularityChannel(dm).recall(
+        List<MovieCandidate> results = new Channels.Popularity(dm).recall(
                 new RecommendationQuery("1", 5, Set.of(), null), 5);
 
         assertThat(results).hasSize(1);

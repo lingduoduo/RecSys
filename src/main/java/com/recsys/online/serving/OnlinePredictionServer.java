@@ -33,11 +33,7 @@ import com.recsys.online.store.ShardedRecordService;
 import com.recsys.online.redis.RedisRateLimiter;
 import com.recsys.online.store.OnlineFeatureStore;
 import com.recsys.online.store.TrendingStore;
-import com.recsys.service.retrieval.channels.EmbeddingChannel;
-import com.recsys.service.retrieval.channels.OnlineRecentHistoryChannel;
-import com.recsys.service.retrieval.channels.PopularityChannel;
-import com.recsys.service.retrieval.channels.TrendingChannel;
-import com.recsys.service.retrieval.channels.UserSimilarityChannel;
+import com.recsys.service.retrieval.channels.Channels;
 import com.recsys.service.retrieval.coldstart.ColdStartChannel;
 import com.recsys.service.retrieval.coldstart.QuotaPolicy;
 import com.recsys.service.retrieval.multichannel.ChannelHealthMonitor;
@@ -83,11 +79,11 @@ public final class OnlinePredictionServer {
             MultiChannelRecallService recallService = MultiChannelRecallService.from(
                     RecallConfig.builder()
                             .channels(List.of(
-                                    new EmbeddingChannel(candidateGenerator),
-                                    new OnlineRecentHistoryChannel(onlineFeatureStore, dataManager),
-                                    new UserSimilarityChannel(dataManager),
-                                    new TrendingChannel(topkStore, List.of("last_hour", "last_day")),
-                                    new PopularityChannel(dataManager, globalPopStore),
+                                    new Channels.Embedding(candidateGenerator),
+                                    new Channels.OnlineRecentHistory(onlineFeatureStore, dataManager),
+                                    new Channels.UserSimilarity(dataManager),
+                                    new Channels.Trending(topkStore, List.of("last_hour", "last_day")),
+                                    new Channels.Popularity(dataManager, globalPopStore),
                                     new ColdStartChannel(topkStore, globalPopStore)))
                             .quotaPolicy(QuotaPolicy.defaultOnline())
                             .healthMonitor(new ChannelHealthMonitor())

@@ -22,7 +22,7 @@ class EmbeddingChannelTest {
         Movie m2 = new Movie(20, "Beta", 2021, List.of("Drama"));
         when(cg.byEmbedding(42, 10)).thenReturn(List.of(m1, m2));
 
-        EmbeddingChannel channel = new EmbeddingChannel(cg);
+        Channels.Embedding channel = new Channels.Embedding(cg);
         List<MovieCandidate> results = channel.recall(
                 new RecommendationQuery("42", 10, Set.of(), null), 10);
 
@@ -39,7 +39,7 @@ class EmbeddingChannelTest {
         CandidateGenerator cg = mock(CandidateGenerator.class);
         when(cg.byEmbedding(999, 5)).thenReturn(List.of());
 
-        EmbeddingChannel channel = new EmbeddingChannel(cg);
+        Channels.Embedding channel = new Channels.Embedding(cg);
         List<MovieCandidate> results = channel.recall(
                 new RecommendationQuery("999", 5, Set.of(), null), 5);
 
@@ -48,6 +48,6 @@ class EmbeddingChannelTest {
 
     @Test
     void name_returnsEmbedding() {
-        assertThat(new EmbeddingChannel(mock(CandidateGenerator.class)).name()).isEqualTo("embedding");
+        assertThat(new Channels.Embedding(mock(CandidateGenerator.class)).name()).isEqualTo("embedding");
     }
 }

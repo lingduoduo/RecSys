@@ -29,7 +29,7 @@ class UserSimilarityChannelTest {
                 new Rating(4, 14, 5.0f, 8L)
         ));
 
-        UserSimilarityChannel channel = new UserSimilarityChannel(dataManager);
+        Channels.UserSimilarity channel = new Channels.UserSimilarity(dataManager);
 
         List<MovieCandidate> candidates = channel.recall(
                 new RecommendationQuery("1", 10, Set.of("10", "11"), null), 10);
@@ -47,7 +47,7 @@ class UserSimilarityChannelTest {
         when(dataManager.getAllRatings()).thenReturn(List.of(
                 new Rating(2, 12, 4.0f, 1L)
         ));
-        UserSimilarityChannel channel = new UserSimilarityChannel(dataManager);
+        Channels.UserSimilarity channel = new Channels.UserSimilarity(dataManager);
 
         assertThat(channel.recall(new RecommendationQuery("1", 10, Set.of(), null), 10))
                 .isEmpty();
