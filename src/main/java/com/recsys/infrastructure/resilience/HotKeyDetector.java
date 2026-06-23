@@ -1,10 +1,13 @@
 package com.recsys.infrastructure.resilience;
 
+import com.github.benmanes.caffeine.cache.Cache;
+import com.github.benmanes.caffeine.cache.Caffeine;
+
+import java.time.Duration;
 import java.util.AbstractMap;
 import java.util.Comparator;
 import java.util.List;
 import java.util.Map;
-import java.util.concurrent.ConcurrentHashMap;
 import java.util.concurrent.atomic.AtomicLong;
 import java.util.stream.Collectors;
 
@@ -27,9 +30,14 @@ public final class HotKeyDetector {
 
     private static final int  DEFAULT_WINDOW_SECONDS   = 10;
     private static final long DEFAULT_HOT_THRESHOLD_PS = 500L; // accesses / second
+    // Hard cap on distinct tracked keys so a high-cardinality key space cannot bloat heap.
+    private static final int  DEFAULT_MAX_TRACKED_KEYS = 100_000;
 
-    private final ConcurrentHashMap<String, WindowCounter> counters = new ConcurrentHashMap<>();
-    private final ConcurrentHashMap<Integer, WindowCounter> intCounters = new ConcurrentHashMap<>();
+    // Bounded Caffeine caches: maximumSize caps memory; expireAfterAccess auto-evicts idle
+    // keys (replaces the need for a scheduled evictIdle sweep). Same-thread maintenance keeps
+    // estimatedSize deterministic.
+    private final Cache<String, WindowCounter> counters;
+    private final Cache<Integer, WindowCounter> intCounters;
     private final long windowMs;
     private final double hotThresholdPerSecond;
 
@@ -40,35 +48,45 @@ public final class HotKeyDetector {
     public HotKeyDetector(int windowSeconds, long hotThresholdPerSecond) {
         this.windowMs = Math.max(1L, windowSeconds) * 1_000L;
         this.hotThresholdPerSecond = Math.max(1L, hotThresholdPerSecond);
+        this.counters = newCounterCache(this.windowMs);
+        this.intCounters = newCounterCache(this.windowMs);
+    }
+
+    private static <K> Cache<K, WindowCounter> newCounterCache(long windowMs) {
+        return Caffeine.newBuilder()
+                .maximumSize(DEFAULT_MAX_TRACKED_KEYS)
+                .expireAfterAccess(Duration.ofMillis(2 * windowMs))
+                .executor(Runnable::run)
+                .build();
     }
 
     /** Records one access for {@code key}. Thread-safe, lock-free per-key. */
     public void record(String key) {
         long now = System.currentTimeMillis();
-        counters.computeIfAbsent(key, k -> new WindowCounter(now)).record(now, windowMs);
+        counters.get(key, k -> new WindowCounter(now)).record(now, windowMs);
     }
 
     /** Records one access for integer {@code id}. Avoids String allocation on hot paths. */
     public void record(int id) {
         long now = System.currentTimeMillis();
-        intCounters.computeIfAbsent(id, k -> new WindowCounter(now)).record(now, windowMs);
+        intCounters.get(id, k -> new WindowCounter(now)).record(now, windowMs);
     }
 
     /** Returns {@code true} when the smoothed per-second access rate exceeds the threshold. */
     public boolean isHot(String key) {
-        WindowCounter c = counters.get(key);
+        WindowCounter c = counters.getIfPresent(key);
         return c != null && c.rate(System.currentTimeMillis(), windowMs) >= hotThresholdPerSecond;
     }
 
     /** Integer-keyed variant of {@link #isHot(String)}. */
     public boolean isHot(int id) {
-        WindowCounter c = intCounters.get(id);
+        WindowCounter c = intCounters.getIfPresent(id);
         return c != null && c.rate(System.currentTimeMillis(), windowMs) >= hotThresholdPerSecond;
     }
 
     /** Returns the smoothed per-second access rate for {@code key}, or 0 if never recorded. */
     public double accessRate(String key) {
-        WindowCounter c = counters.get(key);
+        WindowCounter c = counters.getIfPresent(key);
         return c == null ? 0.0 : c.rate(System.currentTimeMillis(), windowMs);
     }
 
@@ -78,7 +96,7 @@ public final class HotKeyDetector {
      */
     public List<Map.Entry<String, Double>> topHotKeys(int n) {
         long now = System.currentTimeMillis();
-        return counters.entrySet().stream()
+        return counters.asMap().entrySet().stream()
                 .map(e -> (Map.Entry<String, Double>)
                         new AbstractMap.SimpleImmutableEntry<>(e.getKey(), e.getValue().rate(now, windowMs)))
                 .filter(e -> e.getValue() > 0.0)
@@ -88,7 +106,7 @@ public final class HotKeyDetector {
     }
 
     /** Returns the total number of distinct keys being tracked. */
-    public int trackedKeyCount() { return counters.size(); }
+    public int trackedKeyCount() { return (int) counters.estimatedSize(); }
 
     /**
      * Evicts keys that have been idle for at least two full window periods.
@@ -96,11 +114,11 @@ public final class HotKeyDetector {
      */
     public void evictIdle() {
         long now = System.currentTimeMillis();
-        counters.entrySet().removeIf(e -> {
+        counters.asMap().entrySet().removeIf(e -> {
             long sinceWindow = now - e.getValue().windowStartMs;
             return sinceWindow > 2 * windowMs && e.getValue().currentCount.get() == 0L;
         });
-        intCounters.entrySet().removeIf(e -> {
+        intCounters.asMap().entrySet().removeIf(e -> {
             long sinceWindow = now - e.getValue().windowStartMs;
             return sinceWindow > 2 * windowMs && e.getValue().currentCount.get() == 0L;
         });

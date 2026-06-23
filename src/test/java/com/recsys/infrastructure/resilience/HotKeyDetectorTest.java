@@ -79,6 +79,14 @@ class HotKeyDetectorTest {
     }
 
     @Test
+    void trackedKeysAreBoundedUnderHighCardinality() {
+        HotKeyDetector detector = new HotKeyDetector(10, 1L);
+        for (int i = 0; i < 200_000; i++) detector.record("k" + i);
+        // Hard-capped at DEFAULT_MAX_TRACKED_KEYS (100k) — no unbounded heap growth.
+        assertThat(detector.trackedKeyCount()).isLessThanOrEqualTo(100_000);
+    }
+
+    @Test
     void evictIdle_doesNotThrowAndPreservesActiveKeys() {
         HotKeyDetector detector = new HotKeyDetector(10, 1L);
         detector.record("active-key");

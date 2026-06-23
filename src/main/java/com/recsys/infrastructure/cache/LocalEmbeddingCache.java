@@ -13,7 +13,6 @@ import java.util.HashMap;
 import java.util.LinkedHashSet;
 import java.util.Map;
 import java.util.Set;
-import java.util.concurrent.ConcurrentHashMap;
 
 import com.github.benmanes.caffeine.cache.Cache;
 import com.github.benmanes.caffeine.cache.Caffeine;
@@ -61,8 +60,15 @@ public class LocalEmbeddingCache implements EmbeddingStore {
     private final BloomFilterGuard bloom;
     private volatile boolean bloomPopulated = false;
 
-    // Cache penetration guard — Null sentinel: maps absent ID → expiry timestamp.
-    private final ConcurrentHashMap<Integer, Long> nullSentinels = new ConcurrentHashMap<>();
+    // Cache penetration guard — Null sentinel: bounded Caffeine cache of recently-absent IDs.
+    // maximumSize caps heap under penetration attack; expireAfterWrite gives the TTL behaviour
+    // (membership == "recently confirmed absent") without unbounded growth or manual expiry.
+    private static final int NULL_SENTINEL_MAX = 100_000;
+    private final Cache<Integer, Boolean> nullSentinels = Caffeine.newBuilder()
+            .maximumSize(NULL_SENTINEL_MAX)
+            .expireAfterWrite(java.time.Duration.ofMillis(NULL_SENTINEL_TTL_MS))
+            .executor(Runnable::run)
+            .build();
     private final SingleFlight<Integer, float[]> missSingleFlight = new SingleFlight<>(MISS_WAIT_TIMEOUT_MS);
 
     public LocalEmbeddingCache(EmbeddingStore backingStore) {
@@ -119,8 +125,7 @@ public class LocalEmbeddingCache implements EmbeddingStore {
         if (bloomPopulated && !bloom.mightContain(id)) return null;
 
         // 2. Null sentinel: skip backing store for recently confirmed absent IDs.
-        Long nullExpiry = nullSentinels.get(id);
-        if (nullExpiry != null && nullExpiry > System.currentTimeMillis()) return null;
+        if (nullSentinels.getIfPresent(id) != null) return null;
 
         float[] cached = cache.getIfPresent(id);
         if (cached != null) return cached;
@@ -142,12 +147,10 @@ public class LocalEmbeddingCache implements EmbeddingStore {
         if (misses.isEmpty()) return result;
 
         // Apply penetration guards to the miss set (outside sync block to reduce contention).
-        long now = System.currentTimeMillis();
         Set<Integer> toFetch = new LinkedHashSet<>();
         for (int id : misses) {
             if (bloomPopulated && !bloom.mightContain(id)) continue;
-            Long nullExpiry = nullSentinels.get(id);
-            if (nullExpiry != null && nullExpiry > now) continue;
+            if (nullSentinels.getIfPresent(id) != null) continue;
             toFetch.add(id);
         }
 
@@ -157,7 +160,7 @@ public class LocalEmbeddingCache implements EmbeddingStore {
                 if (fetched.containsKey(id)) {
                     bloom.add(id);
                 } else {
-                    nullSentinels.put(id, now + NULL_SENTINEL_TTL_MS);
+                    nullSentinels.put(id, Boolean.TRUE);
                 }
             }
             putAll(fetched);
@@ -171,7 +174,7 @@ public class LocalEmbeddingCache implements EmbeddingStore {
     public void setEmbedding(int id, float[] vector, long ttlSeconds) {
         backingStore.setEmbedding(id, vector, ttlSeconds);
         bloom.add(id);
-        nullSentinels.remove(id);
+        nullSentinels.invalidate(id);
         put(id, vector);
     }
 
@@ -202,10 +205,10 @@ public class LocalEmbeddingCache implements EmbeddingStore {
 
     int inflightMisses() { return missSingleFlight.inflightCount(); }
 
+    int nullSentinelCount() { return (int) nullSentinels.estimatedSize(); }
+
     private float[] loadMissingEmbedding(int id) {
-        Long nullExpiry = nullSentinels.get(id);
-        long now = System.currentTimeMillis();
-        if (nullExpiry != null && nullExpiry > now) return null;
+        if (nullSentinels.getIfPresent(id) != null) return null;
 
         // asMap().get bypasses stats recording so this single-flight double-check
         // does not inflate the miss count (the primary getEmbedding read already recorded it).
@@ -217,7 +220,7 @@ public class LocalEmbeddingCache implements EmbeddingStore {
             bloom.add(id);
             put(id, fromStore);
         } else {
-            nullSentinels.put(id, now + NULL_SENTINEL_TTL_MS);
+            nullSentinels.put(id, Boolean.TRUE);
         }
         return fromStore;
     }
@@ -229,7 +232,7 @@ public class LocalEmbeddingCache implements EmbeddingStore {
             if (id != null && vec != null) {
                 cache.put(id, vec);
                 bloom.add(id);
-                nullSentinels.remove(id);
+                nullSentinels.invalidate(id);
             }
         });
     }
