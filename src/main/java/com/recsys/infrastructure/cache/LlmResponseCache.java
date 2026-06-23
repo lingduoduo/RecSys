@@ -8,6 +8,7 @@ import java.util.HexFormat;
 import java.util.LinkedHashMap;
 import java.util.List;
 import java.util.Map;
+import java.util.concurrent.atomic.AtomicLong;
 
 /**
  * In-memory LRU cache for non-streaming LLM responses, keyed by SHA-256 of the request body.
@@ -24,6 +25,9 @@ public final class LlmResponseCache {
 
     public record Entry(int status, Map<String, List<String>> headers, byte[] body, long insertedAtMs) {}
 
+    /** Cache effectiveness counters: fresh hits, misses (absent or TTL-expired), and capacity evictions. */
+    public record Stats(long hits, long misses, long evictions) {}
+
     // MessageDigest is not thread-safe; one instance per thread avoids locking.
     private static final ThreadLocal<MessageDigest> SHA256 = ThreadLocal.withInitial(() -> {
         try {
@@ -37,6 +41,10 @@ public final class LlmResponseCache {
     private final long ttlMs;
     private final boolean enabled;
 
+    private final AtomicLong hits = new AtomicLong();
+    private final AtomicLong misses = new AtomicLong();
+    private final AtomicLong evictions = new AtomicLong();
+
     LlmResponseCache(int maxSize, long ttlMs) {
         this.ttlMs = ttlMs;
         this.enabled = maxSize > 0 && ttlMs > 0;
@@ -45,7 +53,9 @@ public final class LlmResponseCache {
             this.cache = Collections.synchronizedMap(new LinkedHashMap<>(16, 0.75f, true) {
                 @Override
                 protected boolean removeEldestEntry(Map.Entry<String, Entry> eldest) {
-                    return size() > cap;
+                    boolean evict = size() > cap;
+                    if (evict) evictions.incrementAndGet();
+                    return evict;
                 }
             });
         } else {
@@ -71,11 +81,16 @@ public final class LlmResponseCache {
         if (!enabled) return null;
         String key = hash(requestBody);
         Entry entry = cache.get(key);
-        if (entry == null) return null;
-        if (System.currentTimeMillis() - entry.insertedAtMs() > ttlMs) {
-            cache.remove(key);
+        if (entry == null) {
+            misses.incrementAndGet();
             return null;
         }
+        if (System.currentTimeMillis() - entry.insertedAtMs() > ttlMs) {
+            cache.remove(key);
+            misses.incrementAndGet();
+            return null;
+        }
+        hits.incrementAndGet();
         return entry;
     }
 
@@ -88,6 +103,10 @@ public final class LlmResponseCache {
     int size() {
         if (!enabled) return 0;
         return cache.size();
+    }
+
+    public Stats stats() {
+        return new Stats(hits.get(), misses.get(), evictions.get());
     }
 
     private static String hash(byte[] data) {

@@ -28,6 +28,21 @@ class LlmResponseCacheTest {
     }
 
     @Test
+    void statsCountHitsMissesAndEvictions() {
+        LlmResponseCache cache = new LlmResponseCache(1, 60_000L); // capacity 1 -> forces eviction
+        cache.put(BODY_A, 200, HEADERS, RESPONSE);
+        cache.put(BODY_B, 200, HEADERS, RESPONSE); // evicts the eldest (capacity 1)
+
+        assertNotNull(cache.get(BODY_B)); // hit
+        assertNull(cache.get(BODY_A));    // miss (evicted)
+
+        LlmResponseCache.Stats stats = cache.stats();
+        assertEquals(1, stats.hits());
+        assertEquals(1, stats.misses());
+        assertEquals(1, stats.evictions());
+    }
+
+    @Test
     void hitOnSameRequestBody() {
         LlmResponseCache cache = new LlmResponseCache(100, 60_000L);
         cache.put(BODY_A, 200, HEADERS, RESPONSE);
