@@ -1,6 +1,6 @@
 package com.recsys.config;
 
-import com.recsys.model.service.LoginTokenService;
+import com.recsys.application.auth.LoginTokenService;
 import jakarta.servlet.http.HttpServletRequest;
 import jakarta.servlet.http.HttpServletResponse;
 import org.springframework.http.HttpHeaders;

@@ -1,7 +1,7 @@
 package com.recsys.infrastructure.cache;
 
-import com.recsys.infrastructure.BloomFilterGuard;
-import com.recsys.infrastructure.SingleFlight;
+import com.recsys.infrastructure.resilience.BloomFilterGuard;
+import com.recsys.infrastructure.resilience.SingleFlight;
 import com.recsys.infrastructure.redis.RedisEmbeddingStore;
 import com.recsys.infrastructure.vectordb.EmbeddingStore;
 import org.slf4j.Logger;

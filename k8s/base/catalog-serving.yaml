@@ -41,7 +41,7 @@ spec:
                 name: recsys-config
           env:
             - name: RECSYS_MAIN_CLASS
-              value: com.recsys.serving.RecSysServer
+              value: com.recsys.api.serving.RecSysServer
             - name: PORT
               value: "6010"
             - name: JAVA_OPTS

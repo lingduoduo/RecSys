@@ -1,6 +1,6 @@
 package com.recsys.infrastructure.cache;
 
-import com.recsys.infrastructure.SingleFlight;
+import com.recsys.infrastructure.resilience.SingleFlight;
 import com.recsys.infrastructure.vectordb.EmbeddingStore;
 import org.slf4j.Logger;
 import org.slf4j.LoggerFactory;

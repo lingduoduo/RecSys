@@ -1,6 +1,6 @@
 package com.recsys.infrastructure.cache;
 
-import com.recsys.infrastructure.SingleFlight;
+import com.recsys.infrastructure.resilience.SingleFlight;
 
 import java.util.Set;
 import java.util.concurrent.ConcurrentHashMap;

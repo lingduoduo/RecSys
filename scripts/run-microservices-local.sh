@@ -23,7 +23,7 @@ start_service() {
 
 start_service recsys-serving env PORT=6010 \
   sh scripts/run-with-jvm-tuning.sh recsys-serving -- \
-  mvn exec:java -Dexec.mainClass=com.recsys.serving.RecSysServer
+  mvn exec:java -Dexec.mainClass=com.recsys.api.serving.RecSysServer
 
 start_service model-serving env SERVER_PORT=8080 \
   sh scripts/run-with-jvm-tuning.sh model-serving -- \
@@ -31,7 +31,7 @@ start_service model-serving env SERVER_PORT=8080 \
 
 start_service online-serving env ONLINE_DEMO_PORT=7010 \
   sh scripts/run-with-jvm-tuning.sh online-serving -- \
-  mvn exec:java -Dexec.mainClass=com.recsys.online.serving.OnlinePredictionServer
+  mvn exec:java -Dexec.mainClass=com.recsys.api.online.OnlinePredictionServer
 
 sleep "${GATEWAY_START_DELAY_SECONDS:-10}"
 
@@ -48,7 +48,7 @@ start_service api-gateway env GATEWAY_PORT=8010 \
   AGENT_WORKFLOW_SERVICE_URL="${AGENT_WORKFLOW_SERVICE_URL:-http://localhost:8080}" \
   OBSERVABILITY_SERVICE_URL="${OBSERVABILITY_SERVICE_URL:-http://localhost:8080}" \
   sh scripts/run-with-jvm-tuning.sh api-gateway -- \
-  mvn exec:java -Dexec.mainClass=com.recsys.microservice.MicroserviceGatewayServer
+  mvn exec:java -Dexec.mainClass=com.recsys.api.gateway.MicroserviceGatewayServer
 
 echo "Microservices are starting. Gateway: http://localhost:8010/health"
 wait

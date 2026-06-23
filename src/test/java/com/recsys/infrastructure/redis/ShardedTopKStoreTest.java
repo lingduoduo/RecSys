@@ -1,6 +1,6 @@
 package com.recsys.infrastructure.redis;
 
-import com.recsys.infrastructure.HotKeyDetector;
+import com.recsys.infrastructure.resilience.HotKeyDetector;
 import org.junit.jupiter.api.BeforeEach;
 import org.junit.jupiter.api.Test;
 import redis.clients.jedis.Jedis;

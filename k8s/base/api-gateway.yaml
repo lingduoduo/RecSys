@@ -41,7 +41,7 @@ spec:
                 name: recsys-config
           env:
             - name: RECSYS_MAIN_CLASS
-              value: com.recsys.microservice.MicroserviceGatewayServer
+              value: com.recsys.api.gateway.MicroserviceGatewayServer
             - name: GATEWAY_PORT
               value: "8010"
             - name: JAVA_OPTS

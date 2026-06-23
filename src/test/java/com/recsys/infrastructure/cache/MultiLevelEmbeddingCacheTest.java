@@ -1,6 +1,6 @@
 package com.recsys.infrastructure.cache;
 
-import com.recsys.infrastructure.HotKeyDetector;
+import com.recsys.infrastructure.resilience.HotKeyDetector;
 import com.recsys.infrastructure.vectordb.EmbeddingStore;
 import org.junit.jupiter.api.Test;
 

@@ -1,6 +1,6 @@
 package com.recsys.infrastructure.vectordb;
 
-import com.recsys.infrastructure.DataManager;
+import com.recsys.infrastructure.dataloading.DataManager;
 import org.junit.jupiter.api.Test;
 
 import static org.assertj.core.api.Assertions.assertThatCode;
