@@ -10,6 +10,8 @@ import redis.clients.jedis.params.SetParams;
 import java.util.concurrent.CountDownLatch;
 import java.util.concurrent.ExecutorService;
 import java.util.concurrent.Executors;
+import java.util.concurrent.ScheduledExecutorService;
+import java.util.concurrent.ScheduledFuture;
 import java.util.concurrent.TimeUnit;
 import java.util.concurrent.atomic.AtomicInteger;
 
@@ -220,6 +222,30 @@ class WatchdogLockTest {
 
         assertThat(successfulReleases.get()).isEqualTo(1);
         verify(jedis, times(1)).eval(contains("DEL"), anyList(), anyList());
+    }
+
+    @Test
+    @SuppressWarnings({"unchecked", "rawtypes"})
+    void release_cancelsOwnTaskButNeverShutsDownSharedExecutor() {
+        when(jedis.set(anyString(), anyString(), any(SetParams.class))).thenReturn("OK");
+        when(jedis.eval(anyString(), anyList(), anyList())).thenReturn(1L);
+
+        ScheduledExecutorService shared = mock(ScheduledExecutorService.class);
+        ScheduledFuture<?> taskA = mock(ScheduledFuture.class);
+        ScheduledFuture<?> taskB = mock(ScheduledFuture.class);
+        when(shared.scheduleWithFixedDelay(any(), anyLong(), anyLong(), any()))
+                .thenReturn((ScheduledFuture) taskA, (ScheduledFuture) taskB);
+
+        WatchdogLock a = WatchdogLock.tryAcquire(pool, "wdlock:", "a", 30L, shared);
+        WatchdogLock b = WatchdogLock.tryAcquire(pool, "wdlock:", "b", 30L, shared);
+        a.release();
+        b.release();
+
+        verify(shared, times(2)).scheduleWithFixedDelay(any(), anyLong(), anyLong(), any());
+        verify(shared, never()).shutdown();
+        verify(shared, never()).shutdownNow();
+        verify(taskA).cancel(false);
+        verify(taskB).cancel(false);
     }
 
     @Test
