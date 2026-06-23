@@ -2,7 +2,7 @@ package com.recsys.application.model;
 import com.recsys.application.experiment.ModelVariants;
 
 import com.recsys.config.ABTestConfig;
-import com.recsys.model.response.ModelVersionResponse;
+import com.recsys.api.response.ModelVersionResponse;
 import org.springframework.stereotype.Service;
 
 import java.util.Comparator;

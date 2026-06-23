@@ -1,7 +1,7 @@
 package com.recsys.application.online;
 import com.recsys.domain.online.OnlineRecommendationRequest;
 import com.recsys.domain.online.OnlineRecommendationResult;
-import com.recsys.online.serving.ApiService;
+import com.recsys.api.online.ApiService;
 import com.recsys.observability.OnlineServingMetricsService;
 
 import com.linecorp.armeria.common.HttpRequest;

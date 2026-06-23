@@ -17,9 +17,9 @@ Profiles:
   offline-embedding    Local offline embedding / Spark driver runs, G1 GC
 
 Examples:
-  sh scripts/run-with-jvm-tuning.sh recsys-serving -- mvn exec:java -Dexec.mainClass=com.recsys.serving.RecSysServer
+  sh scripts/run-with-jvm-tuning.sh recsys-serving -- mvn exec:java -Dexec.mainClass=com.recsys.api.serving.RecSysServer
   sh scripts/run-with-jvm-tuning.sh model-serving -- mvn spring-boot:run
-  sh scripts/run-with-jvm-tuning.sh api-gateway -- mvn exec:java -Dexec.mainClass=com.recsys.microservice.MicroserviceGatewayServer
+  sh scripts/run-with-jvm-tuning.sh api-gateway -- mvn exec:java -Dexec.mainClass=com.recsys.api.gateway.MicroserviceGatewayServer
 USAGE
 }
 

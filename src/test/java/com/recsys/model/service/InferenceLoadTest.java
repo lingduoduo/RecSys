@@ -4,7 +4,7 @@ import com.recsys.application.model.ModelArtifactLocator;
 import com.recsys.application.model.ModelRuntimeProvider;
 import com.recsys.application.recommendation.RecommendationService;
 
-import com.recsys.model.request.RecommendRequest;
+import com.recsys.api.request.RecommendRequest;
 import org.junit.jupiter.api.*;
 
 import java.util.ArrayList;

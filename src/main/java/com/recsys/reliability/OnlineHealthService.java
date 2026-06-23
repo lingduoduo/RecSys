@@ -5,7 +5,7 @@ import com.linecorp.armeria.common.HttpRequest;
 import com.linecorp.armeria.common.HttpResponse;
 import com.linecorp.armeria.common.HttpStatus;
 import com.linecorp.armeria.server.ServiceRequestContext;
-import com.recsys.online.serving.ApiService;
+import com.recsys.api.online.ApiService;
 
 import java.util.Map;
 import java.util.concurrent.CompletableFuture;

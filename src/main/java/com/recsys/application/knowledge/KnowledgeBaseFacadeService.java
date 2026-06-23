@@ -5,7 +5,7 @@ import com.recsys.domain.knowledge.UpdateKnowledgeBaseRequest;
 import com.recsys.domain.knowledge.CreateKnowledgeBaseResponse;
 import com.recsys.domain.knowledge.CreateKnowledgeBaseRequest;
 import com.recsys.domain.knowledge.GetKnowledgeBasesResponse;
-import com.recsys.model.knowledge.KnowledgeBaseConverter;
+import com.recsys.api.converter.KnowledgeBaseConverter;
 import com.recsys.domain.knowledge.KnowledgeBase;
 
 import com.fasterxml.jackson.core.JsonProcessingException;

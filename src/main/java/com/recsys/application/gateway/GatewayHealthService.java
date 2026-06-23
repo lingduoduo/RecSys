@@ -7,7 +7,7 @@ import com.linecorp.armeria.common.HttpResponse;
 import com.linecorp.armeria.common.HttpStatus;
 import com.linecorp.armeria.common.MediaType;
 import com.linecorp.armeria.server.ServiceRequestContext;
-import com.recsys.serving.BaseApiService;
+import com.recsys.api.serving.BaseApiService;
 
 import java.time.Duration;
 import java.time.Instant;

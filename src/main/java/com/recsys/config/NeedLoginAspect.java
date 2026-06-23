@@ -1,7 +1,7 @@
 package com.recsys.config;
 
 import com.recsys.config.NeedLogin;
-import com.recsys.model.dto.ApiResponseUtil;
+import com.recsys.api.envelope.ApiResponseUtil;
 import org.aspectj.lang.ProceedingJoinPoint;
 import org.aspectj.lang.annotation.Around;
 import org.aspectj.lang.annotation.Aspect;

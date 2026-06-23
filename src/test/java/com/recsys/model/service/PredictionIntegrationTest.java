@@ -4,8 +4,8 @@ import com.recsys.application.model.ModelArtifactLocator;
 import com.recsys.application.model.ModelRuntimeProvider;
 import com.recsys.application.recommendation.RecommendationService;
 
-import com.recsys.model.request.RecommendRequest;
-import com.recsys.model.response.RecommendResponse;
+import com.recsys.api.request.RecommendRequest;
+import com.recsys.api.response.RecommendResponse;
 import org.junit.jupiter.api.AfterAll;
 import org.junit.jupiter.api.BeforeAll;
 import org.junit.jupiter.api.Test;

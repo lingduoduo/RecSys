@@ -1,6 +1,6 @@
 package com.recsys.exception;
 
-import com.recsys.model.dto.ApiError;
+import com.recsys.api.envelope.ApiError;
 import com.recsys.exception.PipelineNotImplementedException;
 import com.recsys.exception.RateLimitExceededException;
 import com.recsys.exception.ServiceOverloadedException;

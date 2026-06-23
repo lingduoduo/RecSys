@@ -1,5 +1,5 @@
 package com.recsys.application.online;
-import com.recsys.online.serving.ApiService;
+import com.recsys.api.online.ApiService;
 
 import com.linecorp.armeria.common.HttpRequest;
 import com.linecorp.armeria.common.HttpResponse;

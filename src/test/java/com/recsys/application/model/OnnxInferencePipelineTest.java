@@ -6,8 +6,8 @@ import com.recsys.application.recommendation.RecommendationService;
 import com.recsys.domain.recommendation.RecommendationQuery;
 import com.recsys.domain.recommendation.RecommendationResult;
 import com.recsys.domain.prediction.ScoredItem;
-import com.recsys.model.request.RecommendRequest;
-import com.recsys.model.response.RecommendResponse;
+import com.recsys.api.request.RecommendRequest;
+import com.recsys.api.response.RecommendResponse;
 import org.junit.jupiter.api.Test;
 
 import java.util.List;

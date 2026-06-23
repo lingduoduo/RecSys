@@ -11,7 +11,7 @@ import com.linecorp.armeria.common.ResponseHeaders;
 import com.linecorp.armeria.server.ServiceRequestContext;
 import com.recsys.infrastructure.messaging.AsyncEventPublisher;
 import com.recsys.reliability.RedisRateLimiter;
-import com.recsys.online.serving.ApiService;
+import com.recsys.api.online.ApiService;
 
 import java.time.Instant;
 

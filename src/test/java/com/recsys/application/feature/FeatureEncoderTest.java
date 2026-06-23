@@ -2,7 +2,7 @@ package com.recsys.application.feature;
 import com.recsys.application.model.ModelArtifactService;
 import com.recsys.application.feature.FeatureEncoder;
 
-import com.recsys.model.request.RecommendRequest;
+import com.recsys.api.request.RecommendRequest;
 import org.junit.jupiter.api.BeforeEach;
 import org.junit.jupiter.api.Test;
 

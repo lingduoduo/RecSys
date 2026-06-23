@@ -6,7 +6,7 @@ import com.recsys.domain.item.Movie;
 import com.recsys.domain.recommendation.RecommendationQuery;
 import com.recsys.domain.user.User;
 import com.recsys.domain.prediction.ScoredItem;
-import com.recsys.model.response.RecommendResponse;
+import com.recsys.api.response.RecommendResponse;
 import com.recsys.application.experiment.ABTestService;
 import com.recsys.application.model.OnnxInferencePipeline;
 import com.recsys.application.online.OnlineBlendingPipeline;
