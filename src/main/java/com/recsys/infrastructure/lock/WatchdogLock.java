@@ -10,6 +10,7 @@ import java.util.List;
 import java.util.UUID;
 import java.util.concurrent.Executors;
 import java.util.concurrent.ScheduledExecutorService;
+import java.util.concurrent.ScheduledFuture;
 import java.util.concurrent.TimeUnit;
 import java.util.concurrent.atomic.AtomicBoolean;
 
@@ -52,6 +53,17 @@ public final class WatchdogLock implements AutoCloseable {
     // Renew at TTL/3 so at least two renewals succeed within one lease period.
     private static final long RENEWAL_DIVISOR = 3L;
 
+    // One shared scheduler renews every lock's lease — O(1) threads regardless of how many
+    // locks are held concurrently (was one daemon thread per lock).
+    private static final ScheduledExecutorService SHARED_WATCHDOG =
+            Executors.newScheduledThreadPool(
+                    Math.max(1, Integer.getInteger("WATCHDOG_THREADS", 2)),
+                    r -> {
+                        Thread t = new Thread(r, "watchdog-shared");
+                        t.setDaemon(true); // does not prevent JVM exit
+                        return t;
+                    });
+
     // Extend TTL only if this holder's token still matches (prevents ghost renewals).
     private static final String RENEW_SCRIPT = """
             if redis.call('GET', KEYS[1]) == ARGV[1] then
@@ -74,6 +86,7 @@ public final class WatchdogLock implements AutoCloseable {
     private final long leaseTtlSeconds;
     private final long leaseTtlMillis;
     private final ScheduledExecutorService watchdog;
+    private volatile ScheduledFuture<?> renewalTask;
     private final AtomicBoolean held = new AtomicBoolean(true);
     private final AtomicBoolean lostOwnership = new AtomicBoolean(false);
     private volatile long leaseDeadlineMillis;
@@ -102,6 +115,11 @@ public final class WatchdogLock implements AutoCloseable {
 
     static WatchdogLock tryAcquire(Pool<Jedis> pool, String keyPrefix, String resource,
                                    long leaseTtlSeconds) {
+        return tryAcquire(pool, keyPrefix, resource, leaseTtlSeconds, SHARED_WATCHDOG);
+    }
+
+    static WatchdogLock tryAcquire(Pool<Jedis> pool, String keyPrefix, String resource,
+                                   long leaseTtlSeconds, ScheduledExecutorService executor) {
         String lockKey = keyPrefix + resource;
         String token = UUID.randomUUID().toString();
 
@@ -112,17 +130,12 @@ public final class WatchdogLock implements AutoCloseable {
             if (!"OK".equals(result)) return null;
         }
 
-        // Lock acquired — start the watchdog daemon.
+        // Lock acquired — schedule renewal on the shared scheduler; the per-lock task is
+        // cancelled (not the executor shut down) when this lock is released or lost.
         long renewIntervalSeconds = Math.max(1L, leaseTtlSeconds / RENEWAL_DIVISOR);
-        ScheduledExecutorService watchdog = Executors.newSingleThreadScheduledExecutor(r -> {
-            Thread t = new Thread(r, "watchdog-" + lockKey);
-            t.setDaemon(true); // does not prevent JVM exit
-            return t;
-        });
-
         WatchdogLock lock = new WatchdogLock(pool, lockKey, token, leaseTtlSeconds,
-                System.currentTimeMillis() + TimeUnit.SECONDS.toMillis(leaseTtlSeconds), watchdog);
-        watchdog.scheduleWithFixedDelay(
+                System.currentTimeMillis() + TimeUnit.SECONDS.toMillis(leaseTtlSeconds), executor);
+        lock.renewalTask = executor.scheduleWithFixedDelay(
                 lock::renewLease,
                 renewIntervalSeconds, renewIntervalSeconds, TimeUnit.SECONDS);
         return lock;
@@ -131,7 +144,7 @@ public final class WatchdogLock implements AutoCloseable {
     // Called by the watchdog on every renewal interval.
     void renewLease() {
         if (!held.get()) {
-            watchdog.shutdownNow();
+            cancelRenewal();
             return;
         }
         try (Jedis jedis = pool.getResource()) {
@@ -158,8 +171,14 @@ public final class WatchdogLock implements AutoCloseable {
     private void markOwnershipLost() {
         lostOwnership.set(true);
         if (held.compareAndSet(true, false)) {
-            watchdog.shutdownNow();
+            cancelRenewal();
         }
+    }
+
+    // Stop this lock's renewal task without touching the shared executor (other locks use it).
+    private void cancelRenewal() {
+        ScheduledFuture<?> task = renewalTask;
+        if (task != null) task.cancel(false);
     }
 
     /**
@@ -170,7 +189,7 @@ public final class WatchdogLock implements AutoCloseable {
      */
     public boolean release() {
         if (!held.compareAndSet(true, false)) return false;
-        watchdog.shutdownNow();
+        cancelRenewal();
         try (Jedis jedis = pool.getResource()) {
             Object result = jedis.eval(RELEASE_SCRIPT, List.of(lockKey), List.of(token));
             return result instanceof Number n && n.longValue() == 1L;
