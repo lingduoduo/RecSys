@@ -1,5 +1,5 @@
 package com.recsys.reliability;
-import com.recsys.microservice.EnvVars;
+import com.recsys.config.EnvVars;
 
 import java.util.function.LongSupplier;
 

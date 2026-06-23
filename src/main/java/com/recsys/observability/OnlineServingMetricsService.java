@@ -1,6 +1,6 @@
 package com.recsys.observability;
 
-import com.recsys.infrastructure.EnvConfig;
+import com.recsys.config.EnvConfig;
 import io.micrometer.core.instrument.Gauge;
 import io.micrometer.core.instrument.MeterRegistry;
 import org.slf4j.Logger;

@@ -1,4 +1,5 @@
 package com.recsys.microservice;
+import com.recsys.config.EnvVars;
 import com.recsys.reliability.LlmTokenRateLimiter;
 import com.recsys.reliability.GatewayRateLimiter;
 import com.recsys.reliability.RouteCircuitBreaker;

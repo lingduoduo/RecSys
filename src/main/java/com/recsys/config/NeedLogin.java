@@ -1,4 +1,4 @@
-package com.recsys.annotation;
+package com.recsys.config;
 
 import java.lang.annotation.*;
 

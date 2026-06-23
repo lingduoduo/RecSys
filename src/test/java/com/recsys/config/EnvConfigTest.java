@@ -1,4 +1,4 @@
-package com.recsys.infrastructure;
+package com.recsys.config;
 
 import org.junit.jupiter.api.Test;
 

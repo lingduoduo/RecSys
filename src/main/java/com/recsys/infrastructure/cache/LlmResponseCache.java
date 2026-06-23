@@ -1,5 +1,5 @@
 package com.recsys.infrastructure.cache;
-import com.recsys.infrastructure.EnvConfig;
+import com.recsys.config.EnvConfig;
 
 import java.security.MessageDigest;
 import java.security.NoSuchAlgorithmException;

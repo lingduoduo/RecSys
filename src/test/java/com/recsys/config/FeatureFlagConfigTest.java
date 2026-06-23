@@ -1,4 +1,4 @@
-package com.recsys.featureflags.config;
+package com.recsys.config;
 
 import com.recsys.infrastructure.featureflags.FeatureFlagProvider;
 import com.recsys.infrastructure.featureflags.FeatureFlagService;

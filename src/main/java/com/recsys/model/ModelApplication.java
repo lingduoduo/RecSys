@@ -1,6 +1,6 @@
 package com.recsys.model;
 
-import com.recsys.featureflags.config.FeatureFlagConfig;
+import com.recsys.config.FeatureFlagConfig;
 import com.recsys.config.ABTestConfig;
 import com.recsys.config.HealthProperties;
 import com.recsys.config.RecommendationCacheProperties;

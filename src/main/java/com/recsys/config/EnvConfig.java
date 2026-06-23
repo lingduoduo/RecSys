@@ -1,4 +1,4 @@
-package com.recsys.infrastructure;
+package com.recsys.config;
 
 /**
  * Reads numeric configuration from environment variables with a fallback default.

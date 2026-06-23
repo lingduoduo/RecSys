@@ -1,7 +1,7 @@
 package com.recsys.reliability;
 import com.recsys.observability.OnlineServingMetricsService;
 
-import com.recsys.infrastructure.EnvConfig;
+import com.recsys.config.EnvConfig;
 
 /**
  * Keeps production sizing assumptions visible at runtime.

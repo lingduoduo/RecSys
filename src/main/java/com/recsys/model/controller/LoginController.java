@@ -1,6 +1,6 @@
 package com.recsys.model.controller;
 
-import com.recsys.annotation.NeedLogin;
+import com.recsys.config.NeedLogin;
 import com.recsys.config.LoginProperties;
 import com.recsys.config.RequestScopeData;
 import com.recsys.model.dto.ApiResponse;

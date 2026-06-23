@@ -1,4 +1,4 @@
-package com.recsys.model.config;
+package com.recsys.config;
 
 import com.recsys.infrastructure.messaging.AsyncEventPublisher;
 import com.recsys.infrastructure.messaging.KafkaAsyncEventPublisher;

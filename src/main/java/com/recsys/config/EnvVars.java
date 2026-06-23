@@ -1,4 +1,4 @@
-package com.recsys.microservice;
+package com.recsys.config;
 
 public final class EnvVars {
     private EnvVars() {}

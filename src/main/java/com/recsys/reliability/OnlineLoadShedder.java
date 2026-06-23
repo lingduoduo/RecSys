@@ -1,6 +1,6 @@
 package com.recsys.reliability;
 
-import com.recsys.infrastructure.EnvConfig;
+import com.recsys.config.EnvConfig;
 
 import java.util.concurrent.atomic.AtomicInteger;
 import java.util.concurrent.atomic.AtomicLong;
