@@ -4,7 +4,7 @@ import com.recsys.model.dto.ApiError;
 import com.recsys.model.request.RecommendRequest;
 import com.recsys.model.response.RecommendResponse;
 import com.recsys.observability.InferenceMetricsService;
-import com.recsys.model.service.ModelRuntimeProvider;
+import com.recsys.application.model.ModelRuntimeProvider;
 import org.junit.jupiter.api.Test;
 import org.springframework.beans.factory.annotation.Autowired;
 import org.springframework.boot.test.autoconfigure.web.servlet.AutoConfigureMockMvc;

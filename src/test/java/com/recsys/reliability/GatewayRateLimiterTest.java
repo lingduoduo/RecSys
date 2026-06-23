@@ -1,5 +1,5 @@
 package com.recsys.reliability;
-import com.recsys.microservice.MicroserviceRoute;
+import com.recsys.application.gateway.MicroserviceRoute;
 import com.recsys.reliability.GatewayRateLimiter;
 
 import org.junit.jupiter.api.Test;

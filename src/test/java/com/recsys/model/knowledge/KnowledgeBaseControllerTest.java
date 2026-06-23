@@ -1,9 +1,13 @@
 package com.recsys.model.knowledge;
+import com.recsys.domain.knowledge.CreateKnowledgeBaseResponse;
+import com.recsys.domain.knowledge.GetKnowledgeBasesResponse;
+import com.recsys.domain.knowledge.KnowledgeBaseVO;
+import com.recsys.application.knowledge.KnowledgeBaseFacadeService;
 
 import com.fasterxml.jackson.databind.ObjectMapper;
 import com.recsys.exception.GlobalExceptionHandler;
 import com.recsys.config.RequestScopeData;
-import com.recsys.model.service.LoginTokenService;
+import com.recsys.application.auth.LoginTokenService;
 import org.junit.jupiter.api.Test;
 import org.springframework.beans.factory.annotation.Autowired;
 import org.springframework.boot.test.autoconfigure.web.servlet.WebMvcTest;

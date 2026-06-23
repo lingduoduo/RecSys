@@ -2,11 +2,11 @@ package com.recsys.model.controller;
 
 import com.recsys.domain.recommendation.RecommendationQuery;
 import com.recsys.domain.recommendation.RecommendationResult;
-import com.recsys.model.service.ABTestService;
-import com.recsys.model.service.OnnxInferencePipeline;
-import com.recsys.model.service.RecommendationService;
-import com.recsys.service.recommendation.RecommendationPipeline;
-import com.recsys.service.recommendation.SequentialRecommendationPipeline;
+import com.recsys.application.experiment.ABTestService;
+import com.recsys.application.model.OnnxInferencePipeline;
+import com.recsys.application.recommendation.RecommendationService;
+import com.recsys.application.recommendation.RecommendationPipeline;
+import com.recsys.application.recommendation.SequentialRecommendationPipeline;
 import org.springframework.http.MediaType;
 import org.springframework.http.ResponseEntity;
 import org.springframework.web.bind.annotation.*;

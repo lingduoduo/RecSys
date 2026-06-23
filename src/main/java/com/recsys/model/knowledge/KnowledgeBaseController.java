@@ -1,4 +1,9 @@
 package com.recsys.model.knowledge;
+import com.recsys.domain.knowledge.UpdateKnowledgeBaseRequest;
+import com.recsys.domain.knowledge.CreateKnowledgeBaseResponse;
+import com.recsys.domain.knowledge.CreateKnowledgeBaseRequest;
+import com.recsys.domain.knowledge.GetKnowledgeBasesResponse;
+import com.recsys.application.knowledge.KnowledgeBaseFacadeService;
 
 import com.recsys.model.dto.ApiResponse;
 import jakarta.validation.Valid;

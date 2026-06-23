@@ -6,11 +6,11 @@ import com.linecorp.armeria.server.Route;
 import com.linecorp.armeria.server.ServerBuilder;
 import com.linecorp.armeria.testing.junit5.server.ServerExtension;
 import com.recsys.infrastructure.dataloading.DataManager;
-import com.recsys.infrastructure.PairPredictionService;
+import com.recsys.application.model.PairPredictionService;
 import com.recsys.infrastructure.vectordb.CandidateGenerator;
 import com.recsys.infrastructure.vectordb.EmbeddingStore;
 import com.recsys.domain.item.Movie;
-import com.recsys.service.retrieval.multichannel.MultiChannelRecallService;
+import com.recsys.application.retrieval.multichannel.MultiChannelRecallService;
 import org.junit.jupiter.api.Test;
 import org.junit.jupiter.api.extension.RegisterExtension;
 

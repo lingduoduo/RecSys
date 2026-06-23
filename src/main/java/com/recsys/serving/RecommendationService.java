@@ -12,8 +12,8 @@ import com.recsys.domain.item.MovieCandidate;
 import com.recsys.domain.recommendation.RecommendationQuery;
 import com.recsys.domain.recommendation.RecommendationResponse;
 import com.recsys.domain.user.User;
-import com.recsys.service.recommendation.RecommendationPipeline;
-import com.recsys.service.retrieval.multichannel.MultiChannelRecallService;
+import com.recsys.application.recommendation.RecommendationPipeline;
+import com.recsys.application.retrieval.multichannel.MultiChannelRecallService;
 
 import java.util.LinkedHashSet;
 import java.util.List;

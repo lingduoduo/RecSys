@@ -1,5 +1,5 @@
 package com.recsys.infrastructure.messaging;
-import com.recsys.online.event.EventSemantics;
+import com.recsys.domain.online.EventSemantics;
 
 import com.fasterxml.jackson.core.JsonProcessingException;
 import com.fasterxml.jackson.databind.ObjectMapper;

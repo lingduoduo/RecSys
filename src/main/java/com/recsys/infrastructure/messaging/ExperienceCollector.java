@@ -2,7 +2,7 @@ package com.recsys.infrastructure.messaging;
 
 import com.fasterxml.jackson.core.JsonProcessingException;
 import com.fasterxml.jackson.databind.ObjectMapper;
-import com.recsys.online.learner.OnlineJoiner;
+import com.recsys.application.online.OnlineJoiner;
 
 import java.util.ArrayList;
 import java.util.Comparator;

@@ -1,4 +1,6 @@
 package com.recsys.service.retrieval.multichannel;
+import com.recsys.application.retrieval.multichannel.ChannelHealthMonitor;
+import com.recsys.application.retrieval.multichannel.MultiChannelRecallService;
 
 import com.recsys.domain.item.MovieCandidate;
 import com.recsys.domain.recommendation.RecommendationQuery;
@@ -6,7 +8,7 @@ import com.recsys.domain.user.User;
 import com.recsys.infrastructure.dataloading.DataLoader;
 import com.recsys.infrastructure.vectordb.EmbeddingStore;
 import com.recsys.reliability.FaultInjector;
-import com.recsys.service.retrieval.RecallChannel;
+import com.recsys.application.retrieval.RecallChannel;
 import org.junit.jupiter.api.Test;
 
 import java.util.List;

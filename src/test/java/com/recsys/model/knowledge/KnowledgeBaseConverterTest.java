@@ -1,4 +1,9 @@
 package com.recsys.model.knowledge;
+import com.recsys.domain.knowledge.UpdateKnowledgeBaseRequest;
+import com.recsys.domain.knowledge.KnowledgeBaseVO;
+import com.recsys.domain.knowledge.KnowledgeBase;
+import com.recsys.domain.knowledge.KnowledgeBaseDTO;
+import com.recsys.domain.knowledge.CreateKnowledgeBaseRequest;
 
 import com.fasterxml.jackson.databind.ObjectMapper;
 import org.junit.jupiter.api.BeforeEach;

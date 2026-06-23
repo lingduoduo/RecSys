@@ -1,6 +1,6 @@
 package com.recsys.reliability;
 import com.recsys.config.EnvVars;
-import com.recsys.microservice.MicroserviceRoute;
+import com.recsys.application.gateway.MicroserviceRoute;
 
 import java.util.HashMap;
 import java.util.List;

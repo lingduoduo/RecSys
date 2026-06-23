@@ -1,20 +1,22 @@
 package com.recsys.service.recommendation;
+import com.recsys.application.recommendation.RecommendationOrchestrator;
+import com.recsys.application.recommendation.RecommendationPipeline;
 
 import com.recsys.domain.item.Movie;
 import com.recsys.domain.recommendation.RecommendationQuery;
 import com.recsys.domain.user.User;
 import com.recsys.domain.prediction.ScoredItem;
 import com.recsys.model.response.RecommendResponse;
-import com.recsys.model.service.ABTestService;
-import com.recsys.model.service.OnnxInferencePipeline;
-import com.recsys.online.serving.OnlineBlendingPipeline;
-import com.recsys.online.serving.OnlineRecommendationResult;
-import com.recsys.online.serving.OnlineRecommendationService;
-import com.recsys.service.hydrator.RecommendationHydrator;
-import com.recsys.service.pagination.CursorPaginationService;
-import com.recsys.service.pagination.Page;
-import com.recsys.service.ranking.CandidateRanker;
-import com.recsys.service.retrieval.multichannel.MultiChannelRecallService;
+import com.recsys.application.experiment.ABTestService;
+import com.recsys.application.model.OnnxInferencePipeline;
+import com.recsys.application.online.OnlineBlendingPipeline;
+import com.recsys.domain.online.OnlineRecommendationResult;
+import com.recsys.application.online.OnlineRecommendationService;
+import com.recsys.application.recommendation.RecommendationHydrator;
+import com.recsys.application.pagination.CursorPaginationService;
+import com.recsys.application.pagination.Page;
+import com.recsys.application.ranking.CandidateRanker;
+import com.recsys.application.retrieval.multichannel.MultiChannelRecallService;
 import org.junit.jupiter.api.Tag;
 import org.junit.jupiter.api.Test;
 import org.junit.jupiter.api.Timeout;
@@ -42,8 +44,8 @@ class V2CrossPathLoadTest {
     @Timeout(value = TIMEOUT_S + 10)
     void allThreePipelines_steadyLoad_p95Under500ms() throws InterruptedException {
         // Path 2 — ONNX pipeline
-        com.recsys.model.service.RecommendationService onnxService =
-                mock(com.recsys.model.service.RecommendationService.class);
+        com.recsys.application.recommendation.RecommendationService onnxService =
+                mock(com.recsys.application.recommendation.RecommendationService.class);
         ABTestService abTest = mock(ABTestService.class);
         when(abTest.getAssignmentForUser(any())).thenReturn(
                 new ABTestService.Assignment("training", 0, "default", true));

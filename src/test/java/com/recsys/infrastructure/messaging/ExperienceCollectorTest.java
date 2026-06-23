@@ -2,7 +2,7 @@ package com.recsys.infrastructure.messaging;
 
 import com.fasterxml.jackson.databind.JsonNode;
 import com.fasterxml.jackson.databind.ObjectMapper;
-import com.recsys.online.learner.OnlineJoiner;
+import com.recsys.application.online.OnlineJoiner;
 import org.junit.jupiter.api.Test;
 
 import java.util.List;

@@ -2,7 +2,7 @@ package com.recsys.model.controller;
 
 import com.recsys.model.request.ModelVersionRequest;
 import com.recsys.model.response.ModelVersionResponse;
-import com.recsys.model.service.ModelVersionService;
+import com.recsys.application.model.ModelVersionService;
 import jakarta.validation.Valid;
 import org.springframework.http.MediaType;
 import org.springframework.web.bind.annotation.GetMapping;

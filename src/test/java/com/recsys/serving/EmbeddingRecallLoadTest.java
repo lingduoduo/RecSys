@@ -1,13 +1,13 @@
 package com.recsys.serving;
 
 import com.recsys.domain.recommendation.RecommendationQuery;
-import com.recsys.service.hydrator.RecommendationHydrator;
-import com.recsys.service.pagination.CursorPaginationService;
-import com.recsys.service.pagination.Page;
-import com.recsys.service.ranking.CandidateRanker;
-import com.recsys.service.recommendation.RecommendationOrchestrator;
-import com.recsys.service.recommendation.RecommendationPipeline;
-import com.recsys.service.retrieval.multichannel.MultiChannelRecallService;
+import com.recsys.application.recommendation.RecommendationHydrator;
+import com.recsys.application.pagination.CursorPaginationService;
+import com.recsys.application.pagination.Page;
+import com.recsys.application.ranking.CandidateRanker;
+import com.recsys.application.recommendation.RecommendationOrchestrator;
+import com.recsys.application.recommendation.RecommendationPipeline;
+import com.recsys.application.retrieval.multichannel.MultiChannelRecallService;
 import org.junit.jupiter.api.Tag;
 import org.junit.jupiter.api.Test;
 import org.junit.jupiter.api.Timeout;

@@ -1,4 +1,8 @@
 package com.recsys.online.serving;
+import com.recsys.application.online.OnlineServices;
+import com.recsys.application.online.OnlineLiveService;
+import com.recsys.domain.online.OnlineRecommendationResult;
+import com.recsys.application.online.OnlineRecommendationService;
 import com.recsys.observability.OnlineServingMetricsService;
 
 import com.fasterxml.jackson.databind.JsonNode;

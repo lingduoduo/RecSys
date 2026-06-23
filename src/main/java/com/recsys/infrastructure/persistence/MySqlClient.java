@@ -1,6 +1,6 @@
 package com.recsys.infrastructure.persistence;
 
-import com.recsys.service.pagination.MillionScalePaginationSql;
+import com.recsys.application.pagination.MillionScalePaginationSql;
 
 import java.sql.Connection;
 import java.sql.DriverManager;

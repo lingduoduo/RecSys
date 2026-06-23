@@ -3,7 +3,7 @@ import com.recsys.observability.OnlineServingMetricsService;
 
 import com.linecorp.armeria.common.HttpStatus;
 import com.linecorp.armeria.server.ServerBuilder;
-import com.recsys.online.serving.OnlineLiveService;
+import com.recsys.application.online.OnlineLiveService;
 import com.linecorp.armeria.testing.junit5.server.ServerExtension;
 import org.junit.jupiter.api.Test;
 import org.junit.jupiter.api.extension.RegisterExtension;

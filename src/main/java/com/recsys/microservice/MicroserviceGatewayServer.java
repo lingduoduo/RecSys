@@ -1,4 +1,9 @@
 package com.recsys.microservice;
+import com.recsys.application.gateway.GatewayProxyService;
+import com.recsys.application.gateway.LlmProxyService;
+import com.recsys.application.gateway.GatewayHealthService;
+import com.recsys.application.gateway.GatewayAuthenticator;
+import com.recsys.application.gateway.MicroserviceRoute;
 import com.recsys.config.EnvVars;
 import com.recsys.reliability.LlmTokenRateLimiter;
 import com.recsys.reliability.GatewayRateLimiter;

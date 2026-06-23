@@ -8,7 +8,7 @@ import com.linecorp.armeria.testing.junit5.server.ServerExtension;
 import com.recsys.domain.item.RankedMovie;
 import com.recsys.domain.recommendation.RecommendationQuery;
 import com.recsys.domain.recommendation.RecommendationResult;
-import com.recsys.service.recommendation.RecommendationPipeline;
+import com.recsys.application.recommendation.RecommendationPipeline;
 import org.junit.jupiter.api.Test;
 import org.junit.jupiter.api.extension.RegisterExtension;
 

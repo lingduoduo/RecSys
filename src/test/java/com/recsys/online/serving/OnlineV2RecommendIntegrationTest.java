@@ -1,4 +1,8 @@
 package com.recsys.online.serving;
+import com.recsys.application.online.OnlineRecommendV2Service;
+import com.recsys.application.online.OnlineBlendingPipeline;
+import com.recsys.domain.online.OnlineRecommendationResult;
+import com.recsys.application.online.OnlineRecommendationService;
 
 import com.fasterxml.jackson.databind.ObjectMapper;
 import com.linecorp.armeria.common.AggregatedHttpResponse;
@@ -13,7 +17,7 @@ import com.linecorp.armeria.testing.junit5.server.ServerExtension;
 import com.recsys.domain.item.Movie;
 import com.recsys.domain.recommendation.RecommendationQuery;
 import com.recsys.domain.user.User;
-import com.recsys.service.recommendation.RecommendationPipeline;
+import com.recsys.application.recommendation.RecommendationPipeline;
 import org.junit.jupiter.api.Test;
 import org.junit.jupiter.api.extension.RegisterExtension;
 

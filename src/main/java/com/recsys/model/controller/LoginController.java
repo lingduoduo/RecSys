@@ -7,7 +7,7 @@ import com.recsys.model.dto.ApiResponse;
 import com.recsys.exception.UnauthorizedException;
 import com.recsys.model.request.LoginRequest;
 import com.recsys.model.response.LoginResponse;
-import com.recsys.model.service.LoginTokenService;
+import com.recsys.application.auth.LoginTokenService;
 import jakarta.validation.Valid;
 import org.springframework.http.MediaType;
 import org.springframework.web.bind.annotation.*;
