@@ -1,4 +1,5 @@
 package com.recsys.online.serving;
+import com.recsys.observability.OnlineServingMetricsService;
 
 import com.linecorp.armeria.common.HttpRequest;
 import com.linecorp.armeria.common.HttpResponse;
@@ -7,9 +8,9 @@ import com.linecorp.armeria.server.ServiceRequestContext;
 import com.recsys.domain.item.Movie;
 import com.recsys.domain.user.User;
 import com.recsys.infrastructure.messaging.AsyncEventPublisher;
-import com.recsys.online.ops.OnlineLoadShedder;
-import com.recsys.online.ops.OnlineServingMetricsService;
-import com.recsys.online.redis.RedisRateLimiter;
+import com.recsys.reliability.OnlineLoadShedder;
+import com.recsys.observability.OnlineServingMetricsService;
+import com.recsys.reliability.RedisRateLimiter;
 
 import java.util.List;
 import java.util.Map;

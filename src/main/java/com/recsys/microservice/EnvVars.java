@@ -1,14 +1,14 @@
 package com.recsys.microservice;
 
-final class EnvVars {
+public final class EnvVars {
     private EnvVars() {}
 
     @FunctionalInterface
-    interface EnvReader {
+    public interface EnvReader {
         String get(String name);
     }
 
-    static int readInt(EnvReader env, String name, int def) {
+    public static int readInt(EnvReader env, String name, int def) {
         String raw = env.get(name);
         if (raw == null || raw.isBlank()) return def;
         try {
@@ -18,7 +18,7 @@ final class EnvVars {
         }
     }
 
-    static long readLong(EnvReader env, String name, long def) {
+    public static long readLong(EnvReader env, String name, long def) {
         String raw = env.get(name);
         if (raw == null || raw.isBlank()) return def;
         try {
@@ -28,7 +28,7 @@ final class EnvVars {
         }
     }
 
-    static double readDouble(EnvReader env, String name, double def) {
+    public static double readDouble(EnvReader env, String name, double def) {
         String raw = env.get(name);
         if (raw == null || raw.isBlank()) return def;
         try {
@@ -38,11 +38,11 @@ final class EnvVars {
         }
     }
 
-    static int readInt(String name, int def) {
+    public static int readInt(String name, int def) {
         return readInt(System::getenv, name, def);
     }
 
-    static long readLong(String name, long def) {
+    public static long readLong(String name, long def) {
         return readLong(System::getenv, name, def);
     }
 }

@@ -1,4 +1,5 @@
 package com.recsys.microservice;
+import com.recsys.reliability.RouteCircuitBreaker;
 
 import com.linecorp.armeria.client.WebClient;
 import com.linecorp.armeria.common.HttpRequest;

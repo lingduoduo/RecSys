@@ -1,4 +1,5 @@
 package com.recsys.online.serving;
+import com.recsys.observability.OnlineServingMetricsService;
 
 import com.fasterxml.jackson.databind.JsonNode;
 import com.fasterxml.jackson.databind.ObjectMapper;
@@ -8,10 +9,10 @@ import com.linecorp.armeria.server.ServerBuilder;
 import com.linecorp.armeria.testing.junit5.server.ServerExtension;
 import com.recsys.domain.item.Movie;
 import com.recsys.domain.user.User;
-import com.recsys.online.ops.OnlineAdmissionControl;
-import com.recsys.online.ops.OnlineLoadShedder;
-import com.recsys.online.ops.OnlineServingMetricsService;
-import com.recsys.online.redis.RedisRateLimiter;
+import com.recsys.reliability.OnlineAdmissionControl;
+import com.recsys.reliability.OnlineLoadShedder;
+import com.recsys.observability.OnlineServingMetricsService;
+import com.recsys.reliability.RedisRateLimiter;
 import org.junit.jupiter.api.Test;
 import org.junit.jupiter.api.extension.RegisterExtension;
 

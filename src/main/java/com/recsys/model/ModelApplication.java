@@ -12,7 +12,8 @@ import org.springframework.boot.autoconfigure.SpringBootApplication;
 import org.springframework.boot.context.properties.EnableConfigurationProperties;
 import org.springframework.context.annotation.Import;
 
-@SpringBootApplication(scanBasePackages = {"com.recsys.model", "com.recsys.config", "com.recsys.exception"})
+@SpringBootApplication(scanBasePackages = {"com.recsys.model", "com.recsys.config", "com.recsys.exception",
+        "com.recsys.observability", "com.recsys.reliability"})
 @Import(FeatureFlagConfig.class)
 @EnableConfigurationProperties({
         HealthProperties.class,

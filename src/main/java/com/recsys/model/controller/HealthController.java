@@ -2,10 +2,10 @@ package com.recsys.model.controller;
 
 import com.recsys.config.HealthProperties;
 import com.recsys.config.ABTestConfig;
-import com.recsys.model.service.GcEventTracker;
-import com.recsys.model.service.InferenceMetricsService;
-import com.recsys.model.service.JvmMemoryMonitor;
-import com.recsys.model.service.LoadShedder;
+import com.recsys.observability.GcEventTracker;
+import com.recsys.observability.InferenceMetricsService;
+import com.recsys.observability.JvmMemoryMonitor;
+import com.recsys.reliability.LoadShedder;
 import com.recsys.model.service.ModelRuntimeProvider;
 import com.recsys.model.service.RecommendationService;
 import org.springframework.http.HttpStatus;

@@ -5,7 +5,7 @@ import java.util.List;
 import java.util.Locale;
 import java.util.Objects;
 
-record MicroserviceRoute(String name,
+public record MicroserviceRoute(String name,
                          String prefix,
                          String envVar,
                          URI baseUri,
@@ -36,7 +36,7 @@ record MicroserviceRoute(String name,
         return List.copyOf(routes);
     }
 
-    MicroserviceRoute {
+    public MicroserviceRoute {
         Objects.requireNonNull(name, "name");
         Objects.requireNonNull(prefix, "prefix");
         Objects.requireNonNull(envVar, "envVar");

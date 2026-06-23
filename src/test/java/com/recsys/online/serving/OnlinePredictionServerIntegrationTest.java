@@ -1,4 +1,5 @@
 package com.recsys.online.serving;
+import com.recsys.observability.OnlineServingMetricsService;
 
 import com.fasterxml.jackson.databind.JsonNode;
 import com.fasterxml.jackson.databind.ObjectMapper;
@@ -19,13 +20,13 @@ import com.recsys.infrastructure.redis.sharding.ShardedRecordStore;
 import com.recsys.infrastructure.redis.sharding.WriteResult;
 import com.recsys.infrastructure.redis.sharding.WriteStatus;
 import com.recsys.domain.user.User;
-import com.recsys.online.ops.OnlineAdmissionControl;
-import com.recsys.online.ops.OnlineCapacityService;
-import com.recsys.online.ops.OnlineHealthService;
-import com.recsys.online.ops.OnlineLoadShedder;
-import com.recsys.online.ops.OnlineOpsService;
-import com.recsys.online.ops.OnlineServingMetricsService;
-import com.recsys.online.redis.RedisRateLimiter;
+import com.recsys.reliability.OnlineAdmissionControl;
+import com.recsys.reliability.OnlineCapacityService;
+import com.recsys.reliability.OnlineHealthService;
+import com.recsys.reliability.OnlineLoadShedder;
+import com.recsys.reliability.OnlineOpsService;
+import com.recsys.observability.OnlineServingMetricsService;
+import com.recsys.reliability.RedisRateLimiter;
 import com.recsys.infrastructure.store.ShardedRecordService;
 import org.junit.jupiter.api.Test;
 import org.junit.jupiter.api.extension.RegisterExtension;
