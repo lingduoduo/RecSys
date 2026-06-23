@@ -21,6 +21,7 @@ import java.util.Map;
 import java.util.Set;
 import java.util.concurrent.ThreadLocalRandom;
 import java.util.concurrent.TimeUnit;
+import java.util.function.LongSupplier;
 
 public class RedisEmbeddingStore implements EmbeddingStore {
     private static final Logger log = LoggerFactory.getLogger(RedisEmbeddingStore.class);
@@ -31,6 +32,9 @@ public class RedisEmbeddingStore implements EmbeddingStore {
     // cause all entries to expire simultaneously and trigger a thundering herd on Redis.
     // jitterFraction=0.1 means 0..10% of baseTtl is added as a random offset.
     private final double jitterFraction;
+    // Overall wall-clock budget for loadAll's SCAN loop; a slow/large Redis can't block startup.
+    private final long loadAllTimeoutMs;
+    private final LongSupplier clock;
 
     public RedisEmbeddingStore(Pool<Jedis> pool, String keyPrefix) {
         this(pool, keyPrefix, 0.1);
@@ -41,10 +45,18 @@ public class RedisEmbeddingStore implements EmbeddingStore {
     }
 
     RedisEmbeddingStore(Pool<Jedis> pool, String keyPrefix, double jitterFraction, int mgetBatchSize) {
+        this(pool, keyPrefix, jitterFraction, mgetBatchSize,
+                readLongEnv("REDIS_LOADALL_TIMEOUT_MS", 30_000L), System::currentTimeMillis);
+    }
+
+    RedisEmbeddingStore(Pool<Jedis> pool, String keyPrefix, double jitterFraction, int mgetBatchSize,
+                        long loadAllTimeoutMs, LongSupplier clock) {
         this.pool = pool;
         this.keyPrefix = keyPrefix;
         this.jitterFraction = Math.max(0.0, Math.min(0.5, jitterFraction));
         this.mgetBatchSize = Math.max(1, mgetBatchSize);
+        this.loadAllTimeoutMs = Math.max(0L, loadAllTimeoutMs);
+        this.clock = clock;
     }
 
     // Adds uniform positive jitter in [0, jitter] to baseTtl to spread expiry times.
@@ -146,6 +158,7 @@ public class RedisEmbeddingStore implements EmbeddingStore {
     public Map<Integer, float[]> loadAll() {
         Map<Integer, float[]> result = new HashMap<>();
         ScanParams scanParams = new ScanParams().match(keyPrefix + ":*").count(500);
+        long start = clock.getAsLong();
 
         try (Jedis jedis = pool.getResource()) {
             String cursor = "0";
@@ -166,6 +179,11 @@ public class RedisEmbeddingStore implements EmbeddingStore {
                     }
                 }
                 cursor = res.getCursor();
+                if (loadAllTimeoutMs > 0L && clock.getAsLong() - start > loadAllTimeoutMs) {
+                    log.warn("loadAll exceeded {}ms budget after {} entries; returning partial result",
+                            loadAllTimeoutMs, result.size());
+                    break;
+                }
             } while (!"0".equals(cursor));
         }
 
@@ -230,6 +248,16 @@ public class RedisEmbeddingStore implements EmbeddingStore {
         if (raw == null || raw.isBlank()) return defaultValue;
         try {
             return Integer.parseInt(raw.trim());
+        } catch (NumberFormatException e) {
+            return defaultValue;
+        }
+    }
+
+    private static long readLongEnv(String envName, long defaultValue) {
+        String raw = System.getenv(envName);
+        if (raw == null || raw.isBlank()) return defaultValue;
+        try {
+            return Long.parseLong(raw.trim());
         } catch (NumberFormatException e) {
             return defaultValue;
         }

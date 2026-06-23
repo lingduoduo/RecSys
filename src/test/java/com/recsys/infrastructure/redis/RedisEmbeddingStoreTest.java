@@ -3,12 +3,19 @@ package com.recsys.infrastructure.redis;
 import org.junit.jupiter.api.Test;
 import redis.clients.jedis.Jedis;
 import redis.clients.jedis.JedisPool;
+import redis.clients.jedis.params.ScanParams;
+import redis.clients.jedis.resps.ScanResult;
 import redis.clients.jedis.util.Pool;
 
 import java.util.List;
 import java.util.Map;
+import java.util.concurrent.atomic.AtomicLong;
+import java.util.function.LongSupplier;
 
 import static org.assertj.core.api.Assertions.assertThat;
+import static org.mockito.ArgumentMatchers.any;
+import static org.mockito.ArgumentMatchers.anyString;
+import static org.mockito.Mockito.atMost;
 import static org.mockito.Mockito.mock;
 import static org.mockito.Mockito.verify;
 import static org.mockito.Mockito.when;
@@ -59,5 +66,29 @@ class RedisEmbeddingStoreTest {
         assertThat(result.get(3)).containsExactly(0.5f, 0.5f);
         verify(jedis).mget("emb:1", "emb:2");
         verify(jedis).mget("emb:3");
+    }
+
+    @Test
+    @SuppressWarnings("unchecked")
+    void loadAll_stopsWhenTimeBudgetExceeded() {
+        Pool<Jedis> pool = mock(JedisPool.class);
+        Jedis jedis = mock(Jedis.class);
+        when(pool.getResource()).thenReturn(jedis);
+
+        AtomicLong now = new AtomicLong(0L);
+        LongSupplier clock = () -> now.getAndAdd(1000L); // each read advances 1s
+        RedisEmbeddingStore store =
+                new RedisEmbeddingStore(pool, "emb", 0.0, 500, 500L, clock); // 500ms budget
+
+        ScanResult<String> page = mock(ScanResult.class);
+        when(page.getResult()).thenReturn(List.of("emb:1"));
+        when(page.getCursor()).thenReturn("99"); // never "0" -> would loop forever without the budget
+        when(jedis.scan(anyString(), any(ScanParams.class))).thenReturn(page);
+        when(jedis.mget(any(String[].class))).thenReturn(List.of("1.0 0.0"));
+
+        Map<Integer, float[]> result = store.loadAll();
+
+        assertThat(result).containsKey(1);                                   // partial result returned
+        verify(jedis, atMost(2)).scan(anyString(), any(ScanParams.class));   // budget broke the loop
     }
 }
