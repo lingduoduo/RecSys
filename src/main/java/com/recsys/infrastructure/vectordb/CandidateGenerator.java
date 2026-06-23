@@ -8,12 +8,13 @@ import com.recsys.domain.rating.Rating;
 import org.slf4j.Logger;
 import org.slf4j.LoggerFactory;
 
+import java.util.ArrayList;
+import java.util.Collections;
 import java.util.HashSet;
 import java.util.LinkedHashMap;
 import java.util.List;
 import java.util.Map;
 import java.util.Set;
-import java.util.stream.Collectors;
 
 public class CandidateGenerator {
 
@@ -98,10 +99,13 @@ public class CandidateGenerator {
 
         Set<Integer> watched = dataManager.getWatchedMovieIds(userId);
 
-        return embeddingIndex.search(userVec, k, watched).stream()
-                .map(s -> dataManager.getMovieById(s.id()))
-                .filter(m -> m != null)
-                .collect(Collectors.toUnmodifiableList());
+        List<SearchResult> hits = embeddingIndex.search(userVec, k, watched);
+        List<Movie> out = new ArrayList<>(hits.size());
+        for (SearchResult s : hits) {
+            Movie m = dataManager.getMovieById(s.id());
+            if (m != null) out.add(m);
+        }
+        return Collections.unmodifiableList(out);
     }
 
     // Hot-reload embedding: serialize concurrent writes from /setembedding HTTP requests
