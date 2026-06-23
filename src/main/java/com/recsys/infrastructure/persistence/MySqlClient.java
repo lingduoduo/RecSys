@@ -1,9 +1,10 @@
 package com.recsys.infrastructure.persistence;
 
 import com.recsys.application.pagination.MillionScalePaginationSql;
+import com.zaxxer.hikari.HikariConfig;
+import com.zaxxer.hikari.HikariDataSource;
 
 import java.sql.Connection;
-import java.sql.DriverManager;
 import java.sql.PreparedStatement;
 import java.sql.ResultSet;
 import java.sql.SQLException;
@@ -12,18 +13,19 @@ import java.util.ArrayList;
 import java.util.Collections;
 import java.util.List;
 import java.util.Objects;
-import java.util.Properties;
 import java.util.function.Function;
 
 /**
  * Tiny JDBC helper for optional MySQL access.
  *
- * This intentionally avoids a framework or connection pool. Existing serving paths can keep using
- * classpath data and Redis; MySQL callers pay for a connection only when they invoke a query.
+ * Connections are borrowed from a lazily-created HikariCP pool (built on first use, only when
+ * MySQL is enabled) so callers avoid a TCP+auth handshake on every query. The pool is read-only,
+ * small, and env-tunable; {@link #close()} shuts it down.
  */
-public class MySqlClient {
+public class MySqlClient implements AutoCloseable {
 
     private final MySqlConnectionSettings settings;
+    private volatile HikariDataSource dataSource;
 
     public MySqlClient(MySqlConnectionSettings settings) {
         this.settings = settings == null ? MySqlConnectionSettings.disabled() : settings;
@@ -45,12 +47,54 @@ public class MySqlClient {
         if (!settings.enabled()) {
             throw new IllegalStateException("MySQL is disabled; set MYSQL_ENABLED=true before opening connections");
         }
-        Properties props = new Properties();
-        props.setProperty("user", settings.username());
-        props.setProperty("password", settings.password());
-        Connection connection = DriverManager.getConnection(settings.url(), props);
-        connection.setReadOnly(true);
-        return connection;
+        return dataSource().getConnection();
+    }
+
+    // Lazily build the pool on first use so a disabled/unused client never opens a connection.
+    private HikariDataSource dataSource() {
+        HikariDataSource ds = dataSource;
+        if (ds == null) {
+            synchronized (this) {
+                ds = dataSource;
+                if (ds == null) {
+                    HikariConfig cfg = new HikariConfig();
+                    cfg.setPoolName("recsys-mysql");
+                    cfg.setJdbcUrl(settings.url());
+                    cfg.setUsername(settings.username());
+                    cfg.setPassword(settings.password());
+                    cfg.setReadOnly(true); // matches the previous per-connection setReadOnly(true)
+                    cfg.setMaximumPoolSize(readIntEnv("MYSQL_POOL_MAX_SIZE", 5));
+                    cfg.setMinimumIdle(readIntEnv("MYSQL_POOL_MIN_IDLE", 1));
+                    cfg.setConnectionTimeout(readLongEnv("MYSQL_POOL_CONNECTION_TIMEOUT_MS", 10_000L));
+                    cfg.setIdleTimeout(readLongEnv("MYSQL_POOL_IDLE_TIMEOUT_MS", 60_000L));
+                    cfg.setMaxLifetime(readLongEnv("MYSQL_POOL_MAX_LIFETIME_MS", 1_800_000L));
+                    ds = new HikariDataSource(cfg);
+                    dataSource = ds;
+                }
+            }
+        }
+        return ds;
+    }
+
+    /** Shuts down the connection pool if one was created. Safe to call multiple times. */
+    @Override
+    public synchronized void close() {
+        if (dataSource != null) {
+            dataSource.close();
+            dataSource = null;
+        }
+    }
+
+    private static int readIntEnv(String name, int def) {
+        String raw = System.getenv(name);
+        if (raw == null || raw.isBlank()) return def;
+        try { return Integer.parseInt(raw.trim()); } catch (NumberFormatException e) { return def; }
+    }
+
+    private static long readLongEnv(String name, long def) {
+        String raw = System.getenv(name);
+        if (raw == null || raw.isBlank()) return def;
+        try { return Long.parseLong(raw.trim()); } catch (NumberFormatException e) { return def; }
     }
 
     public HealthCheck healthCheck() {

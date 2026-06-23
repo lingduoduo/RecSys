@@ -34,6 +34,14 @@ class MySqlClientTest {
     }
 
     @Test
+    void isAutoCloseable_andCloseIsSafeBeforeAnyConnection() throws Exception {
+        MySqlClient client = new MySqlClient(MySqlConnectionSettings.disabled());
+        assertThat(client).isInstanceOf(AutoCloseable.class);
+        client.close();  // no pool was ever created -> no-op, must not throw
+        client.close();  // idempotent
+    }
+
+    @Test
     void disabledClient_doesNotOpenConnections() {
         MySqlClient client = new MySqlClient(MySqlConnectionSettings.disabled());
 
