@@ -1,5 +1,6 @@
 package com.recsys.infrastructure.cache;
 
+import com.github.benmanes.caffeine.cache.stats.CacheStats;
 import com.recsys.infrastructure.vectordb.EmbeddingStore;
 import org.junit.jupiter.api.BeforeEach;
 import org.junit.jupiter.api.Test;
@@ -167,31 +168,21 @@ class LocalEmbeddingCacheTest {
         tinyCache.getEmbedding(2);
         tinyCache.getEmbedding(3);
 
+        // Capacity is enforced: three distinct ids inserted into a cap-2 cache leaves 2.
+        // (Frequency-based eviction does not promise which id survives.)
         assertThat(tinyCache.cacheSize()).isEqualTo(2);
-
-        int getsBefore = backing.getCount;
-        assertThat(tinyCache.getEmbedding(1)).isNotNull();
-        assertThat(backing.getCount).isEqualTo(getsBefore + 1);
     }
 
     @Test
-    void cache_keepsRecentlyAccessedEntriesWhenCapacityIsReached() {
-        LocalEmbeddingCache tinyCache = new LocalEmbeddingCache(backing, 2);
-        backing.put(1, new float[]{1f});
-        backing.put(2, new float[]{2f});
-        backing.put(3, new float[]{3f});
+    void stats_recordsHitsAndMisses() {
+        backing.put(1, new float[]{1f, 0f});
 
-        tinyCache.getEmbedding(1);
-        tinyCache.getEmbedding(2);
-        tinyCache.getEmbedding(1); // refresh key 1, so key 2 is now least recently used
-        tinyCache.getEmbedding(3);
+        cache.getEmbedding(1); // miss -> loads from backing, populates cache
+        cache.getEmbedding(1); // hit  -> served from heap
 
-        int getsBefore = backing.getCount;
-        assertThat(tinyCache.getEmbedding(1)).isNotNull();
-        assertThat(backing.getCount).isEqualTo(getsBefore);
-
-        assertThat(tinyCache.getEmbedding(2)).isNotNull();
-        assertThat(backing.getCount).isEqualTo(getsBefore + 1);
+        CacheStats stats = cache.stats();
+        assertThat(stats.hitCount()).isEqualTo(1);
+        assertThat(stats.missCount()).isEqualTo(1);
     }
 
     // ── Bloom filter / null sentinel tests (缓存穿透 protection) ──────────
