@@ -2,7 +2,7 @@ package com.recsys.service.retrieval;
 
 import com.recsys.domain.item.MovieCandidate;
 import com.recsys.domain.recommendation.RecommendationQuery;
-import com.recsys.online.store.TrendingStore;
+import com.recsys.infrastructure.store.TrendingStore;
 
 import java.util.ArrayList;
 import java.util.List;

@@ -2,7 +2,7 @@ package com.recsys.online.learner;
 
 import com.fasterxml.jackson.databind.JsonNode;
 import com.fasterxml.jackson.databind.ObjectMapper;
-import com.recsys.online.event.LogCollector;
+import com.recsys.infrastructure.messaging.LogCollector;
 import org.junit.jupiter.api.Test;
 
 import java.time.Clock;

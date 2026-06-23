@@ -1,6 +1,6 @@
 package com.recsys.model.service;
 
-import com.recsys.infrastructure.DataManager;
+import com.recsys.infrastructure.dataloading.DataManager;
 import com.recsys.domain.item.Movie;
 import com.recsys.domain.rating.Rating;
 import java.util.HashSet;

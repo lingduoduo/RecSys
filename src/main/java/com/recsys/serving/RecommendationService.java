@@ -4,7 +4,7 @@ import com.linecorp.armeria.common.HttpRequest;
 import com.linecorp.armeria.common.HttpResponse;
 import com.linecorp.armeria.common.HttpStatus;
 import com.linecorp.armeria.server.ServiceRequestContext;
-import com.recsys.infrastructure.DataManager;
+import com.recsys.infrastructure.dataloading.DataManager;
 import com.recsys.infrastructure.vectordb.EmbeddingStore;
 import com.recsys.infrastructure.vectordb.ExactVectorIndex;
 import com.recsys.domain.item.Movie;

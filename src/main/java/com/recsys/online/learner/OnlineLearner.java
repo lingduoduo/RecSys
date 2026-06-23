@@ -1,6 +1,6 @@
 package com.recsys.online.learner;
 
-import com.recsys.online.event.ExperienceCollector;
+import com.recsys.infrastructure.messaging.ExperienceCollector;
 import redis.clients.jedis.Jedis;
 import redis.clients.jedis.Pipeline;
 import redis.clients.jedis.util.Pool;

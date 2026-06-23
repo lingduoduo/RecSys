@@ -3,7 +3,7 @@ package com.recsys.service.retrieval.coldstart;
 import com.recsys.domain.item.MovieCandidate;
 import com.recsys.domain.recommendation.RecommendationQuery;
 import com.recsys.infrastructure.redis.GlobalPopularityStore;
-import com.recsys.online.store.TrendingStore;
+import com.recsys.infrastructure.store.TrendingStore;
 import com.recsys.service.retrieval.RecallChannel;
 import com.recsys.service.retrieval.RecallScoring;
 

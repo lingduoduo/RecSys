@@ -2,7 +2,7 @@ package com.recsys.model.service;
 
 import com.recsys.domain.item.MovieCandidate;
 import com.recsys.domain.recommendation.RecommendationQuery;
-import com.recsys.online.store.RecentHistoryStore;
+import com.recsys.infrastructure.store.RecentHistoryStore;
 import com.recsys.service.retrieval.multichannel.MultiChannelRecallService;
 
 import java.util.HashSet;

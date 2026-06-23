@@ -3,7 +3,7 @@ package com.recsys.online.learner;
 import com.fasterxml.jackson.core.JsonProcessingException;
 import com.fasterxml.jackson.databind.ObjectMapper;
 import com.recsys.online.event.EventSemantics;
-import com.recsys.online.event.LogCollector;
+import com.recsys.infrastructure.messaging.LogCollector;
 
 import java.util.Collections;
 import java.util.LinkedHashMap;

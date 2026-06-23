@@ -1,4 +1,5 @@
 package com.recsys.infrastructure;
+import com.recsys.infrastructure.dataloading.DataLoader;
 
 import com.recsys.infrastructure.vectordb.VectorMath;
 import com.recsys.domain.prediction.PredictInstance;

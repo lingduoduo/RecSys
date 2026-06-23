@@ -6,7 +6,7 @@ import com.linecorp.armeria.common.HttpStatus;
 import com.linecorp.armeria.server.ServiceRequestContext;
 import com.recsys.domain.item.Movie;
 import com.recsys.domain.user.User;
-import com.recsys.online.event.AsyncEventPublisher;
+import com.recsys.infrastructure.messaging.AsyncEventPublisher;
 import com.recsys.online.ops.OnlineLoadShedder;
 import com.recsys.online.ops.OnlineServingMetricsService;
 import com.recsys.online.redis.RedisRateLimiter;

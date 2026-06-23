@@ -1,11 +1,11 @@
 package com.recsys.featureflags.config;
 
-import com.recsys.featureflags.FeatureFlagProvider;
-import com.recsys.featureflags.FeatureFlagService;
-import com.recsys.featureflags.providers.CachingFeatureFlagProvider;
-import com.recsys.featureflags.providers.CompositeFeatureFlagProvider;
-import com.recsys.featureflags.providers.EnvFeatureFlagProvider;
-import com.recsys.featureflags.providers.PostHogFeatureFlagProvider;
+import com.recsys.infrastructure.featureflags.FeatureFlagProvider;
+import com.recsys.infrastructure.featureflags.FeatureFlagService;
+import com.recsys.infrastructure.featureflags.providers.CachingFeatureFlagProvider;
+import com.recsys.infrastructure.featureflags.providers.CompositeFeatureFlagProvider;
+import com.recsys.infrastructure.featureflags.providers.EnvFeatureFlagProvider;
+import com.recsys.infrastructure.featureflags.providers.PostHogFeatureFlagProvider;
 import org.springframework.boot.context.properties.ConfigurationProperties;
 import org.springframework.boot.context.properties.EnableConfigurationProperties;
 import org.springframework.context.annotation.Bean;

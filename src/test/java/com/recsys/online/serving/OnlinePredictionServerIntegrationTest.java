@@ -26,7 +26,7 @@ import com.recsys.online.ops.OnlineLoadShedder;
 import com.recsys.online.ops.OnlineOpsService;
 import com.recsys.online.ops.OnlineServingMetricsService;
 import com.recsys.online.redis.RedisRateLimiter;
-import com.recsys.online.store.ShardedRecordService;
+import com.recsys.infrastructure.store.ShardedRecordService;
 import org.junit.jupiter.api.Test;
 import org.junit.jupiter.api.extension.RegisterExtension;
 

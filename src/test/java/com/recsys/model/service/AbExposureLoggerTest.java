@@ -3,7 +3,7 @@ package com.recsys.model.service;
 import com.fasterxml.jackson.databind.JsonNode;
 import com.fasterxml.jackson.databind.ObjectMapper;
 import com.recsys.config.ABTestConfig;
-import com.recsys.online.event.AsyncEventPublisher;
+import com.recsys.infrastructure.messaging.AsyncEventPublisher;
 import org.junit.jupiter.api.Test;
 import org.mockito.ArgumentCaptor;
 

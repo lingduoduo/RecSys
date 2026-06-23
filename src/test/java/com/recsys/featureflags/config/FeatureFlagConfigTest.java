@@ -1,8 +1,8 @@
 package com.recsys.featureflags.config;
 
-import com.recsys.featureflags.FeatureFlagProvider;
-import com.recsys.featureflags.FeatureFlagService;
-import com.recsys.featureflags.models.FeatureFlag;
+import com.recsys.infrastructure.featureflags.FeatureFlagProvider;
+import com.recsys.infrastructure.featureflags.FeatureFlagService;
+import com.recsys.infrastructure.featureflags.models.FeatureFlag;
 import org.junit.jupiter.api.Test;
 import org.springframework.boot.test.context.runner.ApplicationContextRunner;
 
@@ -50,7 +50,7 @@ class FeatureFlagConfigTest {
                         "recsys.feature-flags.post-hog.api-key=phc_test")
                 .run(context -> {
                     FeatureFlagProvider provider = context.getBean(FeatureFlagProvider.class);
-                    assertThat(provider).isInstanceOf(com.recsys.featureflags.providers.CompositeFeatureFlagProvider.class);
+                    assertThat(provider).isInstanceOf(com.recsys.infrastructure.featureflags.providers.CompositeFeatureFlagProvider.class);
                 });
     }
 

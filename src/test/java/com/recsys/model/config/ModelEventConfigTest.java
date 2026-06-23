@@ -1,7 +1,7 @@
 package com.recsys.model.config;
 
-import com.recsys.online.event.AsyncEventPublisher;
-import com.recsys.online.event.KafkaAsyncEventPublisher;
+import com.recsys.infrastructure.messaging.AsyncEventPublisher;
+import com.recsys.infrastructure.messaging.KafkaAsyncEventPublisher;
 import org.junit.jupiter.api.Test;
 
 import static org.assertj.core.api.Assertions.assertThat;

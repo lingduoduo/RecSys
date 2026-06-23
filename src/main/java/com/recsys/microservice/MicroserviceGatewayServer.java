@@ -1,4 +1,5 @@
 package com.recsys.microservice;
+import com.recsys.infrastructure.cache.LlmResponseCache;
 
 import com.linecorp.armeria.server.Server;
 import com.linecorp.armeria.server.ServerBuilder;

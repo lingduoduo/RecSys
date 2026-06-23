@@ -1,8 +1,8 @@
 package com.recsys.model.service;
 
 import com.recsys.domain.item.MovieCandidate;
-import com.recsys.featureflags.FeatureFlagService;
-import com.recsys.featureflags.Flags;
+import com.recsys.infrastructure.featureflags.FeatureFlagService;
+import com.recsys.infrastructure.featureflags.Flags;
 import com.recsys.config.RecommendationCacheProperties;
 import com.recsys.model.request.RecommendRequest;
 import com.recsys.model.response.RecommendResponse;
@@ -281,7 +281,7 @@ class RecommendationServiceTest {
         // Build the service with the mocked resolver via the full 6-arg constructor.
         RecommendationService svc = new RecommendationService(
                 modelRuntimeProvider, abTestService, new RecommendationCacheProperties(),
-                org.mockito.Mockito.mock(com.recsys.featureflags.FeatureFlagService.class),
+                org.mockito.Mockito.mock(com.recsys.infrastructure.featureflags.FeatureFlagService.class),
                 new com.recsys.model.converter.RecommendationConverter(), resolver);
 
         RecommendResponse response = svc.recommend(request("123", 5));

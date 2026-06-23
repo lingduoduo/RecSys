@@ -3,8 +3,8 @@ package com.recsys.service.retrieval.channels;
 import com.recsys.domain.item.Movie;
 import com.recsys.domain.item.MovieCandidate;
 import com.recsys.domain.recommendation.RecommendationQuery;
-import com.recsys.infrastructure.DataManager;
-import com.recsys.online.store.RecentHistoryStore;
+import com.recsys.infrastructure.dataloading.DataManager;
+import com.recsys.infrastructure.store.RecentHistoryStore;
 import org.junit.jupiter.api.Test;
 
 import java.util.List;

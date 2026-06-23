@@ -1,6 +1,6 @@
 package com.recsys.online.learner;
 
-import com.recsys.online.event.ExperienceCollector;
+import com.recsys.infrastructure.messaging.ExperienceCollector;
 import org.junit.jupiter.api.Test;
 
 import java.util.List;
