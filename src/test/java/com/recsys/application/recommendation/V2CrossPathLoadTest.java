@@ -1,4 +1,4 @@
-package com.recsys.service.recommendation;
+package com.recsys.application.recommendation;
 import com.recsys.application.recommendation.RecommendationOrchestrator;
 import com.recsys.application.recommendation.RecommendationPipeline;
 

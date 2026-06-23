@@ -28,24 +28,24 @@ docker-compose -f docker-compose.streaming.yml up
 
 | Service | Port | Entry point |
 |---|---|---|
-| RecSys Serving API | 6010 | `com.recsys.serving.RecSysServer` |
-| Model Serving (Spring Boot) | 8080 | `com.recsys.model.ModelApplication` |
-| Online Serving | 7010 | `com.recsys.online.serving.OnlinePredictionServer` |
-| API Gateway | 8010 | `com.recsys.microservice.MicroserviceGatewayServer` |
+| RecSys Serving API | 6010 | `com.recsys.api.serving.RecSysServer` |
+| Model Serving (Spring Boot) | 8080 | `com.recsys.api.rest.ModelApplication` |
+| Online Serving | 7010 | `com.recsys.api.online.OnlinePredictionServer` |
+| API Gateway | 8010 | `com.recsys.api.gateway.MicroserviceGatewayServer` |
 
 Run an individual service:
 ```bash
 # RecSys Serving API
-mvn exec:java -Dexec.mainClass=com.recsys.serving.RecSysServer
+mvn exec:java -Dexec.mainClass=com.recsys.api.serving.RecSysServer
 
 # Model Serving (Spring Boot / ONNX)
 mvn spring-boot:run
 
 # Online Serving
-mvn exec:java -Dexec.mainClass=com.recsys.online.serving.OnlinePredictionServer
+mvn exec:java -Dexec.mainClass=com.recsys.api.online.OnlinePredictionServer
 
 # API Gateway
-mvn exec:java -Dexec.mainClass=com.recsys.microservice.MicroserviceGatewayServer
+mvn exec:java -Dexec.mainClass=com.recsys.api.gateway.MicroserviceGatewayServer
 ```
 
 Key env vars: `REDIS_HOST`, `REDIS_PORT`, `PORT`/`ONLINE_DEMO_PORT`/`GATEWAY_PORT`, `SERVER_PORT`, `RECALL_CHANNEL_TIMEOUT_MS` (per-channel recall timeout for both serving ports; default 200).
@@ -64,19 +64,22 @@ The system demonstrates two recommendation paths:
 
 ## Package Map
 
-| Package | Responsibility |
-|---|---|
-| `serving/` | Jetty servlet handlers for the offline RecSys API |
-| `modelbased/` | Spring Boot ONNX model serving (controller → service → ONNX runtime) |
-| `online/` | Online feature store, learner, rate limiter, distributed lock (Redis), Jetty servlets |
-| `microservice/` | API gateway: proxy, circuit breaker, rate limiter, LLM proxy |
-| `features/` | Embedding stores (Redis, local heap, multi-level L1→L2→L3), LSH index, candidate generation |
-| `models/` | Shared domain DTOs (Movie, User, Rating) |
-| `saga/` | AWS Step Functions saga orchestration (SagaOrchestrator, TCC variant) |
-| `mysql/` | Thin MySQL client wrapper |
-| `pagination/` | Cursor-based SQL helpers for million-scale result sets |
+The code is organized into clean-architecture layers under `com.recsys`; the package
+advertises a class's *role*, not the service that uses it. Each layer has feature
+sub-packages.
 
-`streaming/flink/` and `training/rulebased/` are **excluded from the Maven compile** (they need Spark/Flink classpaths) — edit with that in mind.
+| Layer | Responsibility |
+|---|---|
+| `api/` | Transport / entry points: `serving` (offline Jetty), `online` (Jetty), `gateway` (Jetty), `rest` (Spring Boot app + controllers), `request`, `response`, `converter`, `envelope` |
+| `application/` | Use-case orchestration: `recommendation`, `retrieval` (recall channels/coldstart/multichannel), `ranking`, `feature`, `experiment` (A/B), `auth`, `model` (ONNX pipeline/artifacts), `online`, `gateway` (proxy/LLM-proxy), `knowledge`, `pagination`, `saga` |
+| `domain/` | Domain value types: `item`, `user`, `rating`, `recommendation`, `prediction`, `online`, `knowledge`, `saga` |
+| `infrastructure/` | Technical adapters: `redis` (+ `sharding`), `cache`, `vectordb`, `store`, `messaging`, `persistence` (MySQL), `lock`, `featureflags`, `dataloading`, `resilience` (bloom/hotkey/single-flight), `alb`, `autoscaling` |
+| `observability/` | Metrics, tracing aspect, JVM/GC monitors |
+| `reliability/` | Load shedding, circuit breaking, rate limiting, bulkheads, admission control, graceful shutdown |
+| `config/` | Spring config + `@ConfigurationProperties`, `EnvConfig`/`EnvVars`, `NeedLogin` |
+| `exception/` | Exception types + `GlobalExceptionHandler` (saga exceptions live in `domain/saga`) |
+
+`online/flink/` and `training/rulebased/` are **excluded from the Maven compile** (they need Spark/Flink classpaths) and are intentionally left outside the layer scheme — edit with that in mind.
 
 ## Redis Conventions
 

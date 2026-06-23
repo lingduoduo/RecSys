@@ -1,4 +1,4 @@
-package com.recsys.model.service;
+package com.recsys.api.rest;
 import com.recsys.application.experiment.ABTestService;
 import com.recsys.application.model.ModelArtifactLocator;
 import com.recsys.application.model.ModelRuntimeProvider;

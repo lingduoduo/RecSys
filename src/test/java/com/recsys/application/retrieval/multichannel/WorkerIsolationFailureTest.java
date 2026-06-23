@@ -1,4 +1,4 @@
-package com.recsys.service.retrieval.multichannel;
+package com.recsys.application.retrieval.multichannel;
 import com.recsys.application.retrieval.multichannel.ChannelHealthMonitor;
 import com.recsys.application.retrieval.multichannel.MultiChannelRecallService;
 
