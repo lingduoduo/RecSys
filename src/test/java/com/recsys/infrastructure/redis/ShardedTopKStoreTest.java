@@ -5,6 +5,7 @@ import org.junit.jupiter.api.BeforeEach;
 import org.junit.jupiter.api.Test;
 import redis.clients.jedis.Jedis;
 import redis.clients.jedis.JedisPool;
+import redis.clients.jedis.Pipeline;
 import redis.clients.jedis.util.Pool;
 
 import java.util.List;
@@ -24,6 +25,7 @@ class ShardedTopKStoreTest {
         jedis = mock(Jedis.class);
         pool  = mock(JedisPool.class);
         when(pool.getResource()).thenReturn(jedis);
+        when(jedis.pipelined()).thenReturn(mock(Pipeline.class));
     }
 
     // ── Key-shard naming ──────────────────────────────────────────────────────────
@@ -133,12 +135,16 @@ class ShardedTopKStoreTest {
         ShardedTopKStore store = new ShardedTopKStore(pool, pool, "topk:", 3, 5_000L, new HotKeyDetector());
         Map<String, Double> scores = Map.of("movie:1", 10.0, "movie:2", 8.0);
 
+        Pipeline pipe = mock(Pipeline.class);
+        when(jedis.pipelined()).thenReturn(pipe);
+
         store.seedAllShards("last_hour", scores);
 
-        verify(jedis).zadd("topk:last_hour:s0", scores);
-        verify(jedis).zadd("topk:last_hour:s1", scores);
-        verify(jedis).zadd("topk:last_hour:s2", scores);
-        verify(jedis).zadd("topk:last_hour", scores);
+        verify(pipe).zadd("topk:last_hour:s0", scores);
+        verify(pipe).zadd("topk:last_hour:s1", scores);
+        verify(pipe).zadd("topk:last_hour:s2", scores);
+        verify(pipe).zadd("topk:last_hour", scores);
+        verify(pipe).sync();
     }
 
     @Test

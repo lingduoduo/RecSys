@@ -5,6 +5,7 @@ import com.recsys.infrastructure.store.TrendingStore;
 import org.slf4j.Logger;
 import org.slf4j.LoggerFactory;
 import redis.clients.jedis.Jedis;
+import redis.clients.jedis.Pipeline;
 import redis.clients.jedis.util.Pool;
 
 import java.util.List;
@@ -189,18 +190,17 @@ public final class ShardedTopKStore implements TrendingStore {
      */
     public void seedAllShards(String window, Map<String, Double> memberScores) {
         if (memberScores == null || memberScores.isEmpty()) return;
-        for (int shard = 0; shard < shardCount; shard++) {
-            String key = shardKey(window, shard);
-            try (Jedis jedis = writePool.getResource()) {
-                jedis.zadd(key, memberScores);
-            } catch (Exception e) {
-                log.warn("Failed to seed shard {} for window {}: {}", shard, window, e.toString());
-            }
-        }
+        // Single pipelined round-trip: queue a ZADD for every shard plus the legacy key,
+        // then sync once (was N+1 sequential round-trips, one connection each).
         try (Jedis jedis = writePool.getResource()) {
-            jedis.zadd(legacyKey(window), memberScores);
+            Pipeline pipe = jedis.pipelined();
+            for (int shard = 0; shard < shardCount; shard++) {
+                pipe.zadd(shardKey(window, shard), memberScores);
+            }
+            pipe.zadd(legacyKey(window), memberScores);
+            pipe.sync();
         } catch (Exception e) {
-            log.warn("Failed to seed legacy top-K key for window {}: {}", window, e.toString());
+            log.warn("Failed to seed shards for window {}: {}", window, e.toString());
         }
         hotCache.remove(window); // invalidate so next read reflects new data
     }
