@@ -1,14 +1,16 @@
 package com.recsys.infrastructure.store;
 
+import com.github.benmanes.caffeine.cache.Cache;
+import com.github.benmanes.caffeine.cache.Caffeine;
 import org.slf4j.Logger;
 import org.slf4j.LoggerFactory;
 import redis.clients.jedis.Jedis;
 import redis.clients.jedis.util.Pool;
 
+import java.time.Duration;
 import java.util.ArrayList;
 import java.util.Collection;
 import java.util.HashMap;
-import java.util.Iterator;
 import java.util.LinkedHashMap;
 import java.util.LinkedHashSet;
 import java.util.List;
@@ -36,7 +38,6 @@ public final class OnlineFeatureStore implements RecentHistoryStore {
     private static final long DEFAULT_CACHE_TTL_MS = 5_000L;
     private static final long DEFAULT_STALE_TTL_MS = 60_000L;
     private static final int DEFAULT_MAX_CACHE_USERS = 10_000;
-    private static final long EVICT_INTERVAL_MS = 5_000L;
     private static final long REDIS_FETCH_TIMEOUT_MS = 2_000L;
 
     private final Pool<Jedis> pool;
@@ -44,10 +45,11 @@ public final class OnlineFeatureStore implements RecentHistoryStore {
     private final long staleTtlMs;
     private final int maxCacheUsers;
     private final int redisMgetBatchSize;
-    private final ConcurrentHashMap<String, CachedFeature> featureCache = new ConcurrentHashMap<>();
+    // Bounded Caffeine cache: maximumSize caps memory and expireAfterWrite(staleTtl) reclaims
+    // entries off the read path — replaces the former inline O(N) evictIfNeeded scan.
+    private final Cache<String, CachedFeature> featureCache;
     // Deduplicates concurrent cache misses for the same Redis feature key.
     private final ConcurrentHashMap<String, CompletableFuture<CachedFeature>> inflight = new ConcurrentHashMap<>();
-    private volatile long lastEvictMs = 0L;
 
     public OnlineFeatureStore(Pool<Jedis> pool) {
         this(pool, DEFAULT_CACHE_TTL_MS,
@@ -79,6 +81,11 @@ public final class OnlineFeatureStore implements RecentHistoryStore {
         this.staleTtlMs = Math.max(cacheTtlMs, staleTtlMs);
         this.maxCacheUsers = Math.max(1, maxCacheUsers);
         this.redisMgetBatchSize = Math.max(1, redisMgetBatchSize);
+        this.featureCache = Caffeine.newBuilder()
+                .maximumSize(this.maxCacheUsers)
+                .expireAfterWrite(Duration.ofMillis(this.staleTtlMs))
+                .executor(Runnable::run) // deterministic size; eviction off the read path
+                .build();
     }
 
     @Override
@@ -104,7 +111,7 @@ public final class OnlineFeatureStore implements RecentHistoryStore {
                 continue;
             }
             String key = redisKey.trim();
-            CachedFeature cached = featureCache.get(key);
+            CachedFeature cached = featureCache.getIfPresent(key);
             if (cached != null && cached.expiresAtMs > now) {
                 if (cached.value != null) {
                     result.put(key, cached.value);
@@ -121,13 +128,12 @@ public final class OnlineFeatureStore implements RecentHistoryStore {
         // Snapshot stale values before eviction so they cannot be removed before we read them.
         Map<String, String> staleByKey = new LinkedHashMap<>();
         for (String key : misses) {
-            CachedFeature cached = featureCache.get(key);
+            CachedFeature cached = featureCache.getIfPresent(key);
             if (cached != null && cached.staleExpiresAtMs() > now && cached.value() != null) {
                 staleByKey.put(key, cached.value());
             }
         }
 
-        evictIfNeeded(now);
 
         try {
             Map<String, CachedFeature> fetched = fetchFeaturesFromRedis(misses, now);
@@ -151,7 +157,7 @@ public final class OnlineFeatureStore implements RecentHistoryStore {
             return null;
         }
         String key = redisKey.trim();
-        CachedFeature cached = featureCache.get(key);
+        CachedFeature cached = featureCache.getIfPresent(key);
         if (cached != null && cached.expiresAtMs > now) {
             return cached;
         }
@@ -160,7 +166,6 @@ public final class OnlineFeatureStore implements RecentHistoryStore {
         CompletableFuture<CachedFeature> existing = inflight.putIfAbsent(key, myFuture);
         if (existing == null) {
             try {
-                evictIfNeeded(now);
                 CachedFeature fresh = fetchFeatureFromRedis(key, now);
                 featureCache.put(key, fresh);
                 myFuture.complete(fresh);
@@ -226,27 +231,8 @@ public final class OnlineFeatureStore implements RecentHistoryStore {
         return ids.subList(ids.size() - limit, ids.size());
     }
 
-    private void evictIfNeeded(long now) {
-        if (featureCache.size() < maxCacheUsers) return;
-        // Rate-limit eviction scans: a full O(N) removeIf on every miss is too expensive.
-        if (now - lastEvictMs < EVICT_INTERVAL_MS) return;
-        lastEvictMs = now;
-        // First pass: remove genuinely expired entries.
-        featureCache.entrySet().removeIf(entry -> entry.getValue().staleExpiresAtMs <= now);
-        // Second pass: if still over capacity, evict arbitrary live entries via an
-        // iterator — safe under concurrent modification, avoids Enumeration.nextElement()
-        // which can throw NoSuchElementException when the map is modified concurrently.
-        if (featureCache.size() >= maxCacheUsers) {
-            Iterator<String> it = featureCache.keySet().iterator();
-            while (featureCache.size() >= maxCacheUsers && it.hasNext()) {
-                it.next();
-                it.remove();
-            }
-        }
-    }
-
     public int cacheSize() {
-        return featureCache.size();
+        return (int) featureCache.estimatedSize();
     }
 
     private static int readIntEnv(String envName, int defaultValue) {
