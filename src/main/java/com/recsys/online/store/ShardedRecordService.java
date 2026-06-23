@@ -11,7 +11,7 @@ import com.linecorp.armeria.common.HttpRequest;
 import com.linecorp.armeria.common.HttpResponse;
 import com.linecorp.armeria.common.HttpStatus;
 import com.linecorp.armeria.server.ServiceRequestContext;
-import com.recsys.online.serving.ApiService;
+import com.recsys.serving.BaseApiService;
 
 import java.util.LinkedHashMap;
 import java.util.List;
@@ -25,7 +25,7 @@ import java.util.concurrent.CompletableFuture;
  * GET  /shards/device?deviceId=X    — per-device cursor read
  * GET  /shards/shard?index=N        — shard-level stream scan
  */
-public final class ShardedRecordService extends ApiService {
+public final class ShardedRecordService extends BaseApiService {
 
     private final ShardedRecordStore store;
 

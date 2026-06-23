@@ -117,7 +117,7 @@ public final class OnlinePredictionServer {
               .meterRegistry(registry)
               .decorator(MetricCollectingService.newDecorator(
                       MeterIdPrefixFunction.ofDefault("online_serving")))
-              .service("/health/live", new OnlineLiveService())
+              .service("/health/live", new OnlineServices.Live())
               .service("/health/ready",
                       new OnlineHealthService(metricsService, loadShedder))
               .service("/health",
@@ -136,7 +136,7 @@ public final class OnlinePredictionServer {
               .service("/online/ops",
                       new OnlineOpsService(metricsService, loadShedder, capacityService,
                               redisRateLimiter, asyncEventPublisher))
-              .service("/v2/recommend", new OnlineRecommendV2Service(blendingPipeline))
+              .service("/v2/recommend", new OnlineServices.RecommendV2(blendingPipeline))
               .service(Route.builder().pathPrefix("/shards/").build(),
                       new ShardedRecordService(shardedRecordStore));
 

@@ -10,11 +10,11 @@ import com.linecorp.armeria.common.ResponseHeaders;
 import com.linecorp.armeria.server.ServiceRequestContext;
 import com.recsys.online.event.AsyncEventPublisher;
 import com.recsys.online.redis.RedisRateLimiter;
-import com.recsys.online.serving.ApiService;
+import com.recsys.serving.BaseApiService;
 
 import java.time.Instant;
 
-public final class OnlineOpsService extends ApiService {
+public final class OnlineOpsService extends BaseApiService {
 
     private final OnlineServingMetricsService metricsService;
     private final OnlineLoadShedder loadShedder;

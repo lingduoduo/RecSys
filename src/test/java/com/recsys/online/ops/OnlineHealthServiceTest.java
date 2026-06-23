@@ -2,7 +2,7 @@ package com.recsys.online.ops;
 
 import com.linecorp.armeria.common.HttpStatus;
 import com.linecorp.armeria.server.ServerBuilder;
-import com.recsys.online.serving.OnlineLiveService;
+import com.recsys.online.serving.OnlineServices;
 import com.linecorp.armeria.testing.junit5.server.ServerExtension;
 import org.junit.jupiter.api.Test;
 import org.junit.jupiter.api.extension.RegisterExtension;
@@ -16,7 +16,7 @@ class OnlineHealthServiceTest {
     static final ServerExtension server = new ServerExtension() {
         @Override
         protected void configure(ServerBuilder sb) {
-            sb.service("/health/live", new OnlineLiveService())
+            sb.service("/health/live", new OnlineServices.Live())
               .service("/health/ready",
                       new OnlineHealthService(new OnlineServingMetricsService(), SHEDDER));
         }
