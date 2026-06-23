@@ -10,11 +10,14 @@ import org.slf4j.LoggerFactory;
 import java.util.Collection;
 import java.util.Collections;
 import java.util.HashMap;
-import java.util.LinkedHashMap;
 import java.util.LinkedHashSet;
 import java.util.Map;
 import java.util.Set;
 import java.util.concurrent.ConcurrentHashMap;
+
+import com.github.benmanes.caffeine.cache.Cache;
+import com.github.benmanes.caffeine.cache.Caffeine;
+import com.github.benmanes.caffeine.cache.stats.CacheStats;
 
 /**
  * JVM-heap cache (Tier 3) in front of a backing EmbeddingStore (Tier 2, typically Redis).
@@ -52,7 +55,7 @@ public class LocalEmbeddingCache implements EmbeddingStore {
 
     private final EmbeddingStore backingStore;
     private final int maxEntries;
-    private final Map<Integer, float[]> cache;
+    private final Cache<Integer, float[]> cache;
 
     // Cache penetration guard — Bloom filter: activated after warmUp/preload loads all valid IDs.
     private final BloomFilterGuard bloom;
@@ -74,12 +77,11 @@ public class LocalEmbeddingCache implements EmbeddingStore {
         this.backingStore = backingStore;
         this.maxEntries = Math.max(1, maxEntries);
         this.bloom = bloom;
-        this.cache = Collections.synchronizedMap(new LinkedHashMap<>(16, 0.75f, true) {
-            @Override
-            protected boolean removeEldestEntry(Map.Entry<Integer, float[]> eldest) {
-                return size() > LocalEmbeddingCache.this.maxEntries;
-            }
-        });
+        this.cache = Caffeine.newBuilder()
+                .maximumSize(this.maxEntries)
+                .recordStats()
+                .executor(Runnable::run) // synchronous maintenance -> deterministic size/stats
+                .build();
     }
 
     /**
@@ -120,10 +122,7 @@ public class LocalEmbeddingCache implements EmbeddingStore {
         Long nullExpiry = nullSentinels.get(id);
         if (nullExpiry != null && nullExpiry > System.currentTimeMillis()) return null;
 
-        float[] cached;
-        synchronized (cache) {
-            cached = cache.get(id);
-        }
+        float[] cached = cache.getIfPresent(id);
         if (cached != null) return cached;
 
         return missSingleFlight.execute(id, () -> loadMissingEmbedding(id));
@@ -133,18 +132,11 @@ public class LocalEmbeddingCache implements EmbeddingStore {
     public Map<Integer, float[]> getEmbeddings(Collection<Integer> ids) {
         if (ids == null || ids.isEmpty()) return Collections.emptyMap();
 
-        Map<Integer, float[]> result = new HashMap<>(ids.size() * 2);
+        Map<Integer, float[]> present = cache.getAllPresent(ids);
+        Map<Integer, float[]> result = new HashMap<>(present);
         Set<Integer> misses = new LinkedHashSet<>();
-
-        synchronized (cache) {
-            for (int id : ids) {
-                float[] cached = cache.get(id);
-                if (cached != null) {
-                    result.put(id, cached);
-                } else {
-                    misses.add(id);
-                }
-            }
+        for (int id : ids) {
+            if (!present.containsKey(id)) misses.add(id);
         }
 
         if (misses.isEmpty()) return result;
@@ -195,13 +187,15 @@ public class LocalEmbeddingCache implements EmbeddingStore {
     }
 
     public int cacheSize() {
-        synchronized (cache) {
-            return cache.size();
-        }
+        return (int) cache.estimatedSize();
     }
 
     public int maxEntries() {
         return maxEntries;
+    }
+
+    public CacheStats stats() {
+        return cache.stats();
     }
 
     boolean isBloomPopulated() { return bloomPopulated; }
@@ -213,10 +207,10 @@ public class LocalEmbeddingCache implements EmbeddingStore {
         long now = System.currentTimeMillis();
         if (nullExpiry != null && nullExpiry > now) return null;
 
-        synchronized (cache) {
-            float[] cached = cache.get(id);
-            if (cached != null) return cached;
-        }
+        // asMap().get bypasses stats recording so this single-flight double-check
+        // does not inflate the miss count (the primary getEmbedding read already recorded it).
+        float[] cached = cache.asMap().get(id);
+        if (cached != null) return cached;
 
         float[] fromStore = backingStore.getEmbedding(id);
         if (fromStore != null) {
@@ -231,15 +225,13 @@ public class LocalEmbeddingCache implements EmbeddingStore {
     // Bulk put without activating bloomPopulated (used by setEmbeddings — partial write).
     private void putAll(Map<Integer, float[]> embeddings) {
         if (embeddings == null || embeddings.isEmpty()) return;
-        synchronized (cache) {
-            embeddings.forEach((id, vec) -> {
-                if (id != null && vec != null) {
-                    cache.put(id, vec);
-                    bloom.add(id);
-                    nullSentinels.remove(id);
-                }
-            });
-        }
+        embeddings.forEach((id, vec) -> {
+            if (id != null && vec != null) {
+                cache.put(id, vec);
+                bloom.add(id);
+                nullSentinels.remove(id);
+            }
+        });
     }
 
     // Bulk put for a complete snapshot (warmUp/preload); caller sets bloomPopulated.
@@ -249,9 +241,7 @@ public class LocalEmbeddingCache implements EmbeddingStore {
 
     private void put(Integer id, float[] vector) {
         if (id == null || vector == null) return;
-        synchronized (cache) {
-            cache.put(id, vector);
-        }
+        cache.put(id, vector);
     }
 
     private static int readIntEnv(String envName, int defaultValue) {
