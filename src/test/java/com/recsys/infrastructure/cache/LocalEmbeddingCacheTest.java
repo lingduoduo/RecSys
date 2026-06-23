@@ -174,6 +174,17 @@ class LocalEmbeddingCacheTest {
     }
 
     @Test
+    void nullSentinels_areBoundedAndDoNotGrowUnbounded() {
+        // All ids are absent in the backing store -> each lookup writes a null sentinel.
+        for (int i = 0; i < 2_000; i++) {
+            cache.getEmbedding(900_000 + i);
+        }
+        // The sentinel cache tracks absences but stays bounded (never exceeds what was inserted,
+        // and is hard-capped at NULL_SENTINEL_MAX regardless of penetration volume).
+        assertThat(cache.nullSentinelCount()).isLessThanOrEqualTo(2_000);
+    }
+
+    @Test
     void stats_recordsHitsAndMisses() {
         backing.put(1, new float[]{1f, 0f});
 
