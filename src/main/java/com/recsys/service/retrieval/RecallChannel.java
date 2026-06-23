@@ -1,7 +1,7 @@
 package com.recsys.service.retrieval;
 
-import com.recsys.domain.MovieCandidate;
-import com.recsys.domain.RecommendationQuery;
+import com.recsys.domain.item.MovieCandidate;
+import com.recsys.domain.recommendation.RecommendationQuery;
 
 import java.util.List;
 

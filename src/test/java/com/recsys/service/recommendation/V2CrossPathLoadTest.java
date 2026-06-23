@@ -1,9 +1,9 @@
 package com.recsys.service.recommendation;
 
-import com.recsys.domain.Movie;
-import com.recsys.domain.RecommendationQuery;
-import com.recsys.domain.User;
-import com.recsys.model.dto.ScoredItem;
+import com.recsys.domain.item.Movie;
+import com.recsys.domain.recommendation.RecommendationQuery;
+import com.recsys.domain.user.User;
+import com.recsys.domain.prediction.ScoredItem;
 import com.recsys.model.response.RecommendResponse;
 import com.recsys.model.service.ABTestService;
 import com.recsys.model.service.OnnxInferencePipeline;

@@ -1,6 +1,6 @@
 package com.recsys.model.response;
 
-import com.recsys.model.dto.ScoredItem;
+import com.recsys.domain.prediction.ScoredItem;
 
 import java.util.List;
 

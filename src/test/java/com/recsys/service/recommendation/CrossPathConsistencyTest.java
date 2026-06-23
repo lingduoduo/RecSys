@@ -1,11 +1,11 @@
 package com.recsys.service.recommendation;
 
-import com.recsys.domain.Movie;
-import com.recsys.domain.RankedMovie;
-import com.recsys.domain.RecommendationQuery;
-import com.recsys.domain.RecommendationResult;
-import com.recsys.domain.User;
-import com.recsys.model.dto.ScoredItem;
+import com.recsys.domain.item.Movie;
+import com.recsys.domain.item.RankedMovie;
+import com.recsys.domain.recommendation.RecommendationQuery;
+import com.recsys.domain.recommendation.RecommendationResult;
+import com.recsys.domain.user.User;
+import com.recsys.domain.prediction.ScoredItem;
 import com.recsys.model.response.RecommendResponse;
 import com.recsys.model.service.ABTestService;
 import com.recsys.model.service.OnnxInferencePipeline;
@@ -41,7 +41,7 @@ class CrossPathConsistencyTest {
         CandidateRanker ranker = mock(CandidateRanker.class);
         CursorPaginationService pagination = mock(CursorPaginationService.class);
         RankedMovie rm = new RankedMovie("10", 0.9, 1, Map.of());
-        when(recall.recall(any(), anyInt())).thenReturn(List.of(mock(com.recsys.domain.MovieCandidate.class)));
+        when(recall.recall(any(), anyInt())).thenReturn(List.of(mock(com.recsys.domain.item.MovieCandidate.class)));
         when(ranker.rank(any(), any(), anyInt())).thenReturn(List.of(rm));
         when(pagination.page(any(), any(), anyInt())).thenReturn(new Page<>(List.of(rm), null));
         RecommendationPipeline path1 = new RecommendationOrchestrator(

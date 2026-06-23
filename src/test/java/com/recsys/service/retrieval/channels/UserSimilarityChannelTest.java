@@ -1,8 +1,8 @@
 package com.recsys.service.retrieval.channels;
 
-import com.recsys.domain.MovieCandidate;
-import com.recsys.domain.Rating;
-import com.recsys.domain.RecommendationQuery;
+import com.recsys.domain.item.MovieCandidate;
+import com.recsys.domain.rating.Rating;
+import com.recsys.domain.recommendation.RecommendationQuery;
 import com.recsys.infrastructure.DataManager;
 import org.junit.jupiter.api.Test;
 

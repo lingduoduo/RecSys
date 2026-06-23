@@ -1,9 +1,9 @@
 package com.recsys.service.recommendation;
 
-import com.recsys.domain.MovieCandidate;
-import com.recsys.domain.RankedMovie;
-import com.recsys.domain.RecommendationQuery;
-import com.recsys.domain.RecommendationResult;
+import com.recsys.domain.item.MovieCandidate;
+import com.recsys.domain.item.RankedMovie;
+import com.recsys.domain.recommendation.RecommendationQuery;
+import com.recsys.domain.recommendation.RecommendationResult;
 import com.recsys.service.hydrator.RecommendationHydrator;
 import com.recsys.service.pagination.CursorPaginationService;
 import com.recsys.service.pagination.Page;

@@ -1,4 +1,4 @@
-package com.recsys.domain;
+package com.recsys.domain.item;
 
 import java.util.List;
 

@@ -4,7 +4,7 @@ import com.linecorp.armeria.common.AggregatedHttpResponse;
 import com.linecorp.armeria.common.HttpStatus;
 import com.linecorp.armeria.server.ServerBuilder;
 import com.linecorp.armeria.testing.junit5.server.ServerExtension;
-import com.recsys.domain.Movie;
+import com.recsys.domain.item.Movie;
 import com.recsys.infrastructure.DataManager;
 import com.recsys.service.retrieval.multichannel.MultiChannelRecallService;
 import org.junit.jupiter.api.Test;
@@ -29,7 +29,7 @@ class RecSysServerRegressionTest {
 
     static {
         when(mockData.getUserById(anyInt()))
-                .thenReturn(new com.recsys.domain.User(1, "Alice"));
+                .thenReturn(new com.recsys.domain.user.User(1, "Alice"));
         when(mockData.getUserById(999)).thenReturn(null);
         when(mockData.getMovieById(anyInt()))
                 .thenReturn(new Movie(1, "Test Movie", 2020, List.of("Action")));

@@ -1,12 +1,12 @@
 package com.recsys.model.service;
 
-import com.recsys.domain.MovieCandidate;
+import com.recsys.domain.item.MovieCandidate;
 import com.recsys.featureflags.FeatureFlagService;
 import com.recsys.featureflags.Flags;
 import com.recsys.config.RecommendationCacheProperties;
 import com.recsys.model.request.RecommendRequest;
 import com.recsys.model.response.RecommendResponse;
-import com.recsys.model.dto.ScoredItem;
+import com.recsys.domain.prediction.ScoredItem;
 import org.junit.jupiter.api.BeforeEach;
 import org.junit.jupiter.api.Test;
 
@@ -181,7 +181,7 @@ class RecommendationServiceTest {
         service.recommend(req);
 
         // The excludedItemIds set is forwarded in the RecommendationQuery to the retrievalStage
-        var captor = org.mockito.ArgumentCaptor.forClass(com.recsys.domain.RecommendationQuery.class);
+        var captor = org.mockito.ArgumentCaptor.forClass(com.recsys.domain.recommendation.RecommendationQuery.class);
         verify(retrievalStage).retrieve(captor.capture(), anyInt());
         assertThat(captor.getValue().excludedItemIds()).contains("2", "5");
     }

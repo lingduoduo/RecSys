@@ -2,8 +2,8 @@ package com.recsys.infrastructure.vectordb;
 
 import com.recsys.infrastructure.DataLoader;
 import com.recsys.infrastructure.DataManager;
-import com.recsys.domain.Movie;
-import com.recsys.domain.Rating;
+import com.recsys.domain.item.Movie;
+import com.recsys.domain.rating.Rating;
 
 import org.slf4j.Logger;
 import org.slf4j.LoggerFactory;

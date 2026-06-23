@@ -1,8 +1,8 @@
 package com.recsys.service.retrieval.multichannel;
 
-import com.recsys.domain.MovieCandidate;
-import com.recsys.domain.RecommendationQuery;
-import com.recsys.domain.User;
+import com.recsys.domain.item.MovieCandidate;
+import com.recsys.domain.recommendation.RecommendationQuery;
+import com.recsys.domain.user.User;
 import com.recsys.infrastructure.DataLoader;
 import com.recsys.infrastructure.vectordb.EmbeddingStore;
 import com.recsys.online.ops.FaultInjector;

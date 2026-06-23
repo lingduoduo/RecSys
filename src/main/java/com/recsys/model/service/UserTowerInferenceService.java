@@ -8,7 +8,7 @@ import java.util.List;
 import java.util.Map;
 import java.util.PriorityQueue;
 import java.util.Set;
-import com.recsys.model.dto.ScoredItem;
+import com.recsys.domain.prediction.ScoredItem;
 
 public class UserTowerInferenceService {
 

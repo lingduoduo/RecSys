@@ -5,8 +5,8 @@ import com.linecorp.armeria.common.HttpResponse;
 import com.linecorp.armeria.common.HttpStatus;
 import com.linecorp.armeria.server.ServiceRequestContext;
 import com.recsys.infrastructure.DataManager;
-import com.recsys.domain.Movie;
-import com.recsys.domain.User;
+import com.recsys.domain.item.Movie;
+import com.recsys.domain.user.User;
 
 import java.util.concurrent.CompletableFuture;
 

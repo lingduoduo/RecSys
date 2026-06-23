@@ -18,7 +18,7 @@ import com.recsys.infrastructure.redis.sharding.ShardedRecord;
 import com.recsys.infrastructure.redis.sharding.ShardedRecordStore;
 import com.recsys.infrastructure.redis.sharding.WriteResult;
 import com.recsys.infrastructure.redis.sharding.WriteStatus;
-import com.recsys.domain.User;
+import com.recsys.domain.user.User;
 import com.recsys.online.ops.OnlineAdmissionControl;
 import com.recsys.online.ops.OnlineCapacityService;
 import com.recsys.online.ops.OnlineHealthService;

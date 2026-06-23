@@ -1,7 +1,7 @@
 package com.recsys.model.controller;
 
-import com.recsys.domain.RecommendationQuery;
-import com.recsys.domain.RecommendationResult;
+import com.recsys.domain.recommendation.RecommendationQuery;
+import com.recsys.domain.recommendation.RecommendationResult;
 import com.recsys.model.service.ABTestService;
 import com.recsys.model.service.OnnxInferencePipeline;
 import com.recsys.model.service.RecommendationService;

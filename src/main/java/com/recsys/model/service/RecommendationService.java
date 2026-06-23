@@ -1,14 +1,14 @@
 package com.recsys.model.service;
 
-import com.recsys.domain.MovieCandidate;
-import com.recsys.domain.RecommendationQuery;
+import com.recsys.domain.item.MovieCandidate;
+import com.recsys.domain.recommendation.RecommendationQuery;
 import com.recsys.featureflags.FeatureFlagService;
 import com.recsys.featureflags.Flags;
 import com.recsys.config.RecommendationCacheProperties;
 import com.recsys.model.converter.RecommendationConverter;
 import com.recsys.model.request.RecommendRequest;
 import com.recsys.model.response.RecommendResponse;
-import com.recsys.model.dto.ScoredItem;
+import com.recsys.domain.prediction.ScoredItem;
 import io.micrometer.core.instrument.simple.SimpleMeterRegistry;
 import org.springframework.beans.factory.annotation.Autowired;
 import org.springframework.stereotype.Service;

@@ -1,4 +1,4 @@
-package com.recsys.domain;
+package com.recsys.domain.prediction;
 
 import java.util.List;
 

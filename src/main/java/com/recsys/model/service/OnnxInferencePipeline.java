@@ -1,9 +1,9 @@
 package com.recsys.model.service;
 
-import com.recsys.domain.RankedMovie;
-import com.recsys.domain.RecommendationQuery;
-import com.recsys.domain.RecommendationResult;
-import com.recsys.model.dto.ScoredItem;
+import com.recsys.domain.item.RankedMovie;
+import com.recsys.domain.recommendation.RecommendationQuery;
+import com.recsys.domain.recommendation.RecommendationResult;
+import com.recsys.domain.prediction.ScoredItem;
 import com.recsys.model.request.RecommendRequest;
 import com.recsys.model.response.RecommendResponse;
 import com.recsys.service.recommendation.RecommendationPipeline;

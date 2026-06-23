@@ -1,3 +1,3 @@
-package com.recsys.model.dto;
+package com.recsys.domain.prediction;
 
 public record ScoredItem(String itemId, double score) {}

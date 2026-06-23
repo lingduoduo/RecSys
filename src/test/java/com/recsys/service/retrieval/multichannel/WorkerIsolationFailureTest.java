@@ -1,7 +1,7 @@
 package com.recsys.service.retrieval.multichannel;
 
-import com.recsys.domain.MovieCandidate;
-import com.recsys.domain.RecommendationQuery;
+import com.recsys.domain.item.MovieCandidate;
+import com.recsys.domain.recommendation.RecommendationQuery;
 import com.recsys.online.ops.FaultInjector;
 import com.recsys.online.ops.WorkerBulkhead;
 import com.recsys.service.retrieval.RecallChannel;

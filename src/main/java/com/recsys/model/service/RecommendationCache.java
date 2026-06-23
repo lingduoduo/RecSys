@@ -1,7 +1,7 @@
 package com.recsys.model.service;
 
 import com.recsys.config.RecommendationCacheProperties;
-import com.recsys.model.dto.ScoredItem;
+import com.recsys.domain.prediction.ScoredItem;
 
 import java.time.Clock;
 import java.util.LinkedHashMap;

@@ -1,9 +1,9 @@
 package com.recsys.online.serving;
 
-import com.recsys.domain.Movie;
-import com.recsys.domain.RankedMovie;
-import com.recsys.domain.RecommendationQuery;
-import com.recsys.domain.RecommendationResult;
+import com.recsys.domain.item.Movie;
+import com.recsys.domain.item.RankedMovie;
+import com.recsys.domain.recommendation.RecommendationQuery;
+import com.recsys.domain.recommendation.RecommendationResult;
 import com.recsys.service.recommendation.RecommendationPipeline;
 
 import java.util.ArrayList;

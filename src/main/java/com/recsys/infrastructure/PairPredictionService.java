@@ -1,7 +1,7 @@
 package com.recsys.infrastructure;
 
 import com.recsys.infrastructure.vectordb.VectorMath;
-import com.recsys.domain.PredictInstance;
+import com.recsys.domain.prediction.PredictInstance;
 
 import java.util.ArrayList;
 import java.util.List;

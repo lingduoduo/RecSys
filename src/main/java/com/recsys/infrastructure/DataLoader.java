@@ -1,9 +1,9 @@
 package com.recsys.infrastructure;
 
 import com.recsys.infrastructure.vectordb.VectorMath;
-import com.recsys.domain.Movie;
-import com.recsys.domain.Rating;
-import com.recsys.domain.User;
+import com.recsys.domain.item.Movie;
+import com.recsys.domain.rating.Rating;
+import com.recsys.domain.user.User;
 
 import java.io.BufferedReader;
 import java.io.IOException;

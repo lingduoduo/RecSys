@@ -1,9 +1,9 @@
 package com.recsys.online.serving;
 
-import com.recsys.domain.Movie;
-import com.recsys.domain.RecommendationQuery;
-import com.recsys.domain.RecommendationResult;
-import com.recsys.domain.User;
+import com.recsys.domain.item.Movie;
+import com.recsys.domain.recommendation.RecommendationQuery;
+import com.recsys.domain.recommendation.RecommendationResult;
+import com.recsys.domain.user.User;
 import org.junit.jupiter.api.Test;
 
 import java.util.List;

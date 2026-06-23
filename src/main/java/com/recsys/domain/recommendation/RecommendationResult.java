@@ -1,6 +1,6 @@
-package com.recsys.domain;
+package com.recsys.domain.recommendation;
 
-import com.recsys.domain.RankedMovie;
+import com.recsys.domain.item.RankedMovie;
 import java.util.List;
 import java.util.Map;
 

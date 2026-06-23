@@ -1,6 +1,6 @@
 package com.recsys.model.converter;
 
-import com.recsys.model.dto.ScoredItem;
+import com.recsys.domain.prediction.ScoredItem;
 import com.recsys.model.request.RecommendRequest;
 import com.recsys.model.response.RecommendResponse;
 import org.springframework.stereotype.Component;

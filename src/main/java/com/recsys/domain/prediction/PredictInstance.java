@@ -1,4 +1,4 @@
-package com.recsys.domain;
+package com.recsys.domain.prediction;
 
 public class PredictInstance {
     private int userId;

@@ -1,6 +1,6 @@
 package com.recsys.model.service;
 
-import com.recsys.model.dto.ScoredItem;
+import com.recsys.domain.prediction.ScoredItem;
 
 import java.util.ArrayList;
 import java.util.Comparator;

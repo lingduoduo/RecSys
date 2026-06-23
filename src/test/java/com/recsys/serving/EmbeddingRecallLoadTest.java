@@ -1,6 +1,6 @@
 package com.recsys.serving;
 
-import com.recsys.domain.RecommendationQuery;
+import com.recsys.domain.recommendation.RecommendationQuery;
 import com.recsys.service.hydrator.RecommendationHydrator;
 import com.recsys.service.pagination.CursorPaginationService;
 import com.recsys.service.pagination.Page;

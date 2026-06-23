@@ -7,7 +7,7 @@ import com.linecorp.armeria.server.ServerBuilder;
 import com.linecorp.armeria.testing.junit5.server.ServerExtension;
 import com.recsys.infrastructure.redis.sharding.Page;
 import com.recsys.infrastructure.redis.sharding.ShardedRecordStore;
-import com.recsys.domain.User;
+import com.recsys.domain.user.User;
 import com.recsys.online.ops.OnlineAdmissionControl;
 import com.recsys.online.ops.OnlineCapacityService;
 import com.recsys.online.ops.OnlineLoadShedder;

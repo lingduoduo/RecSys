@@ -1,8 +1,8 @@
 package com.recsys.model.service;
 
 import com.recsys.infrastructure.DataManager;
-import com.recsys.domain.Movie;
-import com.recsys.domain.Rating;
+import com.recsys.domain.item.Movie;
+import com.recsys.domain.rating.Rating;
 import java.util.HashSet;
 import java.util.LinkedHashSet;
 import java.util.List;

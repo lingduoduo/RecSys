@@ -1,9 +1,9 @@
 package com.recsys.online.serving;
 
-import com.recsys.domain.Movie;
-import com.recsys.domain.MovieCandidate;
-import com.recsys.domain.RecommendationQuery;
-import com.recsys.domain.User;
+import com.recsys.domain.item.Movie;
+import com.recsys.domain.item.MovieCandidate;
+import com.recsys.domain.recommendation.RecommendationQuery;
+import com.recsys.domain.user.User;
 import com.recsys.infrastructure.DataManager;
 import com.recsys.online.event.ExperienceCollector;
 import com.recsys.online.learner.OnlineLearner;

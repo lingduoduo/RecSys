@@ -7,11 +7,11 @@ import com.linecorp.armeria.server.ServiceRequestContext;
 import com.recsys.infrastructure.DataManager;
 import com.recsys.infrastructure.vectordb.EmbeddingStore;
 import com.recsys.infrastructure.vectordb.ExactVectorIndex;
-import com.recsys.domain.Movie;
-import com.recsys.domain.MovieCandidate;
-import com.recsys.domain.RecommendationQuery;
-import com.recsys.domain.RecommendationResponse;
-import com.recsys.domain.User;
+import com.recsys.domain.item.Movie;
+import com.recsys.domain.item.MovieCandidate;
+import com.recsys.domain.recommendation.RecommendationQuery;
+import com.recsys.domain.recommendation.RecommendationResponse;
+import com.recsys.domain.user.User;
 import com.recsys.service.recommendation.RecommendationPipeline;
 import com.recsys.service.retrieval.multichannel.MultiChannelRecallService;
 

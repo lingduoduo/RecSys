@@ -1,7 +1,7 @@
 package com.recsys.model.service;
 
-import com.recsys.domain.MovieCandidate;
-import com.recsys.model.dto.ScoredItem;
+import com.recsys.domain.item.MovieCandidate;
+import com.recsys.domain.prediction.ScoredItem;
 import org.junit.jupiter.api.Test;
 
 import java.util.List;
