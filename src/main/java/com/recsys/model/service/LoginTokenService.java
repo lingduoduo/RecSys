@@ -1,7 +1,7 @@
 package com.recsys.model.service;
 
 import com.recsys.infrastructure.redis.RedisConnectionFactory;
-import com.recsys.model.exception.UnauthorizedException;
+import com.recsys.exception.UnauthorizedException;
 import jakarta.annotation.PreDestroy;
 import org.springframework.stereotype.Service;
 import redis.clients.jedis.Jedis;

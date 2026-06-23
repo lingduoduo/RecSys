@@ -4,7 +4,7 @@ import com.recsys.annotation.NeedLogin;
 import com.recsys.config.LoginProperties;
 import com.recsys.config.RequestScopeData;
 import com.recsys.model.dto.ApiResponse;
-import com.recsys.model.exception.UnauthorizedException;
+import com.recsys.exception.UnauthorizedException;
 import com.recsys.model.request.LoginRequest;
 import com.recsys.model.response.LoginResponse;
 import com.recsys.model.service.LoginTokenService;

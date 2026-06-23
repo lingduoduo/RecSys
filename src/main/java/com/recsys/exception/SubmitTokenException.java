@@ -1,4 +1,4 @@
-package com.recsys.model.exception;
+package com.recsys.exception;
 
 public class SubmitTokenException extends RuntimeException {
     public SubmitTokenException(String message) {

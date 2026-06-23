@@ -1,7 +1,7 @@
 package com.recsys.model.controller;
 
 import com.fasterxml.jackson.databind.ObjectMapper;
-import com.recsys.config.GlobalExceptionHandler;
+import com.recsys.exception.GlobalExceptionHandler;
 import com.recsys.config.RequestScopeData;
 import com.recsys.model.request.RecommendRequest;
 import com.recsys.model.response.RecommendResponse;
@@ -12,7 +12,7 @@ import com.recsys.model.service.InferenceMetricsService;
 import com.recsys.model.service.LoadShedder;
 import com.recsys.model.service.ModelRateLimiter;
 import com.recsys.model.service.RecommendationService;
-import com.recsys.model.exception.SubmitTokenException;
+import com.recsys.exception.SubmitTokenException;
 import com.recsys.model.service.LoginTokenService;
 import com.recsys.model.service.SubmitTokenService;
 

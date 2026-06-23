@@ -2,7 +2,7 @@ package com.recsys.service.recommendation;
 
 import com.recsys.domain.recommendation.RecommendationQuery;
 import com.recsys.domain.recommendation.RecommendationResult;
-import com.recsys.model.exception.PipelineNotImplementedException;
+import com.recsys.exception.PipelineNotImplementedException;
 
 public final class SequentialRecommendationPipeline implements RecommendationPipeline {
 

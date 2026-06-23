@@ -1,7 +1,7 @@
 package com.recsys.model.service;
 
 import com.recsys.config.SubmitTokenProperties;
-import com.recsys.model.exception.SubmitTokenException;
+import com.recsys.exception.SubmitTokenException;
 import org.junit.jupiter.api.Test;
 import redis.clients.jedis.Jedis;
 import redis.clients.jedis.JedisPool;

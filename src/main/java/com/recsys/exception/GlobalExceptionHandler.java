@@ -1,11 +1,11 @@
-package com.recsys.config;
+package com.recsys.exception;
 
 import com.recsys.model.dto.ApiError;
-import com.recsys.model.exception.PipelineNotImplementedException;
-import com.recsys.model.exception.RateLimitExceededException;
-import com.recsys.model.exception.ServiceOverloadedException;
-import com.recsys.model.exception.SubmitTokenException;
-import com.recsys.model.exception.UnauthorizedException;
+import com.recsys.exception.PipelineNotImplementedException;
+import com.recsys.exception.RateLimitExceededException;
+import com.recsys.exception.ServiceOverloadedException;
+import com.recsys.exception.SubmitTokenException;
+import com.recsys.exception.UnauthorizedException;
 import org.slf4j.Logger;
 import org.slf4j.LoggerFactory;
 import org.springframework.http.HttpHeaders;

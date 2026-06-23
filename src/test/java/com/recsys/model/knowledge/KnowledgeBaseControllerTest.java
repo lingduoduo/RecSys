@@ -1,7 +1,7 @@
 package com.recsys.model.knowledge;
 
 import com.fasterxml.jackson.databind.ObjectMapper;
-import com.recsys.config.GlobalExceptionHandler;
+import com.recsys.exception.GlobalExceptionHandler;
 import com.recsys.config.RequestScopeData;
 import com.recsys.model.service.LoginTokenService;
 import org.junit.jupiter.api.Test;

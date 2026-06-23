@@ -1,7 +1,7 @@
 package com.recsys.service.recommendation;
 
 import com.recsys.domain.recommendation.RecommendationQuery;
-import com.recsys.model.exception.PipelineNotImplementedException;
+import com.recsys.exception.PipelineNotImplementedException;
 import org.junit.jupiter.api.Test;
 
 import java.util.Set;

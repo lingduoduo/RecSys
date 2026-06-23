@@ -1,6 +1,6 @@
 package com.recsys.model.controller;
 
-import com.recsys.config.GlobalExceptionHandler;
+import com.recsys.exception.GlobalExceptionHandler;
 import com.recsys.config.RequestScopeData;
 import com.recsys.model.response.ModelVersionResponse;
 import com.recsys.model.service.LoginTokenService;
