@@ -142,4 +142,11 @@ class RedisConnectionFactoryTest {
         assertThrows(Exception.class,
             () -> RedisConnectionFactory.create(env, noIdleConfig()));
     }
+
+    @Test
+    void defaultPoolConfig_enablesIdleConnectionValidation() {
+        GenericObjectPoolConfig<Jedis> cfg = RedisConnectionFactory.defaultPoolConfig(Map.of());
+        assertTrue(cfg.getTestWhileIdle(), "idle connections should be validated by the eviction sweep");
+        assertEquals(-1, cfg.getNumTestsPerEvictionRun(), "every idle connection should be tested per sweep");
+    }
 }

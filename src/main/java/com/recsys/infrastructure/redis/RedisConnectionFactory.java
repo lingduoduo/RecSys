@@ -214,6 +214,7 @@ public final class RedisConnectionFactory {
         cfg.setTestOnBorrow(pool.isTestOnBorrow());
         cfg.setBlockWhenExhausted(true);
         cfg.setMaxWait(java.time.Duration.ofMillis(pool.getMaxWaitMs()));
+        applyIdleValidation(cfg);
         return cfg;
     }
 
@@ -226,7 +227,20 @@ public final class RedisConnectionFactory {
         cfg.setBlockWhenExhausted(true);
         cfg.setMaxWait(java.time.Duration.ofMillis(
                 readPositiveInt(env, "REDIS_POOL_MAX_WAIT_MS", DEFAULT_MAX_WAIT_MS)));
+        applyIdleValidation(cfg);
         return cfg;
+    }
+
+    // Validate idle connections in the background so a connection idle past a server-side
+    // timeout is evicted/revalidated before it is handed to a caller on the hot path.
+    private static final long DEFAULT_EVICTION_RUN_MS = 30_000L;
+    private static final long DEFAULT_MIN_EVICTABLE_IDLE_MS = 60_000L;
+
+    private static void applyIdleValidation(GenericObjectPoolConfig<Jedis> cfg) {
+        cfg.setTestWhileIdle(true);
+        cfg.setNumTestsPerEvictionRun(-1); // test every idle connection per sweep
+        cfg.setTimeBetweenEvictionRuns(java.time.Duration.ofMillis(DEFAULT_EVICTION_RUN_MS));
+        cfg.setMinEvictableIdleDuration(java.time.Duration.ofMillis(DEFAULT_MIN_EVICTABLE_IDLE_MS));
     }
 
     private static int readPositiveInt(Map<String, String> env, String name, int defaultValue) {
