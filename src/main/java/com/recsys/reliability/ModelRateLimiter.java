@@ -1,5 +1,6 @@
 package com.recsys.reliability;
 
+import com.recsys.application.model.Strings;
 import org.springframework.beans.factory.annotation.Autowired;
 import org.springframework.beans.factory.annotation.Value;
 import org.springframework.stereotype.Component;
@@ -76,8 +77,7 @@ public class ModelRateLimiter {
     }
 
     private static String normalizeUserId(String userId) {
-        if (userId == null || userId.isBlank()) return "_anonymous";
-        return userId.trim();
+        return Strings.orDefault(userId, "_anonymous");
     }
 
     public record Decision(boolean allowed, int limit, int remaining, Duration retryAfter) {

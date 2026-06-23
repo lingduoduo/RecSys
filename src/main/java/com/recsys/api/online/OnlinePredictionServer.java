@@ -1,7 +1,6 @@
 package com.recsys.api.online;
+
 import com.recsys.application.online.OnlineServices;
-import com.recsys.application.online.OnlineLiveService;
-import com.recsys.application.online.OnlineRecommendV2Service;
 import com.recsys.application.online.OnlineBlendingPipeline;
 import com.recsys.application.online.OnlineRecommendationService;
 import com.recsys.observability.OnlineServingMetricsService;
@@ -34,7 +33,6 @@ import com.recsys.reliability.OnlineCapacityService;
 import com.recsys.reliability.OnlineHealthService;
 import com.recsys.reliability.OnlineLoadShedder;
 import com.recsys.reliability.OnlineOpsService;
-import com.recsys.observability.OnlineServingMetricsService;
 import com.recsys.infrastructure.store.ShardedRecordService;
 import com.recsys.reliability.RedisRateLimiter;
 import com.recsys.infrastructure.store.OnlineFeatureStore;
@@ -123,7 +121,7 @@ public final class OnlinePredictionServer {
               .meterRegistry(registry)
               .decorator(MetricCollectingService.newDecorator(
                       MeterIdPrefixFunction.ofDefault("online_serving")))
-              .service("/health/live", new OnlineLiveService())
+              .service("/health/live", new OnlineServices.Live())
               .service("/health/ready",
                       new OnlineHealthService(metricsService, loadShedder))
               .service("/health",
@@ -142,7 +140,7 @@ public final class OnlinePredictionServer {
               .service("/online/ops",
                       new OnlineOpsService(metricsService, loadShedder, capacityService,
                               redisRateLimiter, asyncEventPublisher))
-              .service("/v2/recommend", new OnlineRecommendV2Service(blendingPipeline))
+              .service("/v2/recommend", new OnlineServices.RecommendV2(blendingPipeline))
               .service(Route.builder().pathPrefix("/shards/").build(),
                       new ShardedRecordService(shardedRecordStore));
 

@@ -1,6 +1,7 @@
 package com.recsys.api.online;
-import com.recsys.application.online.OnlineRecommendV2Service;
+
 import com.recsys.application.online.OnlineBlendingPipeline;
+import com.recsys.application.online.OnlineServices;
 import com.recsys.domain.online.OnlineRecommendationResult;
 import com.recsys.application.online.OnlineRecommendationService;
 
@@ -48,7 +49,7 @@ class OnlineV2RecommendIntegrationTest {
         @Override
         protected void configure(ServerBuilder sb) {
             RecommendationPipeline pipeline = new OnlineBlendingPipeline(mockService);
-            sb.service("/v2/recommend", new OnlineRecommendV2Service(pipeline));
+            sb.service("/v2/recommend", new OnlineServices.RecommendV2(pipeline));
         }
     };
 

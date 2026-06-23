@@ -1,4 +1,7 @@
 package com.recsys.reliability;
+
+import com.recsys.api.serving.BaseApiService;
+import com.recsys.infrastructure.messaging.AsyncEventPublisher;
 import com.recsys.observability.OnlineServingMetricsService;
 
 import com.linecorp.armeria.common.HttpData;
@@ -9,13 +12,10 @@ import com.linecorp.armeria.common.HttpStatus;
 import com.linecorp.armeria.common.MediaType;
 import com.linecorp.armeria.common.ResponseHeaders;
 import com.linecorp.armeria.server.ServiceRequestContext;
-import com.recsys.infrastructure.messaging.AsyncEventPublisher;
-import com.recsys.reliability.RedisRateLimiter;
-import com.recsys.api.online.ApiService;
 
 import java.time.Instant;
 
-public final class OnlineOpsService extends ApiService {
+public final class OnlineOpsService extends BaseApiService {
 
     private final OnlineServingMetricsService metricsService;
     private final OnlineLoadShedder loadShedder;

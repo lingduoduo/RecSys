@@ -1,6 +1,6 @@
 package com.recsys.api.online;
+
 import com.recsys.application.online.OnlineServices;
-import com.recsys.application.online.OnlineLiveService;
 import com.recsys.domain.online.OnlineRecommendationResult;
 import com.recsys.application.online.OnlineRecommendationService;
 import com.recsys.observability.OnlineServingMetricsService;
@@ -29,7 +29,6 @@ import com.recsys.reliability.OnlineCapacityService;
 import com.recsys.reliability.OnlineHealthService;
 import com.recsys.reliability.OnlineLoadShedder;
 import com.recsys.reliability.OnlineOpsService;
-import com.recsys.observability.OnlineServingMetricsService;
 import com.recsys.reliability.RedisRateLimiter;
 import com.recsys.infrastructure.store.ShardedRecordService;
 import org.junit.jupiter.api.Test;
@@ -69,7 +68,7 @@ class OnlinePredictionServerIntegrationTest {
             OnlineLoadShedder shedder = new OnlineLoadShedder();
             OnlineCapacityService capacity = new OnlineCapacityService();
 
-            sb.service("/health/live", new OnlineLiveService())
+            sb.service("/health/live", new OnlineServices.Live())
               .service("/health/ready", new OnlineHealthService(metrics, shedder))
               .service("/health", new OnlineHealthService(metrics, shedder))
               .service("/metrics", (ctx, req) -> HttpResponse.of(HttpStatus.OK))

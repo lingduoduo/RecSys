@@ -1,19 +1,21 @@
 package com.recsys.application.online;
+
+import com.recsys.api.serving.BaseApiService;
+import com.recsys.application.recommendation.RecommendationPipeline;
+import com.recsys.domain.item.Movie;
 import com.recsys.domain.online.OnlineRecommendationRequest;
 import com.recsys.domain.online.OnlineRecommendationResult;
-import com.recsys.api.online.ApiService;
+import com.recsys.domain.recommendation.RecommendationQuery;
+import com.recsys.domain.user.User;
+import com.recsys.infrastructure.messaging.AsyncEventPublisher;
 import com.recsys.observability.OnlineServingMetricsService;
+import com.recsys.reliability.OnlineLoadShedder;
+import com.recsys.reliability.RedisRateLimiter;
 
 import com.linecorp.armeria.common.HttpRequest;
 import com.linecorp.armeria.common.HttpResponse;
 import com.linecorp.armeria.common.HttpStatus;
 import com.linecorp.armeria.server.ServiceRequestContext;
-import com.recsys.domain.item.Movie;
-import com.recsys.domain.user.User;
-import com.recsys.infrastructure.messaging.AsyncEventPublisher;
-import com.recsys.reliability.OnlineLoadShedder;
-import com.recsys.observability.OnlineServingMetricsService;
-import com.recsys.reliability.RedisRateLimiter;
 
 import java.util.List;
 import java.util.Map;
@@ -42,7 +44,7 @@ public final class OnlineServices {
      * Shared request envelope for the admission-gated online handlers. Subclasses
      * supply {@link #render}, {@link #strategyLabel}, and optionally {@link #afterSuccess}.
      */
-    public abstract static class Guarded extends ApiService {
+    public abstract static class Guarded extends BaseApiService {
 
         protected final OnlineRecommendationService recommendationService;
         protected final OnlineServingMetricsService metricsService;
@@ -260,5 +262,45 @@ public final class OnlineServices {
                                                      String window,
                                                      List<Movie> recentMovies,
                                                      List<Movie> trendingMovies) {}
+    }
+
+    /**
+     * GET /health/live — liveness probe. Reports process viability and never fails merely
+     * because the node is draining.
+     */
+    public static final class Live extends BaseApiService {
+        @Override
+        protected HttpResponse doGet(ServiceRequestContext ctx, HttpRequest req) {
+            return writeJson(HttpStatus.OK, Map.of(
+                    "ok", true,
+                    "live", true,
+                    "service", "online-serving"
+            ));
+        }
+    }
+
+    /** POST /v2/recommend — pipeline-driven recommendation from a JSON query. */
+    public static final class RecommendV2 extends BaseApiService {
+
+        private final RecommendationPipeline pipeline;
+
+        public RecommendV2(RecommendationPipeline pipeline) {
+            this.pipeline = pipeline;
+        }
+
+        @Override
+        protected HttpResponse doPost(ServiceRequestContext ctx, HttpRequest req) {
+            return HttpResponse.of(req.aggregate().thenApplyAsync(agg -> {
+                try {
+                    RecommendationQuery query = readJsonBody(agg, RecommendationQuery.class);
+                    return writeJson(HttpStatus.OK, pipeline.recommend(query));
+                } catch (BadRequestException | IllegalArgumentException e) {
+                    return writeError(HttpStatus.BAD_REQUEST, e.getMessage());
+                } catch (Exception e) {
+                    log.error("Unexpected error in OnlineServices.RecommendV2", e);
+                    return writeError(HttpStatus.INTERNAL_SERVER_ERROR, "internal server error");
+                }
+            }, ctx.blockingTaskExecutor()));
+        }
     }
 }

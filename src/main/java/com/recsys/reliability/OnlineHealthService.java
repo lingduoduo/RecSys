@@ -1,16 +1,17 @@
 package com.recsys.reliability;
+
+import com.recsys.api.serving.BaseApiService;
 import com.recsys.observability.OnlineServingMetricsService;
 
 import com.linecorp.armeria.common.HttpRequest;
 import com.linecorp.armeria.common.HttpResponse;
 import com.linecorp.armeria.common.HttpStatus;
 import com.linecorp.armeria.server.ServiceRequestContext;
-import com.recsys.api.online.ApiService;
 
 import java.util.Map;
 import java.util.concurrent.CompletableFuture;
 
-public final class OnlineHealthService extends ApiService {
+public final class OnlineHealthService extends BaseApiService {
 
     private final OnlineServingMetricsService metricsService;
     private final OnlineLoadShedder loadShedder;

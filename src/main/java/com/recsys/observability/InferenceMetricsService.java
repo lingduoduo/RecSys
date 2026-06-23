@@ -1,5 +1,6 @@
 package com.recsys.observability;
 
+import com.recsys.application.model.Strings;
 import com.recsys.config.HealthProperties;
 import io.micrometer.core.instrument.Counter;
 import io.micrometer.core.instrument.Gauge;
@@ -205,10 +206,7 @@ public class InferenceMetricsService {
     }
 
     private static String normalizeVariant(String variant) {
-        if (variant == null || variant.isBlank()) {
-            return "unknown";
-        }
-        return variant.trim();
+        return Strings.orDefault(variant, "unknown");
     }
 
     public record Snapshot(
