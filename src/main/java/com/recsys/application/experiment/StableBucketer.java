@@ -1,5 +1,6 @@
 package com.recsys.application.experiment;
 
+import com.recsys.infrastructure.redis.sharding.Fnv1a;
 import java.nio.charset.StandardCharsets;
 
 /**
@@ -21,13 +22,9 @@ public final class StableBucketer {
         return (int) Long.remainderUnsigned(h, KEYSPACE);
     }
 
-    // FNV-1a accumulation followed by the murmur3 fmix64 finalizer — good avalanche, no dependency.
+    // FNV-1a accumulation (shared Fnv1a) followed by the murmur3 fmix64 finalizer.
     private static long hash64(byte[] data) {
-        long h = 0xcbf29ce484222325L;          // FNV-1a 64-bit offset basis
-        for (byte b : data) {
-            h ^= (b & 0xffL);
-            h *= 0x100000001b3L;               // FNV-1a 64-bit prime
-        }
+        long h = Fnv1a.hash(data);
         h ^= (h >>> 33);
         h *= 0xff51afd7ed558ccdL;
         h ^= (h >>> 33);

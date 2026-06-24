@@ -1,6 +1,5 @@
 package com.recsys.infrastructure.redis.sharding;
 
-import java.nio.charset.StandardCharsets;
 import java.util.Collection;
 import java.util.HashMap;
 import java.util.Map;
@@ -29,7 +28,7 @@ public final class ConsistentHashRing {
 
         for (int shard = 0; shard < shardCount; shard++) {
             for (int v = 0; v < virtualNodesPerShard; v++) {
-                long hash = fnv1a("v" + v + ":" + shard);
+                long hash = Fnv1a.hash("v" + v + ":" + shard);
                 ring.put(hash, shard);
             }
         }
@@ -37,7 +36,7 @@ public final class ConsistentHashRing {
 
     /** Returns the shard index for the given device/user ID. Lock-free after construction. */
     public int shardFor(String deviceId) {
-        long hash = fnv1a(deviceId);
+        long hash = Fnv1a.hash(deviceId);
         Map.Entry<Long, Integer> entry = ring.ceilingEntry(hash);
         return (entry != null ? entry : ring.firstEntry()).getValue();
     }
@@ -52,12 +51,4 @@ public final class ConsistentHashRing {
         return dist;
     }
 
-    static long fnv1a(String s) {
-        long hash = 0xcbf29ce484222325L;
-        for (byte b : s.getBytes(StandardCharsets.UTF_8)) {
-            hash ^= (b & 0xFFL);
-            hash *= 0x100000001b3L;
-        }
-        return hash;
-    }
 }
