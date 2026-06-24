@@ -1,278 +1,190 @@
-# SPEC: Reorganize `com.recsys` into Clean-Architecture Layers
+# SPEC — Versioned, runtime-reconfigurable consistent-hash sharding
+
+> Supersedes the previous SPEC.md. Scope evolved during review: from "dedup the hash" to
+> **a dynamically reshardable, cross-instance-consistent sharding topology** with safe
+> migration for TTL data. Decisions locked with the user:
+> - Keep the consistent-hash **ring** (FNV-1a + virtual nodes) as the mapping; optimize it, don't swap it.
+> - **Versioned topology snapshot** shared across instances (runtime dynamic shard membership).
+> - **Generation-prefixed keys + dual-read window** as the resharding/migration mechanism.
+> - Shared FNV-1a primitive lives in `com.recsys.infrastructure.redis.sharding`.
+> - **Build all 3 phases** (full feature). Reshard is triggered by a **guarded admin HTTP endpoint**.
+> - Accepted defaults: refresh interval **30 s**, dual-read window **= configured max record TTL**,
+>   generation key scheme **`sr:g{version}:...`**, legacy unversioned-key fallback **first window only**.
 
 ## 1. Objective
 
-Restructure the entire `com.recsys` Java package tree into a set of **global, shared
-architectural layers** so the package a class lives in advertises its *role*
-(transport, use-case, domain, technical adapter, cross-cutting concern) instead of
-the *service* that happens to use it today.
+Today `ConsistentHashRing(shardCount, 150)` is built once from a deploy-time env var
+(`SHARDED_RECORD_SHARD_COUNT`, default 2) and is invisible to other instances; changing the
+shard count means a redeploy and silently strands the data that remaps. This spec makes the
+shard topology a **versioned, shared, runtime-swappable snapshot** so that:
 
-- **Scope:** whole `com.recsys` tree (all four services: serving, model, online, microservice + shared packages).
-- **Layer model:** one global set of top-level layers shared across services (not per-service roots).
-- **Behavior guarantee:** primarily **moves** (package + import changes) with **light cleanup**
-  permitted — rename/merge obviously-misplaced classes, delete dead code/empty packages found en route.
-  No functional logic changes; the test suite must pass identically before and after.
+1. **All instances agree** on the current topology (shardCount + ring) by reading one
+   authoritative snapshot from Redis — the "consistent snapshot across services" (reliability).
+2. **Shard count can change at runtime** (publish a new topology version) without a redeploy.
+3. **Resharding is safe for TTL data**: each topology version owns a generation-prefixed
+   keyspace; during a bounded **dual-read window** (≈ max record TTL), reads fall back to the
+   previous generation so in-flight records aren't lost; old data then expires on its own.
+4. The per-generation mapping stays the **consistent-hash ring** (minimal key movement on
+   resize), now **optimized** (build once per generation, allocation-light lookup) and backed
+   by a **single shared FNV-1a** primitive (dedup with `StableBucketer`).
 
-**Target users:** the engineers maintaining this backend; the win is faster navigation and clearer
-ownership boundaries between transport, application logic, domain types, and infrastructure adapters.
+### Target users
+Operators who need to scale shards without a redeploy or data loss, and maintainers who want
+one FNV-1a and one authoritative topology instead of per-instance, deploy-frozen rings.
+
+### What "lower latency / higher throughput / reliability" actually comes from here
+- **Reliability:** a single versioned snapshot removes per-instance topology drift; dual-read
+  removes data loss on resize.
+- **Latency/throughput:** the optimized, immutable per-generation ring (no rebuild on the hot
+  path); resize moves only ~1/N keys (consistent hashing) instead of reshuffling everything.
+- **Honest caveat:** raw single-lookup speed is already fine; the real win is *operational*
+  (resize without redeploy/loss), not a micro-bench step-change. Any deeper hot-path
+  micro-opt stays deferred pending a benchmark (repo precedent).
 
 ### Non-goals
-- No behavior, API contract, wire-format, or Redis-key changes.
-- No splitting/merging of the four deployables; only Java package layout changes.
-- No rewrite of `streaming/flink` or `training/rulebased` logic (they are excluded from the Maven compile — they move packages only if trivial, otherwise stay put; see Boundaries).
+- No algorithm swap (no jump/rendezvous) — the ring stays.
+- No request→service-instance affinity routing (still Redis-shard scope).
+- No change to `ShardedTopKStore` random-shard reads or `RedisReadReplicaRouter` AZ routing.
+- No automatic/elastic reshard decisions — a reshard is an explicit operator action.
+
+---
 
 ## 2. Commands
 
 ```bash
-mvn package -DskipTests                       # compile check after each phase
-mvn test                                      # full suite — must stay green between phases
-mvn test -Dtest=RecommendationServiceTest     # spot-check a single class
+mvn package -DskipTests
+mvn test
+mvn test -Dtest='Fnv1a*,ConsistentHashRing*,StableBucketer*,ShardTopology*,Sharded*'
+# Docker-backed sharding/migration tests
+mvn test -Dgroups=docker -Dtest='ShardTopology*,ShardedRecordStore*'
+# FNV-1a constants must live in exactly one production file afterward
+grep -rn "0xcbf29ce484222325L\|0x100000001b3L" src/main --include="*.java"
 ```
 
-Per-service smoke (after the move, verify each main class still boots):
-```bash
-mvn exec:java -Dexec.mainClass=com.recsys.api.serving.RecSysServer
-mvn spring-boot:run                           # ModelApplication (new package)
-mvn exec:java -Dexec.mainClass=com.recsys.api.online.OnlinePredictionServer
-mvn exec:java -Dexec.mainClass=com.recsys.api.gateway.MicroserviceGatewayServer
-```
+---
 
-## 3. Target Project Structure
+## 3. Project Structure
+
+New + modified components under `com.recsys.infrastructure.redis.sharding`:
 
 ```
-com.recsys
-├── api                       # transport / entry points
-│   ├── serving               # RecSysServer (Jetty) + offline servlet handlers
-│   ├── online                # OnlinePredictionServer (Jetty) + online servlet handler
-│   ├── gateway               # MicroserviceGatewayServer (Jetty)
-│   ├── rest                  # Spring Boot app + @RestController classes
-│   ├── request               # inbound request DTOs
-│   ├── response              # outbound response DTOs
-│   ├── converter             # domain <-> transport mappers
-│   └── envelope              # ApiResponse / ApiError / ApiResponseUtil
-│
-├── application               # use-case orchestration ("what the system does")
-│   ├── recommendation
-│   ├── retrieval             # recall channels, coldstart, multichannel, user-tower stage
-│   ├── ranking
-│   ├── feature
-│   ├── experiment            # A/B test + exposure logging + variant resolution
-│   ├── auth                  # login + submit-token services
-│   ├── model                 # ONNX inference pipeline + artifact/version services
-│   ├── online                # online recommend/learner orchestration
-│   ├── gateway               # proxy / LLM-proxy / route table services
-│   ├── knowledge             # knowledge-base facade
-│   ├── pagination            # cursor pagination services
-│   └── saga                  # saga orchestrators
-│
-├── domain                    # domain models / value types ("the nouns")
-│   ├── user
-│   ├── item
-│   ├── rating
-│   ├── recommendation
-│   ├── prediction
-│   ├── online
-│   ├── knowledge
-│   └── saga
-│
-├── infrastructure            # technical adapters ("how we reach the outside")
-│   ├── redis                 # connection factory, replica router, stores + sharding
-│   ├── cache                 # embedding caches + LLM response cache
-│   ├── vectordb              # candidate generation, LSH, vector index/math
-│   ├── store                 # online feature / recent-history / trending stores
-│   ├── messaging             # async/Kafka event publishers + collectors
-│   ├── persistence           # MySQL client
-│   ├── lock                  # Redis distributed locks / mutex / watchdog
-│   ├── featureflags          # flag providers
-│   ├── dataloading           # DataLoader / DataManager
-│   ├── resilience            # BloomFilterGuard / HotKeyDetector / SingleFlight
-│   ├── alb                   # AWS ALB model
-│   ├── autoscaling           # AWS autoscaling model
-│   └── streaming             # flink job (EXCLUDED from compile — see Boundaries)
-│
-├── observability             # metrics, tracing, runtime monitors
-│
-├── reliability               # load shedding, circuit breaking, rate limiting, bulkheads, admission control, graceful shutdown
-│
-├── config                    # Spring config, properties, env config, web/auth wiring
-│
-└── exception                 # exception types + global handler
+infrastructure/redis/sharding/
+├── Fnv1a.java                 (NEW)  shared 64-bit FNV-1a: hash(byte[]) / hash(String)
+├── ConsistentHashRing.java    (MOD)  uses Fnv1a; mapping bytes unchanged within a version
+├── ShardTopology.java         (NEW)  immutable snapshot: version, shardCount, vnodes, ring, createdAtMs
+├── ShardTopologyStore.java    (NEW)  Redis-backed load/publish of the authoritative snapshot
+├── ShardTopologyProvider.java (NEW)  in-memory volatile current+previous snapshot; periodic refresh
+├── ShardedRecordStore.java    (MOD)  generation-prefixed keys; write=current, read=current→previous(window)
+└── SequenceGenerator.java     (MOD)  per-(generation,shard) sequence keys
+application/experiment/StableBucketer.java  (MOD)  reuse Fnv1a accumulation; keep its fmix64 finalizer
+api/online/OnlinePredictionServer.java       (MOD)  wire provider instead of a fixed ring
+infrastructure/store/ShardedRecordService.java (MOD, optional) admin endpoint to publish a reshard
 ```
 
-## 4. Migration Mapping (current → target)
+### Topology snapshot (the "consistent snapshot")
+- **Redis key:** `shard:topology` → small JSON
+  `{ "version": int, "shardCount": int, "vnodes": int, "createdAtMs": long, "prevVersion": int|null, "prevShardCount": int|null, "prevExpiresAtMs": long|null }`.
+- `ShardTopology` is **immutable**; `ConsistentHashRing` is built once when a version is loaded.
+- `ShardTopologyProvider` holds a `volatile ShardTopology current` (+ an optional `previous` kept
+  until `prevExpiresAtMs`), refreshed every `SHARD_TOPOLOGY_REFRESH_SECONDS` (default 30, matching
+  the gateway's 30 s DNS-TTL precedent). Lock-free reads; atomic reference swap on refresh.
+- **Bootstrap:** if `shard:topology` is absent, the provider initializes version 1 from
+  `SHARDED_RECORD_SHARD_COUNT` and publishes it (idempotent `SETNX`).
 
-Grouped by **target** layer. Source is the current path under `com.recsys/`.
+### Generation-prefixed keys
+Every record key gains a generation segment so versions never collide:
+- `sr:g{version}:rec:{shard}:{seq}`, `sr:g{version}:dev:{shard}:{deviceId}`,
+  `sr:g{version}:stream:{shard}`, `sr:g{version}:seq:{shard}`.
+- **Legacy fallback:** the existing unversioned keys (`sr:rec:...`) are read as a final fallback
+  during the first dual-read window after rollout (mirrors `ShardedTopKStore`'s existing
+  legacy-key fallback), so deploying the feature loses no in-flight TTL data.
 
-### api
-| Current | Target |
-|---|---|
-| `serving/RecSysServer`, `serving/BaseApiService`, `serving/CatalogService`, `serving/EmbeddingService`, `serving/PredictionService`, `serving/RecommendationService` | `api/serving` |
-| `online/serving/OnlinePredictionServer`, `online/serving/ApiService` | `api/online` |
-| `microservice/MicroserviceGatewayServer` | `api/gateway` |
-| `model/ModelApplication` | `api/rest` |
-| `model/controller/*` (Health, Login, Recommendation, RecommendationV2, Version), `model/knowledge/KnowledgeBaseController` | `api/rest` |
-| `model/request/*` | `api/request` |
-| `model/response/*` | `api/response` |
-| `model/converter/RecommendationConverter`, `model/knowledge/KnowledgeBaseConverter` | `api/converter` |
-| `model/dto/ApiResponse`, `ApiError`, `ApiResponseUtil` | `api/envelope` |
+### Read/write semantics
+- **Write:** always to `current` generation (its ring → shard, its key prefix).
+- **Read (device or shard):** query `current`; if a `previous` generation is still within its
+  dual-read window, also query it and merge (dedup by `deviceId:seq`), preferring `current`.
+  After `prevExpiresAtMs`, skip the previous generation (its data has TTL'd out).
+- **Reshard (operator action):** a **guarded admin endpoint** `POST /shards/topology {shardCount}`
+  (auth-protected, on the online server) publishes a new `shard:topology` with `version+1`, the new
+  `shardCount`, and `prev*` = the outgoing version with `prevExpiresAtMs = now + maxRecordTtl`.
+  Instances adopt it on their next refresh; writes immediately use the new generation; reads
+  dual-read until the window closes. A direct `publish(shardCount)` method backs the endpoint and
+  is reusable from a break-glass script if ever needed.
 
-### application
-| Current | Target |
-|---|---|
-| `model/service/RecommendationService`, `service/recommendation/*` (Orchestrator, Pipeline, SequentialRecommendationPipeline), `model/service/CandidateSelectionService`, `model/service/RecommendationCache`, `service/hydrator/RecommendationHydrator` | `application/recommendation` |
-| `service/retrieval/*` (RecallChannel, RecallScoring, channels, coldstart, multichannel), `model/service/ModelRetrievalStage`, `model/service/UserTowerInferenceService` | `application/retrieval` |
-| `service/ranking/*` (CandidateRanker, ScoreRanker), `model/service/RankingStage` | `application/ranking` |
-| `model/service/FeatureEncoder` | `application/feature` |
-| `model/service/ABTestService`, `AbExposureLogger`, `StableBucketer`, `VariantRuntimeResolver`, `ModelVariants` | `application/experiment` |
-| `model/service/LoginTokenService`, `SubmitTokenService` | `application/auth` |
-| `model/service/OnnxInferencePipeline`, `ModelRuntime`, `ModelRuntimeProvider`, `ModelArtifactService`, `ModelArtifactLocator`, `ModelVersionService`, `ScoredItems`, `VocabMembershipEmbeddingStore`, `infrastructure/PairPredictionService` | `application/model` |
-| `online/serving/OnlineRecommendationService`, `OnlineRecommendV2Service`, `OnlineLiveService`, `OnlineBlendingPipeline`, `OnlineServices`, `online/learner/*` (OnlineLearner, OnlineJoiner, LearnerFlushScheduler) | `application/online` |
-| `microservice/GatewayProxyService`, `LlmProxyService`, `GatewayAuthenticator`, `GatewayHealthService`, `MicroserviceRoute`, `MicroserviceRouteTable` | `application/gateway` |
-| `model/knowledge/KnowledgeBaseFacadeService` | `application/knowledge` |
-| `service/pagination/*` (CursorPaginationService, MillionScalePaginationSql, RankedListCursor, Page) | `application/pagination` |
-| `saga/SagaOrchestrators`, `SagaDefinition`, `AwsStepFunctionsSagaDefinition`, `AwsTccStepFunctionsSagaDefinition`, `InMemorySagaStateStore`, `SagaStateStore`, `SagaEventPublisher` | `application/saga` |
+---
 
-### domain
-| Current | Target |
-|---|---|
-| `domain/User` | `domain/user` |
-| `domain/Movie`, `MovieCandidate`, `RankedMovie` | `domain/item` |
-| `domain/Rating` | `domain/rating` |
-| `domain/RecommendationQuery`, `RecommendationResponse`, `RecommendationResult` | `domain/recommendation` |
-| `domain/PredictInstance`, `PredictRequest`, `PredictResponse`, `model/dto/ScoredItem` | `domain/prediction` |
-| `online/serving/OnlineRecommendationRequest`, `OnlineRecommendationResult`, `online/event/EventSemantics` | `domain/online` |
-| `model/knowledge/KnowledgeBase`, `KnowledgeBaseDTO`, `KnowledgeBaseVO`, `CreateKnowledgeBaseRequest/Response`, `GetKnowledgeBasesResponse`, `UpdateKnowledgeBaseRequest` | `domain/knowledge` |
-| `saga/SagaInstance`, `SagaStatus`, `SagaStep`, `SagaStepAction`, `SagaEventType`, `SagaTransitionEvent`, `TccParticipant`, `SagaBackoff` | `domain/saga` |
+## 4. Code Style
 
-### infrastructure
-| Current | Target |
-|---|---|
-| `infrastructure/redis/*` (+ `sharding/*`) | `infrastructure/redis` (keep `sharding` sub-pkg) |
-| `infrastructure/cache/*`, `microservice/LlmResponseCache` | `infrastructure/cache` |
-| `infrastructure/vectordb/*` | `infrastructure/vectordb` |
-| `online/store/*` (OnlineFeatureStore, RecentHistoryStore, TrendingStore, ShardedRecordService) | `infrastructure/store` |
-| `online/event/AsyncEventPublisher`, `KafkaAsyncEventPublisher`, `ExperienceCollector`, `LogCollector` | `infrastructure/messaging` |
-| `mysql/*` (MySqlClient, MySqlConnectionSettings) | `infrastructure/persistence` |
-| `online/redis/RedisDistributedLock`, `RedisMutex`, `WatchdogLock` | `infrastructure/lock` |
-| `featureflags/*` (provider, service, flags, models, providers) | `infrastructure/featureflags` |
-| `infrastructure/DataLoader`, `DataManager` | `infrastructure/dataloading` |
-| `infrastructure/BloomFilterGuard`, `HotKeyDetector`, `SingleFlight` | `infrastructure/resilience` |
-| `infrastructure/alb/*`, `infrastructure/autoscaling/*` | unchanged |
-| `online/flink/*` (OnlineFeatureStreamingJob, MovieEvent), `training/rulebased/*` | `infrastructure/streaming` (**only if it stays out of compile cleanly**; otherwise leave in place — see Boundaries) |
+- `Fnv1a`: `final`, private ctor, exact constants/UTF-8 unchanged (see Boundaries).
+- `ShardTopology`: a `record` (or final class) — immutable; no setters; ring built in a factory.
+- `ShardTopologyProvider`: lock-free hot path (`volatile` snapshot ref); refresh on a single
+  daemon scheduler; fail-safe — on Redis error keep serving the last-good snapshot (never block
+  the request path on topology I/O).
+- Reuse existing patterns: env reads via `EnvConfig`; JSON via the project's existing `ObjectMapper`;
+  Redis access via the same write/read `Pool<Jedis>` split already used by `ShardedRecordStore`.
+- No new dependencies. `StableBucketer` keeps its own `fmix64` finalizer inline (YAGNI).
 
-### observability
-| Current | Target |
-|---|---|
-| `model/service/InferenceMetricsService`, `GcEventTracker`, `JvmMemoryMonitor` | `observability` |
-| `online/ops/OnlineServingMetricsService` | `observability` |
-| `config/TraceIdAspect` | `observability` |
+---
 
-### reliability
-| Current | Target |
-|---|---|
-| `model/service/LoadShedder`, `GracefulShutdownSupport`, `ModelRateLimiter` | `reliability` |
-| `online/ops/OnlineAdmissionControl`, `OnlineLoadShedder`, `WorkerBulkhead`, `FaultInjector`, `OnlineCapacityService`, `OnlineHealthService`, `OnlineOpsService` | `reliability` |
-| `microservice/RouteCircuitBreaker`, `GatewayRateLimiter`, `TokenBucket`, `LlmTokenRateLimiter` | `reliability` |
-| `online/redis/RedisRateLimiter` | `reliability` |
+## 5. Testing Strategy
 
-### config
-| Current | Target |
-|---|---|
-| `config/*` (all existing Spring config + properties) | `config` (unchanged) |
-| `infrastructure/EnvConfig`, `microservice/EnvVars` | `config` |
-| `model/config/ModelEventConfig`, `featureflags/config/FeatureFlagConfig` | `config` |
-| `annotation/NeedLogin` | `config` |
+- **Bar: `mvn test` green**, all existing `ConsistentHashRing*`, `StableBucketer*`, `Sharded*` pass.
+- **`Fnv1aTest` (golden values):** pin `Fnv1a.hash("v0:0")`, `"v0:1"`, `"device-123"` to the exact
+  longs produced by today's `ConsistentHashRing.fnv1a` — guards the dedup against bit-drift.
+- **Within-version mapping stability:** for a fixed topology version, `shardFor(id)` matches a
+  captured expected map (the ring is unchanged within a generation).
+- **`StableBucketer.slot(...)`** golden outputs unchanged after the FNV-1a reuse.
+- **Topology versioning (`ShardTopologyStoreTest`, `ShardTopologyProviderTest`):** load/publish
+  round-trip; SETNX bootstrap; refresh adopts a newer version; provider keeps `previous` until
+  `prevExpiresAtMs` then drops it; Redis-down → last-good snapshot retained.
+- **Dual-read migration (`@Tag("docker")`):** write records under gen 1; publish gen 2 with a
+  larger shardCount; assert a record whose key *moved* is still found via the previous-generation
+  fallback **inside** the window and **not found** after `prevExpiresAtMs`; assert new writes land
+  in gen-2 keys; assert legacy unversioned keys are read during the first window only.
+- **Concurrency:** a reader sees a consistent snapshot across a refresh (no torn read of
+  shardCount vs ring) — exercise an atomic swap under concurrent `shardFor`/read calls.
+- **Sanity grep (§2):** FNV-1a constants in exactly one production file.
 
-### exception
-| Current | Target |
-|---|---|
-| `model/exception/*` (PipelineNotImplemented, RateLimitExceeded, ServiceOverloaded, SubmitToken, Unauthorized) | `exception` |
-| `config/GlobalExceptionHandler` | `exception` |
-| `saga/SagaException`, `SagaConflictException` | stay in `domain/saga` (cohesion with saga types) |
+---
 
-## 5. Classification Rules (for edge cases & implementer judgment)
-
-1. **Touches HTTP/servlet/transport?** → `api`.
-2. **Orchestrates a use case (coordinates domain + infra, has business "verbs")?** → `application`.
-3. **Plain data/value type with no framework deps?** → `domain`.
-4. **Wraps an external system (Redis, MySQL, Kafka, ONNX runtime, AWS, vector index)?** → `infrastructure`.
-5. **Metrics / tracing / runtime monitoring only?** → `observability`.
-6. **Protects the system under load/failure (shed, break, throttle, bulkhead, shutdown)?** → `reliability`.
-7. **Spring `@Configuration`/`@ConfigurationProperties`/env reader/aspect wiring?** → `config`.
-8. **Throwable type or global handler?** → `exception` (except domain-cohesive saga exceptions).
-
-When a class spans two layers (e.g. a "Service" that is really a servlet handler), classify by its
-**primary collaborator**: HTTP request/response → `api`; downstream stores → `application`.
-
-## 6. External References to Update (in lockstep with moves)
-
-These break the build/runtime if not updated alongside the package moves:
-
-- `pom.xml` → `<mainClass>com.recsys.api.rest.ModelApplication</mainClass>`.
-- `ModelApplication` → `@SpringBootApplication(scanBasePackages = {"com.recsys"})` (broadened; verify no stray beans pulled in — narrow to an explicit layer list if it does).
-- `scripts/run-microservices-local.sh` → three updated `mainClass` FQNs.
-- `scripts/run-with-jvm-tuning.sh` → two updated `mainClass` FQNs.
-- `k8s/base/online-serving.yaml`, `api-gateway.yaml`, `model-serving.yaml`, `catalog-serving.yaml` → updated `MAIN_CLASS` env values.
-- `.claude/CLAUDE.md` → Services table entry points, Package Map, Redis/streaming notes.
-- Test sources under `src/test/java/com/recsys/**` (138 files) move to mirror the new main packages.
-
-## 7. Code Style
-
-- Match existing conventions: one top-level class per file, package-private helpers where already used.
-- Update `package` declarations and `import` statements only; do not reformat untouched lines.
-- Preserve class names except where a rename resolves a genuine ambiguity (see collisions below).
-- Keep `sharding` as a sub-package of `infrastructure/redis`.
-
-### Naming collisions to watch (FQN differs, so usually no rename needed)
-- `RecommendationService` ×3 → `api/serving`, `application/recommendation` (model), `application/online` (`OnlineRecommendationService`). Distinct packages — keep names.
-- `Page` ×2 → `infrastructure/redis/sharding/Page`, `application/pagination/Page`. Keep.
-- `ApiService` ×2 → `api/serving/BaseApiService`, `api/online/ApiService`. Keep.
-
-## 8. Testing Strategy
-
-- **Green-between-phases:** `mvn test` must pass after every phase; never leave the tree uncompilable across a commit.
-- Move each test class in the same phase as its subject; update its `package`/imports.
-- Load tests stay opt-in (`-Dgroups=load`), unchanged.
-- After all phases: run `mvn package -DskipTests` + full `mvn test`, then boot all four main classes (smoke commands in §2) to confirm wiring and Spring component scan still resolve.
-- Excluded modules (`infrastructure/streaming`, rulebased) are not compiled by Maven — confirm they remain excluded and do not break IDE-only builds.
-
-## 9. Phased Execution Plan
-
-Each phase = compile + test green + one commit on a feature branch (never commit to `main`).
-Order chosen so leaf layers (no inbound deps) move first, reducing churn.
-
-1. **domain** — value types move first; everything depends on them.
-2. **exception** — small, low-risk.
-3. **infrastructure** (redis, cache, vectordb, store, messaging, persistence, lock, featureflags, dataloading, resilience, alb, autoscaling).
-4. **observability** + **reliability**.
-5. **config** (incl. EnvConfig/EnvVars consolidation, NeedLogin).
-6. **application** (recommendation, retrieval, ranking, feature, experiment, auth, model, online, gateway, knowledge, pagination, saga).
-7. **api** (serving, online, gateway, rest, request, response, converter, envelope) + all external refs in §6.
-8. **Cleanup** — delete now-empty packages (`annotation`, `data`, old `service/`, `mysql/`, etc.), remove dead code surfaced during the move, final full-suite + smoke run.
-
-## 10. Boundaries
+## 6. Boundaries
 
 **Always:**
-- Keep `mvn test` green between phases; commit per phase on a feature branch.
-- Update every external reference in §6 in the same phase as the corresponding move.
-- Use `git mv`-style moves so history is preserved; change only `package`/`import` lines in otherwise-untouched files.
-- Open a PR for review at the end (never merge to `main` directly).
+- Keep the per-generation mapping (hash bytes, vnode key `"v{i}:{shard}"`, default 150 vnodes,
+  TreeMap ceiling) **identical within a version**; only crossing a version may remap.
+- No data loss for records still within their TTL across a reshard (dual-read window ≥ max TTL).
+- Topology I/O never blocks the request hot path; on Redis failure, serve the last-good snapshot.
+- `mvn test` green; feature branch; open a **PR** — never merge to `main` directly.
 
-**Ask first:**
-- Broadening `scanBasePackages` to `com.recsys` if it pulls in unexpected beans — confirm the explicit-list fallback.
-- Any rename that changes a public class name (vs. just its package).
-- Moving `streaming/flink` / `training/rulebased` into `infrastructure/streaming` if it risks the Maven compile-exclude config — default is to leave them in place and only document.
-- Deleting any file that looks dead but has no test coverage proving it unused.
+**Resolved (was "ask first"):**
+- Reshard trigger = **guarded admin HTTP endpoint** `POST /shards/topology {shardCount}`, backed by
+  a reusable `publish(shardCount)` method.
+- Refresh interval = **30 s**; dual-read window = **configured max record TTL**.
+- Generation key scheme = **`sr:g{version}:...`**; legacy unversioned-key fallback = **first window only**.
+
+**Still flag if encountered:**
+- The auth mechanism for the admin endpoint — reuse the existing online-server guard/pattern; if none
+  fits, surface options rather than inventing one.
 
 **Never:**
-- Change runtime behavior, HTTP contracts, wire formats, or Redis key conventions.
-- Merge the four deployables or alter their boundaries.
-- Reformat or "improve" code unrelated to the move within the same change.
-- Commit a state where the project does not compile.
+- Change the FNV-1a constants, byte/UTF-8 handling, vnode key format, default vnode count, the
+  TreeMap lookup, or `StableBucketer.KEYSPACE` (10000).
+- Swap the hashing algorithm (no jump/rendezvous) or add request→instance routing.
+- Make reshard decisions automatically/elastically — operator-triggered only.
+- Touch `ShardedTopKStore` random-shard logic or `RedisReadReplicaRouter` AZ routing.
 
-## 11. Open Risks / Notes
+---
 
-- `@SpringBootApplication` component scan currently lists `{"com.recsys.model","com.recsys.config"}`; the move spreads `@Service`/`@Component` beans across new packages, so the scan must broaden — primary correctness risk, covered by the §2 smoke boot.
-- The offline (`serving`), online, and gateway servers are plain Jetty (no Spring scan), so their beans are wired manually — moving them is import-only but their `main` FQNs are referenced externally (§6).
-- `domain/knowledge` request/response types could alternatively live under `api/request`+`api/response`; spec places them in `domain/knowledge` for cohesion. Flag if reviewers prefer the api split.
-- Empty/near-empty legacy packages (`annotation`, `data`) are removed in Phase 8.
+## 7. Suggested phasing (each phase independently shippable + green)
+
+1. **FNV-1a dedup** — extract `Fnv1a`, wire `ConsistentHashRing` + `StableBucketer`, golden tests.
+   Behavior-identical. (Smallest, zero-risk.)
+2. **Topology snapshot read path** — `ShardTopology` + `ShardTopologyStore` + `ShardTopologyProvider`,
+   bootstrap from env, instances read shardCount/ring from the snapshot. Still single version →
+   behavior-identical (keys still effectively gen 1; introduce the `sr:g1:` prefix + legacy fallback).
+3. **Generation keys + dual-read + reshard publish** — version-scoped keys, dual-read window,
+   publish-new-version path + (optional) admin endpoint, migration tests. This is the feature.
+
+> Phases 2–3 carry real distributed-systems risk (snapshot consistency, dual-read correctness,
+> concurrency). If you'd rather not take that on now, Phase 1 alone is the safe dedup we scoped
+> originally and can ship independently.
