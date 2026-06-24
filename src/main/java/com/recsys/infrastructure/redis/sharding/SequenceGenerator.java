@@ -23,11 +23,16 @@ public final class SequenceGenerator {
         this.prefix = prefix;
     }
 
-    /** Returns the next sequence number for the given shard. Always >= 1. */
-    public long next(int shardIndex) {
+    /** Next sequence for (version, shard). Always >= 1. */
+    public long next(int version, int shardIndex) {
         try (Jedis jedis = pool.getResource()) {
-            return jedis.incr(seqKey(shardIndex));
+            return jedis.incr(seqKey(version, shardIndex));
         }
+    }
+
+    /** Back-compat: version-1 (unversioned) sequence. */
+    public long next(int shardIndex) {
+        return next(1, shardIndex);
     }
 
     /**
@@ -42,7 +47,7 @@ public final class SequenceGenerator {
         if (maxSeq <= 0) return;
 
         try (Jedis jedis = pool.getResource()) {
-            String key = seqKey(shardIndex);
+            String key = seqKey(1, shardIndex);
             String current = jedis.get(key);
             long currentVal = current == null ? 0L : Long.parseLong(current);
             if (currentVal < maxSeq) {
@@ -73,7 +78,7 @@ public final class SequenceGenerator {
         return maxSeq;
     }
 
-    private String seqKey(int shardIndex) {
-        return prefix + "seq:" + shardIndex;
+    private String seqKey(int version, int shardIndex) {
+        return prefix + Generations.keyPrefix(version) + "seq:" + shardIndex;
     }
 }

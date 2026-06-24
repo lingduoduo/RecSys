@@ -23,6 +23,8 @@ import com.recsys.infrastructure.redis.ShardedTopKStore;
 import com.recsys.infrastructure.redis.sharding.ConsistentHashRing;
 import com.recsys.infrastructure.redis.sharding.SequenceGenerator;
 import com.recsys.infrastructure.redis.sharding.ShardedRecordStore;
+import com.recsys.infrastructure.redis.sharding.ShardTopologyProvider;
+import com.recsys.infrastructure.redis.sharding.ShardTopologyStore;
 import com.recsys.infrastructure.vectordb.CandidateGenerator;
 import com.recsys.infrastructure.messaging.AsyncEventPublisher;
 import com.recsys.application.online.LearnerFlushScheduler;
@@ -108,11 +110,15 @@ public final class OnlinePredictionServer {
             RedisRateLimiter redisRateLimiter = new RedisRateLimiter(jedisPool);
 
             int shardCount = readIntEnv("SHARDED_RECORD_SHARD_COUNT", 2);
+            long refreshMs = readIntEnv("SHARD_TOPOLOGY_REFRESH_SECONDS", 30) * 1000L;
+            ShardTopologyStore topologyStore = new ShardTopologyStore(jedisPool, "shard:topology");
+            ShardTopologyProvider topologyProvider = new ShardTopologyProvider(
+                    topologyStore, 150, shardCount, refreshMs,
+                    System::currentTimeMillis);
+            topologyProvider.start();
             ShardedRecordStore shardedRecordStore = new ShardedRecordStore(
-                    jedisPool,
-                    new ConsistentHashRing(shardCount, 150),
-                    new SequenceGenerator(jedisPool, "sr:"),
-                    "sr:");
+                    jedisPool, jedisPool, topologyProvider,
+                    new SequenceGenerator(jedisPool, "sr:"), "sr:");
 
             ServerBuilder sb = Server.builder();
             sb.http(port)
@@ -142,11 +148,15 @@ public final class OnlinePredictionServer {
                               redisRateLimiter, asyncEventPublisher))
               .service("/v2/recommend", new OnlineServices.RecommendV2(blendingPipeline))
               .service(Route.builder().pathPrefix("/shards/").build(),
-                      new ShardedRecordService(shardedRecordStore));
+                      new ShardedRecordService(shardedRecordStore, topologyStore,
+                              System.getenv("SHARD_ADMIN_TOKEN"),
+                              readIntEnv("SHARDED_RECORD_MAX_TTL_SECONDS", 86_400) * 1000L,
+                              System::currentTimeMillis));
 
             Server server = sb.build();
             metricsService.registerGauges(registry);
             LearnerFlushScheduler activeLearnerFlushScheduler = learnerFlushScheduler;
+            ShardTopologyProvider activeTopologyProvider = topologyProvider;
 
             ExecutorService activeRecallExecutor = recallExecutor;
             Runtime.getRuntime().addShutdownHook(new Thread(() -> {
@@ -154,6 +164,7 @@ public final class OnlinePredictionServer {
                 asyncEventPublisher.close();
                 activeLearnerFlushScheduler.close();
                 activeRecallExecutor.shutdownNow();
+                activeTopologyProvider.stop();
                 jedisPool.close();
             }));
 

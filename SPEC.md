@@ -1,13 +1,13 @@
-# SPEC — Split `observability/` + `reliability/` into focused top-level layers
+# SPEC - Split `observability/` + `reliability/` into focused top-level layers
 
-> Supersedes the previous SPEC.md (the whole-repo clean-architecture reorg, now complete —
+> Supersedes the previous SPEC.md (the whole-repo clean-architecture reorg, now complete -
 > that work produced today's flat `observability/` and `reliability/` top-level packages).
 
 ## 1. Objective
 
 Replace the two grab-bag top-level packages `com.recsys.observability` (5 files) and
 `com.recsys.reliability` (15 files) with a set of **focused, concern-named top-level layers**
-that each advertise a single operational responsibility — sitting beside `infrastructure/`,
+that each advertise a single operational responsibility - sitting beside `infrastructure/`,
 `application/`, `domain/`, etc. The package a class lives in should name its concern
 (rate-limiting, load-shedding, metrics) the way `infrastructure/`'s sub-packages name theirs.
 
@@ -34,7 +34,7 @@ implementation per pattern, and concern-named layers instead of two catch-all bu
 # Compile without tests (fast feedback during the move)
 mvn package -DskipTests
 
-# Full verification bar — MUST pass before done
+# Full verification bar - MUST pass before done
 mvn test
 
 # Targeted tests for the touched areas (run frequently while refactoring)
@@ -66,26 +66,26 @@ com.recsys/
 
 Rationale for groupings:
 - `metrics/`, `jvm/`, `tracing/` carve the old `observability/` into its three distinct concerns.
-- `GracefulShutdownSupport` lives in `loadshed/` — it exists only to flip `LoadShedder` on SIGTERM.
-- `OnlineAdmissionControl` lives in `loadshed/` — it's the Armeria decorator wrapping `OnlineLoadShedder`.
+- `GracefulShutdownSupport` lives in `loadshed/` - it exists only to flip `LoadShedder` on SIGTERM.
+- `OnlineAdmissionControl` lives in `loadshed/` - it's the Armeria decorator wrapping `OnlineLoadShedder`.
 - `health/` holds the online-serving ops surface (health + ops endpoints + capacity sizing), which
   composes metrics + load-shed snapshots.
 
-**Naming note — two `resilience` packages.** This introduces a top-level `com.recsys.resilience`
+**Naming note - two `resilience` packages.** This introduces a top-level `com.recsys.resilience`
 (request-tier fault tolerance: circuit breaker, bulkhead, fault injection) alongside the existing
 `com.recsys.infrastructure.resilience` (cache-protection primitives: bloom/hotkey/single-flight).
 FQNs are distinct so the build is unaffected, but readers must not confuse them. (Alternative if the
-clash feels risky: name the new layer `faulttolerance` — flagged in §6.)
+clash feels risky: name the new layer `faulttolerance` - flagged in section 6.)
 
 ### Test structure
 Mirror the move under `src/test/java/com/recsys/<layer>/`. Keep each test next to the class it
 covers (the 16 existing in-package tests move with their classes; the 26 external caller tests just
 get import updates).
 
-### Required non-move edit — Spring component scan (critical)
+### Required non-move edit - Spring component scan (critical)
 `api/rest/ModelApplication.java` `@SpringBootApplication(scanBasePackages = {...})` currently lists
 `"com.recsys.observability", "com.recsys.reliability"`. Replace those two entries with the new
-top-level packages that contain Spring beans — at minimum `metrics`, `loadshed`, `ratelimit`, plus
+top-level packages that contain Spring beans - at minimum `metrics`, `loadshed`, `ratelimit`, plus
 `jvm`/`tracing` if their classes are annotated. Listing all seven new packages is safe. **If any
 bean-bearing package is missed, beans like `LoadShedder` (@Service), `ModelRateLimiter` (@Component),
 `InferenceMetricsService` (@Service), `GracefulShutdownSupport` (@Component) silently stop loading.**
@@ -99,7 +99,7 @@ seven new layers, in the same PR, so docs match the code.
 ## 4. Code Style
 
 - Match the surrounding code: same comment density, `final class`, record-based snapshots,
-  `LongSupplier` ticker injection for testability — all already idiomatic here; preserve it.
+  `LongSupplier` ticker injection for testability - all already idiomatic here; preserve it.
 - Package-private constructors used by tests (e.g. `ModelRateLimiter(double,int,int,LongSupplier)`,
   `RedisRateLimiter(...)`) must stay package-private **and** keep their tests in the same package.
 - No wildcard imports. Update `package` declarations and imports precisely; fix the stale path
@@ -112,11 +112,11 @@ Do these **behind the green test suite**, smallest/safest first. Each must be be
 
 | ID | Change | Risk | Required? |
 |----|--------|------|-----------|
-| C1 | `ratelimit.ModelRateLimiter`: delete its private inner `TokenBucket` + private `Decision`; reuse `ratelimit.TokenBucket` and `TokenBucket.Decision`. (Per-user behavior identical — same refill math.) | Low | **Yes** |
+| C1 | `ratelimit.ModelRateLimiter`: delete its private inner `TokenBucket` + private `Decision`; reuse `ratelimit.TokenBucket` and `TokenBucket.Decision`. (Per-user behavior identical - same refill math.) | Low | **Yes** |
 | C2 | `ratelimit.RedisRateLimiter`: replace private `readIntEnv`/`readLongEnv` with the existing `EnvConfig`/`EnvVars` readers. | Low | **Yes** |
 | C3 | Extract a shared `resilience.CircuitBreaker` (CLOSED/OPEN/HALF_OPEN + consecutive-failure + cooldown + single-probe CAS). Have `RouteCircuitBreaker` and `RedisRateLimiter`'s embedded circuit delegate to it. | Med | Yes, **iff** Redis fail-open semantics (allow-on-exception, probe-on-half-open) are provably unchanged; otherwise extract for `RouteCircuitBreaker` only and leave a `// see CircuitBreaker` note on Redis. |
 | C4 | Extract a shared `metrics.RollingWindowCounter` (deque + running totals `evict()`) and the bounded sub-metric map (`MAX_VARIANTS`/`MAX_STRATEGIES` cap). Both metrics services use it; their public `Snapshot` records stay unchanged. | Med | Yes, if `Snapshot` outputs are identical under test. |
-| C5 | Load shedders: **leave both implementations as-is** (`loadshed.LoadShedder` = Spring/Micrometer/Semaphore; `loadshed.OnlineLoadShedder` = plain/CAS/EnvConfig). Co-locate only — **do not merge** (decided: behavior risk outweighs the dedup). | — | **No (co-locate only)** |
+| C5 | Load shedders: **leave both implementations as-is** (`loadshed.LoadShedder` = Spring/Micrometer/Semaphore; `loadshed.OnlineLoadShedder` = plain/CAS/EnvConfig). Co-locate only - **do not merge** (decided: behavior risk outweighs the dedup). | - | **No (co-locate only)** |
 
 If any consolidation can't preserve behavior cleanly, **prefer the plain move** for that file and
 record why in the PR description. Reorg correctness outranks maximal dedup.
@@ -127,13 +127,13 @@ record why in the PR description. Reorg correctness outranks maximal dedup.
 
 - **Bar: `mvn test` fully green.** No skipped tests, no quarantine.
 - Move-only changes are validated by the existing suite compiling and passing after import updates.
-- Each consolidation (C1–C4) is gated on its existing tests:
-  - C1 → `ModelRateLimiter` tests still pass (per-user limiting, LRU cap, disabled mode).
-  - C2 → `RedisRateLimiter` tests still pass (env defaults, circuit, fail-open).
-  - C3 → both `RouteCircuitBreaker` and `RedisRateLimiter` circuit tests pass; if either lacks a
+- Each consolidation (C1-C4) is gated on its existing tests:
+  - C1 -> `ModelRateLimiter` tests still pass (per-user limiting, LRU cap, disabled mode).
+  - C2 -> `RedisRateLimiter` tests still pass (env defaults, circuit, fail-open).
+  - C3 -> both `RouteCircuitBreaker` and `RedisRateLimiter` circuit tests pass; if either lacks a
     half-open/probe test, add one **before** extracting (characterization test).
-  - C4 → both metrics `Snapshot` tests pass (window eviction, percentiles, bounded maps).
-- After the move, the sanity grep in §2 must return **zero** hits for the old package names.
+  - C4 -> both metrics `Snapshot` tests pass (window eviction, percentiles, bounded maps).
+- After the move, the sanity grep in section 2 must return **zero** hits for the old package names.
 - Run the full `mvn test` once more after all consolidations.
 - Load tests stay opt-in/excluded (unchanged).
 
@@ -147,13 +147,13 @@ record why in the PR description. Reorg correctness outranks maximal dedup.
 - Keep test classes in the same package as the class-under-test when they use package-private members.
 - Verify with `mvn test` before declaring done.
 - Update `.claude/CLAUDE.md`'s Package Map in the same PR (confirmed in scope).
-- Do the work on the current feature branch and open a **PR** for review — never merge to `main`
+- Do the work on the current feature branch and open a **PR** for review - never merge to `main`
   directly (per repo workflow).
 
 **Ask first:**
 - Whether the new top-level `resilience/` should instead be named `faulttolerance/` to avoid visual
   overlap with `infrastructure/resilience/` (default: keep `resilience/`).
-- Any consolidation (C3/C4) that turns out to need a behavior change to land — fall back to a plain move.
+- Any consolidation (C3/C4) that turns out to need a behavior change to land - fall back to a plain move.
 
 **Never:**
 - Change the excluded `online/flink` or `training/rulebased` trees.
@@ -164,7 +164,7 @@ record why in the PR description. Reorg correctness outranks maximal dedup.
 
 ---
 
-## Appendix — Move map (old → new)
+## Appendix - Move map (old -> new)
 
 | File | New package |
 |------|-------------|

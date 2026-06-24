@@ -58,7 +58,7 @@ The system demonstrates two recommendation paths:
 
 **Model-based path** — `ModelApplication` (Spring Boot) runs a PyTorch two-tower ONNX model (`dssm_model.onnx` in `src/main/resources/artifacts/`). `RetrievalService` encodes the user tower; `RankingService` scores candidates. Supports variant-aware artifacts for A/B testing (`recsys.ab-test.*` in `application.yml`), result caching, submit-token CSRF protection, and load shedding.
 
-**Online path** — `OnlinePredictionServer` (Jetty) uses Redis-backed `OnlineFeatureStore` (recent history) and `ShardedTopKStore` (trending) to produce real-time recommendations without a neural model. `OnlineLearner` updates lightweight serving parameters from streaming feedback.
+**Online path** — `OnlinePredictionServer` (Jetty) uses Redis-backed `OnlineFeatureStore` (recent history) and `ShardedTopKStore` (trending) to produce real-time recommendations without a neural model. `OnlineLearner` updates lightweight serving parameters from streaming feedback. Shard topology is operator-triggered via `POST /shards/topology` (header `X-Admin-Token`).
 
 **API Gateway** — `MicroserviceGatewayServer` (Jetty) routes to the above services plus an optional LLM explanation endpoint. Has per-route circuit breakers (`RouteCircuitBreaker`), token-bucket rate limiting (`GatewayRateLimiter`), a dedicated LLM proxy with token budgets (`LlmTokenRateLimiter`, `LlmResponseCache`), and 30 s Cloud Map DNS TTL for EKS blue/green deploys.
 
@@ -92,6 +92,10 @@ sub-packages.
 - `u2vEmb:<id>` — user embeddings
 - `topk:<window>` — sharded top-K trending store (windows: `last_hour`, `last_day`, `last_month`)
 - Online feature store keys are written by the Flink job (`streaming/flink/OnlineFeatureStreamingJob`)
+- `shard:topology` — authoritative versioned shard-topology snapshot (JSON); instances refresh every 30s
+- `sr:rec:{shard}:{seq}` / `sr:dev:{shard}:{id}` / `sr:stream:{shard}` / `sr:seq:{shard}` — generation 1 (unversioned)
+- `sr:g{version}:rec:…` etc. — generation ≥2 keys after a reshard; reads dual-read the previous generation for one max-TTL window
+- Shard-level reads (`GET /shards/shard`, `readAllShards`) are generation-current — during a migration window they do not dual-read the previous generation (device reads do).
 
 ## JVM Tuning
 

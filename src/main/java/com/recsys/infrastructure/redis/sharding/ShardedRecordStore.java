@@ -31,32 +31,29 @@ public final class ShardedRecordStore {
 
     private final Pool<Jedis> writePool;
     private final Pool<Jedis> readPool;
-    private final ConsistentHashRing ring;
+    private final ShardTopologyProvider provider;
     private final SequenceGenerator seqGen;
     private final String prefix;
 
-    /**
-     * Single-pool constructor — reads and writes use the same Redis connection.
-     * Preserved for backwards compatibility and non-replicated deployments.
-     */
-    public ShardedRecordStore(Pool<Jedis> pool, ConsistentHashRing ring,
-                               SequenceGenerator seqGen, String prefix) {
-        this(pool, pool, ring, seqGen, prefix);
-    }
-
-    /**
-     * AZ-aware constructor — writes go to {@code writePool} (primary), reads
-     * go to {@code readPool} (AZ-local replica).  Pass the same pool for both
-     * when running without replicas.
-     */
     public ShardedRecordStore(Pool<Jedis> writePool, Pool<Jedis> readPool,
-                               ConsistentHashRing ring,
-                               SequenceGenerator seqGen, String prefix) {
+                              ShardTopologyProvider provider,
+                              SequenceGenerator seqGen, String prefix) {
         this.writePool = Objects.requireNonNull(writePool, "writePool");
         this.readPool  = Objects.requireNonNull(readPool,  "readPool");
-        this.ring      = Objects.requireNonNull(ring,      "ring");
+        this.provider  = Objects.requireNonNull(provider,  "provider");
         this.seqGen    = Objects.requireNonNull(seqGen,    "seqGen");
         this.prefix    = Objects.requireNonNull(prefix,    "prefix");
+    }
+
+    // Back-compat: fixed single-version topology from a ring.
+    public ShardedRecordStore(Pool<Jedis> pool, ConsistentHashRing ring,
+                              SequenceGenerator seqGen, String prefix) {
+        this(pool, pool, ShardTopologyProvider.fixed(ring), seqGen, prefix);
+    }
+
+    public ShardedRecordStore(Pool<Jedis> writePool, Pool<Jedis> readPool,
+                              ConsistentHashRing ring, SequenceGenerator seqGen, String prefix) {
+        this(writePool, readPool, ShardTopologyProvider.fixed(ring), seqGen, prefix);
     }
 
     // ── Write ────────────────────────────────────────────────────────────────────
@@ -74,12 +71,14 @@ public final class ShardedRecordStore {
     }
 
     private WriteResult doWrite(ShardedRecord record, boolean isUpdate, int ttlSeconds) {
-        int shardIndex = ring.shardFor(record.deviceId());
-        long seqNum    = seqGen.next(shardIndex);
+        ShardTopology topo = provider.current();
+        int version    = topo.version();
+        int shardIndex = topo.shardFor(record.deviceId());
+        long seqNum    = seqGen.next(version, shardIndex);
 
-        String recKey    = recKey(shardIndex, seqNum);
-        String devKey    = devKey(shardIndex, record.deviceId());
-        String streamKey = streamKey(shardIndex);
+        String recKey    = recKey(version, shardIndex, seqNum);
+        String devKey    = devKey(version, shardIndex, record.deviceId());
+        String streamKey = streamKey(version, shardIndex);
 
         long zaddResult;
         try (Jedis jedis = writePool.getResource()) {
@@ -123,32 +122,62 @@ public final class ShardedRecordStore {
 
     // ── Read ─────────────────────────────────────────────────────────────────────
 
+    /**
+     * Device-level read: dual-read across current + previous generation when a migration window
+     * is active. Captures current and previousIfActive exactly once (avoids torn reads on a
+     * mid-call topology shift). readShard/readAllShards remain current-generation only.
+     */
     public Page<ShardedRecord> readDevice(String deviceId, ShardCursor cursor, int limit) {
-        int shardIndex = ring.shardFor(deviceId);
-        String devKey  = devKey(shardIndex, deviceId);
+        ShardTopology cur  = provider.current();
+        ShardTopology prev = provider.previousIfActive();
+
+        Page<ShardedRecord> currentPage = readDeviceAt(cur.version(), cur.shardFor(deviceId),
+                deviceId, cursor, limit);
+
+        if (prev == null) return currentPage;
+
+        Page<ShardedRecord> prevPage = readDeviceAt(prev.version(), prev.shardFor(deviceId),
+                deviceId, cursor, limit);
+        return mergeDevicePages(currentPage, prevPage, limit);
+    }
+
+    // Single-generation device read (the former readDevice body, now version-scoped).
+    private Page<ShardedRecord> readDeviceAt(int version, int shardIndex, String deviceId,
+                                             ShardCursor cursor, int limit) {
+        String devKey = devKey(version, shardIndex, deviceId);
         double minScore = cursor.isStart() ? Double.NEGATIVE_INFINITY
                                            : Double.parseDouble(cursor.value()) + 1;
-
         List<Tuple> tuples;
         try (Jedis jedis = readPool.getResource()) {
             tuples = jedis.zrangeByScoreWithScores(devKey, minScore, Double.POSITIVE_INFINITY, 0, limit);
         }
         if (tuples.isEmpty()) return Page.empty();
-
-        List<Long> seqNums = tuples.stream()
-                .map(t -> (long) t.getScore())
-                .toList();
-        List<ShardedRecord> records = fetchRecords(shardIndex, seqNums);
-
-        // Use tuples.size() (pre-TTL-filter) to decide hasMore: if Redis returned a full
-        // page of ZSet entries, more may exist even if some HGETALL results were expired.
+        List<Long> seqNums = tuples.stream().map(t -> (long) t.getScore()).toList();
+        List<ShardedRecord> records = fetchRecords(version, shardIndex, seqNums);
         long lastSeq = (long) tuples.get(tuples.size() - 1).getScore();
         ShardCursor next = tuples.size() < limit ? null : ShardCursor.of(String.valueOf(lastSeq));
         return new Page<>(records, next);
     }
 
+    // Merge current + previous device records, dedupe by (deviceId, seqNum) preferring current,
+    // sort by seqNum ascending, cap at `limit`. Cursor: current's cursor drives pagination
+    // (previous-generation data is finite and TTLs out within the window).
+    private Page<ShardedRecord> mergeDevicePages(Page<ShardedRecord> current,
+                                                 Page<ShardedRecord> previous, int limit) {
+        java.util.LinkedHashMap<String, ShardedRecord> byKey = new java.util.LinkedHashMap<>();
+        for (ShardedRecord r : current.records()) byKey.put(r.deviceId() + ":" + r.seqNum(), r);
+        for (ShardedRecord r : previous.records()) byKey.putIfAbsent(r.deviceId() + ":" + r.seqNum(), r);
+        List<ShardedRecord> merged = new ArrayList<>(byKey.values());
+        merged.sort(java.util.Comparator.comparingLong(ShardedRecord::seqNum));
+        if (merged.size() > limit) merged = new ArrayList<>(merged.subList(0, limit));
+        // Pagination is driven by the current generation's cursor; previous-generation records
+        // beyond the first page are not paged — they self-heal when the migration window closes.
+        return new Page<>(merged, current.next());
+    }
+
     public Page<ShardedRecord> readShard(int shardIndex, ShardCursor cursor, int limit) {
-        String streamKey = streamKey(shardIndex);
+        int version = provider.current().version();
+        String streamKey = streamKey(version, shardIndex);
 
         // Fetch limit+1 to detect whether more entries exist beyond this page.
         List<StreamEntry> entries;
@@ -168,7 +197,7 @@ public final class ShardedRecordStore {
         List<Long> seqNums = page.stream()
                 .map(e -> Long.parseLong(e.getFields().get("seq")))
                 .toList();
-        List<ShardedRecord> records = fetchRecords(shardIndex, seqNums);
+        List<ShardedRecord> records = fetchRecords(version, shardIndex, seqNums);
 
         ShardCursor next = hasMore
                 ? ShardCursor.of(page.get(page.size() - 1).getID().toString())
@@ -177,8 +206,9 @@ public final class ShardedRecordStore {
     }
 
     public List<Page<ShardedRecord>> readAllShards(ShardCursor cursor, int limitPerShard) {
+        int shardCount = provider.current().shardCount();
         List<Page<ShardedRecord>> pages = new ArrayList<>();
-        for (int i = 0; i < ring.shardCount(); i++) {
+        for (int i = 0; i < shardCount; i++) {
             // Drain the shard fully, merging all pages into one result Page.
             List<ShardedRecord> all = new ArrayList<>();
             ShardCursor cur = cursor;
@@ -194,11 +224,11 @@ public final class ShardedRecordStore {
     }
 
     // Pipelined multi-HGETALL — one Redis round-trip for up to `limit` records.
-    private List<ShardedRecord> fetchRecords(int shardIndex, List<Long> seqNums) {
+    private List<ShardedRecord> fetchRecords(int version, int shardIndex, List<Long> seqNums) {
         if (seqNums.isEmpty()) return List.of();
         List<Response<Map<String, String>>> responses = new ArrayList<>();
         try (Jedis jedis = readPool.getResource(); Pipeline pipe = jedis.pipelined()) {
-            for (long seq : seqNums) responses.add(pipe.hgetAll(recKey(shardIndex, seq)));
+            for (long seq : seqNums) responses.add(pipe.hgetAll(recKey(version, shardIndex, seq)));
             pipe.sync();
         }
 
@@ -220,15 +250,15 @@ public final class ShardedRecordStore {
 
     // ── Key helpers ──────────────────────────────────────────────────────────────
 
-    String recKey(int shardIndex, long seqNum) {
-        return prefix + "rec:" + shardIndex + ":" + seqNum;
+    String recKey(int version, int shardIndex, long seqNum) {
+        return prefix + Generations.keyPrefix(version) + "rec:" + shardIndex + ":" + seqNum;
     }
 
-    String devKey(int shardIndex, String deviceId) {
-        return prefix + "dev:" + shardIndex + ":" + deviceId;
+    String devKey(int version, int shardIndex, String deviceId) {
+        return prefix + Generations.keyPrefix(version) + "dev:" + shardIndex + ":" + deviceId;
     }
 
-    String streamKey(int shardIndex) {
-        return prefix + "stream:" + shardIndex;
+    String streamKey(int version, int shardIndex) {
+        return prefix + Generations.keyPrefix(version) + "stream:" + shardIndex;
     }
 }
