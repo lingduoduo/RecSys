@@ -90,6 +90,7 @@ sub-packages.
 - `shard:topology` — authoritative versioned shard-topology snapshot (JSON); instances refresh every 30s
 - `sr:rec:{shard}:{seq}` / `sr:dev:{shard}:{id}` / `sr:stream:{shard}` / `sr:seq:{shard}` — generation 1 (unversioned)
 - `sr:g{version}:rec:…` etc. — generation ≥2 keys after a reshard; reads dual-read the previous generation for one max-TTL window
+- Shard-level reads (`GET /shards/shard`, `readAllShards`) are generation-current — during a migration window they do not dual-read the previous generation (device reads do).
 
 ## JVM Tuning
 

@@ -156,6 +156,7 @@ public final class OnlinePredictionServer {
             Server server = sb.build();
             metricsService.registerGauges(registry);
             LearnerFlushScheduler activeLearnerFlushScheduler = learnerFlushScheduler;
+            ShardTopologyProvider activeTopologyProvider = topologyProvider;
 
             ExecutorService activeRecallExecutor = recallExecutor;
             Runtime.getRuntime().addShutdownHook(new Thread(() -> {
@@ -163,6 +164,7 @@ public final class OnlinePredictionServer {
                 asyncEventPublisher.close();
                 activeLearnerFlushScheduler.close();
                 activeRecallExecutor.shutdownNow();
+                activeTopologyProvider.stop();
                 jedisPool.close();
             }));
 

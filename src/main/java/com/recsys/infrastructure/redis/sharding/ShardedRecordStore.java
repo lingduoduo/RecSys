@@ -170,6 +170,8 @@ public final class ShardedRecordStore {
         List<ShardedRecord> merged = new ArrayList<>(byKey.values());
         merged.sort(java.util.Comparator.comparingLong(ShardedRecord::seqNum));
         if (merged.size() > limit) merged = new ArrayList<>(merged.subList(0, limit));
+        // Pagination is driven by the current generation's cursor; previous-generation records
+        // beyond the first page are not paged — they self-heal when the migration window closes.
         return new Page<>(merged, current.next());
     }
 
