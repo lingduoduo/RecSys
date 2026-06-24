@@ -982,6 +982,10 @@ curl -v -X POST http://localhost:8010/api/llm/api/generate \
 | `ONLINE_METRICS_WINDOW_SECONDS` | `60` | Rolling metrics window |
 | `ONLINE_TARGET_DAU` | `2000000` | Capacity sizing assumption |
 | `ONLINE_PEAK_QPS` | `8000` | Peak read-QPS target |
+| `SHARDED_RECORD_SHARD_COUNT` | `2` | Bootstrap shard count for the versioned sharded-record topology |
+| `SHARD_TOPOLOGY_REFRESH_SECONDS` | `30` | How often each instance refreshes the `shard:topology` snapshot |
+| `SHARDED_RECORD_MAX_TTL_SECONDS` | `86400` | Dual-read window after a reshard (previous generation served until records TTL out) |
+| `SHARD_ADMIN_TOKEN` | _(unset)_ | Shared secret for `POST /shards/topology`; unset disables the reshard endpoint |
 | `REDIS_POOL_MAX_TOTAL` | `50` | Maximum Redis connections per process |
 | `REDIS_POOL_MAX_WAIT_MS` | `250` | Fail-fast wait when the Redis pool is exhausted |
 | `REDIS_TIMEOUT_MS` | `2000` | Redis connect/socket timeout; set below the request deadline for online serving |
@@ -1353,7 +1357,7 @@ sh streaming/online-serving/scripts/produce_movie_events.sh
 
 ## Sharded Record Store
 
-`ShardedRecordStore` distributes event, feature, and log records across N Redis shards using consistent hashing. Each write fans out to an HSET (full record) + ZADD (device index for per-device reads) + XADD (shard stream for ordered replay). The number of shards is controlled by `SHARDED_RECORD_SHARD_COUNT` (default `2`).
+`ShardedRecordStore` distributes event, feature, and log records across N Redis shards using consistent hashing. Each write fans out to an HSET (full record) + ZADD (device index for per-device reads) + XADD (shard stream for ordered replay). `SHARDED_RECORD_SHARD_COUNT` (default `2`) is the **bootstrap** shard count for a *versioned topology* that can be resharded at runtime without a redeploy — see [Reshard at runtime](#reshard-at-runtime-versioned-topology) below.
 
 The HTTP façade is mounted at `/shards/` on port `7010`.
 
@@ -1411,6 +1415,23 @@ curl "http://localhost:7010/shards/shard?index=1&limit=10"
 | `limit` | both | `10` | 1–100 |
 | `cursor` | both | start | Opaque string from previous response; empty string = start |
 | `index` | `/shards/shard` | `0` | Shard index (0 to `SHARDED_RECORD_SHARD_COUNT - 1`) |
+
+#### Reshard at runtime (versioned topology)
+
+The live topology is an authoritative versioned snapshot in Redis (`shard:topology`) that every instance refreshes every `SHARD_TOPOLOGY_REFRESH_SECONDS` (default `30`) into a lock-free in-memory view (last-good is retained if Redis is briefly unreachable, so topology lookups never block the request path). `SHARDED_RECORD_SHARD_COUNT` seeds version 1; thereafter an operator changes the shard count at runtime — no redeploy:
+
+```bash
+# Publish a new generation (version+1) with 4 shards. Operator-only, shared-secret guarded.
+curl -X POST http://localhost:7010/shards/topology \
+  -H "X-Admin-Token: $SHARD_ADMIN_TOKEN" \
+  -H "Content-Type: application/json" \
+  -d '{"shardCount":4}'
+# {"version":2,"shardCount":4,"prevVersion":1,"prevExpiresAtMs":...}
+```
+
+- **Auth:** disabled (`403`) unless `SHARD_ADMIN_TOKEN` is set *and* the `X-Admin-Token` header matches. `shardCount` must be ≥ 1 (else `400`).
+- **Generation-scoped keys:** generation 1 uses the original unversioned keys (`sr:rec:{shard}:{seq}`); generation ≥2 prepends `g{version}:` (`sr:g2:rec:…`). Because the mapping is consistent hashing, a resize moves only ~1/N of keys.
+- **No data loss for in-flight records:** for `SHARDED_RECORD_MAX_TTL_SECONDS` after a reshard, per-device reads **dual-read** the previous generation and merge it (current wins), so records written before the change are still served until they TTL out. Shard-level scans (`/shards/shard`, read-all) are generation-current and do not dual-read.
 
 ---
 
