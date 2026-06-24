@@ -1,5 +1,6 @@
 package com.recsys.ratelimit;
 
+import com.recsys.config.EnvConfig;
 import org.slf4j.Logger;
 import org.slf4j.LoggerFactory;
 import redis.clients.jedis.Jedis;
@@ -68,8 +69,8 @@ public final class RedisRateLimiter {
         this(
                 pool,
                 "rate:online:",
-                readLongEnv("ONLINE_REDIS_RATE_LIMIT_QPS", 0L),
-                readIntEnv("ONLINE_REDIS_RATE_LIMIT_WINDOW_SECONDS", 1)
+                EnvConfig.readLong("ONLINE_REDIS_RATE_LIMIT_QPS", 0L),
+                EnvConfig.readInt("ONLINE_REDIS_RATE_LIMIT_WINDOW_SECONDS", 1)
         );
     }
 
@@ -208,26 +209,6 @@ public final class RedisRateLimiter {
             return "global";
         }
         return bucket.trim().replaceAll("[^a-zA-Z0-9:_-]", "_");
-    }
-
-    private static int readIntEnv(String envName, int defaultValue) {
-        String raw = System.getenv(envName);
-        if (raw == null || raw.isBlank()) return defaultValue;
-        try {
-            return Integer.parseInt(raw.trim());
-        } catch (NumberFormatException e) {
-            return defaultValue;
-        }
-    }
-
-    private static long readLongEnv(String envName, long defaultValue) {
-        String raw = System.getenv(envName);
-        if (raw == null || raw.isBlank()) return defaultValue;
-        try {
-            return Long.parseLong(raw.trim());
-        } catch (NumberFormatException e) {
-            return defaultValue;
-        }
     }
 
     public record Decision(
