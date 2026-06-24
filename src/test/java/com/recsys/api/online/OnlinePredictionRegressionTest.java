@@ -12,10 +12,10 @@ import com.linecorp.armeria.server.ServerBuilder;
 import com.linecorp.armeria.testing.junit5.server.ServerExtension;
 import com.recsys.domain.item.Movie;
 import com.recsys.domain.user.User;
-import com.recsys.reliability.OnlineAdmissionControl;
-import com.recsys.reliability.OnlineLoadShedder;
+import com.recsys.loadshed.OnlineAdmissionControl;
+import com.recsys.loadshed.OnlineLoadShedder;
 import com.recsys.metrics.OnlineServingMetricsService;
-import com.recsys.reliability.RedisRateLimiter;
+import com.recsys.ratelimit.RedisRateLimiter;
 import org.junit.jupiter.api.Test;
 import org.junit.jupiter.api.extension.RegisterExtension;
 

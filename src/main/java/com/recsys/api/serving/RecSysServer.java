@@ -14,7 +14,7 @@ import com.recsys.infrastructure.redis.RedisConnectionFactory;
 import com.recsys.infrastructure.redis.RedisEmbeddingStore;
 import com.recsys.infrastructure.redis.ShardedTopKStore;
 import com.recsys.infrastructure.vectordb.CandidateGenerator;
-import com.recsys.reliability.FaultInjector;
+import com.recsys.resilience.FaultInjector;
 import com.recsys.application.recommendation.RecommendationHydrator;
 import com.recsys.application.pagination.CursorPaginationService;
 import com.recsys.application.ranking.ScoreRanker;

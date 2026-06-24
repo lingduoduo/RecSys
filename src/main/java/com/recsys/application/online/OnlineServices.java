@@ -9,8 +9,8 @@ import com.recsys.domain.recommendation.RecommendationQuery;
 import com.recsys.domain.user.User;
 import com.recsys.infrastructure.messaging.AsyncEventPublisher;
 import com.recsys.metrics.OnlineServingMetricsService;
-import com.recsys.reliability.OnlineLoadShedder;
-import com.recsys.reliability.RedisRateLimiter;
+import com.recsys.loadshed.OnlineLoadShedder;
+import com.recsys.ratelimit.RedisRateLimiter;
 
 import com.linecorp.armeria.common.HttpRequest;
 import com.linecorp.armeria.common.HttpResponse;

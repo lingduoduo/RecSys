@@ -3,8 +3,8 @@ import com.recsys.application.gateway.GatewayHealthService;
 import com.recsys.application.gateway.GatewayProxyService;
 import com.recsys.application.gateway.GatewayAuthenticator;
 import com.recsys.application.gateway.MicroserviceRoute;
-import com.recsys.reliability.GatewayRateLimiter;
-import com.recsys.reliability.RouteCircuitBreaker;
+import com.recsys.ratelimit.GatewayRateLimiter;
+import com.recsys.resilience.RouteCircuitBreaker;
 
 import com.linecorp.armeria.common.AggregatedHttpResponse;
 import com.linecorp.armeria.common.HttpMethod;

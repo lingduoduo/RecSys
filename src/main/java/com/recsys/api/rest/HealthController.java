@@ -5,7 +5,7 @@ import com.recsys.config.ABTestConfig;
 import com.recsys.jvm.GcEventTracker;
 import com.recsys.metrics.InferenceMetricsService;
 import com.recsys.jvm.JvmMemoryMonitor;
-import com.recsys.reliability.LoadShedder;
+import com.recsys.loadshed.LoadShedder;
 import com.recsys.application.model.ModelRuntimeProvider;
 import com.recsys.application.recommendation.RecommendationService;
 import org.springframework.http.HttpStatus;

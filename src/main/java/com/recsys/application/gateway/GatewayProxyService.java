@@ -1,7 +1,7 @@
 package com.recsys.application.gateway;
-import com.recsys.reliability.TokenBucket;
-import com.recsys.reliability.GatewayRateLimiter;
-import com.recsys.reliability.RouteCircuitBreaker;
+import com.recsys.ratelimit.TokenBucket;
+import com.recsys.ratelimit.GatewayRateLimiter;
+import com.recsys.resilience.RouteCircuitBreaker;
 
 import com.linecorp.armeria.client.WebClient;
 import com.linecorp.armeria.client.retry.Backoff;

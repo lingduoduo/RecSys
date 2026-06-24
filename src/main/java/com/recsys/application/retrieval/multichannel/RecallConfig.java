@@ -1,7 +1,7 @@
 package com.recsys.application.retrieval.multichannel;
 
 import com.recsys.infrastructure.vectordb.EmbeddingStore;
-import com.recsys.reliability.FaultInjector;
+import com.recsys.resilience.FaultInjector;
 import com.recsys.application.retrieval.RecallChannel;
 import com.recsys.application.retrieval.coldstart.QuotaPolicy;
 
