@@ -9,7 +9,6 @@ import java.time.Duration;
 import java.util.Collections;
 import java.util.LinkedHashMap;
 import java.util.Map;
-import java.util.concurrent.TimeUnit;
 import java.util.function.LongSupplier;
 
 /**
@@ -73,7 +72,8 @@ public class ModelRateLimiter {
         // is called inside the same lock, so LRU eviction is consistent.
         TokenBucket bucket = buckets.computeIfAbsent(key,
                 k -> new TokenBucket(ratePerSecond, burstSize, tickerNanos));
-        return bucket.tryAcquire();
+        TokenBucket.Decision d = bucket.tryAcquire();
+        return new Decision(d.allowed(), d.limit(), d.remaining(), d.retryAfter());
     }
 
     private static String normalizeUserId(String userId) {
@@ -83,40 +83,6 @@ public class ModelRateLimiter {
     public record Decision(boolean allowed, int limit, int remaining, Duration retryAfter) {
         public static Decision unlimited() {
             return new Decision(true, 0, 0, Duration.ZERO);
-        }
-    }
-
-    private static final class TokenBucket {
-        private final double refillPerNano;
-        private final int burst;
-        private final LongSupplier tickerNanos;
-        private double tokens;
-        private long lastRefillNanos;
-
-        TokenBucket(double ratePerSecond, int burst, LongSupplier tickerNanos) {
-            this.refillPerNano = ratePerSecond / TimeUnit.SECONDS.toNanos(1);
-            this.burst = burst;
-            this.tickerNanos = tickerNanos;
-            this.tokens = burst;
-            this.lastRefillNanos = tickerNanos.getAsLong();
-        }
-
-        synchronized Decision tryAcquire() {
-            refill();
-            if (tokens >= 1.0) {
-                tokens -= 1.0;
-                return new Decision(true, burst, (int) Math.floor(tokens), Duration.ZERO);
-            }
-            long waitNanos = (long) Math.ceil((1.0 - tokens) / refillPerNano);
-            return new Decision(false, burst, 0, Duration.ofNanos(Math.max(0L, waitNanos)));
-        }
-
-        private void refill() {
-            long now = tickerNanos.getAsLong();
-            long elapsed = Math.max(0L, now - lastRefillNanos);
-            if (elapsed == 0L) return;
-            tokens = Math.min(burst, tokens + elapsed * refillPerNano);
-            lastRefillNanos = now;
         }
     }
 }
