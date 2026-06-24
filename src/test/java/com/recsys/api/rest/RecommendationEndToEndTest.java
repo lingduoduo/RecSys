@@ -3,7 +3,7 @@ package com.recsys.api.rest;
 import com.recsys.api.envelope.ApiError;
 import com.recsys.api.request.RecommendRequest;
 import com.recsys.api.response.RecommendResponse;
-import com.recsys.observability.InferenceMetricsService;
+import com.recsys.metrics.InferenceMetricsService;
 import com.recsys.application.model.ModelRuntimeProvider;
 import org.junit.jupiter.api.Test;
 import org.springframework.beans.factory.annotation.Autowired;

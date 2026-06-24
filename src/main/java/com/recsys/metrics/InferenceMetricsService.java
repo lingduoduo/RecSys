@@ -1,4 +1,4 @@
-package com.recsys.observability;
+package com.recsys.metrics;
 
 import com.recsys.application.model.Strings;
 import com.recsys.config.HealthProperties;

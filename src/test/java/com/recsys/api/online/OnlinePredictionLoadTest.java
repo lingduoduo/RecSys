@@ -2,7 +2,7 @@ package com.recsys.api.online;
 import com.recsys.application.online.OnlineServices;
 import com.recsys.domain.online.OnlineRecommendationResult;
 import com.recsys.application.online.OnlineRecommendationService;
-import com.recsys.observability.OnlineServingMetricsService;
+import com.recsys.metrics.OnlineServingMetricsService;
 
 import com.linecorp.armeria.common.AggregatedHttpResponse;
 import com.linecorp.armeria.common.HttpStatus;
@@ -16,7 +16,7 @@ import com.recsys.reliability.OnlineAdmissionControl;
 import com.recsys.reliability.OnlineCapacityService;
 import com.recsys.reliability.OnlineLoadShedder;
 import com.recsys.reliability.OnlineOpsService;
-import com.recsys.observability.OnlineServingMetricsService;
+import com.recsys.metrics.OnlineServingMetricsService;
 import com.recsys.reliability.RedisRateLimiter;
 import com.recsys.infrastructure.store.ShardedRecordService;
 import org.junit.jupiter.api.Tag;

@@ -1,4 +1,4 @@
-package com.recsys.observability;
+package com.recsys.jvm;
 
 import org.junit.jupiter.api.Test;
 

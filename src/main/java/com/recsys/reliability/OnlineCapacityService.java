@@ -1,5 +1,5 @@
 package com.recsys.reliability;
-import com.recsys.observability.OnlineServingMetricsService;
+import com.recsys.metrics.OnlineServingMetricsService;
 
 import com.recsys.config.EnvConfig;
 

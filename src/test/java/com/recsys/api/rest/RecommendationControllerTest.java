@@ -9,7 +9,7 @@ import com.recsys.api.response.RecommendResponse;
 import com.recsys.domain.prediction.ScoredItem;
 import com.recsys.application.experiment.ABTestService;
 import com.recsys.application.experiment.AbExposureLogger;
-import com.recsys.observability.InferenceMetricsService;
+import com.recsys.metrics.InferenceMetricsService;
 import com.recsys.reliability.LoadShedder;
 import com.recsys.reliability.ModelRateLimiter;
 import com.recsys.application.recommendation.RecommendationService;

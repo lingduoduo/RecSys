@@ -2,7 +2,7 @@ package com.recsys.reliability;
 
 import com.recsys.api.serving.BaseApiService;
 import com.recsys.infrastructure.messaging.AsyncEventPublisher;
-import com.recsys.observability.OnlineServingMetricsService;
+import com.recsys.metrics.OnlineServingMetricsService;
 
 import com.linecorp.armeria.common.HttpData;
 import com.linecorp.armeria.common.HttpHeaderNames;

@@ -1,4 +1,4 @@
-package com.recsys.observability;
+package com.recsys.metrics;
 
 import com.recsys.config.EnvConfig;
 import io.micrometer.core.instrument.Gauge;

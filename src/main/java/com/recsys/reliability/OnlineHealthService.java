@@ -1,7 +1,7 @@
 package com.recsys.reliability;
 
 import com.recsys.api.serving.BaseApiService;
-import com.recsys.observability.OnlineServingMetricsService;
+import com.recsys.metrics.OnlineServingMetricsService;
 
 import com.linecorp.armeria.common.HttpRequest;
 import com.linecorp.armeria.common.HttpResponse;

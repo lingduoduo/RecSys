@@ -2,7 +2,7 @@ package com.recsys.api.online;
 import com.recsys.application.online.OnlineServices;
 import com.recsys.domain.online.OnlineRecommendationResult;
 import com.recsys.application.online.OnlineRecommendationService;
-import com.recsys.observability.OnlineServingMetricsService;
+import com.recsys.metrics.OnlineServingMetricsService;
 
 import com.fasterxml.jackson.databind.JsonNode;
 import com.fasterxml.jackson.databind.ObjectMapper;
@@ -14,7 +14,7 @@ import com.recsys.domain.item.Movie;
 import com.recsys.domain.user.User;
 import com.recsys.reliability.OnlineAdmissionControl;
 import com.recsys.reliability.OnlineLoadShedder;
-import com.recsys.observability.OnlineServingMetricsService;
+import com.recsys.metrics.OnlineServingMetricsService;
 import com.recsys.reliability.RedisRateLimiter;
 import org.junit.jupiter.api.Test;
 import org.junit.jupiter.api.extension.RegisterExtension;

@@ -1,5 +1,5 @@
-package com.recsys.observability;
-import com.recsys.observability.OnlineServingMetricsService;
+package com.recsys.metrics;
+import com.recsys.metrics.OnlineServingMetricsService;
 
 import org.junit.jupiter.api.Test;
 

@@ -1,4 +1,4 @@
-package com.recsys.observability;
+package com.recsys.jvm;
 
 import com.sun.management.GarbageCollectionNotificationInfo;
 import com.sun.management.GcInfo;

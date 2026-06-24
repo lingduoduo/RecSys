@@ -1,4 +1,4 @@
-package com.recsys.observability;
+package com.recsys.tracing;
 
 import jakarta.servlet.http.HttpServletRequest;
 import jakarta.servlet.http.HttpServletResponse;

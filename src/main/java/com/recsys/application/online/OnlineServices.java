@@ -8,7 +8,7 @@ import com.recsys.domain.online.OnlineRecommendationResult;
 import com.recsys.domain.recommendation.RecommendationQuery;
 import com.recsys.domain.user.User;
 import com.recsys.infrastructure.messaging.AsyncEventPublisher;
-import com.recsys.observability.OnlineServingMetricsService;
+import com.recsys.metrics.OnlineServingMetricsService;
 import com.recsys.reliability.OnlineLoadShedder;
 import com.recsys.reliability.RedisRateLimiter;
 

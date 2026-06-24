@@ -3,7 +3,7 @@ package com.recsys.api.online;
 import com.recsys.application.online.OnlineServices;
 import com.recsys.application.online.OnlineBlendingPipeline;
 import com.recsys.application.online.OnlineRecommendationService;
-import com.recsys.observability.OnlineServingMetricsService;
+import com.recsys.metrics.OnlineServingMetricsService;
 
 import com.linecorp.armeria.server.Route;
 import com.linecorp.armeria.server.Server;

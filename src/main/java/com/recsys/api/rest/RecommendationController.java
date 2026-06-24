@@ -6,7 +6,7 @@ import com.recsys.api.response.SubmitTokenResponse;
 import java.util.Optional;
 import com.recsys.application.experiment.ABTestService;
 import com.recsys.application.experiment.AbExposureLogger;
-import com.recsys.observability.InferenceMetricsService;
+import com.recsys.metrics.InferenceMetricsService;
 import com.recsys.reliability.LoadShedder;
 import com.recsys.reliability.ModelRateLimiter;
 import com.recsys.exception.RateLimitExceededException;
