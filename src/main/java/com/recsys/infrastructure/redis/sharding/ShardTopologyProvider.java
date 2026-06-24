@@ -54,6 +54,18 @@ public final class ShardTopologyProvider {
         return new ShardTopologyProvider(new ShardTopology(version, shardCount, vnodes, 0L));
     }
 
+    /**
+     * Package-private factory for dual-read tests: constructs a fixed provider whose
+     * current/previous/expiry triple is set directly. The fixed ctor's clock returns 0L;
+     * callers use Long.MAX_VALUE (window open) or Long.MIN_VALUE (window closed) to bracket it.
+     */
+    static ShardTopologyProvider fixedWithPrevious(ShardTopology current, ShardTopology previous,
+                                                   long prevExpiresAtMs) {
+        ShardTopologyProvider p = new ShardTopologyProvider(current);
+        p.snapshot = new Snapshot(current, previous, prevExpiresAtMs);
+        return p;
+    }
+
     public void start() {
         if (store != null) {
             try { store.bootstrap(initialShardCount, vnodes, clockMs.getAsLong()); }

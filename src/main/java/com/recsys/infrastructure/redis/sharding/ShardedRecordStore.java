@@ -122,30 +122,55 @@ public final class ShardedRecordStore {
 
     // ── Read ─────────────────────────────────────────────────────────────────────
 
+    /**
+     * Device-level read: dual-read across current + previous generation when a migration window
+     * is active. Captures current and previousIfActive exactly once (avoids torn reads on a
+     * mid-call topology shift). readShard/readAllShards remain current-generation only.
+     */
     public Page<ShardedRecord> readDevice(String deviceId, ShardCursor cursor, int limit) {
-        ShardTopology topo = provider.current();
-        int version    = topo.version();
-        int shardIndex = topo.shardFor(deviceId);
-        String devKey  = devKey(version, shardIndex, deviceId);
+        ShardTopology cur  = provider.current();
+        ShardTopology prev = provider.previousIfActive();
+
+        Page<ShardedRecord> currentPage = readDeviceAt(cur.version(), cur.shardFor(deviceId),
+                deviceId, cursor, limit);
+
+        if (prev == null) return currentPage;
+
+        Page<ShardedRecord> prevPage = readDeviceAt(prev.version(), prev.shardFor(deviceId),
+                deviceId, cursor, limit);
+        return mergeDevicePages(currentPage, prevPage, limit);
+    }
+
+    // Single-generation device read (the former readDevice body, now version-scoped).
+    private Page<ShardedRecord> readDeviceAt(int version, int shardIndex, String deviceId,
+                                             ShardCursor cursor, int limit) {
+        String devKey = devKey(version, shardIndex, deviceId);
         double minScore = cursor.isStart() ? Double.NEGATIVE_INFINITY
                                            : Double.parseDouble(cursor.value()) + 1;
-
         List<Tuple> tuples;
         try (Jedis jedis = readPool.getResource()) {
             tuples = jedis.zrangeByScoreWithScores(devKey, minScore, Double.POSITIVE_INFINITY, 0, limit);
         }
         if (tuples.isEmpty()) return Page.empty();
-
-        List<Long> seqNums = tuples.stream()
-                .map(t -> (long) t.getScore())
-                .toList();
+        List<Long> seqNums = tuples.stream().map(t -> (long) t.getScore()).toList();
         List<ShardedRecord> records = fetchRecords(version, shardIndex, seqNums);
-
-        // Use tuples.size() (pre-TTL-filter) to decide hasMore: if Redis returned a full
-        // page of ZSet entries, more may exist even if some HGETALL results were expired.
         long lastSeq = (long) tuples.get(tuples.size() - 1).getScore();
         ShardCursor next = tuples.size() < limit ? null : ShardCursor.of(String.valueOf(lastSeq));
         return new Page<>(records, next);
+    }
+
+    // Merge current + previous device records, dedupe by (deviceId, seqNum) preferring current,
+    // sort by seqNum ascending, cap at `limit`. Cursor: current's cursor drives pagination
+    // (previous-generation data is finite and TTLs out within the window).
+    private Page<ShardedRecord> mergeDevicePages(Page<ShardedRecord> current,
+                                                 Page<ShardedRecord> previous, int limit) {
+        java.util.LinkedHashMap<String, ShardedRecord> byKey = new java.util.LinkedHashMap<>();
+        for (ShardedRecord r : current.records()) byKey.put(r.deviceId() + ":" + r.seqNum(), r);
+        for (ShardedRecord r : previous.records()) byKey.putIfAbsent(r.deviceId() + ":" + r.seqNum(), r);
+        List<ShardedRecord> merged = new ArrayList<>(byKey.values());
+        merged.sort(java.util.Comparator.comparingLong(ShardedRecord::seqNum));
+        if (merged.size() > limit) merged = new ArrayList<>(merged.subList(0, limit));
+        return new Page<>(merged, current.next());
     }
 
     public Page<ShardedRecord> readShard(int shardIndex, ShardCursor cursor, int limit) {
