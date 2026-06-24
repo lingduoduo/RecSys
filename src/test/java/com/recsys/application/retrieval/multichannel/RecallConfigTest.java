@@ -4,7 +4,7 @@ import com.recsys.application.retrieval.multichannel.RecallConfig;
 
 import com.recsys.domain.item.MovieCandidate;
 import com.recsys.domain.recommendation.RecommendationQuery;
-import com.recsys.reliability.FaultInjector;
+import com.recsys.resilience.FaultInjector;
 import com.recsys.application.retrieval.RecallChannel;
 import org.junit.jupiter.api.Test;
 

@@ -5,9 +5,9 @@ import com.recsys.application.gateway.GatewayHealthService;
 import com.recsys.application.gateway.GatewayAuthenticator;
 import com.recsys.application.gateway.MicroserviceRoute;
 import com.recsys.config.EnvVars;
-import com.recsys.reliability.LlmTokenRateLimiter;
-import com.recsys.reliability.GatewayRateLimiter;
-import com.recsys.reliability.RouteCircuitBreaker;
+import com.recsys.ratelimit.LlmTokenRateLimiter;
+import com.recsys.ratelimit.GatewayRateLimiter;
+import com.recsys.resilience.RouteCircuitBreaker;
 import com.recsys.infrastructure.cache.LlmResponseCache;
 
 import com.linecorp.armeria.server.Server;

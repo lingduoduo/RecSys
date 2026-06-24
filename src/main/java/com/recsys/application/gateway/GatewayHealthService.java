@@ -1,5 +1,5 @@
 package com.recsys.application.gateway;
-import com.recsys.reliability.RouteCircuitBreaker;
+import com.recsys.resilience.RouteCircuitBreaker;
 
 import com.linecorp.armeria.client.WebClient;
 import com.linecorp.armeria.common.HttpRequest;
