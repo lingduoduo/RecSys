@@ -1,4 +1,4 @@
-// src/main/java/com/recsys/streaming/WorkerBulkhead.java
+// src/main/java/com/recsys/resilience/WorkerBulkhead.java
 package com.recsys.resilience;
 
 import java.util.Objects;

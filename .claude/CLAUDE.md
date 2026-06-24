@@ -74,8 +74,13 @@ sub-packages.
 | `application/` | Use-case orchestration: `recommendation`, `retrieval` (recall channels/coldstart/multichannel), `ranking`, `feature`, `experiment` (A/B), `auth`, `model` (ONNX pipeline/artifacts), `online`, `gateway` (proxy/LLM-proxy), `knowledge`, `pagination`, `saga` |
 | `domain/` | Domain value types: `item`, `user`, `rating`, `recommendation`, `prediction`, `online`, `knowledge`, `saga` |
 | `infrastructure/` | Technical adapters: `redis` (+ `sharding`), `cache`, `vectordb`, `store`, `messaging`, `persistence` (MySQL), `lock`, `featureflags`, `dataloading`, `resilience` (bloom/hotkey/single-flight), `alb`, `autoscaling` |
-| `observability/` | Metrics, tracing aspect, JVM/GC monitors |
-| `reliability/` | Load shedding, circuit breaking, rate limiting, bulkheads, admission control, graceful shutdown |
+| `metrics/` | Request/inference metrics services (Micrometer + Armeria online) |
+| `jvm/` | JVM/GC monitors (`GcEventTracker`, `JvmMemoryMonitor`) |
+| `tracing/` | `TraceIdAspect` (trace-id propagation) |
+| `ratelimit/` | Token-bucket + Redis rate limiters (`TokenBucket`, gateway/LLM/model/Redis) |
+| `loadshed/` | Load shedders, admission control, graceful shutdown |
+| `resilience/` | Circuit breaker, bulkhead, fault injector (request-tier fault tolerance) |
+| `health/` | Online-serving health/ops endpoints + capacity sizing |
 | `config/` | Spring config + `@ConfigurationProperties`, `EnvConfig`/`EnvVars`, `NeedLogin` |
 | `exception/` | Exception types + `GlobalExceptionHandler` (saga exceptions live in `domain/saga`) |
 

@@ -1,4 +1,4 @@
-// src/test/java/com/recsys/streaming/WorkerBulkheadTest.java
+// src/test/java/com/recsys/resilience/WorkerBulkheadTest.java
 package com.recsys.resilience;
 
 import org.junit.jupiter.api.AfterEach;
