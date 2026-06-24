@@ -49,6 +49,11 @@ public final class ShardTopologyProvider {
                 new ShardTopology(1, ring.shardCount(), ConsistentHashRing.DEFAULT_VIRTUAL_NODES, 0L));
     }
 
+    /** Constant provider pinned at an explicit version — test/helper use. */
+    public static ShardTopologyProvider fixedAtVersion(int version, int shardCount, int vnodes) {
+        return new ShardTopologyProvider(new ShardTopology(version, shardCount, vnodes, 0L));
+    }
+
     public void start() {
         if (store != null) {
             try { store.bootstrap(initialShardCount, vnodes, clockMs.getAsLong()); }
