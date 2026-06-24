@@ -148,7 +148,10 @@ public final class OnlinePredictionServer {
                               redisRateLimiter, asyncEventPublisher))
               .service("/v2/recommend", new OnlineServices.RecommendV2(blendingPipeline))
               .service(Route.builder().pathPrefix("/shards/").build(),
-                      new ShardedRecordService(shardedRecordStore));
+                      new ShardedRecordService(shardedRecordStore, topologyStore,
+                              System.getenv("SHARD_ADMIN_TOKEN"),
+                              readIntEnv("SHARDED_RECORD_MAX_TTL_SECONDS", 86_400) * 1000L,
+                              System::currentTimeMillis));
 
             Server server = sb.build();
             metricsService.registerGauges(registry);

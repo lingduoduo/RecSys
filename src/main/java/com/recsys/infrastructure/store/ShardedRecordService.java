@@ -7,6 +7,7 @@ import com.recsys.infrastructure.redis.sharding.RecordType;
 import com.recsys.infrastructure.redis.sharding.ShardCursor;
 import com.recsys.infrastructure.redis.sharding.ShardedRecord;
 import com.recsys.infrastructure.redis.sharding.ShardedRecordStore;
+import com.recsys.infrastructure.redis.sharding.ShardTopologyStore;
 import com.recsys.infrastructure.redis.sharding.WriteResult;
 import com.linecorp.armeria.common.HttpRequest;
 import com.linecorp.armeria.common.HttpResponse;
@@ -17,6 +18,7 @@ import java.util.LinkedHashMap;
 import java.util.List;
 import java.util.Map;
 import java.util.concurrent.CompletableFuture;
+import java.util.function.LongSupplier;
 
 /**
  * HTTP façade over ShardedRecordStore.
@@ -28,9 +30,23 @@ import java.util.concurrent.CompletableFuture;
 public final class ShardedRecordService extends BaseApiService {
 
     private final ShardedRecordStore store;
+    private final ShardTopologyStore topologyStore;   // null => reshard disabled
+    private final String adminToken;                  // blank/null => reshard disabled
+    private final long dualReadWindowMs;
+    private final LongSupplier clockMs;
 
     public ShardedRecordService(ShardedRecordStore store) {
+        this(store, null, null, 0L, System::currentTimeMillis);
+    }
+
+    public ShardedRecordService(ShardedRecordStore store, ShardTopologyStore topologyStore,
+                                String adminToken, long dualReadWindowMs,
+                                LongSupplier clockMs) {
         this.store = store;
+        this.topologyStore = topologyStore;
+        this.adminToken = adminToken;
+        this.dualReadWindowMs = dualReadWindowMs;
+        this.clockMs = clockMs;
     }
 
     // ── POST /shards/records ─────────────────────────────────────────────────
@@ -38,6 +54,9 @@ public final class ShardedRecordService extends BaseApiService {
     @Override
     protected HttpResponse doPost(ServiceRequestContext ctx, HttpRequest req) {
         String path = ctx.path();
+        if (path.equals("/shards/topology")) {
+            return handleReshard(ctx, req);
+        }
         if (path.endsWith("/records") || path.equals("/shards/") || path.equals("/shards")) {
             return HttpResponse.of(req.aggregate().thenApplyAsync(agg -> {
                 try {
@@ -79,6 +98,38 @@ public final class ShardedRecordService extends BaseApiService {
             }, ctx.blockingTaskExecutor()));
         }
         return writeError(HttpStatus.NOT_FOUND, "unknown path");
+    }
+
+    // ── POST /shards/topology ────────────────────────────────────────────────
+
+    private HttpResponse handleReshard(ServiceRequestContext ctx, HttpRequest req) {
+        return HttpResponse.of(req.aggregate().thenApplyAsync(agg -> {
+            if (topologyStore == null || adminToken == null || adminToken.isBlank()) {
+                return writeError(HttpStatus.FORBIDDEN, "reshard disabled");
+            }
+            String token = agg.headers().get("X-Admin-Token");
+            if (token == null || !token.equals(adminToken)) {
+                return writeError(HttpStatus.FORBIDDEN, "invalid admin token");
+            }
+            try {
+                JsonNode body = MAPPER.readTree(agg.content().toInputStream());
+                if (!body.has("shardCount") || body.get("shardCount").asInt(0) < 1) {
+                    return writeError(HttpStatus.BAD_REQUEST, "shardCount must be an integer >= 1");
+                }
+                int newShardCount = body.get("shardCount").asInt();
+                ShardTopologyStore.Snapshot s =
+                        topologyStore.publishReshard(newShardCount, clockMs.getAsLong(), dualReadWindowMs);
+                return writeJson(HttpStatus.OK, Map.of(
+                        "version",        s.version(),
+                        "shardCount",     s.shardCount(),
+                        "prevVersion",    s.prevVersion(),
+                        "prevExpiresAtMs", s.prevExpiresAtMs()
+                ));
+            } catch (Exception e) {
+                log.error("Unexpected error in reshard", e);
+                return writeError(HttpStatus.INTERNAL_SERVER_ERROR, "internal server error");
+            }
+        }, ctx.blockingTaskExecutor()));
     }
 
     // ── GET /shards/device and /shards/shard ─────────────────────────────────
