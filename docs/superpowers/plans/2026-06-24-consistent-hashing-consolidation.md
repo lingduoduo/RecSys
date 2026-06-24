@@ -87,8 +87,8 @@ class HashingTest {
 
     @Test
     void fmix64_matchesBucketerAvalancheGoldenValues() {
-        assertThat(Hashing.fmix64(Hashing.fnv1a64("123:default"))).isEqualTo(-1111743039773131603L);
-        assertThat(Hashing.fmix64(Hashing.fnv1a64(":"))).isEqualTo(-3366928001641268291L);
+        assertThat(Hashing.fmix64(Hashing.fnv1a64("123:default"))).isEqualTo(-5946069669134103219L);
+        assertThat(Hashing.fmix64(Hashing.fnv1a64(":"))).isEqualTo(8049451291064401709L);
     }
 }
 ```
