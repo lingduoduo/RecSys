@@ -89,6 +89,12 @@
       <artifactId>caffeine</artifactId>
       <version>3.1.8</version>
     </dependency>
+    <!-- HikariCP: connection pool for the optional MySQL client. -->
+    <dependency>
+      <groupId>com.zaxxer</groupId>
+      <artifactId>HikariCP</artifactId>
+      <version>5.1.0</version>
+    </dependency>
     <!-- Armeria HTTP/2 server. -->
     <dependency>
       <groupId>com.linecorp.armeria</groupId>

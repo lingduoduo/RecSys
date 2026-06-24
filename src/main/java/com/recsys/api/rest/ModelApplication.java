@@ -13,7 +13,9 @@ import org.springframework.boot.context.properties.EnableConfigurationProperties
 import org.springframework.context.annotation.Import;
 
 @SpringBootApplication(scanBasePackages = {"com.recsys.api", "com.recsys.config", "com.recsys.exception",
-        "com.recsys.observability", "com.recsys.reliability", "com.recsys.application"})
+        "com.recsys.metrics", "com.recsys.jvm", "com.recsys.tracing",
+        "com.recsys.ratelimit", "com.recsys.loadshed", "com.recsys.resilience", "com.recsys.health",
+        "com.recsys.application"})
 @Import(FeatureFlagConfig.class)
 @EnableConfigurationProperties({
         HealthProperties.class,

@@ -11,7 +11,7 @@ import com.recsys.infrastructure.redis.RedisEmbeddingStore;
 import com.recsys.config.ABTestConfig;
 import com.recsys.infrastructure.dataloading.DataManager;
 import com.recsys.infrastructure.vectordb.CandidateGenerator;
-import com.recsys.reliability.FaultInjector;
+import com.recsys.resilience.FaultInjector;
 import com.recsys.infrastructure.store.TrendingStore;
 import com.recsys.infrastructure.redis.GlobalPopularityStore;
 import com.recsys.infrastructure.redis.ShardedTopKStore;

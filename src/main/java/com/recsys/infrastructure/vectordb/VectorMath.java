@@ -5,20 +5,6 @@ public final class VectorMath {
     private VectorMath() {
     }
 
-    public static double cosine(float[] a, float[] b) {
-        if (a == null || b == null || a.length != b.length) return Double.NEGATIVE_INFINITY;
-
-        double dot = 0.0, na = 0.0, nb = 0.0;
-        for (int i = 0; i < a.length; i++) {
-            double x = a[i], y = b[i];
-            dot += x * y;
-            na += x * x;
-            nb += y * y;
-        }
-        if (na == 0.0 || nb == 0.0) return Double.NEGATIVE_INFINITY;
-        return dot / Math.sqrt(na * nb);
-    }
-
     public static double innerProduct(float[] a, float[] b) {
         if (a == null || b == null || a.length != b.length) return Double.NEGATIVE_INFINITY;
         int len = a.length;
@@ -35,13 +21,6 @@ public final class VectorMath {
         double dot = s0 + s1 + s2 + s3;
         for (; i < len; i++) dot += (double) a[i] * b[i];
         return dot;
-    }
-
-    public static double normSq(float[] v) {
-        if (v == null) return 0.0;
-        double n = 0.0;
-        for (float x : v) n += (double) x * x;
-        return n;
     }
 
     public static float[] parseVector(String s) {

@@ -3,7 +3,7 @@ package com.recsys.application.retrieval.multichannel;
 import com.recsys.domain.item.MovieCandidate;
 import com.recsys.domain.recommendation.RecommendationQuery;
 import com.recsys.infrastructure.vectordb.EmbeddingStore;
-import com.recsys.reliability.FaultInjector;
+import com.recsys.resilience.FaultInjector;
 import com.recsys.application.retrieval.RecallChannel;
 import com.recsys.application.retrieval.RecallScoring;
 import com.recsys.application.retrieval.coldstart.QuotaPolicy;
