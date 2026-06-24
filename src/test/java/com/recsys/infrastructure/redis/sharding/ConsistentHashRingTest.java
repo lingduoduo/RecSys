@@ -73,4 +73,33 @@ class ConsistentHashRingTest {
     void shardCount_returnsConfiguredValue() {
         assertThat(new ConsistentHashRing(3, 150).shardCount()).isEqualTo(3);
     }
+
+    @Test
+    void shardFor_matchesGoldenAssignmentsAcrossShardCounts() {
+        assertThatAssignments(2, Map.of(
+                "device-1", 0,
+                "device-123", 0,
+                "device-abc", 0,
+                "user:999", 1,
+                "user:12345", 1));
+
+        assertThatAssignments(4, Map.of(
+                "device-1", 0,
+                "device-123", 0,
+                "device-abc", 0,
+                "user:999", 1,
+                "user:12345", 1));
+
+        assertThatAssignments(8, Map.of(
+                "device-1", 4,
+                "device-123", 4,
+                "device-abc", 0,
+                "user:999", 1,
+                "user:12345", 5));
+    }
+
+    private static void assertThatAssignments(int shardCount, Map<String, Integer> expected) {
+        var ring = new ConsistentHashRing(shardCount, 150);
+        expected.forEach((deviceId, shard) -> assertThat(ring.shardFor(deviceId)).isEqualTo(shard));
+    }
 }
