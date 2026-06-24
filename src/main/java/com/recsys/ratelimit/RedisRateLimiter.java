@@ -1,14 +1,13 @@
 package com.recsys.ratelimit;
 
 import com.recsys.config.EnvConfig;
+import com.recsys.resilience.CircuitBreaker;
 import org.slf4j.Logger;
 import org.slf4j.LoggerFactory;
 import redis.clients.jedis.Jedis;
 import redis.clients.jedis.util.Pool;
 
 import java.util.List;
-import java.util.concurrent.atomic.AtomicBoolean;
-import java.util.concurrent.atomic.AtomicInteger;
 import java.util.concurrent.atomic.AtomicLong;
 
 /**
@@ -56,12 +55,7 @@ public final class RedisRateLimiter {
     private final AtomicLong localCount = new AtomicLong(0L);
 
     // Circuit breaker state (cache avalanche / rate-limit degradation).
-    private final int circuitFailureThreshold;
-    private final long circuitResetMs;
-    private final AtomicInteger consecutiveFailures = new AtomicInteger(0);
-    private volatile long circuitOpenUntilMs = 0L;
-    // Ensures only one thread probes Redis in HALF_OPEN state.
-    private final AtomicBoolean probing = new AtomicBoolean(false);
+    private final CircuitBreaker circuit;
 
     public enum CircuitState { CLOSED, OPEN, HALF_OPEN }
 
@@ -92,8 +86,7 @@ public final class RedisRateLimiter {
         this.windowSeconds = Math.max(1, windowSeconds);
         this.enabled = pool != null && this.limit > 0L;
         this.localPassThreshold = (long) (Math.max(0L, this.limit) * Math.max(0.0, Math.min(1.0, localPassFraction)));
-        this.circuitFailureThreshold = Math.max(1, circuitFailureThreshold);
-        this.circuitResetMs = Math.max(1L, circuitResetMs);
+        this.circuit = new CircuitBreaker(Math.max(1, circuitFailureThreshold), Math.max(1L, circuitResetMs));
     }
 
     public static RedisRateLimiter disabled() {
@@ -116,18 +109,12 @@ public final class RedisRateLimiter {
             return Decision.allowed(limit - local, 0, false);
         }
 
-        // Above local threshold — check circuit state before hitting Redis.
-        CircuitState state = circuitState();
-        if (state == CircuitState.OPEN) {
-            log.debug("Circuit OPEN for bucket '{}', allowing without Redis", bucket);
-            return Decision.allowed(limit, 0, true);
-        }
-        if (state == CircuitState.HALF_OPEN && !probing.compareAndSet(false, true)) {
-            // Another thread is already probing; fail-open to avoid serializing all traffic.
+        // Above local threshold — consult the circuit before hitting Redis.
+        // CLOSED → proceed; OPEN → fail open; HALF_OPEN → only the probe winner proceeds.
+        if (!circuit.tryAcquire()) {
             return Decision.allowed(limit, 0, true);
         }
 
-        // Consult Redis for accurate cross-instance count.
         String key = keyPrefix + normalizeBucket(bucket);
         try (Jedis jedis = pool.getResource()) {
             Object raw = jedis.eval(
@@ -135,29 +122,23 @@ public final class RedisRateLimiter {
                     List.of(key),
                     List.of(Long.toString(limit), Integer.toString(windowSeconds))
             );
-            // Successful Redis call: reset circuit.
-            consecutiveFailures.set(0);
-            probing.set(false);
+            circuit.recordSuccess();
             return parseDecision(raw);
         } catch (Exception e) {
-            int failures = consecutiveFailures.incrementAndGet();
-            if (failures >= circuitFailureThreshold) {
-                circuitOpenUntilMs = System.currentTimeMillis() + circuitResetMs;
-            }
-            probing.set(false);
+            circuit.recordFailure();
             log.warn("Redis rate limiter failed open for bucket '{}' (failures={}): {}",
-                    bucket, failures, e.toString());
+                    bucket, circuit.failureCount(), e.toString());
             return Decision.allowed(limit, 0, true);
         }
     }
 
     /** Returns the current circuit breaker state. */
     public CircuitState circuitState() {
-        int failures = consecutiveFailures.get();
-        if (failures < circuitFailureThreshold) return CircuitState.CLOSED;
-        long now = System.currentTimeMillis();
-        if (now < circuitOpenUntilMs) return CircuitState.OPEN;
-        return CircuitState.HALF_OPEN;
+        return switch (circuit.state()) {
+            case CLOSED    -> CircuitState.CLOSED;
+            case OPEN      -> CircuitState.OPEN;
+            case HALF_OPEN -> CircuitState.HALF_OPEN;
+        };
     }
 
     public Snapshot snapshot() {
