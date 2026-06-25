@@ -1,5 +1,4 @@
 package com.recsys.application.experiment;
-import com.recsys.application.experiment.StableBucketer;
 
 import org.junit.jupiter.api.Test;
 
@@ -11,6 +10,10 @@ import static org.assertj.core.api.Assertions.assertThat;
 class StableBucketerTest {
 
     private static final int GOLDEN_123_DEFAULT = 8397;
+    private static final int GOLDEN_123_LAYER_A = 7123;
+    private static final int GOLDEN_123_LAYER_B = 5243;
+    private static final int GOLDEN_EMPTY = 1709;
+    private static final int GOLDEN_DEVICE_RECSYS_AB = 8238;
 
     @Test
     void slotIsDeterministic() {
@@ -58,8 +61,12 @@ class StableBucketerTest {
     }
 
     @Test
-    void slotIsStableForKnownInput() {
-        // Golden value: pins the algorithm so a future refactor that changes bucketing is caught.
+    void slotIsStableForKnownInputs() {
+        // Golden values: pin the algorithm so a future refactor that changes bucketing is caught.
         assertThat(StableBucketer.slot("123", "default")).isEqualTo(GOLDEN_123_DEFAULT);
+        assertThat(StableBucketer.slot("123", "a")).isEqualTo(GOLDEN_123_LAYER_A);
+        assertThat(StableBucketer.slot("123", "b")).isEqualTo(GOLDEN_123_LAYER_B);
+        assertThat(StableBucketer.slot("", "")).isEqualTo(GOLDEN_EMPTY);
+        assertThat(StableBucketer.slot("device-123", "recsys.ab")).isEqualTo(GOLDEN_DEVICE_RECSYS_AB);
     }
 }

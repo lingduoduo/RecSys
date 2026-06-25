@@ -1,7 +1,7 @@
-# SPEC - Split `observability/` + `reliability/` into focused top-level layers
+# Operational Layer Split Design
 
-> Supersedes the previous SPEC.md (the whole-repo clean-architecture reorg, now complete -
-> that work produced today's flat `observability/` and `reliability/` top-level packages).
+> Archived from the working `SPEC.md`. Splits the two grab-bag `observability/` + `reliability/`
+> packages into seven focused, concern-named top-level layers, consolidating duplication on the way.
 
 ## 1. Objective
 
@@ -120,6 +120,10 @@ Do these **behind the green test suite**, smallest/safest first. Each must be be
 
 If any consolidation can't preserve behavior cleanly, **prefer the plain move** for that file and
 record why in the PR description. Reorg correctness outranks maximal dedup.
+
+> **Outcome (as shipped, PR #150):** C1–C3 done; C3 extracted `resilience.CircuitBreaker` used by both
+> `RouteCircuitBreaker` and `RedisRateLimiter`. C4 deferred (the two metrics windows diverge enough that
+> a shared generic adds more code/risk than it removes). C5 co-located only, as decided.
 
 ---
 

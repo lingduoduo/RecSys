@@ -8,7 +8,7 @@ import java.util.TreeMap;
 /**
  * Immutable consistent-hash ring mapping device/user IDs to shard indices.
  *
- * Uses FNV-1a (64-bit) for hashing and virtual nodes for uniform distribution.
+ * Uses {@link Hashing#fnv1a64(String)} and virtual nodes for uniform distribution.
  * Each physical shard gets {@code virtualNodesPerShard} virtual nodes spread
  * across the hash space by hashing "v{i}:{shardIndex}" strings.
  *
@@ -28,7 +28,7 @@ public final class ConsistentHashRing {
 
         for (int shard = 0; shard < shardCount; shard++) {
             for (int v = 0; v < virtualNodesPerShard; v++) {
-                long hash = Fnv1a.hash("v" + v + ":" + shard);
+                long hash = Hashing.fnv1a64("v" + v + ":" + shard);
                 ring.put(hash, shard);
             }
         }
@@ -36,7 +36,7 @@ public final class ConsistentHashRing {
 
     /** Returns the shard index for the given device/user ID. Lock-free after construction. */
     public int shardFor(String deviceId) {
-        long hash = Fnv1a.hash(deviceId);
+        long hash = Hashing.fnv1a64(deviceId);
         Map.Entry<Long, Integer> entry = ring.ceilingEntry(hash);
         return (entry != null ? entry : ring.firstEntry()).getValue();
     }

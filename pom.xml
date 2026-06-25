@@ -15,6 +15,7 @@
     <spring-boot.version>3.3.4</spring-boot.version>
     <onnxruntime.version>1.18.0</onnxruntime.version>
     <armeria.version>1.28.4</armeria.version>
+    <aws.sdk.version>2.25.70</aws.sdk.version>
     <!-- Default: skip @Tag("load") and @Tag("docker") tests.
          Override: mvn test -DexcludedGroups="" -Dgroups=load
          Run docker tests: mvn test -DexcludedGroups=load -->
@@ -185,6 +186,13 @@
       <groupId>org.apache.kafka</groupId>
       <artifactId>kafka-clients</artifactId>
       <version>3.7.1</version>
+    </dependency>
+
+    <!-- AWS SDK v2 SQS transport for AsyncEventPublisher and saga event publishing. -->
+    <dependency>
+      <groupId>software.amazon.awssdk</groupId>
+      <artifactId>sqs</artifactId>
+      <version>${aws.sdk.version}</version>
     </dependency>
 
   </dependencies>

@@ -48,6 +48,10 @@ spec:
               value: com.recsys.api.online.OnlinePredictionServer
             - name: ONLINE_DEMO_PORT
               value: "7010"
+            - name: ONLINE_EVENTS_SQS_ENABLED
+              value: "false"
+            - name: ONLINE_EVENTS_SQS_QUEUE_URL
+              value: ""
             - name: REDIS_POOL_MAX_TOTAL
               value: "64"
             - name: REDIS_POOL_MAX_IDLE

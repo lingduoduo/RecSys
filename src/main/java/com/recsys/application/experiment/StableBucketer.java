@@ -1,6 +1,6 @@
 package com.recsys.application.experiment;
 
-import com.recsys.infrastructure.redis.sharding.Fnv1a;
+import com.recsys.infrastructure.redis.sharding.Hashing;
 import java.nio.charset.StandardCharsets;
 
 /**
@@ -22,14 +22,8 @@ public final class StableBucketer {
         return (int) Long.remainderUnsigned(h, KEYSPACE);
     }
 
-    // FNV-1a accumulation (shared Fnv1a) followed by the murmur3 fmix64 finalizer.
+    // FNV-1a accumulation followed by the murmur3 fmix64 finalizer.
     private static long hash64(byte[] data) {
-        long h = Fnv1a.hash(data);
-        h ^= (h >>> 33);
-        h *= 0xff51afd7ed558ccdL;
-        h ^= (h >>> 33);
-        h *= 0xc4ceb9fe1a85ec53L;   // murmur3 x64-128 finalizer constant (avalanche-equivalent fmix64 variant)
-        h ^= (h >>> 33);
-        return h;
+        return Hashing.fmix64(Hashing.fnv1a64(data));
     }
 }
