@@ -105,6 +105,7 @@ curl http://localhost:8010/health
   - [Port 7010 — Online Prediction Server](#port-7010--online-prediction-server)
   - [Port 8080 — Model Serving (Spring Boot)](#port-8080--model-serving-spring-boot)
   - [Port 8010 — API Gateway](#port-8010--api-gateway)
+- [SQL Use Cases](#sql-use-cases)
 - [Microservice Gateway](#microservice-gateway)
 - [Configuration](#configuration)
 - [Project Layout](#project-layout)
@@ -801,6 +802,196 @@ curl -X POST "http://localhost:8010/api/llm/api/generate" \
 ```
 
 > **Hostname note:** `localhost:8010` is for local dev. In Kubernetes use the ClusterIP name (e.g. `recsys-api-gateway:8010`); on EKS with Cloud Map use `api-gateway.recsys.internal:8010`.
+
+---
+
+## SQL Use Cases
+
+SQL support is opt-in and intentionally small. The serving hot paths use Redis/ONNX by default, while MySQL is available for product-style views that need durable relational data, deep pagination, counts, and ad hoc filtering. The relevant backend pieces are:
+
+- `MillionScalePaginationSql` — emits MySQL-friendly covering-index, keyset, delayed-join, and count queries.
+- `MySqlClient` — read-only JDBC helper backed by a lazily-created HikariCP pool.
+- `/v2/recommend` on ports `6010` and `7010` — existing backend APIs that expose cursor-page semantics to UI clients, even when the current candidate source is Redis-backed recall rather than direct SQL.
+
+### Frontend UI Use Cases
+
+The repository does not currently include a standalone frontend app. A UI can still be built directly against the service contracts below:
+
+| UI view | Backend call | SQL/pagination concern |
+|---|---|---|
+| Catalog browser | `GET /item`, `GET /movie`, future SQL-backed list API | Use keyset pagination over `(updated_at, id)` or `(popularity_score, id)` instead of deep `OFFSET` scans |
+| Recommendation feed | `POST /v2/recommend` on `6010`, `7010`, or gateway | Store and replay `nextCursor`; disable "next" when it is `null` |
+| Online feature inspector | `GET /online/features` | Debug the Redis feature view that would be joined with relational item metadata |
+| Model-serving demo | `POST /api/v1/recommend` on `8080` | Show model version, A/B variant, scores, and cached result status |
+| Admin / ops dashboard | `GET /health`, `/health/cache`, `/online/ops` | Pair service health with MySQL health when SQL-backed screens are enabled |
+
+Frontend paging pattern:
+
+```text
+Initial render:
+  POST /v2/recommend {userId, limit, excludedItemIds}
+  render items
+  save response.nextCursor
+
+Next page:
+  POST /v2/recommend {userId, limit, cursor: previous.nextCursor}
+  append or replace rows
+
+End of list:
+  nextCursor == null
+```
+
+### Backend Curl Services
+
+Direct catalog recommendation page, suitable for a "For You" UI:
+
+```bash
+curl -X POST "http://localhost:6010/v2/recommend" \
+  -H "Content-Type: application/json" \
+  -d '{"userId":"123","limit":10,"excludedItemIds":["1","2"]}'
+
+curl -X POST "http://localhost:6010/v2/recommend" \
+  -H "Content-Type: application/json" \
+  -d '{"userId":"123","limit":10,"cursor":"<nextCursor>"}'
+```
+
+Real-time online recommendation page:
+
+```bash
+curl -X POST "http://localhost:7010/v2/recommend" \
+  -H "Content-Type: application/json" \
+  -d '{"userId":"123","limit":10}'
+
+curl "http://localhost:7010/online/features?userId=123&window=last_hour"
+```
+
+Model-serving recommendation card with A/B variant metadata:
+
+```bash
+curl -X POST "http://localhost:8080/api/v1/recommend" \
+  -H "Content-Type: application/json" \
+  -d '{"userId":"123","k":5}'
+```
+
+Gateway equivalents for a frontend that only talks to one origin:
+
+```bash
+curl -X POST "http://localhost:8010/api/catalog/v2/recommend" \
+  -H "Content-Type: application/json" \
+  -d '{"userId":"123","limit":10}'
+
+curl -X POST "http://localhost:8010/api/online/v2/recommend" \
+  -H "Content-Type: application/json" \
+  -d '{"userId":"123","limit":10}'
+
+curl -X POST "http://localhost:8010/api/model/api/v1/recommend" \
+  -H "Content-Type: application/json" \
+  -d '{"userId":"123","k":5}'
+```
+
+### SQL Backend Patterns
+
+Enable MySQL only for services or jobs that actually need relational reads:
+
+```bash
+export MYSQL_ENABLED=true
+export MYSQL_URL="jdbc:mysql://localhost:3306/recsys?useSSL=false&serverTimezone=UTC"
+export MYSQL_USER="recsys"
+export MYSQL_PASSWORD=""
+export MYSQL_POOL_MAX_SIZE=5
+export MYSQL_POOL_MIN_IDLE=1
+```
+
+Recommended table/index shape for a SQL-backed catalog list:
+
+```sql
+CREATE TABLE movies (
+  id BIGINT PRIMARY KEY,
+  title VARCHAR(255) NOT NULL,
+  year INT,
+  popularity_score DECIMAL(12,6) NOT NULL,
+  updated_at DATETIME NOT NULL,
+  genre VARCHAR(64)
+);
+
+CREATE INDEX idx_movies_popularity_id
+  ON movies (genre, popularity_score DESC, id DESC, title, year);
+```
+
+Use `MillionScalePaginationSql` to generate safe SQL templates with bind parameters:
+
+```java
+var table = MillionScalePaginationSql.table(
+    "movies",
+    "id",
+    "popularity_score",
+    MillionScalePaginationSql.SortDirection.DESC,
+    "idx_movies_popularity_id",
+    List.of("id", "title", "year", "popularity_score")
+);
+
+var firstPage = MillionScalePaginationSql.cursorPage(
+    table,
+    List.of("genre = ?"),
+    List.of("Sci-Fi"),
+    null,
+    20
+);
+
+var nextPage = MillionScalePaginationSql.cursorPage(
+    table,
+    List.of("genre = ?"),
+    List.of("Sci-Fi"),
+    MillionScalePaginationSql.SeekCursor.decode(cursorFromUi),
+    20
+);
+```
+
+For deep random-access admin pages, prefer delayed join pagination:
+
+```java
+var page1000 = MillionScalePaginationSql.delayedJoinPage(
+    table,
+    List.of("genre = ?"),
+    List.of("Sci-Fi"),
+    20_000,
+    20
+);
+```
+
+For count badges, force the covering index:
+
+```java
+var count = MillionScalePaginationSql.countWithCoveringIndex(
+    table,
+    List.of("genre = ?"),
+    List.of("Sci-Fi")
+);
+```
+
+Execution through the read-only MySQL helper:
+
+```java
+try (var mysql = MySqlClient.fromEnv()) {
+    var page = mysql.queryPage(
+        firstPage,
+        20,
+        row -> new MillionScalePaginationSql.SeekCursor(
+            row.popularityScore().toPlainString(),
+            row.id()
+        ),
+        rs -> new MovieRow(
+            rs.getLong("id"),
+            rs.getString("title"),
+            rs.getInt("year"),
+            rs.getBigDecimal("popularity_score")
+        ),
+        2
+    );
+}
+```
+
+Keep SQL reads off latency-critical recommendation paths unless the data is indexed, bounded, and cached. For user-facing recommendation feeds, prefer the existing `/v2/recommend` APIs; use SQL for durable catalog browsing, admin lists, and hydration data that benefits from relational filters.
 
 ---
 
