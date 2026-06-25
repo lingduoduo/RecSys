@@ -39,6 +39,7 @@ import com.recsys.infrastructure.store.ShardedRecordService;
 import com.recsys.ratelimit.RedisRateLimiter;
 import com.recsys.infrastructure.store.OnlineFeatureStore;
 import com.recsys.infrastructure.store.TrendingStore;
+import com.recsys.infrastructure.messaging.AsyncEventPublisherFactory;
 import com.recsys.application.retrieval.channels.Channels;
 import com.recsys.application.retrieval.coldstart.ColdStartChannel;
 import com.recsys.application.retrieval.coldstart.QuotaPolicy;
@@ -61,7 +62,7 @@ public final class OnlinePredictionServer {
         int requestTimeoutMs = readIntEnv("ONLINE_REQUEST_TIMEOUT_MS", 500);
 
         Pool<Jedis> jedisPool = RedisConnectionFactory.fromEnv();
-        AsyncEventPublisher asyncEventPublisher = new AsyncEventPublisher();
+        AsyncEventPublisher asyncEventPublisher = createAsyncEventPublisher();
         LearnerFlushScheduler learnerFlushScheduler = null;
         ExecutorService recallExecutor = null;
 
@@ -187,5 +188,9 @@ public final class OnlinePredictionServer {
         } catch (NumberFormatException e) {
             return defaultValue;
         }
+    }
+
+    static AsyncEventPublisher createAsyncEventPublisher() {
+        return AsyncEventPublisherFactory.fromEnvironment("ONLINE_EVENTS");
     }
 }

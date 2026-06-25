@@ -23,6 +23,7 @@ import com.recsys.infrastructure.redis.sharding.ShardedRecord;
 import com.recsys.infrastructure.redis.sharding.ShardedRecordStore;
 import com.recsys.infrastructure.redis.sharding.WriteResult;
 import com.recsys.infrastructure.redis.sharding.WriteStatus;
+import com.recsys.infrastructure.messaging.AsyncEventPublisher;
 import com.recsys.domain.user.User;
 import com.recsys.loadshed.OnlineAdmissionControl;
 import com.recsys.health.OnlineCapacityService;
@@ -114,6 +115,12 @@ class OnlinePredictionServerIntegrationTest {
 
     @Test void ops() {
         assertThat(server.blockingWebClient().get("/online/ops").status()).isEqualTo(HttpStatus.OK);
+    }
+
+    @Test void defaultAsyncEventPublisherIsLogOnlyWhenEnvIsAbsent() {
+        AsyncEventPublisher publisher = OnlinePredictionServer.createAsyncEventPublisher();
+        assertThat(publisher).isExactlyInstanceOf(AsyncEventPublisher.class);
+        publisher.close();
     }
 
     @Test void writeShardRecord() throws Exception {

@@ -106,6 +106,12 @@ recsys:
     ttl-seconds: ${RECSYS_SUBMIT_TOKEN_TTL_SECONDS:300}
     key-prefix: ${RECSYS_SUBMIT_TOKEN_KEY_PREFIX:submit_token:}
   events:
+    # A/B exposure events can ship to SQS for AWS-native decoupling. SQS wins over Kafka
+    # when both are configured; leave disabled for local/dev/tests.
+    sqs:
+      enabled: ${RECSYS_EVENTS_SQS_ENABLED:false}
+      queue-url: ${RECSYS_EVENTS_SQS_QUEUE_URL:}
+      region: ${RECSYS_EVENTS_SQS_REGION:${AWS_REGION:us-east-1}}
     # A/B exposure events ship to Kafka only when enabled=true AND bootstrap-servers is non-blank;
     # otherwise the publisher falls back to the log-only base (local/dev/tests need no broker).
     kafka:

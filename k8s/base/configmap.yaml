@@ -48,3 +48,8 @@ data:
   ONLINE_DRAIN_UTILIZATION: "0.90"
   ONLINE_FEATURE_STALE_TTL_MS: "60000"
   ONLINE_TOPK_STALE_TTL_MS: "60000"
+  # Optional saga transition publication to SQS. Keep disabled unless a saga events queue
+  # and IAM permission are configured for the runtime that creates saga orchestrators.
+  SAGA_EVENTS_SQS_ENABLED: "false"
+  SAGA_EVENTS_SQS_QUEUE_URL: ""
+  SAGA_EVENTS_SQS_BEST_EFFORT: "false"
