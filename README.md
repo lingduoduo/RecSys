@@ -18,7 +18,8 @@ A compact Maven workspace demonstrating recommendation-system serving, retrieval
 | Online Serving | `OnlinePredictionServer`, `OnlineFeatureStore`, `ShardedTopKStore`, `OnlineLearner` |
 | Catalog Serving | `RecSysServer` (Armeria), embedding-based recall, `SimilarMovieService` |
 | Recommendation Service | Shared recall → rank → paginate → hydrate pipeline, `MultiChannelRecallService` |
-| Data Infrastructure | Redis embedding store, multi-level cache (L1/L2/L3), LSH vector index, sharded top-K, MySQL |
+| Data Infrastructure | Redis embedding store, AZ-aware read-replica router, multi-level cache (L1/L2/L3), LSH vector index, consistent-hash sharded record store, sharded top-K, MySQL |
+| Messaging & Load Balancing | `AsyncEventPublisher` (SQS/Kafka transports), `ApplicationLoadBalancer` (L7), capacity-weight feedback |
 | Domain Model | Shared value objects: `Movie`, `User`, `MovieCandidate`, `RecommendationQuery` |
 | Configuration | Spring `@ConfigurationProperties`, feature flag providers, JVM tuning options |
 | Infrastructure | Kubernetes base + EKS overlay, Docker, Flink streaming topology |
@@ -116,6 +117,9 @@ curl http://localhost:8010/health
 - [Redis Test Data](#redis-test-data)
 - [Online Serving](#online-serving)
 - [Sharded Record Store](#sharded-record-store)
+- [Redis Read Replicas](#redis-read-replicas)
+- [Event Publishers (Message Queues)](#event-publishers-message-queues)
+- [Load Balancing](#load-balancing)
 - [Offline Item Embeddings](#offline-item-embeddings)
 - [Kubernetes & EKS](#kubernetes--eks)
 - [Capacity Planning](#capacity-planning)
@@ -1180,6 +1184,13 @@ curl -v -X POST http://localhost:8010/api/llm/api/generate \
 | `REDIS_POOL_MAX_TOTAL` | `50` | Maximum Redis connections per process |
 | `REDIS_POOL_MAX_WAIT_MS` | `250` | Fail-fast wait when the Redis pool is exhausted |
 | `REDIS_TIMEOUT_MS` | `2000` | Redis connect/socket timeout; set below the request deadline for online serving |
+| `REDIS_REPLICA_NODES` | _(unset)_ | Comma-separated read-replica specs `host:port@az`; unset → all reads on primary ([Redis Read Replicas](#redis-read-replicas)) |
+| `AWS_AZ` | `unknown` | This instance's AZ; replica router prefers same-AZ reads |
+| `ONLINE_EVENTS_SQS_ENABLED` | `false` | Drain online events to SQS (needs `ONLINE_EVENTS_SQS_QUEUE_URL`) |
+| `ONLINE_EVENTS_SQS_QUEUE_URL` | _(unset)_ | Target SQS queue URL for online events |
+| `ONLINE_EVENTS_KAFKA_ENABLED` | `false` | Drain online events to Kafka (needs `ONLINE_EVENTS_KAFKA_BOOTSTRAP_SERVERS`) |
+| `ONLINE_EVENTS_KAFKA_BOOTSTRAP_SERVERS` | _(unset)_ | Kafka bootstrap servers for online events |
+| `ONLINE_EVENTS_KAFKA_TOPIC` | `online_events` | Kafka topic for online events |
 
 ### API Gateway (port 8010)
 
@@ -1206,6 +1217,11 @@ curl -v -X POST http://localhost:8010/api/llm/api/generate \
 | `recsys.health.max-avg-latency-ms` | `2000` | Avg latency above which `/health/ready` → `503` |
 | `recsys.health.max-concurrent-requests` | `64` | Per-instance in-flight cap |
 | `MYSQL_ENABLED` | `false` | Optional MySQL switch |
+| `recsys.events.sqs.enabled` | `false` | Ship A/B exposure events to SQS (needs `queue-url`) |
+| `recsys.events.sqs.queue-url` | _(unset)_ | Target SQS queue URL for A/B exposures |
+| `recsys.events.kafka.enabled` | `false` | Ship A/B exposure events to Kafka (needs `bootstrap-servers`) |
+| `recsys.events.kafka.bootstrap-servers` | _(unset)_ | Kafka bootstrap servers for A/B exposures |
+| `recsys.events.kafka.exposure-topic` | `ab_exposures` | Kafka topic for A/B exposures |
 | `FEATURE_FLAG_ENVIRONMENT_PREFIX` | `FEATURE_FLAG_` | Prefix for environment-backed feature flags |
 | `POSTHOG_FEATURE_FLAGS_ENABLED` | `false` | Enables PostHog feature-flag evaluation |
 | `POSTHOG_PROJECT_API_KEY` | _(unset)_ | PostHog project API key used by `/decide` |
@@ -1221,10 +1237,12 @@ src/main/java/com/recsys/
 ├── domain/         Shared value objects: Movie, User, Rating, RecommendationQuery, MovieCandidate
 ├── data/           DataLoader / DataManager — bundled classpath movie+user+rating data
 ├── infrastructure/
-│   ├── redis/      RedisConnectionFactory, RedisEmbeddingStore, ShardedTopKStore
+│   ├── redis/      RedisConnectionFactory, RedisEmbeddingStore, ShardedTopKStore, RedisReadReplicaRouter, ReplicaConfig
+│   │   └── sharding/ ConsistentHashRing, Hashing (FNV-1a), ShardedRecordStore, ShardTopology* (versioned topology)
 │   ├── vectordb/   CandidateGenerator, VectorIndex (LSH + exact), EmbeddingStore
 │   ├── cache/      LocalEmbeddingCache, MultiLevelEmbeddingCache, HotKeyDetector
-│   ├── alb/        ALB integration helpers
+│   ├── messaging/  AsyncEventPublisher + SQS/Kafka transports, AsyncEventPublisherFactory
+│   ├── alb/        ApplicationLoadBalancer (L7 listener/target-group routing)
 │   └── autoscaling/ Auto-scaling signal publishers
 ├── service/
 │   ├── retrieval/  MultiChannelRecallService, RecallConfig, QuotaPolicy, recall channels (Embedding, Trending, GenreHistory, OnlineRecentHistory, Popularity, ColdStart)
@@ -1548,7 +1566,7 @@ sh streaming/online-serving/scripts/produce_movie_events.sh
 
 ## Sharded Record Store
 
-`ShardedRecordStore` distributes event, feature, and log records across N Redis shards using consistent hashing. Each write fans out to an HSET (full record) + ZADD (device index for per-device reads) + XADD (shard stream for ordered replay). `SHARDED_RECORD_SHARD_COUNT` (default `2`) is the **bootstrap** shard count for a *versioned topology* that can be resharded at runtime without a redeploy — see [Reshard at runtime](#reshard-at-runtime-versioned-topology) below.
+`ShardedRecordStore` distributes event, feature, and log records across N Redis shards using consistent hashing. `ConsistentHashRing` places each shard on a 64-bit ring with **150 virtual nodes per shard** (keyed by the shared `Hashing.fnv1a64` FNV-1a primitive, also reused by `StableBucketer` for A/B bucketing) so device IDs spread uniformly and a resize moves only ~1/N of keys. Each write fans out to an HSET (full record) + ZADD (device index for per-device reads) + XADD (shard stream for ordered replay). `SHARDED_RECORD_SHARD_COUNT` (default `2`) is the **bootstrap** shard count for a *versioned topology* that can be resharded at runtime without a redeploy — see [Reshard at runtime](#reshard-at-runtime-versioned-topology) below.
 
 The HTTP façade is mounted at `/shards/` on port `7010`.
 
@@ -1623,6 +1641,83 @@ curl -X POST http://localhost:7010/shards/topology \
 - **Auth:** disabled (`403`) unless `SHARD_ADMIN_TOKEN` is set *and* the `X-Admin-Token` header matches. `shardCount` must be ≥ 1 (else `400`).
 - **Generation-scoped keys:** generation 1 uses the original unversioned keys (`sr:rec:{shard}:{seq}`); generation ≥2 prepends `g{version}:` (`sr:g2:rec:…`). Because the mapping is consistent hashing, a resize moves only ~1/N of keys.
 - **No data loss for in-flight records:** for `SHARDED_RECORD_MAX_TTL_SECONDS` after a reshard, per-device reads **dual-read** the previous generation and merge it (current wins), so records written before the change are still served until they TTL out. Shard-level scans (`/shards/shard`, read-all) are generation-current and do not dual-read.
+
+---
+
+## Redis Read Replicas
+
+`RedisReadReplicaRouter` splits the Redis traffic so writes stay on the primary while reads spread across AZ-local replicas — keeping the hot read path cheap and available even if the primary's AZ is briefly unreachable.
+
+- **Writes** always go to the primary pool (`writablePool()`), the single write leader.
+- **Reads** prefer the replica in the same Availability Zone as the calling instance (`AWS_AZ`), fall back to a random replica, and fall back again to the primary when no replicas are configured.
+
+Configure replicas with `REDIS_REPLICA_NODES` (comma-separated) and tag this instance's AZ so same-AZ reads avoid cross-AZ data-transfer cost:
+
+```bash
+# host:port@az (port → 6379 and az → "unknown" when omitted)
+export AWS_AZ=us-east-1b
+export REDIS_REPLICA_NODES="redis-b.internal:6379@us-east-1b,redis-c.internal:6379@us-east-1c"
+```
+
+When `REDIS_REPLICA_NODES` is unset the router transparently routes every read to the primary, so local dev needs no extra config. This complements Redis Sentinel (primary failover) — the router handles read fan-out, Sentinel handles leader election.
+
+---
+
+## Event Publishers (Message Queues)
+
+Behavioral and experiment events leave the serving path through a bounded, **fire-and-forget** `AsyncEventPublisher`: requests enqueue onto an in-memory ring buffer and a background thread drains it in batches to a broker. A broker outage or backpressure never blocks or fails a request — the default (log-only) publisher is used until a transport is configured, so local dev, tests, and the demo need no broker. Three transports are wired:
+
+| Producer | Default (no broker) | SQS | Kafka |
+|---|---|---|---|
+| Online events (`7010`) | log-only | `ONLINE_EVENTS_SQS_*` | `ONLINE_EVENTS_KAFKA_*` |
+| A/B exposures (`8080`) | log-only | `recsys.events.sqs.*` | `recsys.events.kafka.*` |
+| Saga lifecycle | NOOP | `SAGA_EVENTS_SQS_*` | — |
+
+**Online server (port 7010)** — `AsyncEventPublisherFactory.fromEnvironment("ONLINE_EVENTS")` picks SQS first (when enabled with a non-blank queue URL), then Kafka, else log-only. Drain stats surface in `/online/ops` under `events` (`queueSize`, `published`, `dropped`, `drained`).
+
+```bash
+# Ship online events to SQS
+export ONLINE_EVENTS_SQS_ENABLED=true
+export ONLINE_EVENTS_SQS_QUEUE_URL="https://sqs.us-east-1.amazonaws.com/123456789012/online-events"
+export AWS_REGION=us-east-1
+
+# …or to Kafka (topic defaults to online_events)
+export ONLINE_EVENTS_KAFKA_ENABLED=true
+export ONLINE_EVENTS_KAFKA_BOOTSTRAP_SERVERS=localhost:9092
+export ONLINE_EVENTS_KAFKA_TOPIC=online_events
+
+curl "http://localhost:7010/online/ops" | jq '.events'
+# {"queueSize":0,"published":128,"dropped":0,"drained":128}
+```
+
+**Model server (port 8080)** — `ModelEventConfig` ships A/B exposure events the same way, configured via Spring properties (topic defaults to `ab_exposures`):
+
+```yaml
+recsys:
+  events:
+    sqs:   { enabled: true, queue-url: "https://sqs.us-east-1.amazonaws.com/123456789012/ab-exposures", region: us-east-1 }
+    kafka: { enabled: false, bootstrap-servers: localhost:9092, exposure-topic: ab_exposures }
+```
+
+**Saga lifecycle** — `SagaEventPublishers.fromEnvironment()` emits saga state transitions to SQS when `SAGA_EVENTS_SQS_ENABLED=true` and `SAGA_EVENTS_SQS_QUEUE_URL` is set; otherwise NOOP. Set `SAGA_EVENTS_SQS_BEST_EFFORT=true` to swallow publish failures instead of surfacing them.
+
+> SQS sends in batches of ≤ 10 (`SendMessageBatch`); both transports log and swallow broker errors so the drain loop and request path never break.
+
+---
+
+## Load Balancing
+
+Two layers cooperate to keep traffic on healthy, non-overloaded instances:
+
+**Capacity-weight feedback (in-process).** Every Model-Serving response carries an `X-Capacity-Weight: <0–100>` header, and `GET /health/load` / `GET /online/ops` expose the same `suggestedWeight`. The weight drops as in-flight concurrency approaches the cap, letting an external load balancer (ALB target-group weights, Envoy, or a service mesh) shift traffic away from a saturated instance in real time, and `/health/ready` returns `503` past `ONLINE_DRAIN_UTILIZATION` so the LB drains the node. See [Health probes](#health-probes).
+
+```bash
+curl -s -D - -o /dev/null -X POST http://localhost:8080/api/v1/recommend \
+  -H "Content-Type: application/json" -d '{"userId":"123","k":5}' | grep -i x-capacity-weight
+# X-Capacity-Weight: 89
+```
+
+**L7 routing model (`ApplicationLoadBalancer`).** `infrastructure/alb/` models an ALB-style Layer-7 balancer: it evaluates listener rules by priority and round-robins across healthy targets in the matched target group — the same shape used by the EKS ALB ingress, and the unit under test for the gateway's routing and health-aware target selection.
 
 ---
 
