@@ -24,6 +24,9 @@ import static org.assertj.core.api.Assertions.assertThat;
 
 class GatewayServerIntegrationTest {
 
+    // Reported as the gateway's own port in the /health per-port rollup (self-check).
+    private static final int GATEWAY_SELF_PORT = 18010;
+
     // Fake upstream that returns 200 for all requests.
     // Must be registered before `gateway` so its port is assigned first.
     @RegisterExtension
@@ -59,7 +62,7 @@ class GatewayServerIntegrationTest {
             GatewayRateLimiter rateLimiter = GatewayRateLimiter.disabled();
             GatewayAuthenticator auth = GatewayAuthenticator.disabled();
 
-            sb.service("/health", new GatewayHealthService(routes, timeout, cbs))
+            sb.service("/health", new GatewayHealthService(routes, timeout, cbs, GATEWAY_SELF_PORT))
               .service("prefix:/", new GatewayProxyService(routes, timeout, cbs, rateLimiter, auth));
         }
     };
@@ -69,6 +72,19 @@ class GatewayServerIntegrationTest {
         AggregatedHttpResponse r = gateway.blockingWebClient().get("/health");
         assertThat(r.status()).isEqualTo(HttpStatus.OK);
         assertThat(r.contentUtf8()).contains("status");
+    }
+
+    @Test
+    void healthIncludesPerPortRollupAndGatewaySelf() {
+        AggregatedHttpResponse r = gateway.blockingWebClient().get("/health");
+        assertThat(r.status()).isEqualTo(HttpStatus.OK);
+        String body = r.contentUtf8();
+        // Deduped per-port rollup is present...
+        assertThat(body).contains("\"ports\"");
+        // ...covers the backend port (both routes share fakeUpstream's port, collapsed to one entry)...
+        assertThat(body).contains("\"" + fakeUpstream.httpPort() + "\":\"UP\"");
+        // ...and the gateway reports its own port as a self-check.
+        assertThat(body).contains("\"" + GATEWAY_SELF_PORT + "\":\"UP\"");
     }
 
     @Test
