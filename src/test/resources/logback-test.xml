@@ -8,6 +8,14 @@
   <!-- Suppress expected connection-failure WARNs from sentinel pool construction in tests -->
   <logger name="redis.clients.jedis" level="ERROR"/>
 
+  <!-- Negative-path tests deliberately inject failures (Mockito thenThrow / fake doubles) to prove
+       these classes degrade gracefully; the handled failure is logged at WARN. Mute it so a green
+       run stays clean. These are scoped to specific classes, not whole packages, so real warnings
+       still surface. -->
+  <logger name="com.recsys.application.experiment.AbExposureLogger" level="ERROR"/>
+  <logger name="com.recsys.application.experiment.VariantRuntimeResolver" level="ERROR"/>
+  <logger name="com.recsys.application.online.LearnerFlushScheduler" level="ERROR"/>
+
   <root level="WARN">
     <appender-ref ref="STDOUT"/>
   </root>
