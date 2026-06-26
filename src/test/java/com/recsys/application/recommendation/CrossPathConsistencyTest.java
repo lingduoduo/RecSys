@@ -45,7 +45,7 @@ class CrossPathConsistencyTest {
         RankedMovie rm = new RankedMovie("10", 0.9, 1, Map.of());
         when(recall.recall(any(), anyInt())).thenReturn(List.of(mock(com.recsys.domain.item.MovieCandidate.class)));
         when(ranker.rank(any(), any(), anyInt())).thenReturn(List.of(rm));
-        when(pagination.page(any(), any(), anyInt())).thenReturn(new Page<>(List.of(rm), null));
+        when(pagination.page(any(), any(), anyInt(), any(), any())).thenReturn(new Page<>(List.of(rm), null));
         RecommendationPipeline path1 = new RecommendationOrchestrator(
                 recall, ranker, RecommendationHydrator.IDENTITY, pagination);
         RecommendationResult r1 = path1.recommend(query);

@@ -299,7 +299,9 @@ RECSYS_VECTOR_BACKEND=exact mvn exec:java -Dexec.mainClass=com.recsys.serving.Re
 
 #### Recommendations v2 — cursor pagination (`/v2/recommend`)
 
-`POST /v2/recommend` drives the same multi-channel recall through the recall → rank → hydrate → paginate pipeline (`RecommendationOrchestrator`). It takes a JSON `RecommendationQuery` and returns a cursor for million-scale, stable pagination. Cold/warm channel selection is identical to `/getrecommendation`.
+`POST /v2/recommend` drives the same multi-channel recall through the recall → rank → hydrate → paginate pipeline (`RecommendationOrchestrator`). It takes a JSON `RecommendationQuery` and returns an opaque **seek cursor** for stable pagination. Cold/warm channel selection is identical to `/getrecommendation`.
+
+The cursor is a *keyset* anchor on the last item's `(score, itemId)` — **not** an absolute offset — so excluding items or a shifting ranked list between pages never silently skips or duplicates results. Recall is bounded to a window of `5 × limit` candidates and recomputed each request, so this paginates within a fresh recall window rather than over a frozen million-row snapshot.
 
 ```bash
 # First page
@@ -319,12 +321,21 @@ curl -X POST "http://localhost:6010/v2/recommend" \
   "items": [
     {"itemId": "4", "score": 0.93, "rank": 1, "features": {"title": "The Matrix", "year": 1999}}
   ],
-  "nextCursor": "eyJvZmZzZXQiOjEwfQ==",
+  "nextCursor": "djI6MC45Mzo0",
   "trace": {"candidateCount": "50", "rankedCount": "50"}
 }
 ```
 
 `limit` must be 1–100; a blank `userId` returns `400`. Unlike `/getrecommendation`, this pipeline does **not** look up the user in the catalog, so an unknown (non-blank) `userId` does not 404 — it runs recall directly (cold quota if it has no embedding). When there are no more results `nextCursor` is `null`. The `trace` map reports `candidateCount` (recalled) and `rankedCount` for debugging.
+
+**Cursor vs. exclusion paging — pick one model, don't mix them:**
+
+| | Use the cursor for | How |
+|---|---|---|
+| **Stable pagination** | a fixed result set (catalog-style browse) | keep `excludedItemIds` constant across pages; advance `cursor` until `nextCursor` is `null` |
+| **Dynamic feed** | an ever-fresh "For You" feed | **omit `cursor`**; accumulate seen IDs into `excludedItemIds` and re-request — each call re-recalls and excludes what's seen, picking up live trending / learner changes |
+
+The seek cursor tolerates a *changing* `excludedItemIds` without skipping, but mixing a saved cursor with a growing exclusion set conflates the two models — for a dynamic feed, drop the cursor and page by exclusion alone.
 
 #### Similar movies
 
