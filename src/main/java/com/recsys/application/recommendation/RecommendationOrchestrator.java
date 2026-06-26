@@ -52,7 +52,8 @@ public class RecommendationOrchestrator implements RecommendationPipeline {
         int windowLimit = query.limit() * recallMultiplier;
         List<MovieCandidate> candidates = recallService.recall(query, windowLimit);
         List<RankedMovie> ranked = ranker.rank(query, candidates, windowLimit);
-        Page<RankedMovie> page = paginationService.page(ranked, query.cursor(), query.limit());
+        Page<RankedMovie> page = paginationService.page(
+                ranked, query.cursor(), query.limit(), RankedMovie::score, RankedMovie::itemId);
         List<RankedMovie> hydrated = hydrator.hydrate(query, page.items());
 
         return new RecommendationResult(

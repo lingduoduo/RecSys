@@ -34,7 +34,7 @@ class RecommendationPipelineTest {
         RankedMovie movie = new RankedMovie("42", 0.9, 1, Map.of());
         when(recall.recall(any(), anyInt())).thenReturn(List.of(mock(MovieCandidate.class)));
         when(ranker.rank(any(), any(), anyInt())).thenReturn(List.of(movie));
-        when(pagination.page(any(), any(), anyInt()))
+        when(pagination.page(any(), any(), anyInt(), any(), any()))
                 .thenReturn(new Page<>(List.of(movie), null));
 
         RecommendationPipeline pipeline =

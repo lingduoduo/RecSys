@@ -69,7 +69,7 @@ class V2CrossPathLoadTest {
         CursorPaginationService pagination = mock(CursorPaginationService.class);
         when(recall.recall(any(), anyInt())).thenReturn(List.of());
         when(ranker.rank(any(), any(), anyInt())).thenReturn(List.of());
-        when(pagination.page(any(), any(), anyInt())).thenReturn(new Page<>(List.of(), null));
+        when(pagination.page(any(), any(), anyInt(), any(), any())).thenReturn(new Page<>(List.of(), null));
         RecommendationPipeline embedding = new RecommendationOrchestrator(
                 recall, ranker, RecommendationHydrator.IDENTITY, pagination);
 
