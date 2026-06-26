@@ -20,14 +20,17 @@ public final class GatewayHealthService extends BaseApiService {
 
     private final List<MicroserviceRoute> routes;
     private final Map<String, RouteCircuitBreaker> circuitBreakers;
+    private final int gatewayPort;
     // Per-route clients built from each route's base URI so we can call the health path directly.
     private final Map<String, WebClient> healthClients;
 
     public GatewayHealthService(List<MicroserviceRoute> routes,
                          Duration timeout,
-                         Map<String, RouteCircuitBreaker> circuitBreakers) {
+                         Map<String, RouteCircuitBreaker> circuitBreakers,
+                         int gatewayPort) {
         this.routes = List.copyOf(routes);
         this.circuitBreakers = Map.copyOf(circuitBreakers);
+        this.gatewayPort = gatewayPort;
         // Build one WebClient per route base URI. responseTimeout is set slightly above the
         // health-check timeout so Armeria's own timeout fires after our deadline.
         this.healthClients = routes.stream().collect(
@@ -50,6 +53,9 @@ public final class GatewayHealthService extends BaseApiService {
                 CompletableFuture.allOf(futures.toArray(new CompletableFuture[0]))
                         .thenApply(v -> {
                             Map<String, Object> services = new LinkedHashMap<>();
+                            // Deduped per-port rollup: many routes share one backend port, so a
+                            // port is UP only when every route targeting it is UP.
+                            Map<Integer, Boolean> portUp = new LinkedHashMap<>();
                             boolean allUp = true;
                             for (int i = 0; i < routes.size(); i++) {
                                 MicroserviceRoute route = routes.get(i);
@@ -57,12 +63,21 @@ public final class GatewayHealthService extends BaseApiService {
                                 RouteCircuitBreaker cb = circuitBreakers.get(route.name());
                                 services.put(route.name(), health.asMap(route, cb));
                                 allUp = allUp && health.up();
+                                portUp.merge(portOf(route.baseUri()), health.up(), (a, b) -> a && b);
                             }
+                            // Self-check: if this handler is answering, the gateway port is up.
+                            portUp.put(gatewayPort, Boolean.TRUE);
+
+                            Map<String, String> ports = new LinkedHashMap<>();
+                            portUp.forEach((p, up) -> ports.put(Integer.toString(p), up ? "UP" : "DOWN"));
+
+                            Map<String, Object> payload = new LinkedHashMap<>();
+                            payload.put("status", allUp ? "UP" : "DEGRADED");
+                            payload.put("checkedAt", Instant.now().toString());
+                            payload.put("ports", ports);
+                            payload.put("services", services);
                             try {
-                                byte[] body = MAPPER.writeValueAsBytes(Map.of(
-                                        "status", allUp ? "UP" : "DEGRADED",
-                                        "checkedAt", Instant.now().toString(),
-                                        "services", services));
+                                byte[] body = MAPPER.writeValueAsBytes(payload);
                                 return HttpResponse.of(
                                         allUp ? HttpStatus.OK : HttpStatus.SERVICE_UNAVAILABLE,
                                         MediaType.JSON_UTF_8, body);
@@ -70,6 +85,14 @@ public final class GatewayHealthService extends BaseApiService {
                                 return HttpResponse.of(HttpStatus.INTERNAL_SERVER_ERROR);
                             }
                         }));
+    }
+
+    // Resolve a route's effective port: explicit port, or the scheme default when omitted.
+    private static int portOf(java.net.URI uri) {
+        if (uri.getPort() != -1) {
+            return uri.getPort();
+        }
+        return "https".equalsIgnoreCase(uri.getScheme()) ? 443 : 80;
     }
 
     private CompletableFuture<ServiceHealth> checkRoute(MicroserviceRoute route) {

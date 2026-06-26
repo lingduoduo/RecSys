@@ -56,6 +56,7 @@ curl http://localhost:8010/health
 {
   "status": "UP",
   "checkedAt": "...",
+  "ports": {"6010": "UP", "8080": "UP", "7010": "UP", "8010": "UP"},
   "services": {
     "recommendation-retrieval": {"status": "UP", "healthUrl": "http://localhost:8080/health/ready", "statusCode": 200, "latencyMs": 4},
     "catalog":  {"status": "UP", "healthUrl": "http://localhost:6010/health", "statusCode": 200, "latencyMs": 2},
@@ -64,6 +65,8 @@ curl http://localhost:8010/health
   }
 }
 ```
+
+The `ports` block is a deduped per-port rollup (backends plus the gateway's own `8010`); `services` keeps the full per-route detail. See [Health aggregation](#health-aggregation).
 
 ### Start individual services
 
@@ -1051,7 +1054,7 @@ sh scripts/run-microservices-local.sh
 
 ### Health aggregation
 
-`GET /health` pings every registered downstream service and returns an aggregated status. `DEGRADED` means at least one service is down; individual `status` fields show which:
+`GET /health` pings every registered downstream service and returns an aggregated status. `DEGRADED` means at least one service is down; individual `status` fields show which. The response carries two views: a deduped **`ports` rollup** (one entry per distinct backend port plus the gateway's own port `8010` as a self-check — the same port checked by several routes collapses to a single `UP`/`DOWN`) and the full per-route **`services`** detail:
 
 ```bash
 curl http://localhost:8010/health
@@ -1061,6 +1064,12 @@ curl http://localhost:8010/health
 {
   "status": "UP",
   "checkedAt": "2026-06-12T00:00:00Z",
+  "ports": {
+    "6010": "UP",
+    "8080": "UP",
+    "7010": "DOWN",
+    "8010": "UP"
+  },
   "services": {
     "user-profile":  {"status":"UP","prefix":"/api/users","baseUrl":"http://localhost:6010","healthUrl":"http://localhost:6010/health","statusCode":200,"latencyMs":2,"circuitState":"CLOSED"},
     "catalog":       {"status":"UP","prefix":"/api/catalog","baseUrl":"http://localhost:6010","healthUrl":"http://localhost:6010/health","statusCode":200,"latencyMs":1,"circuitState":"CLOSED"},
@@ -1070,8 +1079,14 @@ curl http://localhost:8010/health
 }
 ```
 
+A port is `UP` only when **every** route targeting it is healthy; `8010` is always `UP` while the gateway can answer (self-check). The overall `status` is `DEGRADED` (HTTP `503`) whenever any backend is down — the gateway's own port does not mask a failing backend.
+
 ```bash
-# Status-only summary
+# Per-port rollup only — fastest "is every port up" check
+curl http://localhost:8010/health | jq '.ports'
+# {"6010":"UP","8080":"UP","7010":"DOWN","8010":"UP"}
+
+# Status-only summary of the per-route detail
 curl http://localhost:8010/health | jq '{status, services: (.services | to_entries | map({(.key): .value.status}) | add)}'
 # {"status":"DEGRADED","services":{"user-profile":"UP","catalog":"UP","model":"UP","online":"DOWN",...}}
 ```
