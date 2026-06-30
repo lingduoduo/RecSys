@@ -1,10 +1,9 @@
 package com.recsys.infrastructure.lock;
 
-import redis.clients.jedis.Jedis;
-import redis.clients.jedis.params.SetParams;
-import redis.clients.jedis.util.Pool;
+import com.recsys.infrastructure.redis.RedisExecutor;
+import io.lettuce.core.ScriptOutputType;
+import io.lettuce.core.SetArgs;
 
-import java.util.List;
 import java.util.UUID;
 import java.util.function.Supplier;
 
@@ -52,16 +51,16 @@ public final class RedisMutex {
             return 0
             """;
 
-    private final Pool<Jedis> pool;
+    private final RedisExecutor exec;
     private final String keyPrefix;
     private final long lockTtlSeconds;
 
-    public RedisMutex(Pool<Jedis> pool) {
-        this(pool, "mutex:", 5L);
+    public RedisMutex(RedisExecutor exec) {
+        this(exec, "mutex:", 5L);
     }
 
-    RedisMutex(Pool<Jedis> pool, String keyPrefix, long lockTtlSeconds) {
-        this.pool = pool;
+    RedisMutex(RedisExecutor exec, String keyPrefix, long lockTtlSeconds) {
+        this.exec = exec;
         this.keyPrefix = keyPrefix;
         this.lockTtlSeconds = Math.max(1L, lockTtlSeconds);
     }
@@ -75,10 +74,8 @@ public final class RedisMutex {
     public String tryAcquire(String resource) {
         String lockKey = keyPrefix + resource;
         String token = UUID.randomUUID().toString();
-        try (Jedis jedis = pool.getResource()) {
-            String result = jedis.set(lockKey, token, SetParams.setParams().nx().ex(lockTtlSeconds));
-            return "OK".equals(result) ? token : null;
-        }
+        String result = exec.execute(c -> c.set(lockKey, token, SetArgs.Builder.nx().ex(lockTtlSeconds)));
+        return "OK".equals(result) ? token : null;
     }
 
     /**
@@ -88,10 +85,9 @@ public final class RedisMutex {
      */
     public boolean release(String resource, String token) {
         String lockKey = keyPrefix + resource;
-        try (Jedis jedis = pool.getResource()) {
-            Object result = jedis.eval(RELEASE_SCRIPT, List.of(lockKey), List.of(token));
-            return result instanceof Number n && n.longValue() == 1L;
-        }
+        Long result = exec.execute(c -> c.eval(RELEASE_SCRIPT, ScriptOutputType.INTEGER,
+                new String[]{lockKey}, token));
+        return result != null && result == 1L;
     }
 
     /**

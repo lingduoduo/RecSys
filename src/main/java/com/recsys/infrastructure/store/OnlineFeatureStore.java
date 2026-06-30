@@ -2,10 +2,10 @@ package com.recsys.infrastructure.store;
 
 import com.github.benmanes.caffeine.cache.Cache;
 import com.github.benmanes.caffeine.cache.Caffeine;
+import com.recsys.infrastructure.redis.RedisExecutor;
+import io.lettuce.core.KeyValue;
 import org.slf4j.Logger;
 import org.slf4j.LoggerFactory;
-import redis.clients.jedis.Jedis;
-import redis.clients.jedis.util.Pool;
 
 import java.time.Duration;
 import java.util.ArrayList;
@@ -40,7 +40,7 @@ public final class OnlineFeatureStore implements RecentHistoryStore {
     private static final int DEFAULT_MAX_CACHE_USERS = 10_000;
     private static final long REDIS_FETCH_TIMEOUT_MS = 2_000L;
 
-    private final Pool<Jedis> pool;
+    private final RedisExecutor exec;
     private final long cacheTtlMs;
     private final long staleTtlMs;
     private final int maxCacheUsers;
@@ -51,32 +51,32 @@ public final class OnlineFeatureStore implements RecentHistoryStore {
     // Deduplicates concurrent cache misses for the same Redis feature key.
     private final ConcurrentHashMap<String, CompletableFuture<CachedFeature>> inflight = new ConcurrentHashMap<>();
 
-    public OnlineFeatureStore(Pool<Jedis> pool) {
-        this(pool, DEFAULT_CACHE_TTL_MS,
+    public OnlineFeatureStore(RedisExecutor exec) {
+        this(exec, DEFAULT_CACHE_TTL_MS,
                 readLongEnv("ONLINE_FEATURE_STALE_TTL_MS", DEFAULT_STALE_TTL_MS),
                 readIntEnv("ONLINE_FEATURE_CACHE_MAX_USERS", DEFAULT_MAX_CACHE_USERS));
     }
 
-    OnlineFeatureStore(Pool<Jedis> pool, long cacheTtlMs) {
-        this(pool, cacheTtlMs, DEFAULT_STALE_TTL_MS, DEFAULT_MAX_CACHE_USERS);
+    OnlineFeatureStore(RedisExecutor exec, long cacheTtlMs) {
+        this(exec, cacheTtlMs, DEFAULT_STALE_TTL_MS, DEFAULT_MAX_CACHE_USERS);
     }
 
-    OnlineFeatureStore(Pool<Jedis> pool, long cacheTtlMs, int maxCacheUsers) {
-        this(pool, cacheTtlMs, DEFAULT_STALE_TTL_MS, maxCacheUsers);
+    OnlineFeatureStore(RedisExecutor exec, long cacheTtlMs, int maxCacheUsers) {
+        this(exec, cacheTtlMs, DEFAULT_STALE_TTL_MS, maxCacheUsers);
     }
 
-    OnlineFeatureStore(Pool<Jedis> pool, long cacheTtlMs, long staleTtlMs, int maxCacheUsers) {
-        this(pool, cacheTtlMs, staleTtlMs, maxCacheUsers,
+    OnlineFeatureStore(RedisExecutor exec, long cacheTtlMs, long staleTtlMs, int maxCacheUsers) {
+        this(exec, cacheTtlMs, staleTtlMs, maxCacheUsers,
                 readIntEnv("ONLINE_FEATURE_REDIS_MGET_BATCH_SIZE", 500));
     }
 
-    OnlineFeatureStore(Pool<Jedis> pool, long cacheTtlMs, int maxCacheUsers, int redisMgetBatchSize) {
-        this(pool, cacheTtlMs, DEFAULT_STALE_TTL_MS, maxCacheUsers, redisMgetBatchSize);
+    OnlineFeatureStore(RedisExecutor exec, long cacheTtlMs, int maxCacheUsers, int redisMgetBatchSize) {
+        this(exec, cacheTtlMs, DEFAULT_STALE_TTL_MS, maxCacheUsers, redisMgetBatchSize);
     }
 
-    OnlineFeatureStore(Pool<Jedis> pool, long cacheTtlMs, long staleTtlMs,
+    OnlineFeatureStore(RedisExecutor exec, long cacheTtlMs, long staleTtlMs,
                        int maxCacheUsers, int redisMgetBatchSize) {
-        this.pool = pool;
+        this.exec = exec;
         this.cacheTtlMs = cacheTtlMs;
         this.staleTtlMs = Math.max(cacheTtlMs, staleTtlMs);
         this.maxCacheUsers = Math.max(1, maxCacheUsers);
@@ -191,22 +191,18 @@ public final class OnlineFeatureStore implements RecentHistoryStore {
     }
 
     private CachedFeature fetchFeatureFromRedis(String redisKey, long now) {
-        try (Jedis jedis = pool.getResource()) {
-            return cachedFeature(jedis.get(redisKey), now);
-        }
+        return cachedFeature(exec.executeRead(c -> c.get(redisKey)), now);
     }
 
     private Map<String, CachedFeature> fetchFeaturesFromRedis(Collection<String> redisKeys, long now) {
         List<String> keys = new ArrayList<>(new LinkedHashSet<>(redisKeys));
         Map<String, CachedFeature> result = new HashMap<>(keys.size() * 2);
-        try (Jedis jedis = pool.getResource()) {
-            for (int start = 0; start < keys.size(); start += redisMgetBatchSize) {
-                int end = Math.min(keys.size(), start + redisMgetBatchSize);
-                String[] batch = keys.subList(start, end).toArray(new String[0]);
-                List<String> values = jedis.mget(batch);
-                for (int i = 0; i < values.size(); i++) {
-                    result.put(batch[i], cachedFeature(values.get(i), now));
-                }
+        for (int start = 0; start < keys.size(); start += redisMgetBatchSize) {
+            int end = Math.min(keys.size(), start + redisMgetBatchSize);
+            String[] batch = keys.subList(start, end).toArray(new String[0]);
+            List<KeyValue<String, String>> values = exec.executeRead(c -> c.mget(batch));
+            for (int i = 0; i < values.size(); i++) {
+                result.put(batch[i], cachedFeature(values.get(i).getValueOrElse(null), now));
             }
         }
         return result;

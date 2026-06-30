@@ -1,12 +1,13 @@
 package com.recsys.infrastructure.lock;
 
+import com.recsys.infrastructure.redis.RedisExecutor;
+import io.lettuce.core.ScriptOutputType;
+import io.lettuce.core.SetArgs;
+import io.lettuce.core.api.sync.RedisCommands;
 import org.junit.jupiter.api.BeforeEach;
 import org.junit.jupiter.api.Test;
-import redis.clients.jedis.Jedis;
-import redis.clients.jedis.JedisPool;
-import redis.clients.jedis.util.Pool;
-import redis.clients.jedis.params.SetParams;
 
+import java.util.function.Function;
 import java.util.concurrent.CountDownLatch;
 import java.util.concurrent.ExecutorService;
 import java.util.concurrent.Executors;
@@ -29,24 +30,29 @@ import static org.mockito.Mockito.*;
  */
 class WatchdogLockTest {
 
-    private Jedis jedis;
-    private Pool<Jedis> pool;
+    private RedisExecutor exec;
+    private RedisCommands<String, String> cmd;
 
     @BeforeEach
+    @SuppressWarnings("unchecked")
     void setUp() {
-        jedis = mock(Jedis.class);
-        pool  = mock(JedisPool.class);
-        when(pool.getResource()).thenReturn(jedis);
+        exec = mock(RedisExecutor.class);
+        cmd  = mock(RedisCommands.class);
+        when(exec.execute(any())).thenAnswer(i ->
+                i.getArgument(0, Function.class).apply(cmd));
+        when(exec.executeRead(any())).thenAnswer(i ->
+                i.getArgument(0, Function.class).apply(cmd));
     }
 
     // ── Acquisition ──────────────────────────────────────────────────────────────
 
     @Test
     void tryAcquire_returnsLockWhenKeyIsFree() {
-        when(jedis.set(anyString(), anyString(), any(SetParams.class))).thenReturn("OK");
-        when(jedis.eval(anyString(), anyList(), anyList())).thenReturn(1L); // for release
+        when(cmd.set(anyString(), anyString(), any(SetArgs.class))).thenReturn("OK");
+        when(cmd.eval(anyString(), any(ScriptOutputType.class), any(String[].class), any(String[].class)))
+                .thenReturn(1L); // for release
 
-        WatchdogLock lock = WatchdogLock.tryAcquire(pool, "wdlock:", "order:1", 30L);
+        WatchdogLock lock = WatchdogLock.tryAcquire(exec, "wdlock:", "order:1", 30L);
         try {
             assertThat(lock).isNotNull();
             assertThat(lock.isHeld()).isTrue();
@@ -59,42 +65,44 @@ class WatchdogLockTest {
 
     @Test
     void tryAcquire_returnsNullWhenKeyIsHeld() {
-        when(jedis.set(anyString(), anyString(), any(SetParams.class))).thenReturn(null);
+        when(cmd.set(anyString(), anyString(), any(SetArgs.class))).thenReturn(null);
 
-        WatchdogLock lock = WatchdogLock.tryAcquire(pool, "wdlock:", "order:1", 30L);
+        WatchdogLock lock = WatchdogLock.tryAcquire(exec, "wdlock:", "order:1", 30L);
 
         assertThat(lock).isNull();
     }
 
     @Test
     void tryAcquire_usesSingleAtomicSetNxExCommand() {
-        when(jedis.set(anyString(), anyString(), any(SetParams.class))).thenReturn("OK");
-        when(jedis.eval(anyString(), anyList(), anyList())).thenReturn(1L);
+        when(cmd.set(anyString(), anyString(), any(SetArgs.class))).thenReturn("OK");
+        when(cmd.eval(anyString(), any(ScriptOutputType.class), any(String[].class), any(String[].class)))
+                .thenReturn(1L);
 
-        WatchdogLock lock = WatchdogLock.tryAcquire(pool, "wdlock:", "res", 30L);
+        WatchdogLock lock = WatchdogLock.tryAcquire(exec, "wdlock:", "res", 30L);
         lock.release();
 
         // Exactly one SET NX EX (acquisition), then one eval (release) — no SETNX/EXPIRE.
-        verify(jedis, times(1)).set(eq("wdlock:res"), anyString(), any(SetParams.class));
-        verify(jedis, never()).setnx(anyString(), anyString());
-        verify(jedis, never()).expire(anyString(), anyLong());
+        verify(cmd, times(1)).set(eq("wdlock:res"), anyString(), any(SetArgs.class));
+        verify(cmd, never()).setnx(anyString(), anyString());
+        verify(cmd, never()).expire(anyString(), anyLong());
     }
 
     // ── Watchdog renewal ─────────────────────────────────────────────────────────
 
     @Test
     void watchdog_renewsLeaseAtTtlThirdInterval() throws InterruptedException {
-        when(jedis.set(anyString(), anyString(), any(SetParams.class))).thenReturn("OK");
+        when(cmd.set(anyString(), anyString(), any(SetArgs.class))).thenReturn("OK");
 
         // Latch counts down on each RENEW eval call; release eval also counts down (ok).
         CountDownLatch renewedTwice = new CountDownLatch(2);
-        when(jedis.eval(anyString(), anyList(), anyList())).thenAnswer(inv -> {
-            renewedTwice.countDown();
-            return 1L;
-        });
+        when(cmd.eval(anyString(), any(ScriptOutputType.class), any(String[].class), any(String[].class)))
+                .thenAnswer(inv -> {
+                    renewedTwice.countDown();
+                    return 1L;
+                });
 
         // 3 s TTL → watchdog fires every 1 s (Math.max(1, 3/3) = 1)
-        WatchdogLock lock = WatchdogLock.tryAcquire(pool, "wdlock:", "res", 3L);
+        WatchdogLock lock = WatchdogLock.tryAcquire(exec, "wdlock:", "res", 3L);
         assertThat(lock).isNotNull();
 
         boolean renewedInTime = renewedTwice.await(5, TimeUnit.SECONDS);
@@ -105,35 +113,38 @@ class WatchdogLockTest {
 
     @Test
     void watchdog_usesRenewScriptWithMatchingToken() throws InterruptedException {
-        when(jedis.set(anyString(), anyString(), any(SetParams.class))).thenReturn("OK");
+        when(cmd.set(anyString(), anyString(), any(SetArgs.class))).thenReturn("OK");
         CountDownLatch firstRenew = new CountDownLatch(1);
         AtomicInteger renewCallCount = new AtomicInteger();
 
-        when(jedis.eval(anyString(), anyList(), anyList())).thenAnswer(inv -> {
-            renewCallCount.incrementAndGet();
-            firstRenew.countDown();
-            return 1L;
-        });
+        when(cmd.eval(anyString(), any(ScriptOutputType.class), any(String[].class), any(String[].class)))
+                .thenAnswer(inv -> {
+                    renewCallCount.incrementAndGet();
+                    firstRenew.countDown();
+                    return 1L;
+                });
 
-        WatchdogLock lock = WatchdogLock.tryAcquire(pool, "wdlock:", "res", 3L);
+        WatchdogLock lock = WatchdogLock.tryAcquire(exec, "wdlock:", "res", 3L);
         assertThat(lock).isNotNull();
         boolean renewed = firstRenew.await(4, TimeUnit.SECONDS);
         lock.release();
 
         assertThat(renewed).isTrue();
         // First eval call is the renewal; verify it carries the correct token and TTL.
-        verify(jedis, atLeastOnce()).eval(
+        verify(cmd, atLeastOnce()).eval(
                 contains("PEXPIRE"),         // renewal uses millisecond TTL precision
-                eq(java.util.List.of("wdlock:res")),
-                argThat(args -> args.contains(lock.token()) && args.contains("3000")));
+                eq(ScriptOutputType.INTEGER),
+                eq(new String[]{"wdlock:res"}),
+                eq(lock.token()), eq("3000"));
     }
 
     @Test
     void watchdog_marksLockLostWhenRenewalTokenNoLongerMatches() {
-        when(jedis.set(anyString(), anyString(), any(SetParams.class))).thenReturn("OK");
-        when(jedis.eval(anyString(), anyList(), anyList())).thenReturn(0L);
+        when(cmd.set(anyString(), anyString(), any(SetArgs.class))).thenReturn("OK");
+        when(cmd.eval(anyString(), any(ScriptOutputType.class), any(String[].class), any(String[].class)))
+                .thenReturn(0L);
 
-        WatchdogLock lock = WatchdogLock.tryAcquire(pool, "wdlock:", "res", 30L);
+        WatchdogLock lock = WatchdogLock.tryAcquire(exec, "wdlock:", "res", 30L);
         assertThat(lock).isNotNull();
 
         lock.renewLease();
@@ -145,10 +156,11 @@ class WatchdogLockTest {
 
     @Test
     void watchdog_marksLockLostWhenRenewalErrorsPastLocalLeaseDeadline() throws InterruptedException {
-        when(jedis.set(anyString(), anyString(), any(SetParams.class))).thenReturn("OK");
-        when(jedis.eval(anyString(), anyList(), anyList())).thenThrow(new RuntimeException("redis down"));
+        when(cmd.set(anyString(), anyString(), any(SetArgs.class))).thenReturn("OK");
+        when(cmd.eval(anyString(), any(ScriptOutputType.class), any(String[].class), any(String[].class)))
+                .thenThrow(new RuntimeException("redis down"));
 
-        WatchdogLock lock = WatchdogLock.tryAcquire(pool, "wdlock:", "res", 1L);
+        WatchdogLock lock = WatchdogLock.tryAcquire(exec, "wdlock:", "res", 1L);
         assertThat(lock).isNotNull();
 
         Thread.sleep(1_050L);
@@ -162,10 +174,11 @@ class WatchdogLockTest {
 
     @Test
     void release_stopsWatchdogAndDeletesKeyViaLua() {
-        when(jedis.set(anyString(), anyString(), any(SetParams.class))).thenReturn("OK");
-        when(jedis.eval(anyString(), anyList(), anyList())).thenReturn(1L);
+        when(cmd.set(anyString(), anyString(), any(SetArgs.class))).thenReturn("OK");
+        when(cmd.eval(anyString(), any(ScriptOutputType.class), any(String[].class), any(String[].class)))
+                .thenReturn(1L);
 
-        WatchdogLock lock = WatchdogLock.tryAcquire(pool, "wdlock:", "res", 30L);
+        WatchdogLock lock = WatchdogLock.tryAcquire(exec, "wdlock:", "res", 30L);
         assertThat(lock).isNotNull();
 
         boolean released = lock.release();
@@ -173,18 +186,20 @@ class WatchdogLockTest {
         assertThat(released).isTrue();
         assertThat(lock.isHeld()).isFalse();
         // Release must call eval (Lua fencing-token delete).
-        verify(jedis, atLeastOnce()).eval(
+        verify(cmd, atLeastOnce()).eval(
                 contains("DEL"),
-                eq(java.util.List.of("wdlock:res")),
-                argThat(args -> args.contains(lock.token())));
+                eq(ScriptOutputType.INTEGER),
+                eq(new String[]{"wdlock:res"}),
+                eq(lock.token()));
     }
 
     @Test
     void release_returnsFalseOnSecondCall_idempotentRelease() {
-        when(jedis.set(anyString(), anyString(), any(SetParams.class))).thenReturn("OK");
-        when(jedis.eval(anyString(), anyList(), anyList())).thenReturn(1L);
+        when(cmd.set(anyString(), anyString(), any(SetArgs.class))).thenReturn("OK");
+        when(cmd.eval(anyString(), any(ScriptOutputType.class), any(String[].class), any(String[].class)))
+                .thenReturn(1L);
 
-        WatchdogLock lock = WatchdogLock.tryAcquire(pool, "wdlock:", "res", 30L);
+        WatchdogLock lock = WatchdogLock.tryAcquire(exec, "wdlock:", "res", 30L);
         lock.release();                    // first call — succeeds
         boolean second = lock.release();   // second call — already released
 
@@ -193,9 +208,10 @@ class WatchdogLockTest {
 
     @Test
     void release_isAtomicAcrossConcurrentCallers() throws Exception {
-        when(jedis.set(anyString(), anyString(), any(SetParams.class))).thenReturn("OK");
-        when(jedis.eval(anyString(), anyList(), anyList())).thenReturn(1L);
-        WatchdogLock lock = WatchdogLock.tryAcquire(pool, "wdlock:", "res", 30L);
+        when(cmd.set(anyString(), anyString(), any(SetArgs.class))).thenReturn("OK");
+        when(cmd.eval(anyString(), any(ScriptOutputType.class), any(String[].class), any(String[].class)))
+                .thenReturn(1L);
+        WatchdogLock lock = WatchdogLock.tryAcquire(exec, "wdlock:", "res", 30L);
         assertThat(lock).isNotNull();
 
         int threads = 8;
@@ -221,14 +237,15 @@ class WatchdogLockTest {
         assertThat(executor.awaitTermination(1, TimeUnit.SECONDS)).isTrue();
 
         assertThat(successfulReleases.get()).isEqualTo(1);
-        verify(jedis, times(1)).eval(contains("DEL"), anyList(), anyList());
+        verify(cmd, times(1)).eval(contains("DEL"), any(ScriptOutputType.class), any(String[].class), any(String[].class));
     }
 
     @Test
     @SuppressWarnings({"unchecked", "rawtypes"})
     void release_cancelsOwnTaskButNeverShutsDownSharedExecutor() {
-        when(jedis.set(anyString(), anyString(), any(SetParams.class))).thenReturn("OK");
-        when(jedis.eval(anyString(), anyList(), anyList())).thenReturn(1L);
+        when(cmd.set(anyString(), anyString(), any(SetArgs.class))).thenReturn("OK");
+        when(cmd.eval(anyString(), any(ScriptOutputType.class), any(String[].class), any(String[].class)))
+                .thenReturn(1L);
 
         ScheduledExecutorService shared = mock(ScheduledExecutorService.class);
         ScheduledFuture<?> taskA = mock(ScheduledFuture.class);
@@ -236,8 +253,8 @@ class WatchdogLockTest {
         when(shared.scheduleWithFixedDelay(any(), anyLong(), anyLong(), any()))
                 .thenReturn((ScheduledFuture) taskA, (ScheduledFuture) taskB);
 
-        WatchdogLock a = WatchdogLock.tryAcquire(pool, "wdlock:", "a", 30L, shared);
-        WatchdogLock b = WatchdogLock.tryAcquire(pool, "wdlock:", "b", 30L, shared);
+        WatchdogLock a = WatchdogLock.tryAcquire(exec, "wdlock:", "a", 30L, shared);
+        WatchdogLock b = WatchdogLock.tryAcquire(exec, "wdlock:", "b", 30L, shared);
         a.release();
         b.release();
 
@@ -250,10 +267,11 @@ class WatchdogLockTest {
 
     @Test
     void close_releasesLockViaAutoCloseable() {
-        when(jedis.set(anyString(), anyString(), any(SetParams.class))).thenReturn("OK");
-        when(jedis.eval(anyString(), anyList(), anyList())).thenReturn(1L);
+        when(cmd.set(anyString(), anyString(), any(SetArgs.class))).thenReturn("OK");
+        when(cmd.eval(anyString(), any(ScriptOutputType.class), any(String[].class), any(String[].class)))
+                .thenReturn(1L);
 
-        WatchdogLock lock = WatchdogLock.tryAcquire(pool, "wdlock:", "res", 30L);
+        WatchdogLock lock = WatchdogLock.tryAcquire(exec, "wdlock:", "res", 30L);
         assertThat(lock).isNotNull();
 
         lock.close(); // try-with-resources path
@@ -263,14 +281,15 @@ class WatchdogLockTest {
 
     @Test
     void watchdog_stopsRenewingAfterRelease() throws InterruptedException {
-        when(jedis.set(anyString(), anyString(), any(SetParams.class))).thenReturn("OK");
+        when(cmd.set(anyString(), anyString(), any(SetArgs.class))).thenReturn("OK");
         AtomicInteger evalCount = new AtomicInteger();
-        when(jedis.eval(anyString(), anyList(), anyList())).thenAnswer(inv -> {
-            evalCount.incrementAndGet();
-            return 1L;
-        });
+        when(cmd.eval(anyString(), any(ScriptOutputType.class), any(String[].class), any(String[].class)))
+                .thenAnswer(inv -> {
+                    evalCount.incrementAndGet();
+                    return 1L;
+                });
 
-        WatchdogLock lock = WatchdogLock.tryAcquire(pool, "wdlock:", "res", 3L);
+        WatchdogLock lock = WatchdogLock.tryAcquire(exec, "wdlock:", "res", 3L);
         assertThat(lock).isNotNull();
 
         lock.release(); // stops the watchdog, calls eval once (release script)

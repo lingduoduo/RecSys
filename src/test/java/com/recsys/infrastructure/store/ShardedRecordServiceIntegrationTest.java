@@ -5,9 +5,14 @@ import com.linecorp.armeria.common.HttpStatus;
 import com.linecorp.armeria.server.Route;
 import com.linecorp.armeria.server.ServerBuilder;
 import com.linecorp.armeria.testing.junit5.server.ServerExtension;
+import com.recsys.infrastructure.redis.LettuceRedisExecutor;
+import com.recsys.infrastructure.redis.RedisExecutor;
 import com.recsys.infrastructure.redis.sharding.ConsistentHashRing;
 import com.recsys.infrastructure.redis.sharding.SequenceGenerator;
 import com.recsys.infrastructure.redis.sharding.ShardedRecordStore;
+import io.lettuce.core.RedisClient;
+import io.lettuce.core.RedisURI;
+import org.apache.commons.pool2.impl.GenericObjectPoolConfig;
 import org.junit.jupiter.api.AfterAll;
 import org.junit.jupiter.api.AfterEach;
 import org.junit.jupiter.api.Tag;
@@ -16,9 +21,6 @@ import org.junit.jupiter.api.extension.RegisterExtension;
 import org.testcontainers.containers.GenericContainer;
 import org.testcontainers.junit.jupiter.Container;
 import org.testcontainers.junit.jupiter.Testcontainers;
-import redis.clients.jedis.Jedis;
-import redis.clients.jedis.JedisPool;
-import redis.clients.jedis.util.Pool;
 
 import static org.assertj.core.api.Assertions.assertThat;
 
@@ -31,27 +33,29 @@ class ShardedRecordServiceIntegrationTest {
             new GenericContainer<>("redis:7-alpine").withExposedPorts(6379);
 
     // Initialized in configure() — Testcontainers starts @Container before @RegisterExtension.
-    static Pool<Jedis> pool;
+    static RedisExecutor exec;
 
     @AfterEach
     void flushRedis() {
-        try (Jedis jedis = pool.getResource()) { jedis.flushAll(); }
+        exec.execute(c -> { c.flushall(); return null; });
     }
 
     @AfterAll
     static void closePool() {
-        if (pool != null) pool.close();
+        if (exec != null) exec.close();
     }
 
     @RegisterExtension
     static final ServerExtension server = new ServerExtension() {
         @Override
         protected void configure(ServerBuilder sb) {
-            pool = new JedisPool(REDIS.getHost(), REDIS.getMappedPort(6379));
+            RedisClient client = RedisClient.create(
+                    RedisURI.create(REDIS.getHost(), REDIS.getMappedPort(6379)));
+            exec = new LettuceRedisExecutor(client, new GenericObjectPoolConfig<>(), true);
             ShardedRecordStore store = new ShardedRecordStore(
-                    pool,
+                    exec,
                     new ConsistentHashRing(2, 150),
-                    new SequenceGenerator(pool, "sr:"),
+                    new SequenceGenerator(exec, "sr:"),
                     "sr:");
             sb.service(Route.builder().pathPrefix("/shards/").build(),
                     new ShardedRecordService(store));

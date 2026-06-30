@@ -1,20 +1,18 @@
 package com.recsys.infrastructure.redis.sharding;
 
+import com.recsys.infrastructure.redis.RedisExecutor;
 import org.junit.jupiter.api.Test;
-import redis.clients.jedis.Jedis;
-import redis.clients.jedis.util.Pool;
 import static org.assertj.core.api.Assertions.assertThat;
 import static org.mockito.Mockito.mock;
 
 class ShardedRecordStoreGenerationKeyTest {
 
-    // Key helpers don't touch Redis; mock pools satisfy the constructor's non-null checks.
-    @SuppressWarnings("unchecked")
+    // Key helpers don't touch Redis; a mock executor satisfies the constructor's non-null checks.
     private ShardedRecordStore storeAtVersion(int version, int shardCount) {
-        Pool<Jedis> pool = mock(Pool.class);
+        RedisExecutor exec = mock(RedisExecutor.class);
         ShardTopologyProvider provider = ShardTopologyProvider.fixedAtVersion(version, shardCount, 150);
-        return new ShardedRecordStore(pool, pool, provider,
-                new SequenceGenerator(pool, "sr:"), "sr:");
+        return new ShardedRecordStore(exec, exec, provider,
+                new SequenceGenerator(exec, "sr:"), "sr:");
     }
 
     @Test

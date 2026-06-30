@@ -1,15 +1,15 @@
 package com.recsys.ratelimit;
 
+import com.recsys.infrastructure.redis.RedisExecutor;
+import io.lettuce.core.ScriptOutputType;
+import io.lettuce.core.api.sync.RedisCommands;
 import org.junit.jupiter.api.Test;
-import redis.clients.jedis.Jedis;
-import redis.clients.jedis.JedisPool;
-import redis.clients.jedis.util.Pool;
 
 import java.util.List;
+import java.util.function.Function;
 
 import static org.assertj.core.api.Assertions.assertThat;
-import static org.mockito.ArgumentMatchers.anyList;
-import static org.mockito.ArgumentMatchers.anyString;
+import static org.mockito.ArgumentMatchers.any;
 import static org.mockito.Mockito.mock;
 import static org.mockito.Mockito.never;
 import static org.mockito.Mockito.times;
@@ -17,6 +17,22 @@ import static org.mockito.Mockito.verify;
 import static org.mockito.Mockito.when;
 
 class RedisRateLimiterTest {
+
+    /** A RedisExecutor whose execute() applies the lambda against the given commands mock. */
+    @SuppressWarnings("unchecked")
+    private static RedisExecutor execFor(RedisCommands<String, String> cmd) {
+        RedisExecutor exec = mock(RedisExecutor.class);
+        when(exec.execute(any())).thenAnswer(i ->
+                i.getArgument(0, Function.class).apply(cmd));
+        when(exec.executeRead(any())).thenAnswer(i ->
+                i.getArgument(0, Function.class).apply(cmd));
+        return exec;
+    }
+
+    @SuppressWarnings("unchecked")
+    private static RedisCommands<String, String> mockCommands() {
+        return mock(RedisCommands.class);
+    }
 
     @Test
     void disabledLimiter_allowsRequests() {
@@ -30,12 +46,12 @@ class RedisRateLimiterTest {
 
     @Test
     void tryAcquire_parsesAllowedRedisDecision() {
-        Jedis jedis = mock(Jedis.class);
-        Pool<Jedis> pool = mock(JedisPool.class);
-        when(pool.getResource()).thenReturn(jedis);
-        when(jedis.eval(anyString(), anyList(), anyList())).thenReturn(List.of(1L, 99L, 1L));
+        RedisCommands<String, String> cmd = mockCommands();
+        when(cmd.eval(any(String.class), any(ScriptOutputType.class), any(String[].class), any(String[].class)))
+                .thenReturn(List.of(1L, 99L, 1L));
+        RedisExecutor exec = execFor(cmd);
         // localPassFraction=0.0 forces every call to Redis, testing the parsing path
-        RedisRateLimiter limiter = new RedisRateLimiter(pool, "rate:test:", 100L, 1, 0.0);
+        RedisRateLimiter limiter = new RedisRateLimiter(exec, "rate:test:", 100L, 1, 0.0);
 
         RedisRateLimiter.Decision decision = limiter.tryAcquire("recommendation");
 
@@ -47,11 +63,11 @@ class RedisRateLimiterTest {
 
     @Test
     void tryAcquire_parsesRejectedRedisDecision() {
-        Jedis jedis = mock(Jedis.class);
-        Pool<Jedis> pool = mock(JedisPool.class);
-        when(pool.getResource()).thenReturn(jedis);
-        when(jedis.eval(anyString(), anyList(), anyList())).thenReturn(List.of(0L, 0L, 1L));
-        RedisRateLimiter limiter = new RedisRateLimiter(pool, "rate:test:", 100L, 1, 0.0);
+        RedisCommands<String, String> cmd = mockCommands();
+        when(cmd.eval(any(String.class), any(ScriptOutputType.class), any(String[].class), any(String[].class)))
+                .thenReturn(List.of(0L, 0L, 1L));
+        RedisExecutor exec = execFor(cmd);
+        RedisRateLimiter limiter = new RedisRateLimiter(exec, "rate:test:", 100L, 1, 0.0);
 
         RedisRateLimiter.Decision decision = limiter.tryAcquire("features");
 
@@ -61,9 +77,9 @@ class RedisRateLimiterTest {
 
     @Test
     void tryAcquire_failsOpenWhenRedisUnavailable() {
-        Pool<Jedis> pool = mock(JedisPool.class);
-        when(pool.getResource()).thenThrow(new IllegalStateException("redis down"));
-        RedisRateLimiter limiter = new RedisRateLimiter(pool, "rate:test:", 100L, 1, 0.0);
+        RedisExecutor exec = mock(RedisExecutor.class);
+        when(exec.execute(any())).thenThrow(new IllegalStateException("redis down"));
+        RedisRateLimiter limiter = new RedisRateLimiter(exec, "rate:test:", 100L, 1, 0.0);
 
         RedisRateLimiter.Decision decision = limiter.tryAcquire("recommendation");
 
@@ -73,11 +89,9 @@ class RedisRateLimiterTest {
 
     @Test
     void tryAcquire_localPreCheck_skipsRedisWhenBelowThreshold() {
-        Jedis jedis = mock(Jedis.class);
-        Pool<Jedis> pool = mock(JedisPool.class);
-        when(pool.getResource()).thenReturn(jedis);
+        RedisExecutor exec = mock(RedisExecutor.class);
         // limit=10, localPassFraction=0.7 → localPassThreshold=7
-        RedisRateLimiter limiter = new RedisRateLimiter(pool, "rate:test:", 10L, 1, 0.7);
+        RedisRateLimiter limiter = new RedisRateLimiter(exec, "rate:test:", 10L, 1, 0.7);
 
         // First 7 calls must be served locally without touching Redis
         for (int i = 0; i < 7; i++) {
@@ -85,7 +99,7 @@ class RedisRateLimiterTest {
             assertThat(d.allowed()).isTrue();
             assertThat(d.failOpen()).isFalse();
         }
-        verify(jedis, never()).eval(anyString(), anyList(), anyList());
+        verify(exec, never()).execute(any());
 
         // Snapshot must expose the local threshold
         assertThat(limiter.localPassThreshold()).isEqualTo(7L);
@@ -93,26 +107,26 @@ class RedisRateLimiterTest {
 
     @Test
     void tryAcquire_localPreCheck_fallsBackToRedisAboveThreshold() {
-        Jedis jedis = mock(Jedis.class);
-        Pool<Jedis> pool = mock(JedisPool.class);
-        when(pool.getResource()).thenReturn(jedis);
-        when(jedis.eval(anyString(), anyList(), anyList())).thenReturn(List.of(1L, 2L, 1L));
+        RedisCommands<String, String> cmd = mockCommands();
+        when(cmd.eval(any(String.class), any(ScriptOutputType.class), any(String[].class), any(String[].class)))
+                .thenReturn(List.of(1L, 2L, 1L));
+        RedisExecutor exec = execFor(cmd);
         // limit=5, localPassFraction=0.6 → localPassThreshold=3
-        RedisRateLimiter limiter = new RedisRateLimiter(pool, "rate:test:", 5L, 1, 0.6);
+        RedisRateLimiter limiter = new RedisRateLimiter(exec, "rate:test:", 5L, 1, 0.6);
 
         for (int i = 0; i < 3; i++) limiter.tryAcquire("online"); // exhaust local threshold
         limiter.tryAcquire("online"); // 4th call must hit Redis
 
-        verify(jedis).eval(anyString(), anyList(), anyList());
+        verify(exec).execute(any());
     }
 
     // ── Circuit breaker tests (缓存雪崩/限流降级) ────────────────────────────
 
     @Test
     void circuitBreaker_startsInClosedState() {
-        Pool<Jedis> pool = mock(JedisPool.class);
+        RedisExecutor exec = mock(RedisExecutor.class);
         // failureThreshold=3, resetWindowMs=10_000
-        RedisRateLimiter limiter = new RedisRateLimiter(pool, "rate:", 100L, 1, 0.0, 3, 10_000L);
+        RedisRateLimiter limiter = new RedisRateLimiter(exec, "rate:", 100L, 1, 0.0, 3, 10_000L);
 
         assertThat(limiter.circuitState())
                 .isEqualTo(RedisRateLimiter.CircuitState.CLOSED);
@@ -120,9 +134,9 @@ class RedisRateLimiterTest {
 
     @Test
     void circuitBreaker_opensAfterConsecutiveFailureThreshold() {
-        Pool<Jedis> pool = mock(JedisPool.class);
-        when(pool.getResource()).thenThrow(new RuntimeException("redis down"));
-        RedisRateLimiter limiter = new RedisRateLimiter(pool, "rate:", 100L, 1, 0.0, 3, 10_000L);
+        RedisExecutor exec = mock(RedisExecutor.class);
+        when(exec.execute(any())).thenThrow(new RuntimeException("redis down"));
+        RedisRateLimiter limiter = new RedisRateLimiter(exec, "rate:", 100L, 1, 0.0, 3, 10_000L);
 
         for (int i = 0; i < 3; i++) limiter.tryAcquire("x");
 
@@ -132,10 +146,10 @@ class RedisRateLimiterTest {
 
     @Test
     void circuitBreaker_failsOpenWithoutRedisCallWhenOpen() {
-        Pool<Jedis> pool = mock(JedisPool.class);
-        when(pool.getResource()).thenThrow(new RuntimeException("redis down"));
+        RedisExecutor exec = mock(RedisExecutor.class);
+        when(exec.execute(any())).thenThrow(new RuntimeException("redis down"));
         // threshold=1 so a single failure opens the circuit
-        RedisRateLimiter limiter = new RedisRateLimiter(pool, "rate:", 100L, 1, 0.0, 1, 10_000L);
+        RedisRateLimiter limiter = new RedisRateLimiter(exec, "rate:", 100L, 1, 0.0, 1, 10_000L);
 
         limiter.tryAcquire("x"); // opens circuit (1 failure)
 
@@ -144,15 +158,15 @@ class RedisRateLimiterTest {
         assertThat(d.allowed()).isTrue();
         assertThat(d.failOpen()).isTrue();
         // Only the first call hit Redis.
-        verify(pool, times(1)).getResource();
+        verify(exec, times(1)).execute(any());
     }
 
     @Test
     void circuitBreaker_halfOpenAfterResetWindow() throws Exception {
-        Pool<Jedis> pool = mock(JedisPool.class);
-        when(pool.getResource()).thenThrow(new RuntimeException("redis down"));
+        RedisExecutor exec = mock(RedisExecutor.class);
+        when(exec.execute(any())).thenThrow(new RuntimeException("redis down"));
         // threshold=1, resetWindowMs=20ms (very short for testing)
-        RedisRateLimiter limiter = new RedisRateLimiter(pool, "rate:", 100L, 1, 0.0, 1, 20L);
+        RedisRateLimiter limiter = new RedisRateLimiter(exec, "rate:", 100L, 1, 0.0, 1, 20L);
 
         limiter.tryAcquire("x"); // opens circuit
         Thread.sleep(30);       // wait past reset window
@@ -163,15 +177,16 @@ class RedisRateLimiterTest {
 
     @Test
     void circuitBreaker_closesOnSuccessfulProbeInHalfOpen() throws Exception {
-        Jedis jedis = mock(Jedis.class);
-        Pool<Jedis> pool = mock(JedisPool.class);
-        // First call throws (opens circuit); all subsequent calls return jedis (Redis recovered).
+        RedisCommands<String, String> cmd = mockCommands();
+        when(cmd.eval(any(String.class), any(ScriptOutputType.class), any(String[].class), any(String[].class)))
+                .thenReturn(List.of(1L, 99L, 1L));
+        RedisExecutor exec = mock(RedisExecutor.class);
+        // First call throws (opens circuit); all subsequent calls apply the lambda (Redis recovered).
         // Chained stubs avoid re-stubbing after thenThrow, which would re-fire the exception.
-        when(pool.getResource())
+        when(exec.execute(any()))
                 .thenThrow(new RuntimeException("redis down"))
-                .thenReturn(jedis);
-        when(jedis.eval(anyString(), anyList(), anyList())).thenReturn(List.of(1L, 99L, 1L));
-        RedisRateLimiter limiter = new RedisRateLimiter(pool, "rate:", 100L, 1, 0.0, 1, 20L);
+                .thenAnswer(i -> i.getArgument(0, Function.class).apply(cmd));
+        RedisRateLimiter limiter = new RedisRateLimiter(exec, "rate:", 100L, 1, 0.0, 1, 20L);
 
         limiter.tryAcquire("x"); // opens circuit (1st call throws)
         Thread.sleep(30);        // wait past reset window → HALF_OPEN
@@ -185,8 +200,8 @@ class RedisRateLimiterTest {
 
     @Test
     void snapshot_includesCircuitState() {
-        Pool<Jedis> pool = mock(JedisPool.class);
-        RedisRateLimiter limiter = new RedisRateLimiter(pool, "rate:", 100L, 1, 0.7, 5, 30_000L);
+        RedisExecutor exec = mock(RedisExecutor.class);
+        RedisRateLimiter limiter = new RedisRateLimiter(exec, "rate:", 100L, 1, 0.7, 5, 30_000L);
 
         RedisRateLimiter.Snapshot snap = limiter.snapshot();
 

@@ -3,7 +3,6 @@ package com.recsys.infrastructure.redis.sharding;
 import org.junit.jupiter.api.BeforeEach;
 import org.junit.jupiter.api.Tag;
 import org.junit.jupiter.api.Test;
-import redis.clients.jedis.Jedis;
 
 import static org.assertj.core.api.Assertions.assertThat;
 
@@ -15,7 +14,7 @@ class ShardedRecordStoreTtlTest extends RedisShardingTestBase {
     @BeforeEach
     void setUp() {
         var ring = new ConsistentHashRing(1, 150);
-        store = new ShardedRecordStore(pool, ring, new SequenceGenerator(pool, "sr:"), "sr:");
+        store = new ShardedRecordStore(exec, ring, new SequenceGenerator(exec, "sr:"), "sr:");
     }
 
     @Test
@@ -25,10 +24,8 @@ class ShardedRecordStoreTtlTest extends RedisShardingTestBase {
 
         WriteResult result = store.write(record, 3600);
 
-        try (Jedis jedis = pool.getResource()) {
-            long ttl = jedis.ttl("sr:rec:0:" + result.seqNum());
-            assertThat(ttl).isBetween(3598L, 3600L);
-        }
+        long ttl = cmd().ttl("sr:rec:0:" + result.seqNum());
+        assertThat(ttl).isBetween(3598L, 3600L);
     }
 
     @Test
@@ -40,13 +37,11 @@ class ShardedRecordStoreTtlTest extends RedisShardingTestBase {
 
         Thread.sleep(1100); // wait for hash to expire
 
-        try (Jedis jedis = pool.getResource()) {
-            // Hash key expired
-            assertThat(jedis.exists("sr:rec:0:" + result.seqNum())).isFalse();
-            // ZSet member still present (no TTL set on ZSet)
-            Double score = jedis.zscore("sr:dev:0:dev-ttl2", "evt-short");
-            assertThat(score).isNotNull();
-        }
+        // Hash key expired
+        assertThat(cmd().exists("sr:rec:0:" + result.seqNum())).isZero();
+        // ZSet member still present (no TTL set on ZSet)
+        Double score = cmd().zscore("sr:dev:0:dev-ttl2", "evt-short");
+        assertThat(score).isNotNull();
     }
 
     @Test

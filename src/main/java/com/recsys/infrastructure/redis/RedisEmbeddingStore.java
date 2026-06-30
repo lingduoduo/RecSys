@@ -2,16 +2,19 @@ package com.recsys.infrastructure.redis;
 
 import com.recsys.infrastructure.vectordb.EmbeddingStore;
 import com.recsys.infrastructure.vectordb.VectorMath;
-import redis.clients.jedis.Jedis;
-import redis.clients.jedis.util.Pool;
-import redis.clients.jedis.Pipeline;
-import redis.clients.jedis.params.ScanParams;
-import redis.clients.jedis.params.SetParams;
-import redis.clients.jedis.resps.ScanResult;
+
+import io.lettuce.core.KeyScanCursor;
+import io.lettuce.core.KeyValue;
+import io.lettuce.core.LettuceFutures;
+import io.lettuce.core.RedisFuture;
+import io.lettuce.core.ScanArgs;
+import io.lettuce.core.SetArgs;
 
 import org.slf4j.Logger;
 import org.slf4j.LoggerFactory;
 
+import java.time.Duration;
+import java.util.ArrayList;
 import java.util.Collection;
 import java.util.HashMap;
 import java.util.HashSet;
@@ -25,7 +28,7 @@ import java.util.function.LongSupplier;
 
 public class RedisEmbeddingStore implements EmbeddingStore {
     private static final Logger log = LoggerFactory.getLogger(RedisEmbeddingStore.class);
-    private final Pool<Jedis> pool;
+    private final RedisExecutor exec;
     private final String keyPrefix;
     private final int mgetBatchSize;
     // Cache avalanche — random TTL jitter: staggers expiry across keys so a batch write does not
@@ -36,22 +39,22 @@ public class RedisEmbeddingStore implements EmbeddingStore {
     private final long loadAllTimeoutMs;
     private final LongSupplier clock;
 
-    public RedisEmbeddingStore(Pool<Jedis> pool, String keyPrefix) {
-        this(pool, keyPrefix, 0.1);
+    public RedisEmbeddingStore(RedisExecutor exec, String keyPrefix) {
+        this(exec, keyPrefix, 0.1);
     }
 
-    RedisEmbeddingStore(Pool<Jedis> pool, String keyPrefix, double jitterFraction) {
-        this(pool, keyPrefix, jitterFraction, readIntEnv("REDIS_EMBEDDING_MGET_BATCH_SIZE", 500));
+    RedisEmbeddingStore(RedisExecutor exec, String keyPrefix, double jitterFraction) {
+        this(exec, keyPrefix, jitterFraction, readIntEnv("REDIS_EMBEDDING_MGET_BATCH_SIZE", 500));
     }
 
-    RedisEmbeddingStore(Pool<Jedis> pool, String keyPrefix, double jitterFraction, int mgetBatchSize) {
-        this(pool, keyPrefix, jitterFraction, mgetBatchSize,
+    RedisEmbeddingStore(RedisExecutor exec, String keyPrefix, double jitterFraction, int mgetBatchSize) {
+        this(exec, keyPrefix, jitterFraction, mgetBatchSize,
                 readLongEnv("REDIS_LOADALL_TIMEOUT_MS", 30_000L), System::currentTimeMillis);
     }
 
-    RedisEmbeddingStore(Pool<Jedis> pool, String keyPrefix, double jitterFraction, int mgetBatchSize,
+    RedisEmbeddingStore(RedisExecutor exec, String keyPrefix, double jitterFraction, int mgetBatchSize,
                         long loadAllTimeoutMs, LongSupplier clock) {
-        this.pool = pool;
+        this.exec = exec;
         this.keyPrefix = keyPrefix;
         this.jitterFraction = Math.max(0.0, Math.min(0.5, jitterFraction));
         this.mgetBatchSize = Math.max(1, mgetBatchSize);
@@ -72,17 +75,13 @@ public class RedisEmbeddingStore implements EmbeddingStore {
 
     @Override
     public float[] getEmbedding(int movieId) {
-        try (Jedis jedis = pool.getResource()) {
-            String v = jedis.get(keyPrefix + ":" + movieId);
-            if (v == null || v.isBlank()) return null;
-            return VectorMath.parseVector(v);
-        }
+        String v = exec.execute(c -> c.get(keyPrefix + ":" + movieId));
+        if (v == null || v.isBlank()) return null;
+        return VectorMath.parseVector(v);
     }
 
     public void setEmbeddingNoTtl(int movieId, float[] vector) {
-        try (Jedis jedis = pool.getResource()) {
-            jedis.set(keyPrefix + ":" + movieId, toVectorString(vector));
-        }
+        exec.execute(c -> c.set(keyPrefix + ":" + movieId, toVectorString(vector)));
     }
 
     // ttlSeconds <= 0 means no expiry
@@ -92,10 +91,8 @@ public class RedisEmbeddingStore implements EmbeddingStore {
             setEmbeddingNoTtl(movieId, vector);
             return;
         }
-        SetParams params = SetParams.setParams().px(jitteredTtlMillis(ttlSeconds));
-        try (Jedis jedis = pool.getResource()) {
-            jedis.set(keyPrefix + ":" + movieId, toVectorString(vector), params);
-        }
+        SetArgs args = SetArgs.Builder.px(jitteredTtlMillis(ttlSeconds));
+        exec.execute(c -> c.set(keyPrefix + ":" + movieId, toVectorString(vector), args));
     }
 
     // Bulk write — mirrors the Spark/Scala pattern of iterating model vectors after training.
@@ -106,19 +103,21 @@ public class RedisEmbeddingStore implements EmbeddingStore {
     @Override
     public void setEmbeddings(Map<Integer, float[]> vectors, long ttlSeconds) {
         if (vectors == null || vectors.isEmpty()) return;
-        try (Jedis jedis = pool.getResource();
-             Pipeline pipeline = jedis.pipelined()) {
+        exec.executePipelined(conn -> {
+            var async = conn.async();
+            List<RedisFuture<?>> futures = new ArrayList<>(vectors.size());
             for (Map.Entry<Integer, float[]> entry : vectors.entrySet()) {
                 String key = keyPrefix + ":" + entry.getKey();
                 String value = toVectorString(entry.getValue());
                 if (ttlSeconds > 0) {
-                    pipeline.set(key, value, SetParams.setParams().px(jitteredTtlMillis(ttlSeconds)));
+                    futures.add(async.set(key, value, SetArgs.Builder.px(jitteredTtlMillis(ttlSeconds))));
                 } else {
-                    pipeline.set(key, value);
+                    futures.add(async.set(key, value));
                 }
             }
-            pipeline.sync();
-        }
+            conn.flushCommands();
+            LettuceFutures.awaitAll(Duration.ofSeconds(5), futures.toArray(new RedisFuture[0]));
+        });
     }
 
     @Override
@@ -126,24 +125,23 @@ public class RedisEmbeddingStore implements EmbeddingStore {
         Map<Integer, float[]> embeddings = new HashMap<>();
         if (movieIds == null || movieIds.isEmpty()) return embeddings;
 
-        List<Integer> ids = new java.util.ArrayList<>(new LinkedHashSet<>(movieIds));
+        List<Integer> ids = new ArrayList<>(new LinkedHashSet<>(movieIds));
         if (ids.isEmpty()) {
             return embeddings;
         }
 
-        try (Jedis jedis = pool.getResource()) {
-            for (int start = 0; start < ids.size(); start += mgetBatchSize) {
-                int end = Math.min(ids.size(), start + mgetBatchSize);
-                String[] keys = new String[end - start];
-                for (int i = start; i < end; i++) {
-                    keys[i - start] = keyPrefix + ":" + ids.get(i);
-                }
-                List<String> values = jedis.mget(keys);
-                for (int j = 0; j < values.size(); j++) {
-                    String value = values.get(j);
-                    if (value == null || value.isBlank()) continue;
-                    embeddings.put(ids.get(start + j), VectorMath.parseVector(value));
-                }
+        for (int start = 0; start < ids.size(); start += mgetBatchSize) {
+            int end = Math.min(ids.size(), start + mgetBatchSize);
+            String[] keys = new String[end - start];
+            for (int i = start; i < end; i++) {
+                keys[i - start] = keyPrefix + ":" + ids.get(i);
+            }
+            final int batchStart = start;
+            List<KeyValue<String, String>> values = exec.execute(c -> c.mget(keys));
+            for (int j = 0; j < values.size(); j++) {
+                String value = values.get(j).getValueOrElse(null);
+                if (value == null || value.isBlank()) continue;
+                embeddings.put(ids.get(batchStart + j), VectorMath.parseVector(value));
             }
         }
 
@@ -157,18 +155,17 @@ public class RedisEmbeddingStore implements EmbeddingStore {
     // for large embedding stores.
     public Map<Integer, float[]> loadAll() {
         Map<Integer, float[]> result = new HashMap<>();
-        ScanParams scanParams = new ScanParams().match(keyPrefix + ":*").count(500);
+        ScanArgs scanArgs = ScanArgs.Builder.matches(keyPrefix + ":*").limit(500);
         long start = clock.getAsLong();
 
-        try (Jedis jedis = pool.getResource()) {
-            String cursor = "0";
-            do {
-                ScanResult<String> res = jedis.scan(cursor, scanParams);
-                List<String> pageKeys = res.getResult();
+        return exec.execute(c -> {
+            KeyScanCursor<String> cursor = c.scan(scanArgs);
+            while (true) {
+                List<String> pageKeys = cursor.getKeys();
                 if (!pageKeys.isEmpty()) {
-                    List<String> values = jedis.mget(pageKeys.toArray(new String[0]));
+                    List<KeyValue<String, String>> values = c.mget(pageKeys.toArray(new String[0]));
                     for (int i = 0; i < pageKeys.size(); i++) {
-                        String val = values.get(i);
+                        String val = values.get(i).getValueOrElse(null);
                         if (val == null || val.isBlank()) continue;
                         int sep = pageKeys.get(i).lastIndexOf(':');
                         if (sep < 0) continue;
@@ -178,16 +175,16 @@ public class RedisEmbeddingStore implements EmbeddingStore {
                         } catch (NumberFormatException ignore) {}
                     }
                 }
-                cursor = res.getCursor();
                 if (loadAllTimeoutMs > 0L && clock.getAsLong() - start > loadAllTimeoutMs) {
                     log.warn("loadAll exceeded {}ms budget after {} entries; returning partial result",
                             loadAllTimeoutMs, result.size());
                     break;
                 }
-            } while (!"0".equals(cursor));
-        }
-
-        return result;
+                if (cursor.isFinished()) break;
+                cursor = c.scan(cursor, scanArgs);
+            }
+            return result;
+        });
     }
 
     public Map<Integer, float[]> loadValidEmbeddings(Set<Integer> knownMovieIds) {
@@ -204,17 +201,12 @@ public class RedisEmbeddingStore implements EmbeddingStore {
         Set<Integer> ids = new HashSet<>();
 
         int countHint = Math.min(maxKeys, 500);
-        ScanParams params = new ScanParams()
-                .match(keyPrefix + ":*")
-                .count(countHint);
+        ScanArgs args = ScanArgs.Builder.matches(keyPrefix + ":*").limit(countHint);
 
-        String cursor = "0";
-
-        try (Jedis jedis = pool.getResource()) {
+        return exec.execute(c -> {
+            KeyScanCursor<String> cursor = c.scan(args);
             while (true) {
-                ScanResult<String> res = jedis.scan(cursor, params);
-
-                for (String key : res.getResult()) {
+                for (String key : cursor.getKeys()) {
                     int idx = key.lastIndexOf(':');
                     if (idx >= 0 && idx + 1 < key.length()) {
                         try {
@@ -226,12 +218,11 @@ public class RedisEmbeddingStore implements EmbeddingStore {
                     if (ids.size() >= maxKeys) return ids;
                 }
 
-                cursor = res.getCursor();
-                if ("0".equals(cursor)) break;
+                if (cursor.isFinished()) break;
+                cursor = c.scan(cursor, args);
             }
-        }
-
-        return ids;
+            return ids;
+        });
     }
 
     private static String toVectorString(float[] vec) {

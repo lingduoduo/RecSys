@@ -1,16 +1,17 @@
 package com.recsys.infrastructure.redis.sharding;
 
-import redis.clients.jedis.Jedis;
-import redis.clients.jedis.Pipeline;
-import redis.clients.jedis.Response;
-import redis.clients.jedis.StreamEntryID;
-import redis.clients.jedis.params.XAddParams;
-import redis.clients.jedis.params.XReadParams;
-import redis.clients.jedis.params.ZAddParams;
-import redis.clients.jedis.resps.StreamEntry;
-import redis.clients.jedis.resps.Tuple;
-import redis.clients.jedis.util.Pool;
+import com.recsys.infrastructure.redis.RedisExecutor;
+import io.lettuce.core.Limit;
+import io.lettuce.core.Range;
+import io.lettuce.core.RedisFuture;
+import io.lettuce.core.LettuceFutures;
+import io.lettuce.core.ScoredValue;
+import io.lettuce.core.StreamMessage;
+import io.lettuce.core.XAddArgs;
+import io.lettuce.core.XReadArgs;
+import io.lettuce.core.ZAddArgs;
 
+import java.time.Duration;
 import java.util.ArrayList;
 import java.util.List;
 import java.util.Map;
@@ -28,32 +29,33 @@ import java.util.Objects;
 public final class ShardedRecordStore {
 
     private static final long STREAM_MAXLEN = 1_000_000L;
+    private static final Duration PIPELINE_TIMEOUT = Duration.ofSeconds(5);
 
-    private final Pool<Jedis> writePool;
-    private final Pool<Jedis> readPool;
+    private final RedisExecutor writeExec;
+    private final RedisExecutor readExec;
     private final ShardTopologyProvider provider;
     private final SequenceGenerator seqGen;
     private final String prefix;
 
-    public ShardedRecordStore(Pool<Jedis> writePool, Pool<Jedis> readPool,
+    public ShardedRecordStore(RedisExecutor writeExec, RedisExecutor readExec,
                               ShardTopologyProvider provider,
                               SequenceGenerator seqGen, String prefix) {
-        this.writePool = Objects.requireNonNull(writePool, "writePool");
-        this.readPool  = Objects.requireNonNull(readPool,  "readPool");
+        this.writeExec = Objects.requireNonNull(writeExec, "writeExec");
+        this.readExec  = Objects.requireNonNull(readExec,  "readExec");
         this.provider  = Objects.requireNonNull(provider,  "provider");
         this.seqGen    = Objects.requireNonNull(seqGen,    "seqGen");
         this.prefix    = Objects.requireNonNull(prefix,    "prefix");
     }
 
     // Back-compat: fixed single-version topology from a ring.
-    public ShardedRecordStore(Pool<Jedis> pool, ConsistentHashRing ring,
+    public ShardedRecordStore(RedisExecutor exec, ConsistentHashRing ring,
                               SequenceGenerator seqGen, String prefix) {
-        this(pool, pool, ShardTopologyProvider.fixed(ring), seqGen, prefix);
+        this(exec, exec, ShardTopologyProvider.fixed(ring), seqGen, prefix);
     }
 
-    public ShardedRecordStore(Pool<Jedis> writePool, Pool<Jedis> readPool,
+    public ShardedRecordStore(RedisExecutor writeExec, RedisExecutor readExec,
                               ConsistentHashRing ring, SequenceGenerator seqGen, String prefix) {
-        this(writePool, readPool, ShardTopologyProvider.fixed(ring), seqGen, prefix);
+        this(writeExec, readExec, ShardTopologyProvider.fixed(ring), seqGen, prefix);
     }
 
     // ── Write ────────────────────────────────────────────────────────────────────
@@ -80,42 +82,47 @@ public final class ShardedRecordStore {
         String devKey    = devKey(version, shardIndex, record.deviceId());
         String streamKey = streamKey(version, shardIndex);
 
-        long zaddResult;
-        try (Jedis jedis = writePool.getResource()) {
-            Pipeline pipe = jedis.pipelined();
+        // Captured from inside the pipeline so we can inspect the ZADD result after awaitAll.
+        @SuppressWarnings("unchecked")
+        RedisFuture<Long>[] zaddHolder = new RedisFuture[1];
 
-            pipe.hset(recKey, Map.of(
+        writeExec.executePipelined(conn -> {
+            var async = conn.async();
+            List<RedisFuture<?>> futures = new ArrayList<>();
+
+            futures.add(async.hset(recKey, Map.of(
                     "deviceId",  record.deviceId(),
                     "type",      record.type().name(),
                     "eventId",   record.eventId(),
                     "payload",   record.payload() != null ? record.payload() : "",
                     "timestamp", String.valueOf(record.timestamp())
-            ));
-            if (ttlSeconds > 0) pipe.expire(recKey, ttlSeconds);
+            )));
+            if (ttlSeconds > 0) futures.add(async.expire(recKey, ttlSeconds));
 
-            var zaddFuture = isUpdate
-                    ? pipe.zadd(devKey, seqNum, record.eventId(),
-                            ZAddParams.zAddParams().xx().gt())
-                    : pipe.zadd(devKey, seqNum, record.eventId(),
-                            ZAddParams.zAddParams().nx());
+            RedisFuture<Long> zaddFuture = isUpdate
+                    ? async.zadd(devKey, ZAddArgs.Builder.xx().gt(), (double) seqNum, record.eventId())
+                    : async.zadd(devKey, ZAddArgs.Builder.nx(), (double) seqNum, record.eventId());
+            zaddHolder[0] = zaddFuture;
+            futures.add(zaddFuture);
 
-            pipe.xadd(streamKey,
-                    XAddParams.xAddParams()
-                            .id(StreamEntryID.NEW_ENTRY)
-                            .maxLen(STREAM_MAXLEN)
-                            .approximateTrimming(),
+            futures.add(async.xadd(streamKey,
+                    XAddArgs.Builder.maxlen(STREAM_MAXLEN).approximateTrimming(),
                     Map.of(
                             "deviceId", record.deviceId(),
                             "seq",      String.valueOf(seqNum),
                             "type",     record.type().name(),
                             "eventId",  record.eventId()
-                    ));
-            pipe.sync();
+                    )));
 
-            zaddResult = (Long) zaddFuture.get();
-        }
+            conn.flushCommands();
+            LettuceFutures.awaitAll(PIPELINE_TIMEOUT,
+                    futures.toArray(new RedisFuture[0]));
+        });
 
-        WriteStatus status = (!isUpdate && zaddResult == 0L)
+        Long zaddResult = awaitResult(zaddHolder[0]);
+        long zadd = zaddResult == null ? 0L : zaddResult;
+
+        WriteStatus status = (!isUpdate && zadd == 0L)
                 ? WriteStatus.DUPLICATE : WriteStatus.OK;
         return new WriteResult(seqNum, shardIndex, status);
     }
@@ -147,10 +154,10 @@ public final class ShardedRecordStore {
         String devKey = devKey(version, shardIndex, deviceId);
         double minScore = cursor.isStart() ? Double.NEGATIVE_INFINITY
                                            : Double.parseDouble(cursor.value()) + 1;
-        List<Tuple> tuples;
-        try (Jedis jedis = readPool.getResource()) {
-            tuples = jedis.zrangeByScoreWithScores(devKey, minScore, Double.POSITIVE_INFINITY, 0, limit);
-        }
+        Range<Double> range = Range.create(minScore, Double.POSITIVE_INFINITY);
+        Limit pageLimit = Limit.create(0, limit);
+        List<ScoredValue<String>> tuples =
+                readExec.executeRead(c -> c.zrangebyscoreWithScores(devKey, range, pageLimit));
         if (tuples.isEmpty()) return Page.empty();
         List<Long> seqNums = tuples.stream().map(t -> (long) t.getScore()).toList();
         List<ShardedRecord> records = fetchRecords(version, shardIndex, seqNums);
@@ -180,27 +187,21 @@ public final class ShardedRecordStore {
         String streamKey = streamKey(version, shardIndex);
 
         // Fetch limit+1 to detect whether more entries exist beyond this page.
-        List<StreamEntry> entries;
-        try (Jedis jedis = readPool.getResource()) {
-            StreamEntryID fromId = new StreamEntryID(cursor.value());
-            List<Map.Entry<String, List<StreamEntry>>> result = jedis.xread(
-                    XReadParams.xReadParams().count(limit + 1),
-                    Map.of(streamKey, fromId));
-            entries = (result == null || result.isEmpty()) ? List.of()
-                    : result.get(0).getValue();
-        }
-        if (entries.isEmpty()) return Page.empty();
+        List<StreamMessage<String, String>> entries = readExec.executeRead(c -> c.xread(
+                XReadArgs.Builder.count(limit + 1),
+                XReadArgs.StreamOffset.from(streamKey, cursor.value())));
+        if (entries == null || entries.isEmpty()) return Page.empty();
 
         boolean hasMore = entries.size() > limit;
-        List<StreamEntry> page = hasMore ? entries.subList(0, limit) : entries;
+        List<StreamMessage<String, String>> page = hasMore ? entries.subList(0, limit) : entries;
 
         List<Long> seqNums = page.stream()
-                .map(e -> Long.parseLong(e.getFields().get("seq")))
+                .map(e -> Long.parseLong(e.getBody().get("seq")))
                 .toList();
         List<ShardedRecord> records = fetchRecords(version, shardIndex, seqNums);
 
         ShardCursor next = hasMore
-                ? ShardCursor.of(page.get(page.size() - 1).getID().toString())
+                ? ShardCursor.of(page.get(page.size() - 1).getId())
                 : null;
         return new Page<>(records, next);
     }
@@ -226,15 +227,21 @@ public final class ShardedRecordStore {
     // Pipelined multi-HGETALL — one Redis round-trip for up to `limit` records.
     private List<ShardedRecord> fetchRecords(int version, int shardIndex, List<Long> seqNums) {
         if (seqNums.isEmpty()) return List.of();
-        List<Response<Map<String, String>>> responses = new ArrayList<>();
-        try (Jedis jedis = readPool.getResource(); Pipeline pipe = jedis.pipelined()) {
-            for (long seq : seqNums) responses.add(pipe.hgetAll(recKey(version, shardIndex, seq)));
-            pipe.sync();
-        }
+        @SuppressWarnings("unchecked")
+        RedisFuture<Map<String, String>>[] responses = new RedisFuture[seqNums.size()];
+        readExec.executePipelined(conn -> {
+            var async = conn.async();
+            for (int i = 0; i < seqNums.size(); i++) {
+                responses[i] = async.hgetall(recKey(version, shardIndex, seqNums.get(i)));
+            }
+            conn.flushCommands();
+            LettuceFutures.awaitAll(PIPELINE_TIMEOUT,
+                    responses);
+        });
 
         List<ShardedRecord> records = new ArrayList<>();
         for (int i = 0; i < seqNums.size(); i++) {
-            Map<String, String> fields = responses.get(i).get();
+            Map<String, String> fields = awaitResult(responses[i]);
             if (fields == null || fields.isEmpty()) continue; // TTL expired — skip
             records.add(new ShardedRecord(
                     fields.get("deviceId"),
@@ -246,6 +253,18 @@ public final class ShardedRecordStore {
             ));
         }
         return records;
+    }
+
+    // Reads a future that awaitAll has already completed; rethrows failures unchecked.
+    private static <T> T awaitResult(RedisFuture<T> future) {
+        try {
+            return future.get();
+        } catch (InterruptedException e) {
+            Thread.currentThread().interrupt();
+            throw new IllegalStateException("Interrupted awaiting Redis result", e);
+        } catch (java.util.concurrent.ExecutionException e) {
+            throw new IllegalStateException("Redis pipeline command failed", e.getCause());
+        }
     }
 
     // ── Key helpers ──────────────────────────────────────────────────────────────

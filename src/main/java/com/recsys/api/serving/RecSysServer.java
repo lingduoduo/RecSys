@@ -10,8 +10,9 @@ import com.recsys.infrastructure.dataloading.DataManager;
 import com.recsys.application.model.PairPredictionService;
 import com.recsys.infrastructure.cache.LocalEmbeddingCache;
 import com.recsys.infrastructure.redis.GlobalPopularityStore;
-import com.recsys.infrastructure.redis.RedisConnectionFactory;
+import com.recsys.infrastructure.redis.LettuceClientFactory;
 import com.recsys.infrastructure.redis.RedisEmbeddingStore;
+import com.recsys.infrastructure.redis.RedisExecutor;
 import com.recsys.infrastructure.redis.ShardedTopKStore;
 import com.recsys.infrastructure.vectordb.CandidateGenerator;
 import com.recsys.resilience.FaultInjector;
@@ -28,8 +29,6 @@ import com.recsys.application.retrieval.multichannel.RecallConfig;
 import com.recsys.infrastructure.store.TrendingStore;
 import org.slf4j.Logger;
 import org.slf4j.LoggerFactory;
-import redis.clients.jedis.Jedis;
-import redis.clients.jedis.util.Pool;
 import java.util.List;
 import java.util.concurrent.ExecutorService;
 import java.util.concurrent.Executors;
@@ -59,7 +58,7 @@ public class RecSysServer {
 
     public void run() throws Exception {
         int port = readIntEnv("PORT", DEFAULT_PORT);
-        Pool<Jedis> jedisPool = RedisConnectionFactory.fromEnv();
+        RedisExecutor jedisPool = LettuceClientFactory.fromEnv();
         try {
             DataManager dataManager = DataManager.getInstance();
             PairPredictionService pairPredictionService = new PairPredictionService();

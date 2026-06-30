@@ -1,8 +1,6 @@
 package com.recsys.infrastructure.redis;
 
 import com.recsys.infrastructure.cache.TtlSingleFlightCache;
-import redis.clients.jedis.Jedis;
-import redis.clients.jedis.util.Pool;
 
 import java.util.List;
 import java.util.function.LongSupplier;
@@ -21,16 +19,16 @@ public class GlobalPopularityStore {
     // One Redis snapshot holds the top-N list; getTopIds(limit) slices it.
     static final int MAX_CACHED = 100;
 
-    private final Pool<Jedis> pool;
+    private final RedisExecutor exec;
     private final TtlSingleFlightCache<List<String>> cache;
 
-    public GlobalPopularityStore(Pool<Jedis> pool) {
-        this(pool, TtlSingleFlightCache.DEFAULT_FRESH_TTL_MS,
+    public GlobalPopularityStore(RedisExecutor exec) {
+        this(exec, TtlSingleFlightCache.DEFAULT_FRESH_TTL_MS,
                 TtlSingleFlightCache.DEFAULT_STALE_TTL_MS, System::currentTimeMillis);
     }
 
-    GlobalPopularityStore(Pool<Jedis> pool, long freshTtlMs, long staleTtlMs, LongSupplier clock) {
-        this.pool = pool;
+    GlobalPopularityStore(RedisExecutor exec, long freshTtlMs, long staleTtlMs, LongSupplier clock) {
+        this.exec = exec;
         this.cache = new TtlSingleFlightCache<>(freshTtlMs, staleTtlMs, clock);
     }
 
@@ -49,9 +47,7 @@ public class GlobalPopularityStore {
     }
 
     private List<String> loadTopFromRedis() {
-        try (Jedis jedis = pool.getResource()) {
-            List<String> ids = jedis.zrevrange(KEY, 0, MAX_CACHED - 1);
-            return ids == null ? List.of() : List.copyOf(ids);
-        }
+        List<String> ids = exec.executeRead(c -> c.zrevrange(KEY, 0, MAX_CACHED - 1));
+        return ids == null ? List.of() : List.copyOf(ids);
     }
 }

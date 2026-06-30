@@ -3,7 +3,6 @@ package com.recsys.infrastructure.redis.sharding;
 import org.junit.jupiter.api.BeforeEach;
 import org.junit.jupiter.api.Tag;
 import org.junit.jupiter.api.Test;
-import redis.clients.jedis.Jedis;
 
 import java.util.Map;
 
@@ -18,7 +17,7 @@ class ShardedRecordStoreWriteTest extends RedisShardingTestBase {
     @BeforeEach
     void setUp() {
         ring  = new ConsistentHashRing(2, 150);
-        store = new ShardedRecordStore(pool, ring, new SequenceGenerator(pool, "sr:"), "sr:");
+        store = new ShardedRecordStore(exec, ring, new SequenceGenerator(exec, "sr:"), "sr:");
     }
 
     @Test
@@ -40,15 +39,13 @@ class ShardedRecordStoreWriteTest extends RedisShardingTestBase {
 
         WriteResult result = store.write(record);
 
-        try (Jedis jedis = pool.getResource()) {
-            Map<String, String> hash = jedis.hgetAll(
-                    "sr:rec:" + result.shardIndex() + ":" + result.seqNum());
-            assertThat(hash)
-                    .containsEntry("deviceId", "device-2")
-                    .containsEntry("type", "FEATURE")
-                    .containsEntry("eventId", "feat-001")
-                    .containsEntry("payload", "{\"engagement\":0.12}");
-        }
+        Map<String, String> hash = cmd().hgetall(
+                "sr:rec:" + result.shardIndex() + ":" + result.seqNum());
+        assertThat(hash)
+                .containsEntry("deviceId", "device-2")
+                .containsEntry("type", "FEATURE")
+                .containsEntry("eventId", "feat-001")
+                .containsEntry("payload", "{\"engagement\":0.12}");
     }
 
     @Test
@@ -58,11 +55,9 @@ class ShardedRecordStoreWriteTest extends RedisShardingTestBase {
 
         WriteResult result = store.write(record);
 
-        try (Jedis jedis = pool.getResource()) {
-            Double score = jedis.zscore(
-                    "sr:dev:" + result.shardIndex() + ":device-3", "evt-002");
-            assertThat(score).isEqualTo((double) result.seqNum());
-        }
+        Double score = cmd().zscore(
+                "sr:dev:" + result.shardIndex() + ":device-3", "evt-002");
+        assertThat(score).isEqualTo((double) result.seqNum());
     }
 
     @Test
@@ -72,10 +67,8 @@ class ShardedRecordStoreWriteTest extends RedisShardingTestBase {
 
         WriteResult result = store.write(record);
 
-        try (Jedis jedis = pool.getResource()) {
-            long streamLen = jedis.xlen("sr:stream:" + result.shardIndex());
-            assertThat(streamLen).isGreaterThan(0);
-        }
+        long streamLen = cmd().xlen("sr:stream:" + result.shardIndex());
+        assertThat(streamLen).isGreaterThan(0);
     }
 
     @Test
@@ -99,19 +92,15 @@ class ShardedRecordStoreWriteTest extends RedisShardingTestBase {
         WriteResult first = store.write(r1);
 
         // Force a high score for same eventId.
-        try (Jedis jedis = pool.getResource()) {
-            jedis.zadd("sr:dev:" + first.shardIndex() + ":device-6",
-                    9999.0, "feat-ver");
-        }
+        cmd().zadd("sr:dev:" + first.shardIndex() + ":device-6",
+                9999.0, "feat-ver");
 
         ShardedRecord r2 = new ShardedRecord("device-6", 0, RecordType.FEATURE,
                 "feat-ver", "{\"v\":2}", System.currentTimeMillis());
         store.update(r2);
 
-        try (Jedis jedis = pool.getResource()) {
-            Double score = jedis.zscore(
-                    "sr:dev:" + first.shardIndex() + ":device-6", "feat-ver");
-            assertThat(score).isEqualTo(9999.0);
-        }
+        Double score = cmd().zscore(
+                "sr:dev:" + first.shardIndex() + ":device-6", "feat-ver");
+        assertThat(score).isEqualTo(9999.0);
     }
 }

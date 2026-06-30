@@ -2,9 +2,6 @@ package com.recsys.infrastructure.redis;
 
 import com.recsys.infrastructure.store.TrendingStore;
 
-import redis.clients.jedis.Jedis;
-import redis.clients.jedis.util.Pool;
-
 import java.util.List;
 import java.util.concurrent.CompletableFuture;
 import java.util.concurrent.ConcurrentHashMap;
@@ -25,18 +22,18 @@ public final class RedisTopKStore implements TrendingStore {
     private static final long FETCH_WAIT_TIMEOUT_MS = 2_000L;
     private static final int MAX_FULL_CACHE_SIZE = 100;
 
-    private final Pool<Jedis> pool;
+    private final RedisExecutor exec;
     private final String keyPrefix;
     private final long cacheTtlMs;
     private final ConcurrentHashMap<String, CachedIds> hotTopKCache = new ConcurrentHashMap<>();
     private final ConcurrentHashMap<String, CompletableFuture<CachedIds>> inflight = new ConcurrentHashMap<>();
 
-    public RedisTopKStore(Pool<Jedis> pool, String keyPrefix) {
-        this(pool, keyPrefix, DEFAULT_CACHE_TTL_MS);
+    public RedisTopKStore(RedisExecutor exec, String keyPrefix) {
+        this(exec, keyPrefix, DEFAULT_CACHE_TTL_MS);
     }
 
-    public RedisTopKStore(Pool<Jedis> pool, String keyPrefix, long cacheTtlMs) {
-        this.pool = pool;
+    public RedisTopKStore(RedisExecutor exec, String keyPrefix, long cacheTtlMs) {
+        this.exec = exec;
         this.keyPrefix = keyPrefix;
         this.cacheTtlMs = Math.max(0L, cacheTtlMs);
     }
@@ -82,13 +79,13 @@ public final class RedisTopKStore implements TrendingStore {
         // Always fetch a full list so different k values share the same cache entry.
         int fetchSize = Math.max(k, MAX_FULL_CACHE_SIZE);
         String key = keyPrefix + window;
-        try (Jedis jedis = pool.getResource()) {
-            CachedIds ids = new CachedIds(List.copyOf(jedis.zrevrange(key, 0, fetchSize - 1)), now + cacheTtlMs);
-            if (cacheTtlMs > 0L) {
-                hotTopKCache.put(window, ids);
-            }
-            return ids;
+        CachedIds ids = new CachedIds(
+                List.copyOf(exec.executeRead(c -> c.zrevrange(key, 0, fetchSize - 1))),
+                now + cacheTtlMs);
+        if (cacheTtlMs > 0L) {
+            hotTopKCache.put(window, ids);
         }
+        return ids;
     }
 
     public int hotCacheSize() {

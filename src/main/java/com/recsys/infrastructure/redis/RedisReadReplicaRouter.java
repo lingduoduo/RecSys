@@ -1,17 +1,14 @@
 package com.recsys.infrastructure.redis;
 
-import redis.clients.jedis.Jedis;
-import redis.clients.jedis.util.Pool;
-
 import java.io.Closeable;
 import java.util.List;
 import java.util.concurrent.ThreadLocalRandom;
 
 /**
- * Routes Redis operations to the correct pool based on access type and
- * Availability Zone locality.
+ * Routes Redis operations to the correct {@link RedisExecutor} based on access
+ * type and Availability Zone locality.
  *
- * <p><b>Write path</b>: always uses the primary pool (write leader).
+ * <p><b>Write path</b>: always uses the primary executor (write leader).
  *
  * <p><b>Read path</b>: prefers the replica in the same AZ as this service
  * instance (set via the {@code AWS_AZ} environment variable).  Falls back to a
@@ -19,38 +16,37 @@ import java.util.concurrent.ThreadLocalRandom;
  * This keeps reads available even if the primary AZ becomes unreachable, and
  * avoids cross-AZ data-transfer costs on the hot read path.
  *
- * <p>Lifecycle: call {@link #close()} once on shutdown to drain and close all
- * pools.
+ * <p>Lifecycle: call {@link #close()} once on shutdown to close all executors.
  */
 public final class RedisReadReplicaRouter implements Closeable {
 
-    /** One replica pool plus its declared Availability Zone label. */
-    public record AzPool(Pool<Jedis> pool, String az) {}
+    /** One replica executor plus its declared Availability Zone label. */
+    public record AzExecutor(RedisExecutor exec, String az) {}
 
-    private final Pool<Jedis> primaryPool;
-    private final List<AzPool> replicaPools;
+    private final RedisExecutor primary;
+    private final List<AzExecutor> replicas;
     private final String localAz;
 
     /**
-     * @param primaryPool  connection pool for the Redis write leader
-     * @param replicaPools zero or more AZ-tagged read-replica pools
-     * @param localAz      AZ of this service instance (e.g. {@code "us-east-1b"})
+     * @param primary  executor for the Redis write leader
+     * @param replicas zero or more AZ-tagged read-replica executors
+     * @param localAz  AZ of this service instance (e.g. {@code "us-east-1b"})
      */
-    public RedisReadReplicaRouter(Pool<Jedis> primaryPool,
-                                  List<AzPool> replicaPools,
+    public RedisReadReplicaRouter(RedisExecutor primary,
+                                  List<AzExecutor> replicas,
                                   String localAz) {
-        this.primaryPool  = primaryPool;
-        this.replicaPools = List.copyOf(replicaPools);
-        this.localAz      = localAz == null ? "unknown" : localAz;
+        this.primary  = primary;
+        this.replicas = List.copyOf(replicas);
+        this.localAz  = localAz == null ? "unknown" : localAz;
     }
 
-    /** Returns the write pool (primary). Always use this for mutations. */
-    public Pool<Jedis> writablePool() {
-        return primaryPool;
+    /** Returns the write executor (primary). Always use this for mutations. */
+    public RedisExecutor writable() {
+        return primary;
     }
 
     /**
-     * Returns the best read pool for the current AZ.
+     * Returns the best read executor for the current AZ.
      *
      * <ol>
      *   <li>Same-AZ replica — lowest latency, survives primary-AZ failure.</li>
@@ -58,21 +54,21 @@ public final class RedisReadReplicaRouter implements Closeable {
      *   <li>Primary — safe fallback when no replicas are configured.</li>
      * </ol>
      */
-    public Pool<Jedis> readablePool() {
-        if (replicaPools.isEmpty()) return primaryPool;
+    public RedisExecutor readable() {
+        if (replicas.isEmpty()) return primary;
 
         // prefer same-AZ replica
-        for (AzPool ap : replicaPools) {
-            if (localAz.equals(ap.az())) return ap.pool();
+        for (AzExecutor ae : replicas) {
+            if (localAz.equals(ae.az())) return ae.exec();
         }
 
         // fall back to random replica
-        return replicaPools.get(ThreadLocalRandom.current().nextInt(replicaPools.size())).pool();
+        return replicas.get(ThreadLocalRandom.current().nextInt(replicas.size())).exec();
     }
 
     /** Number of configured read replicas (0 when running without replicas). */
     public int replicaCount() {
-        return replicaPools.size();
+        return replicas.size();
     }
 
     /** AZ this router considers local. */
@@ -82,7 +78,7 @@ public final class RedisReadReplicaRouter implements Closeable {
 
     @Override
     public void close() {
-        primaryPool.close();
-        for (AzPool ap : replicaPools) ap.pool().close();
+        primary.close();
+        for (AzExecutor ae : replicas) ae.exec().close();
     }
 }

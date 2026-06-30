@@ -8,7 +8,7 @@ import static org.assertj.core.api.Assertions.assertThat;
 class ShardedRecordStoreDualReadTest extends RedisShardingTestBase {
 
     private ShardedRecordStore storeOn(ShardTopologyProvider provider) {
-        return new ShardedRecordStore(pool, pool, provider, new SequenceGenerator(pool, "sr:"), "sr:");
+        return new ShardedRecordStore(exec, exec, provider, new SequenceGenerator(exec, "sr:"), "sr:");
     }
 
     @Test

@@ -2,12 +2,13 @@ package com.recsys.infrastructure.redis;
 
 import com.recsys.infrastructure.resilience.HotKeyDetector;
 import com.recsys.infrastructure.store.TrendingStore;
+import io.lettuce.core.LettuceFutures;
+import io.lettuce.core.RedisFuture;
 import org.slf4j.Logger;
 import org.slf4j.LoggerFactory;
-import redis.clients.jedis.Jedis;
-import redis.clients.jedis.Pipeline;
-import redis.clients.jedis.util.Pool;
 
+import java.time.Duration;
+import java.util.ArrayList;
 import java.util.List;
 import java.util.Map;
 import java.util.concurrent.CompletableFuture;
@@ -49,8 +50,8 @@ public final class ShardedTopKStore implements TrendingStore {
     static final int  MAX_FULL_CACHE_SIZE      = 100;
     private static final long FETCH_WAIT_TIMEOUT_MS = 2_000L;
 
-    private final Pool<Jedis> writePool;
-    private final Pool<Jedis> readPool;
+    private final RedisExecutor writeExec;
+    private final RedisExecutor readExec;
     private final String keyPrefix;   // e.g. "topk:"
     private final int shardCount;
     private final long cacheTtlMs;
@@ -72,8 +73,8 @@ public final class ShardedTopKStore implements TrendingStore {
      * Single-pool constructor — reads and writes use the same Redis connection.
      * Preserved for backwards compatibility and non-replicated deployments.
      */
-    public ShardedTopKStore(Pool<Jedis> pool, String keyPrefix) {
-        this(pool, pool, keyPrefix, DEFAULT_SHARD_COUNT,
+    public ShardedTopKStore(RedisExecutor exec, String keyPrefix) {
+        this(exec, exec, keyPrefix, DEFAULT_SHARD_COUNT,
                 readLongEnv("ONLINE_TOPK_CACHE_TTL_MS", DEFAULT_CACHE_TTL_MS),
                 readLongEnv("ONLINE_TOPK_STALE_TTL_MS", DEFAULT_STALE_TTL_MS), new HotKeyDetector());
     }
@@ -82,23 +83,23 @@ public final class ShardedTopKStore implements TrendingStore {
      * AZ-aware constructor — writes (seedAllShards) go to {@code writePool}
      * (primary), reads (getTopKIds) go to {@code readPool} (AZ-local replica).
      */
-    public ShardedTopKStore(Pool<Jedis> writePool, Pool<Jedis> readPool, String keyPrefix) {
-        this(writePool, readPool, keyPrefix, DEFAULT_SHARD_COUNT,
+    public ShardedTopKStore(RedisExecutor writeExec, RedisExecutor readExec, String keyPrefix) {
+        this(writeExec, readExec, keyPrefix, DEFAULT_SHARD_COUNT,
                 readLongEnv("ONLINE_TOPK_CACHE_TTL_MS", DEFAULT_CACHE_TTL_MS),
                 readLongEnv("ONLINE_TOPK_STALE_TTL_MS", DEFAULT_STALE_TTL_MS), new HotKeyDetector());
     }
 
-    ShardedTopKStore(Pool<Jedis> writePool, Pool<Jedis> readPool, String keyPrefix,
+    ShardedTopKStore(RedisExecutor writeExec, RedisExecutor readExec, String keyPrefix,
                      int shardCount, long cacheTtlMs, HotKeyDetector hotKeyDetector) {
-        this(writePool, readPool, keyPrefix, shardCount, cacheTtlMs,
+        this(writeExec, readExec, keyPrefix, shardCount, cacheTtlMs,
                 DEFAULT_STALE_TTL_MS, hotKeyDetector);
     }
 
-    ShardedTopKStore(Pool<Jedis> writePool, Pool<Jedis> readPool, String keyPrefix,
+    ShardedTopKStore(RedisExecutor writeExec, RedisExecutor readExec, String keyPrefix,
                      int shardCount, long cacheTtlMs, long staleTtlMs,
                      HotKeyDetector hotKeyDetector) {
-        this.writePool      = writePool;
-        this.readPool       = readPool;
+        this.writeExec      = writeExec;
+        this.readExec       = readExec;
         this.keyPrefix      = keyPrefix;
         this.shardCount     = Math.max(1, shardCount);
         this.cacheTtlMs     = Math.max(0L, cacheTtlMs);
@@ -160,10 +161,10 @@ public final class ShardedTopKStore implements TrendingStore {
         String key = shardKey(window, shard);
         int fetchSize = Math.max(k, MAX_FULL_CACHE_SIZE);
 
-        try (Jedis jedis = readPool.getResource()) {
-            List<String> ids = List.copyOf(jedis.zrevrange(key, 0, fetchSize - 1));
+        return readExec.executeRead(c -> {
+            List<String> ids = List.copyOf(c.zrevrange(key, 0, fetchSize - 1));
             if (ids.isEmpty()) {
-                List<String> legacyIds = List.copyOf(jedis.zrevrange(legacyKey(window), 0, fetchSize - 1));
+                List<String> legacyIds = List.copyOf(c.zrevrange(legacyKey(window), 0, fetchSize - 1));
                 if (!legacyIds.isEmpty()) {
                     legacyFallbackFetches.incrementAndGet();
                     ids = legacyIds;
@@ -173,7 +174,7 @@ public final class ShardedTopKStore implements TrendingStore {
             CachedIds result = new CachedIds(ids, now + cacheTtlMs, now + staleTtlMs);
             if (staleTtlMs > 0L) hotCache.put(window, result);
             return result;
-        }
+        });
     }
 
     // ── Write path (fan-out to all shards) ────────────────────────────────────────
@@ -192,13 +193,22 @@ public final class ShardedTopKStore implements TrendingStore {
         if (memberScores == null || memberScores.isEmpty()) return;
         // Single pipelined round-trip: queue a ZADD for every shard plus the legacy key,
         // then sync once (was N+1 sequential round-trips, one connection each).
-        try (Jedis jedis = writePool.getResource()) {
-            Pipeline pipe = jedis.pipelined();
-            for (int shard = 0; shard < shardCount; shard++) {
-                pipe.zadd(shardKey(window, shard), memberScores);
-            }
-            pipe.zadd(legacyKey(window), memberScores);
-            pipe.sync();
+        @SuppressWarnings("unchecked")
+        io.lettuce.core.ScoredValue<String>[] scoredValues =
+                memberScores.entrySet().stream()
+                        .map(e -> io.lettuce.core.ScoredValue.just(e.getValue(), e.getKey()))
+                        .toArray(io.lettuce.core.ScoredValue[]::new);
+        try {
+            writeExec.executePipelined(conn -> {
+                var async = conn.async();
+                List<RedisFuture<?>> futures = new ArrayList<>(shardCount + 1);
+                for (int shard = 0; shard < shardCount; shard++) {
+                    futures.add(async.zadd(shardKey(window, shard), scoredValues));
+                }
+                futures.add(async.zadd(legacyKey(window), scoredValues));
+                conn.flushCommands();
+                LettuceFutures.awaitAll(Duration.ofSeconds(5), futures.toArray(new RedisFuture[0]));
+            });
         } catch (Exception e) {
             log.warn("Failed to seed shards for window {}: {}", window, e.toString());
         }

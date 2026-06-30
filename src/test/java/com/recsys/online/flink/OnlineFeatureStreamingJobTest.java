@@ -1,12 +1,18 @@
 package com.recsys.online.flink;
 
 import com.recsys.infrastructure.vectordb.VectorMath;
+import io.lettuce.core.RedisClient;
+import io.lettuce.core.RedisURI;
+import io.lettuce.core.api.StatefulRedisConnection;
+import io.lettuce.core.api.sync.RedisCommands;
+import io.lettuce.core.codec.StringCodec;
 import org.apache.flink.configuration.Configuration;
 import org.junit.jupiter.api.Test;
 import org.testcontainers.containers.GenericContainer;
 import org.testcontainers.junit.jupiter.Container;
 import org.testcontainers.junit.jupiter.Testcontainers;
-import redis.clients.jedis.Jedis;
+
+import java.util.function.Consumer;
 
 import static org.assertj.core.api.Assertions.assertThat;
 
@@ -16,6 +22,16 @@ class OnlineFeatureStreamingJobTest {
     @Container
     static final GenericContainer<?> REDIS = new GenericContainer<>("redis:7-alpine")
             .withExposedPorts(6379);
+
+    /** Connects a short-lived Lettuce client for assertions, then shuts it down. */
+    private static void withRedis(String host, int port, Consumer<RedisCommands<String, String>> body) {
+        RedisClient client = RedisClient.create(RedisURI.create(host, port));
+        try (StatefulRedisConnection<String, String> conn = client.connect(StringCodec.UTF8)) {
+            body.accept(conn.sync());
+        } finally {
+            client.shutdown();
+        }
+    }
 
     // ── pre-existing tests (unchanged) ──────────────────────────────────────
 
@@ -92,14 +108,14 @@ class OnlineFeatureStreamingJobTest {
                     "u2vEmb:10", "0.5 0.5", 1000L, 3600, "evt-abc");
             sink.invoke(update, null);
 
-            try (Jedis jedis = new Jedis(host, port)) {
-                assertThat(jedis.get("u2vEmb:10")).isEqualTo("0.5 0.5");
-                assertThat(jedis.get("u2vEmb:10:last_event")).isEqualTo("evt-abc");
-                assertThat(jedis.lrange("u2vEmb:10:event_history", 0, -1))
+            withRedis(host, port, cmd -> {
+                assertThat(cmd.get("u2vEmb:10")).isEqualTo("0.5 0.5");
+                assertThat(cmd.get("u2vEmb:10:last_event")).isEqualTo("evt-abc");
+                assertThat(cmd.lrange("u2vEmb:10:event_history", 0, -1))
                         .containsExactly("evt-abc");
-                assertThat(jedis.smembers("lineage:event:evt-abc"))
+                assertThat(cmd.smembers("lineage:event:evt-abc"))
                         .containsExactly("u2vEmb:10");
-            }
+            });
         } finally {
             sink.close();
         }
@@ -119,13 +135,13 @@ class OnlineFeatureStreamingJobTest {
             sink.invoke(new OnlineFeatureStreamingJob.StringFeatureUpdate(
                     "u2vEmb:20", "0.1 0.2", 1000L, 3600, "evt-stale"), null);
 
-            try (Jedis jedis = new Jedis(host, port)) {
-                assertThat(jedis.get("u2vEmb:20")).isEqualTo("0.6 0.8");
-                assertThat(jedis.get("u2vEmb:20:last_event")).isEqualTo("evt-first");
-                assertThat(jedis.lrange("u2vEmb:20:event_history", 0, -1))
+            withRedis(host, port, cmd -> {
+                assertThat(cmd.get("u2vEmb:20")).isEqualTo("0.6 0.8");
+                assertThat(cmd.get("u2vEmb:20:last_event")).isEqualTo("evt-first");
+                assertThat(cmd.lrange("u2vEmb:20:event_history", 0, -1))
                         .containsExactly("evt-first");
-                assertThat(jedis.smembers("lineage:event:evt-stale")).isEmpty();
-            }
+                assertThat(cmd.smembers("lineage:event:evt-stale")).isEmpty();
+            });
         } finally {
             sink.close();
         }
@@ -145,12 +161,12 @@ class OnlineFeatureStreamingJobTest {
                         "evt-" + String.format("%03d", i)), null);
             }
 
-            try (Jedis jedis = new Jedis(host, port)) {
-                var history = jedis.lrange("u2vEmb:30:event_history", 0, -1);
+            withRedis(host, port, cmd -> {
+                var history = cmd.lrange("u2vEmb:30:event_history", 0, -1);
                 assertThat(history).hasSize(5);
                 assertThat(history.get(0)).isEqualTo("evt-002");
                 assertThat(history.get(4)).isEqualTo("evt-006");
-            }
+            });
         } finally {
             sink.close();
         }

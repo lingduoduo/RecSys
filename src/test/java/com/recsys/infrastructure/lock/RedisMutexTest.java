@@ -1,11 +1,13 @@
 package com.recsys.infrastructure.lock;
 
+import com.recsys.infrastructure.redis.RedisExecutor;
+import io.lettuce.core.ScriptOutputType;
+import io.lettuce.core.SetArgs;
+import io.lettuce.core.api.sync.RedisCommands;
+import org.junit.jupiter.api.BeforeEach;
 import org.junit.jupiter.api.Test;
-import redis.clients.jedis.Jedis;
-import redis.clients.jedis.JedisPool;
-import redis.clients.jedis.util.Pool;
-import redis.clients.jedis.params.SetParams;
 
+import java.util.function.Function;
 import java.util.concurrent.atomic.AtomicBoolean;
 
 import static org.assertj.core.api.Assertions.assertThat;
@@ -14,14 +16,26 @@ import static org.mockito.Mockito.*;
 
 class RedisMutexTest {
 
+    private RedisExecutor exec;
+    @SuppressWarnings("unchecked")
+    private RedisCommands<String, String> cmd = mock(RedisCommands.class);
+
+    @BeforeEach
+    @SuppressWarnings("unchecked")
+    void setUp() {
+        exec = mock(RedisExecutor.class);
+        cmd = mock(RedisCommands.class);
+        when(exec.execute(any())).thenAnswer(i ->
+                i.getArgument(0, Function.class).apply(cmd));
+        when(exec.executeRead(any())).thenAnswer(i ->
+                i.getArgument(0, Function.class).apply(cmd));
+    }
+
     @Test
     void tryAcquire_returnsTokenWhenLockIsFree() {
-        Jedis jedis = mock(Jedis.class);
-        Pool<Jedis> pool = mock(JedisPool.class);
-        when(pool.getResource()).thenReturn(jedis);
-        when(jedis.set(anyString(), anyString(), any(SetParams.class))).thenReturn("OK");
+        when(cmd.set(anyString(), anyString(), any(SetArgs.class))).thenReturn("OK");
 
-        RedisMutex mutex = new RedisMutex(pool, "mutex:", 5L);
+        RedisMutex mutex = new RedisMutex(exec, "mutex:", 5L);
         String token = mutex.tryAcquire("user:1");
 
         assertThat(token).isNotNull().isNotBlank();
@@ -29,13 +43,10 @@ class RedisMutexTest {
 
     @Test
     void tryAcquire_returnsNullWhenLockIsHeld() {
-        Jedis jedis = mock(Jedis.class);
-        Pool<Jedis> pool = mock(JedisPool.class);
-        when(pool.getResource()).thenReturn(jedis);
         // Redis SET NX returns null when the key already exists.
-        when(jedis.set(anyString(), anyString(), any(SetParams.class))).thenReturn(null);
+        when(cmd.set(anyString(), anyString(), any(SetArgs.class))).thenReturn(null);
 
-        RedisMutex mutex = new RedisMutex(pool, "mutex:", 5L);
+        RedisMutex mutex = new RedisMutex(exec, "mutex:", 5L);
         String token = mutex.tryAcquire("user:1");
 
         assertThat(token).isNull();
@@ -43,13 +54,11 @@ class RedisMutexTest {
 
     @Test
     void release_returnsTrueWhenTokenMatches() {
-        Jedis jedis = mock(Jedis.class);
-        Pool<Jedis> pool = mock(JedisPool.class);
-        when(pool.getResource()).thenReturn(jedis);
         // Lua script returns 1 when key was deleted.
-        when(jedis.eval(anyString(), anyList(), anyList())).thenReturn(1L);
+        when(cmd.eval(anyString(), any(ScriptOutputType.class), any(String[].class), any(String[].class)))
+                .thenReturn(1L);
 
-        RedisMutex mutex = new RedisMutex(pool, "mutex:", 5L);
+        RedisMutex mutex = new RedisMutex(exec, "mutex:", 5L);
         boolean released = mutex.release("user:1", "some-token");
 
         assertThat(released).isTrue();
@@ -57,13 +66,11 @@ class RedisMutexTest {
 
     @Test
     void release_returnsFalseWhenTokenDoesNotMatch() {
-        Jedis jedis = mock(Jedis.class);
-        Pool<Jedis> pool = mock(JedisPool.class);
-        when(pool.getResource()).thenReturn(jedis);
         // Lua script returns 0 when token didn't match (already expired or wrong holder).
-        when(jedis.eval(anyString(), anyList(), anyList())).thenReturn(0L);
+        when(cmd.eval(anyString(), any(ScriptOutputType.class), any(String[].class), any(String[].class)))
+                .thenReturn(0L);
 
-        RedisMutex mutex = new RedisMutex(pool, "mutex:", 5L);
+        RedisMutex mutex = new RedisMutex(exec, "mutex:", 5L);
         boolean released = mutex.release("user:1", "stale-token");
 
         assertThat(released).isFalse();
@@ -71,13 +78,11 @@ class RedisMutexTest {
 
     @Test
     void withLock_executesActionWhenLockAcquired() {
-        Jedis jedis = mock(Jedis.class);
-        Pool<Jedis> pool = mock(JedisPool.class);
-        when(pool.getResource()).thenReturn(jedis);
-        when(jedis.set(anyString(), anyString(), any(SetParams.class))).thenReturn("OK");
-        when(jedis.eval(anyString(), anyList(), anyList())).thenReturn(1L);
+        when(cmd.set(anyString(), anyString(), any(SetArgs.class))).thenReturn("OK");
+        when(cmd.eval(anyString(), any(ScriptOutputType.class), any(String[].class), any(String[].class)))
+                .thenReturn(1L);
 
-        RedisMutex mutex = new RedisMutex(pool, "mutex:", 5L);
+        RedisMutex mutex = new RedisMutex(exec, "mutex:", 5L);
         AtomicBoolean actionRan = new AtomicBoolean(false);
 
         String result = mutex.withLock("resource", () -> { actionRan.set(true); return "done"; },
@@ -86,17 +91,14 @@ class RedisMutexTest {
         assertThat(actionRan.get()).isTrue();
         assertThat(result).isEqualTo("done");
         // release() must be called after the action.
-        verify(jedis).eval(anyString(), anyList(), anyList());
+        verify(cmd).eval(anyString(), any(ScriptOutputType.class), any(String[].class), any(String[].class));
     }
 
     @Test
     void withLock_executesFallbackWhenLockNotAcquired() {
-        Jedis jedis = mock(Jedis.class);
-        Pool<Jedis> pool = mock(JedisPool.class);
-        when(pool.getResource()).thenReturn(jedis);
-        when(jedis.set(anyString(), anyString(), any(SetParams.class))).thenReturn(null);
+        when(cmd.set(anyString(), anyString(), any(SetArgs.class))).thenReturn(null);
 
-        RedisMutex mutex = new RedisMutex(pool, "mutex:", 5L);
+        RedisMutex mutex = new RedisMutex(exec, "mutex:", 5L);
         AtomicBoolean fallbackRan = new AtomicBoolean(false);
 
         String result = mutex.withLock("resource",
@@ -106,34 +108,28 @@ class RedisMutexTest {
         assertThat(fallbackRan.get()).isTrue();
         assertThat(result).isEqualTo("degraded");
         // No release call when lock was never acquired.
-        verify(jedis, never()).eval(anyString(), anyList(), anyList());
+        verify(cmd, never()).eval(anyString(), any(ScriptOutputType.class), any(String[].class), any(String[].class));
     }
 
     // ── Distributed-lock correctness verification (分布式锁验证) ─────────────────
 
     @Test
     void tryAcquire_usesSingleAtomicSetNxExCommand() {
-        Jedis jedis = mock(Jedis.class);
-        Pool<Jedis> pool = mock(JedisPool.class);
-        when(pool.getResource()).thenReturn(jedis);
-        when(jedis.set(anyString(), anyString(), any(SetParams.class))).thenReturn("OK");
+        when(cmd.set(anyString(), anyString(), any(SetArgs.class))).thenReturn("OK");
 
-        new RedisMutex(pool, "mutex:", 5L).tryAcquire("resource");
+        new RedisMutex(exec, "mutex:", 5L).tryAcquire("resource");
 
         // Exactly one SET NX EX — no separate SETNX or EXPIRE (atomic by design).
-        verify(jedis, times(1)).set(eq("mutex:resource"), anyString(), any(SetParams.class));
-        verify(jedis, never()).setnx(anyString(), anyString());
-        verify(jedis, never()).expire(anyString(), anyLong());
-        verify(jedis, never()).eval(anyString(), anyList(), anyList());
+        verify(cmd, times(1)).set(eq("mutex:resource"), anyString(), any(SetArgs.class));
+        verify(cmd, never()).setnx(anyString(), anyString());
+        verify(cmd, never()).expire(anyString(), anyLong());
+        verify(cmd, never()).eval(anyString(), any(ScriptOutputType.class), any(String[].class), any(String[].class));
     }
 
     @Test
     void tryAcquire_producesUniqueTokensOnEachCall() {
-        Jedis jedis = mock(Jedis.class);
-        Pool<Jedis> pool = mock(JedisPool.class);
-        when(pool.getResource()).thenReturn(jedis);
-        when(jedis.set(anyString(), anyString(), any(SetParams.class))).thenReturn("OK");
-        RedisMutex mutex = new RedisMutex(pool, "mutex:", 5L);
+        when(cmd.set(anyString(), anyString(), any(SetArgs.class))).thenReturn("OK");
+        RedisMutex mutex = new RedisMutex(exec, "mutex:", 5L);
 
         String t1 = mutex.tryAcquire("r");
         String t2 = mutex.tryAcquire("r");
@@ -143,33 +139,30 @@ class RedisMutexTest {
 
     @Test
     void release_usesLuaFencingTokenScript() {
-        Jedis jedis = mock(Jedis.class);
-        Pool<Jedis> pool = mock(JedisPool.class);
-        when(pool.getResource()).thenReturn(jedis);
-        when(jedis.eval(anyString(), anyList(), anyList())).thenReturn(1L);
+        when(cmd.eval(anyString(), any(ScriptOutputType.class), any(String[].class), any(String[].class)))
+                .thenReturn(1L);
 
-        new RedisMutex(pool, "mutex:", 5L).release("resource", "tok");
+        new RedisMutex(exec, "mutex:", 5L).release("resource", "tok");
 
         // Lua script receives the lock key and the caller's token.
-        verify(jedis).eval(anyString(),
-                eq(java.util.List.of("mutex:resource")),
-                eq(java.util.List.of("tok")));
+        verify(cmd).eval(anyString(),
+                eq(ScriptOutputType.INTEGER),
+                eq(new String[]{"mutex:resource"}),
+                eq("tok"));
     }
 
     @Test
     void withLock_releasesLockEvenWhenActionThrows() {
-        Jedis jedis = mock(Jedis.class);
-        Pool<Jedis> pool = mock(JedisPool.class);
-        when(pool.getResource()).thenReturn(jedis);
-        when(jedis.set(anyString(), anyString(), any(SetParams.class))).thenReturn("OK");
-        when(jedis.eval(anyString(), anyList(), anyList())).thenReturn(1L);
-        RedisMutex mutex = new RedisMutex(pool, "mutex:", 5L);
+        when(cmd.set(anyString(), anyString(), any(SetArgs.class))).thenReturn("OK");
+        when(cmd.eval(anyString(), any(ScriptOutputType.class), any(String[].class), any(String[].class)))
+                .thenReturn(1L);
+        RedisMutex mutex = new RedisMutex(exec, "mutex:", 5L);
 
         try {
             mutex.withLock("r", () -> { throw new RuntimeException("boom"); }, () -> null);
         } catch (RuntimeException ignored) {}
 
         // Even though the action threw, release (eval) must still be called.
-        verify(jedis).eval(anyString(), anyList(), anyList());
+        verify(cmd).eval(anyString(), any(ScriptOutputType.class), any(String[].class), any(String[].class));
     }
 }
