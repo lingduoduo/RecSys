@@ -149,7 +149,7 @@ public class RecSysServer {
             Server server = sb.build();
             Runtime.getRuntime().addShutdownHook(new Thread(() -> {
                 server.stop().join();
-                executor.shutdown();
+                com.recsys.loadshed.GracefulExecutors.shutdownGracefully(executor);
                 jedisPool.close();
             }, "recsys-shutdown"));
             log.info("Starting RecSys serving API on port {}", port);

@@ -163,7 +163,7 @@ public final class OnlinePredictionServer {
                 server.stop().join();
                 asyncEventPublisher.close();
                 activeLearnerFlushScheduler.close();
-                activeRecallExecutor.shutdownNow();
+                com.recsys.loadshed.GracefulExecutors.shutdownGracefully(activeRecallExecutor);
                 activeTopologyProvider.stop();
                 jedisPool.close();
             }));
@@ -173,7 +173,7 @@ public final class OnlinePredictionServer {
         } catch (Exception e) {
             asyncEventPublisher.close();
             if (learnerFlushScheduler != null) learnerFlushScheduler.close();
-            if (recallExecutor != null) recallExecutor.shutdownNow();
+            if (recallExecutor != null) com.recsys.loadshed.GracefulExecutors.shutdownGracefully(recallExecutor);
             jedisPool.close();
             throw e;
         }

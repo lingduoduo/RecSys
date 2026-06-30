@@ -231,7 +231,7 @@ public class ModelRuntimeProvider implements SmartInitializingSingleton {
         }
         runtimes.clear();
         if (recallExecutor != null) {
-            recallExecutor.shutdownNow();
+            com.recsys.loadshed.GracefulExecutors.shutdownGracefully(recallExecutor);
             recallExecutor = null;
         }
         if (recallPool != null) {
