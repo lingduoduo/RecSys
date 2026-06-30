@@ -273,7 +273,11 @@
             <artifactId>maven-compiler-plugin</artifactId>
             <version>3.13.0</version>
             <configuration>
-              <excludes combine.self="override" />
+              <!-- Compile only the Spark offline-embedding job (training/rulebased).
+                   Keep the Flink sources excluded — this profile has no Flink deps. -->
+              <excludes combine.self="override">
+                <exclude>com/recsys/online/flink/**</exclude>
+              </excludes>
             </configuration>
           </plugin>
         </plugins>
