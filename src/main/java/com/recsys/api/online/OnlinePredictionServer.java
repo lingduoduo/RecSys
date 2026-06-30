@@ -31,6 +31,7 @@ import com.recsys.infrastructure.messaging.AsyncEventPublisher;
 import com.recsys.application.online.LearnerFlushScheduler;
 import com.recsys.application.online.OnlineLearner;
 import com.recsys.resilience.FaultInjector;
+import com.recsys.loadshed.GracefulExecutors;
 import com.recsys.loadshed.OnlineAdmissionControl;
 import com.recsys.health.OnlineCapacityService;
 import com.recsys.health.OnlineHealthService;
@@ -163,7 +164,7 @@ public final class OnlinePredictionServer {
                 server.stop().join();
                 asyncEventPublisher.close();
                 activeLearnerFlushScheduler.close();
-                activeRecallExecutor.shutdownNow();
+                GracefulExecutors.shutdownGracefully(activeRecallExecutor);
                 activeTopologyProvider.stop();
                 jedisPool.close();
             }));
@@ -173,7 +174,7 @@ public final class OnlinePredictionServer {
         } catch (Exception e) {
             asyncEventPublisher.close();
             if (learnerFlushScheduler != null) learnerFlushScheduler.close();
-            if (recallExecutor != null) recallExecutor.shutdownNow();
+            if (recallExecutor != null) GracefulExecutors.shutdownGracefully(recallExecutor);
             jedisPool.close();
             throw e;
         }

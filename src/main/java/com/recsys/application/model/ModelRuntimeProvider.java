@@ -9,6 +9,7 @@ import ai.onnxruntime.OrtException;
 import com.recsys.infrastructure.redis.LettuceClientFactory;
 import com.recsys.infrastructure.redis.RedisEmbeddingStore;
 import com.recsys.infrastructure.redis.RedisExecutor;
+import com.recsys.loadshed.GracefulExecutors;
 import com.recsys.config.ABTestConfig;
 import com.recsys.infrastructure.dataloading.DataManager;
 import com.recsys.infrastructure.vectordb.CandidateGenerator;
@@ -231,7 +232,7 @@ public class ModelRuntimeProvider implements SmartInitializingSingleton {
         }
         runtimes.clear();
         if (recallExecutor != null) {
-            recallExecutor.shutdownNow();
+            GracefulExecutors.shutdownGracefully(recallExecutor);
             recallExecutor = null;
         }
         if (recallPool != null) {
