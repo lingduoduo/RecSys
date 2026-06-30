@@ -1,5 +1,13 @@
 package com.recsys.infrastructure.redis.sharding;
 
+import com.recsys.infrastructure.redis.LettuceRedisExecutor;
+import com.recsys.infrastructure.redis.RedisExecutor;
+import io.lettuce.core.RedisClient;
+import io.lettuce.core.RedisURI;
+import io.lettuce.core.api.StatefulRedisConnection;
+import io.lettuce.core.api.sync.RedisCommands;
+import io.lettuce.core.codec.StringCodec;
+import org.apache.commons.pool2.impl.GenericObjectPoolConfig;
 import org.junit.jupiter.api.AfterEach;
 import org.junit.jupiter.api.BeforeEach;
 import org.junit.jupiter.api.Tag;
@@ -7,14 +15,12 @@ import org.junit.jupiter.api.Test;
 import org.testcontainers.containers.GenericContainer;
 import org.testcontainers.junit.jupiter.Container;
 import org.testcontainers.junit.jupiter.Testcontainers;
-import redis.clients.jedis.Jedis;
-import redis.clients.jedis.JedisPool;
 
 import static org.assertj.core.api.Assertions.assertThat;
 
 /**
- * Verifies that ShardedRecordStore routes writes to writePool and reads to
- * readPool when they are distinct — proving AZ-aware replica routing works.
+ * Verifies that ShardedRecordStore routes writes to writeExec and reads to
+ * readExec when they are distinct — proving AZ-aware replica routing works.
  *
  * Setup: two isolated Redis containers representing a primary (AZ-a) and a
  * read replica (AZ-b).  The read replica starts empty and is NOT populated by
@@ -35,26 +41,39 @@ class ShardedRecordStoreReplicaRoutingTest {
     static final GenericContainer<?> REPLICA =
             new GenericContainer<>("redis:7-alpine").withExposedPorts(6379);
 
-    private JedisPool writePool;
-    private JedisPool readPool;
+    private RedisExecutor writeExec;
+    private RedisExecutor readExec;
     private ShardedRecordStore store;
+
+    private static RedisExecutor newExecutor(GenericContainer<?> container) {
+        RedisClient client = RedisClient.create(
+                RedisURI.create(container.getHost(), container.getMappedPort(6379)));
+        StatefulRedisConnection<String, String> conn = client.connect(StringCodec.UTF8);
+        GenericObjectPoolConfig<StatefulRedisConnection<String, String>> cfg =
+                new GenericObjectPoolConfig<>();
+        return new LettuceRedisExecutor(client, conn, cfg, true);
+    }
+
+    private static RedisCommands<String, String> cmd(RedisExecutor exec) {
+        return exec.execute(c -> c);
+    }
 
     @BeforeEach
     void setUp() {
-        writePool = new JedisPool(PRIMARY.getHost(), PRIMARY.getMappedPort(6379));
-        readPool  = new JedisPool(REPLICA.getHost(), REPLICA.getMappedPort(6379));
+        writeExec = newExecutor(PRIMARY);
+        readExec  = newExecutor(REPLICA);
 
         ConsistentHashRing ring = new ConsistentHashRing(1, 150);
-        SequenceGenerator  seqGen = new SequenceGenerator(writePool, "rr:");
-        store = new ShardedRecordStore(writePool, readPool, ring, seqGen, "rr:");
+        SequenceGenerator  seqGen = new SequenceGenerator(writeExec, "rr:");
+        store = new ShardedRecordStore(writeExec, readExec, ring, seqGen, "rr:");
     }
 
     @AfterEach
     void tearDown() {
-        try (Jedis p = writePool.getResource()) { p.flushAll(); }
-        try (Jedis r = readPool.getResource())  { r.flushAll(); }
-        writePool.close();
-        readPool.close();
+        cmd(writeExec).flushall();
+        cmd(readExec).flushall();
+        writeExec.close();
+        readExec.close();
     }
 
     @Test
@@ -63,16 +82,12 @@ class ShardedRecordStoreReplicaRoutingTest {
                 "evt-1", "{}", System.currentTimeMillis());
         store.write(rec);
 
-        // The record hash key must exist in PRIMARY (writePool).
-        try (Jedis primary = writePool.getResource()) {
-            long primaryKeys = primary.dbSize();
-            assertThat(primaryKeys).isGreaterThan(0);
-        }
+        // The record hash key must exist in PRIMARY (writeExec).
+        long primaryKeys = cmd(writeExec).dbsize();
+        assertThat(primaryKeys).isGreaterThan(0);
 
         // REPLICA is untouched — store did not write there.
-        try (Jedis replica = readPool.getResource()) {
-            assertThat(replica.dbSize()).isZero();
-        }
+        assertThat(cmd(readExec).dbsize()).isZero();
     }
 
     @Test
@@ -82,7 +97,7 @@ class ShardedRecordStoreReplicaRoutingTest {
                 "evt-2", "{}", System.currentTimeMillis());
         store.write(rec);
 
-        // readDevice reads from readPool (REPLICA), which is empty → no results.
+        // readDevice reads from readExec (REPLICA), which is empty → no results.
         Page<ShardedRecord> page = store.readDevice("dev-rr2", ShardCursor.start(), 10);
         assertThat(page.records()).isEmpty();
         assertThat(page.hasMore()).isFalse();
@@ -90,24 +105,23 @@ class ShardedRecordStoreReplicaRoutingTest {
 
     @Test
     void readDevice_returnsDataWhenReplicaIsPopulated() {
-        // Simulate replication by writing directly to both pools.
+        // Simulate replication by writing directly to both endpoints.
         ShardedRecord rec = new ShardedRecord("dev-rr3", 0, RecordType.EVENT,
                 "evt-3", "{}", System.currentTimeMillis());
         store.write(rec);
 
         // Copy data to replica to simulate async replication catching up.
-        try (Jedis primary = writePool.getResource();
-             Jedis replica = readPool.getResource()) {
-            primary.keys("rr:*").forEach(key -> {
-                String type = primary.type(key);
-                if ("hash".equals(type)) {
-                    replica.hset(key, primary.hgetAll(key));
-                } else if ("zset".equals(type)) {
-                    primary.zrangeWithScores(key, 0, -1)
-                           .forEach(t -> replica.zadd(key, t.getScore(), t.getElement()));
-                }
-            });
-        }
+        RedisCommands<String, String> primary = cmd(writeExec);
+        RedisCommands<String, String> replica = cmd(readExec);
+        primary.keys("rr:*").forEach(key -> {
+            String type = primary.type(key);
+            if ("hash".equals(type)) {
+                replica.hset(key, primary.hgetall(key));
+            } else if ("zset".equals(type)) {
+                primary.zrangeWithScores(key, 0, -1)
+                       .forEach(sv -> replica.zadd(key, sv.getScore(), sv.getValue()));
+            }
+        });
 
         Page<ShardedRecord> page = store.readDevice("dev-rr3", ShardCursor.start(), 10);
         assertThat(page.records()).hasSize(1);

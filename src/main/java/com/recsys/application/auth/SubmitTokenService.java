@@ -1,17 +1,16 @@
 package com.recsys.application.auth;
 
-import com.recsys.application.model.LazyJedisPool;
-import com.recsys.infrastructure.redis.RedisConnectionFactory;
+import com.recsys.application.model.LazyRedisExecutor;
+import com.recsys.infrastructure.redis.LettuceClientFactory;
+import com.recsys.infrastructure.redis.RedisExecutor;
 import com.recsys.config.SubmitTokenProperties;
 import com.recsys.exception.SubmitTokenException;
+import io.lettuce.core.ScriptOutputType;
+import io.lettuce.core.SetArgs;
 import jakarta.annotation.PreDestroy;
 import org.springframework.beans.factory.annotation.Autowired;
 import org.springframework.stereotype.Service;
-import redis.clients.jedis.Jedis;
-import redis.clients.jedis.params.SetParams;
-import redis.clients.jedis.util.Pool;
 
-import java.util.List;
 import java.util.UUID;
 import java.util.function.Supplier;
 
@@ -28,16 +27,16 @@ public class SubmitTokenService {
             """;
 
     private final SubmitTokenProperties properties;
-    private final LazyJedisPool jedisPool;
+    private final LazyRedisExecutor redis;
 
     @Autowired
     public SubmitTokenService(SubmitTokenProperties properties) {
-        this(properties, () -> RedisConnectionFactory.fromEnv());
+        this(properties, () -> LettuceClientFactory.fromEnv());
     }
 
-    SubmitTokenService(SubmitTokenProperties properties, Supplier<Pool<Jedis>> poolFactory) {
+    SubmitTokenService(SubmitTokenProperties properties, Supplier<RedisExecutor> executorFactory) {
         this.properties = properties;
-        this.jedisPool = new LazyJedisPool(poolFactory);
+        this.redis = new LazyRedisExecutor(executorFactory);
     }
 
     public boolean isEnabled() {
@@ -54,14 +53,13 @@ public class SubmitTokenService {
         }
 
         String token = UUID.randomUUID().toString();
-        try (Jedis jedis = jedisPool.resource()) {
-            String result = jedis.set(redisKey(token), TOKEN_VALUE,
-                    SetParams.setParams().nx().ex(properties.getTtlSeconds()));
-            if (!"OK".equals(result)) {
-                throw new SubmitTokenException("failed to create submit token");
-            }
-            return token;
+        String result = redis.execute(c ->
+                c.set(redisKey(token), TOKEN_VALUE,
+                        SetArgs.Builder.nx().ex(properties.getTtlSeconds())));
+        if (!"OK".equals(result)) {
+            throw new SubmitTokenException("failed to create submit token");
         }
+        return token;
     }
 
     public void validateAndConsume(String token) {
@@ -71,17 +69,16 @@ public class SubmitTokenService {
         if (token == null || token.isBlank()) {
             throw invalidToken();
         }
-        try (Jedis jedis = jedisPool.resource()) {
-            Object result = jedis.eval(CONSUME_SCRIPT, List.of(redisKey(token.trim())), List.of(TOKEN_VALUE));
-            if (!(result instanceof Number n) || n.longValue() != 1L) {
-                throw invalidToken();
-            }
+        Long result = redis.execute(c -> c.eval(CONSUME_SCRIPT, ScriptOutputType.INTEGER,
+                new String[]{redisKey(token.trim())}, TOKEN_VALUE));
+        if (result == null || result != 1L) {
+            throw invalidToken();
         }
     }
 
     @PreDestroy
     public void close() {
-        jedisPool.close();
+        redis.close();
     }
 
     private String redisKey(String token) {

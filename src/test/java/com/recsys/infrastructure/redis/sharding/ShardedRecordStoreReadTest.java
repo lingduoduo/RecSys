@@ -16,7 +16,7 @@ class ShardedRecordStoreReadTest extends RedisShardingTestBase {
     @BeforeEach
     void setUp() {
         var ring = new ConsistentHashRing(2, 150);
-        store = new ShardedRecordStore(pool, ring, new SequenceGenerator(pool, "sr:"), "sr:");
+        store = new ShardedRecordStore(exec, ring, new SequenceGenerator(exec, "sr:"), "sr:");
     }
 
     private ShardedRecord event(String deviceId, String eventId) {
@@ -62,7 +62,7 @@ class ShardedRecordStoreReadTest extends RedisShardingTestBase {
     @Test
     void readShard_returnsAllRecordsAcrossDevices() {
         var ring = new ConsistentHashRing(1, 150); // single shard — all devices land here
-        var s = new ShardedRecordStore(pool, ring, new SequenceGenerator(pool, "sr:"), "sr:");
+        var s = new ShardedRecordStore(exec, ring, new SequenceGenerator(exec, "sr:"), "sr:");
 
         s.write(event("dev-X", "ex1"));
         s.write(event("dev-Y", "ey1"));
@@ -75,7 +75,7 @@ class ShardedRecordStoreReadTest extends RedisShardingTestBase {
     @Test
     void readShard_cursorAdvancesIncrementally() {
         var ring = new ConsistentHashRing(1, 150);
-        var s = new ShardedRecordStore(pool, ring, new SequenceGenerator(pool, "sr:"), "sr:");
+        var s = new ShardedRecordStore(exec, ring, new SequenceGenerator(exec, "sr:"), "sr:");
 
         for (int i = 1; i <= 4; i++) s.write(event("dev-C", "ec" + i));
 
@@ -91,7 +91,7 @@ class ShardedRecordStoreReadTest extends RedisShardingTestBase {
     @Test
     void readAllShards_advancesEachShardIndependently() {
         var ring = new ConsistentHashRing(2, 150);
-        var s = new ShardedRecordStore(pool, ring, new SequenceGenerator(pool, "sr:"), "sr:");
+        var s = new ShardedRecordStore(exec, ring, new SequenceGenerator(exec, "sr:"), "sr:");
 
         for (int i = 0; i < 20; i++) s.write(event("device-" + i, "e" + i));
 

@@ -5,8 +5,8 @@
     </encoder>
   </appender>
 
-  <!-- Suppress expected connection-failure WARNs from sentinel pool construction in tests -->
-  <logger name="redis.clients.jedis" level="ERROR"/>
+  <!-- Suppress expected connection-failure WARNs from Lettuce client construction in tests -->
+  <logger name="io.lettuce.core" level="ERROR"/>
 
   <!-- Negative-path tests deliberately inject failures (Mockito thenThrow / fake doubles) to prove
        these classes degrade gracefully; the handled failure is logged at WARN. Mute it so a green

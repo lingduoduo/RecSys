@@ -1,12 +1,10 @@
 package com.recsys.config;
 
-import com.recsys.infrastructure.redis.RedisConnectionFactory;
+import com.recsys.infrastructure.redis.LettuceClientFactory;
+import com.recsys.infrastructure.redis.RedisExecutor;
 import com.recsys.infrastructure.redis.RedisReadReplicaRouter;
-import jakarta.annotation.PreDestroy;
 import org.springframework.context.annotation.Bean;
 import org.springframework.context.annotation.Configuration;
-import redis.clients.jedis.Jedis;
-import redis.clients.jedis.util.Pool;
 
 @Configuration
 public class RedisConfig {
@@ -17,23 +15,18 @@ public class RedisConfig {
         this.redisProperties = redisProperties;
     }
 
-    /** Primary connection pool — use this for writes and non-replica reads. */
-    @Bean
-    public Pool<Jedis> jedisPool() {
-        return RedisConnectionFactory.from(redisProperties);
+    /** Primary Redis executor — use this for writes and non-replica reads. */
+    @Bean(destroyMethod = "close")
+    public RedisExecutor redisExecutor() {
+        return LettuceClientFactory.from(redisProperties);
     }
 
     /**
      * AZ-aware read-replica router.
-     * Falls back to the primary pool when no replica nodes are configured.
+     * Falls back to the primary executor when no replica nodes are configured.
      */
-    @Bean
+    @Bean(destroyMethod = "close")
     public RedisReadReplicaRouter redisReadReplicaRouter() {
-        return RedisConnectionFactory.routerFrom(redisProperties);
-    }
-
-    @PreDestroy
-    public void close() {
-        // Beans manage their own lifecycle; Spring calls @PreDestroy on each Pool bean.
+        return LettuceClientFactory.routerFrom(redisProperties);
     }
 }

@@ -9,7 +9,7 @@ class ShardTopologyStoreTest extends RedisShardingTestBase {
 
     @Test
     void bootstrap_writesVersion1_andIsIdempotent() {
-        ShardTopologyStore store = new ShardTopologyStore(pool, "shard:topology:test1");
+        ShardTopologyStore store = new ShardTopologyStore(exec, "shard:topology:test1");
 
         ShardTopologyStore.Snapshot s1 = store.bootstrap(2, 150, 1000L);
         assertThat(s1.version()).isEqualTo(1);
@@ -24,13 +24,13 @@ class ShardTopologyStoreTest extends RedisShardingTestBase {
 
     @Test
     void load_returnsNullWhenAbsent() {
-        ShardTopologyStore store = new ShardTopologyStore(pool, "shard:topology:absent");
+        ShardTopologyStore store = new ShardTopologyStore(exec, "shard:topology:absent");
         assertThat(store.load()).isNull();
     }
 
     @Test
     void publishReshard_bumpsVersionAndRecordsPreviousWithExpiry() {
-        ShardTopologyStore store = new ShardTopologyStore(pool, "shard:topology:test2");
+        ShardTopologyStore store = new ShardTopologyStore(exec, "shard:topology:test2");
         store.bootstrap(2, 150, 1000L);
 
         ShardTopologyStore.Snapshot v2 = store.publishReshard(4, 5000L, 60_000L);

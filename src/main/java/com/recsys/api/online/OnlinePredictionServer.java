@@ -16,8 +16,9 @@ import io.micrometer.prometheus.PrometheusMeterRegistry;
 import com.recsys.infrastructure.dataloading.DataManager;
 import com.recsys.infrastructure.cache.LogicalExpiryEmbeddingCache;
 import com.recsys.infrastructure.redis.GlobalPopularityStore;
-import com.recsys.infrastructure.redis.RedisConnectionFactory;
+import com.recsys.infrastructure.redis.LettuceClientFactory;
 import com.recsys.infrastructure.redis.RedisEmbeddingStore;
+import com.recsys.infrastructure.redis.RedisExecutor;
 import com.recsys.infrastructure.vectordb.EmbeddingStore;
 import com.recsys.infrastructure.redis.ShardedTopKStore;
 import com.recsys.infrastructure.redis.sharding.ConsistentHashRing;
@@ -49,8 +50,6 @@ import com.recsys.application.retrieval.multichannel.RecallConfig;
 import java.util.List;
 import java.util.concurrent.ExecutorService;
 import java.util.concurrent.Executors;
-import redis.clients.jedis.Jedis;
-import redis.clients.jedis.util.Pool;
 
 public final class OnlinePredictionServer {
     private static final int DEFAULT_PORT = 7010;
@@ -61,7 +60,7 @@ public final class OnlinePredictionServer {
         int port = readIntEnv("ONLINE_DEMO_PORT", DEFAULT_PORT);
         int requestTimeoutMs = readIntEnv("ONLINE_REQUEST_TIMEOUT_MS", 500);
 
-        Pool<Jedis> jedisPool = RedisConnectionFactory.fromEnv();
+        RedisExecutor jedisPool = LettuceClientFactory.fromEnv();
         AsyncEventPublisher asyncEventPublisher = createAsyncEventPublisher();
         LearnerFlushScheduler learnerFlushScheduler = null;
         ExecutorService recallExecutor = null;

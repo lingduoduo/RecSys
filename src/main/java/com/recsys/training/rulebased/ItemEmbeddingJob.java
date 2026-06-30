@@ -12,12 +12,20 @@ import org.apache.spark.sql.Row;
 import org.apache.spark.sql.SparkSession;
 import org.apache.spark.sql.api.java.UDF1;
 import org.apache.spark.sql.types.DataTypes;
-import redis.clients.jedis.Jedis;
-import redis.clients.jedis.Pipeline;
-import redis.clients.jedis.params.SetParams;
+import io.lettuce.core.LettuceFutures;
+import io.lettuce.core.RedisClient;
+import io.lettuce.core.RedisFuture;
+import io.lettuce.core.RedisURI;
+import io.lettuce.core.SetArgs;
+import io.lettuce.core.api.StatefulRedisConnection;
+import io.lettuce.core.api.async.RedisAsyncCommands;
+import io.lettuce.core.codec.StringCodec;
 
 import java.net.URL;
+import java.time.Duration;
+import java.util.ArrayList;
 import java.util.Arrays;
+import java.util.List;
 import java.util.Locale;
 import java.util.stream.Collectors;
 
@@ -159,15 +167,25 @@ public class ItemEmbeddingJob {
         final long ttl = config.redisTtl();
 
         itemEmbeddings.foreachPartition(rows -> {
-            SetParams params = ttl > 0 ? SetParams.setParams().ex(ttl) : SetParams.setParams();
-            try (Jedis jedis = new Jedis(host, port)) {
-                Pipeline pipeline = jedis.pipelined();
+            // Create the Lettuce client inside the partition lambda so nothing
+            // non-serializable crosses the Spark closure boundary.
+            RedisClient client = RedisClient.create(RedisURI.create(host, port));
+            try (StatefulRedisConnection<String, String> conn = client.connect(StringCodec.UTF8)) {
+                conn.setAutoFlushCommands(false);
+                RedisAsyncCommands<String, String> async = conn.async();
+                List<RedisFuture<?>> futures = new ArrayList<>();
                 rows.forEachRemaining(row -> {
                     String key = prefix + ":" + row.getString(0);
                     String value = vectorToString((Vector) row.get(1));
-                    pipeline.set(key, value, params);
+                    futures.add(ttl > 0
+                            ? async.set(key, value, SetArgs.Builder.ex(ttl))
+                            : async.set(key, value));
                 });
-                pipeline.sync();
+                conn.flushCommands();
+                LettuceFutures.awaitAll(Duration.ofSeconds(30),
+                        futures.toArray(new RedisFuture[0]));
+            } finally {
+                client.shutdown();
             }
         });
 

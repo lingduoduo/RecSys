@@ -1,12 +1,14 @@
 package com.recsys.application.online;
 
 import com.recsys.infrastructure.messaging.ExperienceCollector;
-import redis.clients.jedis.Jedis;
-import redis.clients.jedis.Pipeline;
-import redis.clients.jedis.util.Pool;
-import redis.clients.jedis.params.ScanParams;
-import redis.clients.jedis.resps.ScanResult;
+import com.recsys.infrastructure.redis.RedisExecutor;
+import io.lettuce.core.KeyScanCursor;
+import io.lettuce.core.KeyValue;
+import io.lettuce.core.RedisFuture;
+import io.lettuce.core.ScanArgs;
 
+import java.time.Duration;
+import java.util.ArrayList;
 import java.util.Collections;
 import java.util.Comparator;
 import java.util.HashMap;
@@ -103,32 +105,36 @@ public class OnlineLearner {
      * Writes all item biases to Redis using a pipeline for a single round-trip.
      * Call periodically (e.g. every N experiences) so biases survive process restarts.
      */
-    public void flushToRedis(Pool<Jedis> pool, String keyPrefix) {
+    public void flushToRedis(RedisExecutor exec, String keyPrefix) {
+        if (exec == null) return;
         Map<Integer, Double> snapshot = new HashMap<>(itemBias);
         if (snapshot.isEmpty()) return;
-        try (Jedis jedis = pool.getResource()) {
-            Pipeline pipe = jedis.pipelined();
+        exec.executePipelined(conn -> {
+            var async = conn.async();
+            List<RedisFuture<?>> futures = new ArrayList<>(snapshot.size());
             for (Map.Entry<Integer, Double> e : snapshot.entrySet()) {
-                pipe.set(keyPrefix + ":" + e.getKey(), Double.toString(e.getValue()));
+                futures.add(async.set(keyPrefix + ":" + e.getKey(), Double.toString(e.getValue())));
             }
-            pipe.sync();
-        }
+            conn.flushCommands();
+            io.lettuce.core.LettuceFutures.awaitAll(Duration.ofSeconds(5),
+                    futures.toArray(new RedisFuture[0]));
+        });
     }
 
     /**
      * Populates item biases from Redis on startup to resume learning after a restart.
      */
-    public void loadFromRedis(Pool<Jedis> pool, String keyPrefix) {
-        ScanParams scanParams = new ScanParams().match(keyPrefix + ":*").count(500);
-        try (Jedis jedis = pool.getResource()) {
-            String cursor = "0";
-            do {
-                ScanResult<String> res = jedis.scan(cursor, scanParams);
-                List<String> keys = res.getResult();
+    public void loadFromRedis(RedisExecutor exec, String keyPrefix) {
+        if (exec == null) return;
+        ScanArgs scanArgs = ScanArgs.Builder.matches(keyPrefix + ":*").limit(500);
+        exec.execute(c -> {
+            KeyScanCursor<String> cursor = c.scan(scanArgs);
+            while (true) {
+                List<String> keys = cursor.getKeys();
                 if (!keys.isEmpty()) {
-                    List<String> vals = jedis.mget(keys.toArray(new String[0]));
+                    List<KeyValue<String, String>> vals = c.mget(keys.toArray(new String[0]));
                     for (int i = 0; i < keys.size(); i++) {
-                        String val = vals.get(i);
+                        String val = vals.get(i).getValueOrElse(null);
                         if (val == null || val.isBlank()) continue;
                         String key = keys.get(i);
                         int sep = key.lastIndexOf(':');
@@ -139,9 +145,11 @@ public class OnlineLearner {
                         } catch (NumberFormatException ignore) {}
                     }
                 }
-                cursor = res.getCursor();
-            } while (!"0".equals(cursor));
-        }
+                if (cursor.isFinished()) break;
+                cursor = c.scan(cursor, scanArgs);
+            }
+            return null;
+        });
     }
 
     private void evictIfNeeded() {

@@ -1,9 +1,8 @@
 package com.recsys.application.online;
 
+import com.recsys.infrastructure.redis.RedisExecutor;
 import org.slf4j.Logger;
 import org.slf4j.LoggerFactory;
-import redis.clients.jedis.Jedis;
-import redis.clients.jedis.util.Pool;
 
 import java.util.concurrent.Executors;
 import java.util.concurrent.ScheduledExecutorService;
@@ -15,7 +14,7 @@ public final class LearnerFlushScheduler implements AutoCloseable {
     private static final Logger log = LoggerFactory.getLogger(LearnerFlushScheduler.class);
 
     private final OnlineLearner learner;
-    private final Pool<Jedis> pool;
+    private final RedisExecutor exec;
     private final String keyPrefix;
     private final long intervalSeconds;
     private final ScheduledExecutorService scheduler;
@@ -23,10 +22,10 @@ public final class LearnerFlushScheduler implements AutoCloseable {
     private final AtomicLong errorCount = new AtomicLong();
     private volatile long lastFlushMs = 0L;
 
-    public LearnerFlushScheduler(OnlineLearner learner, Pool<Jedis> pool,
+    public LearnerFlushScheduler(OnlineLearner learner, RedisExecutor exec,
                                  String keyPrefix, long intervalSeconds) {
         this.learner         = learner;
-        this.pool            = pool;
+        this.exec            = exec;
         this.keyPrefix       = keyPrefix;
         this.intervalSeconds = Math.max(1L, intervalSeconds);
         this.scheduler       = Executors.newSingleThreadScheduledExecutor(r -> {
@@ -43,9 +42,9 @@ public final class LearnerFlushScheduler implements AutoCloseable {
     }
 
     private void tryFlush() {
-        if (pool == null) return;
+        if (exec == null) return;
         try {
-            learner.flushToRedis(pool, keyPrefix);
+            learner.flushToRedis(exec, keyPrefix);
             flushCount.incrementAndGet();
             lastFlushMs = System.currentTimeMillis();
         } catch (Exception e) {

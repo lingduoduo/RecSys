@@ -1,9 +1,11 @@
 package com.recsys.infrastructure.redis.sharding;
 
-import redis.clients.jedis.Jedis;
-import redis.clients.jedis.params.ScanParams;
-import redis.clients.jedis.resps.ScanResult;
-import redis.clients.jedis.util.Pool;
+import com.recsys.infrastructure.redis.RedisExecutor;
+import io.lettuce.core.KeyScanCursor;
+import io.lettuce.core.Limit;
+import io.lettuce.core.Range;
+import io.lettuce.core.ScanArgs;
+import io.lettuce.core.ScoredValue;
 
 import java.util.List;
 
@@ -15,19 +17,17 @@ import java.util.List;
  */
 public final class SequenceGenerator {
 
-    private final Pool<Jedis> pool;
+    private final RedisExecutor exec;
     private final String prefix;
 
-    public SequenceGenerator(Pool<Jedis> pool, String prefix) {
-        this.pool   = pool;
+    public SequenceGenerator(RedisExecutor exec, String prefix) {
+        this.exec   = exec;
         this.prefix = prefix;
     }
 
     /** Next sequence for (version, shard). Always >= 1. */
     public long next(int version, int shardIndex) {
-        try (Jedis jedis = pool.getResource()) {
-            return jedis.incr(seqKey(version, shardIndex));
-        }
+        return exec.execute(c -> c.incr(seqKey(version, shardIndex)));
     }
 
     /** Back-compat: version-1 (unversioned) sequence. */
@@ -46,36 +46,34 @@ public final class SequenceGenerator {
         long maxSeq = findMaxSeqInShard(shardIndex);
         if (maxSeq <= 0) return;
 
-        try (Jedis jedis = pool.getResource()) {
-            String key = seqKey(1, shardIndex);
-            String current = jedis.get(key);
-            long currentVal = current == null ? 0L : Long.parseLong(current);
-            if (currentVal < maxSeq) {
-                jedis.set(key, String.valueOf(maxSeq + 1));
-            }
+        String key = seqKey(1, shardIndex);
+        String current = exec.execute(c -> c.get(key));
+        long currentVal = current == null ? 0L : Long.parseLong(current);
+        if (currentVal < maxSeq) {
+            exec.execute(c -> c.set(key, String.valueOf(maxSeq + 1)));
         }
     }
 
     private long findMaxSeqInShard(int shardIndex) {
         String pattern = prefix + "dev:" + shardIndex + ":*";
-        ScanParams params = new ScanParams().match(pattern).count(200);
-        long maxSeq = 0L;
+        ScanArgs params = ScanArgs.Builder.matches(pattern).limit(200);
 
-        try (Jedis jedis = pool.getResource()) {
-            String cursor = "0";
-            do {
-                ScanResult<String> result = jedis.scan(cursor, params);
-                for (String devKey : result.getResult()) {
-                    List<String> top = jedis.zrevrangeByScore(devKey, "+inf", "-inf", 0, 1);
+        return exec.execute(c -> {
+            long maxSeq = 0L;
+            KeyScanCursor<String> cursor = c.scan(params);
+            while (true) {
+                for (String devKey : cursor.getKeys()) {
+                    List<ScoredValue<String>> top = c.zrevrangebyscoreWithScores(
+                            devKey, Range.unbounded(), Limit.create(0, 1));
                     if (!top.isEmpty()) {
-                        Double score = jedis.zscore(devKey, top.get(0));
-                        if (score != null) maxSeq = Math.max(maxSeq, score.longValue());
+                        maxSeq = Math.max(maxSeq, (long) top.get(0).getScore());
                     }
                 }
-                cursor = result.getCursor();
-            } while (!"0".equals(cursor));
-        }
-        return maxSeq;
+                if (cursor.isFinished()) break;
+                cursor = c.scan(cursor, params);
+            }
+            return maxSeq;
+        });
     }
 
     private String seqKey(int version, int shardIndex) {

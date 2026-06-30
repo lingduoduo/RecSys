@@ -1,11 +1,9 @@
 package com.recsys.infrastructure.redis.sharding;
 
 import com.fasterxml.jackson.databind.ObjectMapper;
-import redis.clients.jedis.Jedis;
-import redis.clients.jedis.params.SetParams;
-import redis.clients.jedis.util.Pool;
-
-import java.util.List;
+import com.recsys.infrastructure.redis.RedisExecutor;
+import io.lettuce.core.ScriptOutputType;
+import io.lettuce.core.SetArgs;
 
 /**
  * Authoritative shard-topology snapshot in Redis (key {@code shard:topology}).
@@ -39,40 +37,34 @@ public final class ShardTopologyStore {
             return encoded
             """;
 
-    private final Pool<Jedis> pool;
+    private final RedisExecutor exec;
     private final String key;
 
-    public ShardTopologyStore(Pool<Jedis> pool, String key) {
-        this.pool = pool;
+    public ShardTopologyStore(RedisExecutor exec, String key) {
+        this.exec = exec;
         this.key = key;
     }
 
     public Snapshot load() {
-        try (Jedis jedis = pool.getResource()) {
-            String json = jedis.get(key);
-            return json == null ? null : parse(json);
-        }
+        String json = exec.execute(c -> c.get(key));
+        return json == null ? null : parse(json);
     }
 
     /** First-writer-wins create of version 1; returns the effective snapshot (existing or new). */
     public Snapshot bootstrap(int shardCount, int vnodes, long nowMs) {
         Snapshot v1 = new Snapshot(1, shardCount, vnodes, nowMs, null, null, null);
-        try (Jedis jedis = pool.getResource()) {
-            jedis.set(key, write(v1), SetParams.setParams().nx());
-        }
+        exec.execute(c -> c.set(key, write(v1), SetArgs.Builder.nx()));
         return load();
     }
 
     /** Atomically bump to version+1 with the new shard count and a prev pointer + expiry. */
     public Snapshot publishReshard(int newShardCount, long nowMs, long dualReadWindowMs) {
-        Object raw;
-        try (Jedis jedis = pool.getResource()) {
-            raw = jedis.eval(PUBLISH_LUA, List.of(key),
-                    List.of(Integer.toString(newShardCount),
-                            Long.toString(nowMs),
-                            Long.toString(dualReadWindowMs)));
-        }
-        return parse((String) raw);
+        String raw = exec.execute(c -> c.eval(PUBLISH_LUA, ScriptOutputType.VALUE,
+                new String[]{key},
+                Integer.toString(newShardCount),
+                Long.toString(nowMs),
+                Long.toString(dualReadWindowMs)));
+        return parse(raw);
     }
 
     private static Snapshot parse(String json) {

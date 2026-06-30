@@ -2,7 +2,6 @@ package com.recsys.infrastructure.redis.sharding;
 
 import org.junit.jupiter.api.Tag;
 import org.junit.jupiter.api.Test;
-import redis.clients.jedis.Jedis;
 
 import java.util.Set;
 import java.util.concurrent.ConcurrentSkipListSet;
@@ -17,7 +16,7 @@ class SequenceGeneratorTest extends RedisShardingTestBase {
 
     @Test
     void next_returnsMonotonicallyIncreasingValues() {
-        var gen = new SequenceGenerator(pool, "sr:");
+        var gen = new SequenceGenerator(exec, "sr:");
         long s1 = gen.next(0);
         long s2 = gen.next(0);
         long s3 = gen.next(0);
@@ -27,7 +26,7 @@ class SequenceGeneratorTest extends RedisShardingTestBase {
 
     @Test
     void next_differentShardsHaveIndependentCounters() {
-        var gen = new SequenceGenerator(pool, "sr:");
+        var gen = new SequenceGenerator(exec, "sr:");
         assertThat(gen.next(0)).isEqualTo(1L);
         assertThat(gen.next(1)).isEqualTo(1L);
         assertThat(gen.next(0)).isEqualTo(2L);
@@ -35,7 +34,7 @@ class SequenceGeneratorTest extends RedisShardingTestBase {
 
     @Test
     void next_concurrentWritersProduceNoDuplicates() throws InterruptedException {
-        var gen = new SequenceGenerator(pool, "sr:");
+        var gen = new SequenceGenerator(exec, "sr:");
         int threads = 10, callsPerThread = 100;
         Set<Long> seqNums = new ConcurrentSkipListSet<>();
         CountDownLatch latch = new CountDownLatch(threads);
@@ -55,11 +54,9 @@ class SequenceGeneratorTest extends RedisShardingTestBase {
 
     @Test
     void ensureCounterValid_resetsCounterWhenBehindMaxZSetScore() {
-        var gen = new SequenceGenerator(pool, "sr:");
+        var gen = new SequenceGenerator(exec, "sr:");
         // Manually write a ZSet member with score=100 simulating records after a flush.
-        try (Jedis jedis = pool.getResource()) {
-            jedis.zadd("sr:dev:0:device-1", 100.0, "event-1");
-        }
+        cmd().zadd("sr:dev:0:device-1", 100.0, "event-1");
         // Counter is at 0 (never incremented after flush) — should be reset.
         gen.ensureCounterValid(0, 1); // shardIndex=0, shardCount=1
 

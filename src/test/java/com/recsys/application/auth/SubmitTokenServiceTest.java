@@ -1,14 +1,14 @@
 package com.recsys.application.auth;
-import com.recsys.application.auth.SubmitTokenService;
 
 import com.recsys.config.SubmitTokenProperties;
 import com.recsys.exception.SubmitTokenException;
+import com.recsys.infrastructure.redis.RedisExecutor;
+import io.lettuce.core.ScriptOutputType;
+import io.lettuce.core.SetArgs;
+import io.lettuce.core.api.sync.RedisCommands;
 import org.junit.jupiter.api.Test;
-import redis.clients.jedis.Jedis;
-import redis.clients.jedis.JedisPool;
-import redis.clients.jedis.params.SetParams;
 
-import java.util.List;
+import java.util.function.Function;
 
 import static org.assertj.core.api.Assertions.assertThat;
 import static org.assertj.core.api.Assertions.assertThatCode;
@@ -25,40 +25,43 @@ class SubmitTokenServiceTest {
     @Test
     void createToken_writesOneTimeTokenWithTtl() {
         RedisMocks redis = redis();
-        when(redis.jedis.set(any(), eq("1"), any(SetParams.class))).thenReturn("OK");
+        when(redis.cmd.set(any(), eq("1"), any(SetArgs.class))).thenReturn("OK");
 
-        SubmitTokenService service = new SubmitTokenService(enabledProperties(), () -> redis.pool);
+        SubmitTokenService service = new SubmitTokenService(enabledProperties(), () -> redis.exec);
 
         String token = service.createToken();
 
         assertThat(token).isNotBlank();
-        verify(redis.jedis).set(eq("submit_token:" + token), eq("1"), any(SetParams.class));
+        verify(redis.cmd).set(eq("submit_token:" + token), eq("1"), any(SetArgs.class));
     }
 
     @Test
     void validateAndConsume_deletesTokenAtomicallyViaLua() {
         RedisMocks redis = redis();
-        when(redis.jedis.eval(eq(SubmitTokenService.CONSUME_SCRIPT), anyStringList(), anyStringList()))
+        when(redis.cmd.eval(eq(SubmitTokenService.CONSUME_SCRIPT), eq(ScriptOutputType.INTEGER),
+                any(String[].class), any(String[].class)))
                 .thenReturn(1L);
 
-        SubmitTokenService service = new SubmitTokenService(enabledProperties(), () -> redis.pool);
+        SubmitTokenService service = new SubmitTokenService(enabledProperties(), () -> redis.exec);
 
         assertThatCode(() -> service.validateAndConsume("tok"))
                 .doesNotThrowAnyException();
 
-        verify(redis.jedis).eval(
+        verify(redis.cmd).eval(
                 eq(SubmitTokenService.CONSUME_SCRIPT),
-                eq(List.of("submit_token:tok")),
-                eq(List.of("1")));
+                eq(ScriptOutputType.INTEGER),
+                eq(new String[]{"submit_token:tok"}),
+                eq("1"));
     }
 
     @Test
     void validateAndConsume_rejectsMissingOrAlreadyUsedToken() {
         RedisMocks redis = redis();
-        when(redis.jedis.eval(eq(SubmitTokenService.CONSUME_SCRIPT), anyStringList(), anyStringList()))
+        when(redis.cmd.eval(eq(SubmitTokenService.CONSUME_SCRIPT), eq(ScriptOutputType.INTEGER),
+                any(String[].class), any(String[].class)))
                 .thenReturn(0L);
 
-        SubmitTokenService service = new SubmitTokenService(enabledProperties(), () -> redis.pool);
+        SubmitTokenService service = new SubmitTokenService(enabledProperties(), () -> redis.exec);
 
         assertThatThrownBy(() -> service.validateAndConsume("tok"))
                 .isInstanceOf(SubmitTokenException.class)
@@ -71,12 +74,12 @@ class SubmitTokenServiceTest {
         SubmitTokenProperties properties = enabledProperties();
         properties.setEnabled(false);
 
-        SubmitTokenService service = new SubmitTokenService(properties, () -> redis.pool);
+        SubmitTokenService service = new SubmitTokenService(properties, () -> redis.exec);
 
         assertThatCode(() -> service.validateAndConsume(null))
                 .doesNotThrowAnyException();
 
-        verify(redis.pool, never()).getResource();
+        verify(redis.exec, never()).execute(any());
     }
 
     private static SubmitTokenProperties enabledProperties() {
@@ -87,17 +90,13 @@ class SubmitTokenServiceTest {
         return properties;
     }
 
-    private static RedisMocks redis() {
-        JedisPool pool = mock(JedisPool.class);
-        Jedis jedis = mock(Jedis.class);
-        when(pool.getResource()).thenReturn(jedis);
-        return new RedisMocks(pool, jedis);
-    }
-
     @SuppressWarnings("unchecked")
-    private static List<String> anyStringList() {
-        return any(List.class);
+    private static RedisMocks redis() {
+        RedisExecutor exec = mock(RedisExecutor.class);
+        RedisCommands<String, String> cmd = mock(RedisCommands.class);
+        when(exec.execute(any())).thenAnswer(i -> i.getArgument(0, Function.class).apply(cmd));
+        return new RedisMocks(exec, cmd);
     }
 
-    private record RedisMocks(JedisPool pool, Jedis jedis) {}
+    private record RedisMocks(RedisExecutor exec, RedisCommands<String, String> cmd) {}
 }

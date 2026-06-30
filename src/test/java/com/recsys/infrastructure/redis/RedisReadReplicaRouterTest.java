@@ -1,8 +1,6 @@
 package com.recsys.infrastructure.redis;
 
 import org.junit.jupiter.api.Test;
-import redis.clients.jedis.Jedis;
-import redis.clients.jedis.util.Pool;
 
 import java.util.List;
 
@@ -11,81 +9,80 @@ import static org.mockito.Mockito.mock;
 
 class RedisReadReplicaRouterTest {
 
-    @SuppressWarnings("unchecked")
-    private static Pool<Jedis> mockPool() {
-        return mock(Pool.class);
+    private static RedisExecutor mockExec() {
+        return mock(RedisExecutor.class);
     }
 
     @Test
-    void writablePool_alwaysReturnsPrimary() {
-        Pool<Jedis> primary = mockPool();
-        Pool<Jedis> replica = mockPool();
+    void writable_alwaysReturnsPrimary() {
+        RedisExecutor primary = mockExec();
+        RedisExecutor replica = mockExec();
         try (var router = new RedisReadReplicaRouter(primary,
-                List.of(new RedisReadReplicaRouter.AzPool(replica, "us-east-1b")),
+                List.of(new RedisReadReplicaRouter.AzExecutor(replica, "us-east-1b")),
                 "us-east-1a")) {
-            assertThat(router.writablePool()).isSameAs(primary);
+            assertThat(router.writable()).isSameAs(primary);
         }
     }
 
     @Test
-    void readablePool_returnsPrimaryWhenNoReplicas() {
-        Pool<Jedis> primary = mockPool();
+    void readable_returnsPrimaryWhenNoReplicas() {
+        RedisExecutor primary = mockExec();
         try (var router = new RedisReadReplicaRouter(primary, List.of(), "us-east-1a")) {
-            assertThat(router.readablePool()).isSameAs(primary);
+            assertThat(router.readable()).isSameAs(primary);
         }
     }
 
     @Test
-    void readablePool_prefersSameAzReplica() {
-        Pool<Jedis> primary  = mockPool();
-        Pool<Jedis> replicaB = mockPool();
-        Pool<Jedis> replicaC = mockPool();
+    void readable_prefersSameAzReplica() {
+        RedisExecutor primary  = mockExec();
+        RedisExecutor replicaB = mockExec();
+        RedisExecutor replicaC = mockExec();
 
         try (var router = new RedisReadReplicaRouter(primary, List.of(
-                new RedisReadReplicaRouter.AzPool(replicaB, "us-east-1b"),
-                new RedisReadReplicaRouter.AzPool(replicaC, "us-east-1c")
+                new RedisReadReplicaRouter.AzExecutor(replicaB, "us-east-1b"),
+                new RedisReadReplicaRouter.AzExecutor(replicaC, "us-east-1c")
         ), "us-east-1b")) {
-            assertThat(router.readablePool()).isSameAs(replicaB);
+            assertThat(router.readable()).isSameAs(replicaB);
         }
     }
 
     @Test
-    void readablePool_returnsAReplicaWhenNoSameAzMatch() {
-        Pool<Jedis> primary  = mockPool();
-        Pool<Jedis> replicaB = mockPool();
-        Pool<Jedis> replicaC = mockPool();
+    void readable_returnsAReplicaWhenNoSameAzMatch() {
+        RedisExecutor primary  = mockExec();
+        RedisExecutor replicaB = mockExec();
+        RedisExecutor replicaC = mockExec();
 
         try (var router = new RedisReadReplicaRouter(primary, List.of(
-                new RedisReadReplicaRouter.AzPool(replicaB, "us-east-1b"),
-                new RedisReadReplicaRouter.AzPool(replicaC, "us-east-1c")
+                new RedisReadReplicaRouter.AzExecutor(replicaB, "us-east-1b"),
+                new RedisReadReplicaRouter.AzExecutor(replicaC, "us-east-1c")
         ), "us-east-1a")) {
-            Pool<Jedis> selected = router.readablePool();
+            RedisExecutor selected = router.readable();
             assertThat(selected).isIn(replicaB, replicaC);
             assertThat(selected).isNotSameAs(primary);
         }
     }
 
     @Test
-    void readablePool_withNullLocalAz_returnsAnyReplica() {
-        Pool<Jedis> primary  = mockPool();
-        Pool<Jedis> replicaB = mockPool();
+    void readable_withNullLocalAz_returnsAnyReplica() {
+        RedisExecutor primary  = mockExec();
+        RedisExecutor replicaB = mockExec();
 
         try (var router = new RedisReadReplicaRouter(primary,
-                List.of(new RedisReadReplicaRouter.AzPool(replicaB, "us-east-1b")),
+                List.of(new RedisReadReplicaRouter.AzExecutor(replicaB, "us-east-1b")),
                 null)) {
-            assertThat(router.readablePool()).isSameAs(replicaB);
+            assertThat(router.readable()).isSameAs(replicaB);
         }
     }
 
     @Test
     void replicaCount_reflectsConfiguredReplicas() {
-        Pool<Jedis> primary  = mockPool();
-        Pool<Jedis> replicaB = mockPool();
-        Pool<Jedis> replicaC = mockPool();
+        RedisExecutor primary  = mockExec();
+        RedisExecutor replicaB = mockExec();
+        RedisExecutor replicaC = mockExec();
 
         try (var router = new RedisReadReplicaRouter(primary, List.of(
-                new RedisReadReplicaRouter.AzPool(replicaB, "us-east-1b"),
-                new RedisReadReplicaRouter.AzPool(replicaC, "us-east-1c")
+                new RedisReadReplicaRouter.AzExecutor(replicaB, "us-east-1b"),
+                new RedisReadReplicaRouter.AzExecutor(replicaC, "us-east-1c")
         ), "us-east-1a")) {
             assertThat(router.replicaCount()).isEqualTo(2);
         }
@@ -93,21 +90,21 @@ class RedisReadReplicaRouterTest {
 
     @Test
     void replicaCount_zeroWhenNoReplicas() {
-        try (var router = new RedisReadReplicaRouter(mockPool(), List.of(), "us-east-1a")) {
+        try (var router = new RedisReadReplicaRouter(mockExec(), List.of(), "us-east-1a")) {
             assertThat(router.replicaCount()).isZero();
         }
     }
 
     @Test
     void localAz_isPreserved() {
-        try (var router = new RedisReadReplicaRouter(mockPool(), List.of(), "us-west-2a")) {
+        try (var router = new RedisReadReplicaRouter(mockExec(), List.of(), "us-west-2a")) {
             assertThat(router.localAz()).isEqualTo("us-west-2a");
         }
     }
 
     @Test
     void localAz_defaultsToUnknownWhenNull() {
-        try (var router = new RedisReadReplicaRouter(mockPool(), List.of(), null)) {
+        try (var router = new RedisReadReplicaRouter(mockExec(), List.of(), null)) {
             assertThat(router.localAz()).isEqualTo("unknown");
         }
     }

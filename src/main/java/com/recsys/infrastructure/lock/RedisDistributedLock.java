@@ -1,10 +1,9 @@
 package com.recsys.infrastructure.lock;
 
-import redis.clients.jedis.Jedis;
-import redis.clients.jedis.params.SetParams;
-import redis.clients.jedis.util.Pool;
+import com.recsys.infrastructure.redis.RedisExecutor;
+import io.lettuce.core.ScriptOutputType;
+import io.lettuce.core.SetArgs;
 
-import java.util.List;
 import java.util.UUID;
 
 /**
@@ -55,17 +54,17 @@ public final class RedisDistributedLock {
             return 0
             """;
 
-    private final Pool<Jedis> pool;
+    private final RedisExecutor exec;
     private final String keyPrefix;
     private final long defaultTtlSeconds;
     private final long defaultTtlMillis;
 
-    public RedisDistributedLock(Pool<Jedis> pool) {
-        this(pool, "dlock:", 30L);
+    public RedisDistributedLock(RedisExecutor exec) {
+        this(exec, "dlock:", 30L);
     }
 
-    RedisDistributedLock(Pool<Jedis> pool, String keyPrefix, long defaultTtlSeconds) {
-        this.pool = pool;
+    RedisDistributedLock(RedisExecutor exec, String keyPrefix, long defaultTtlSeconds) {
+        this.exec = exec;
         this.keyPrefix = keyPrefix;
         this.defaultTtlSeconds = Math.max(1L, defaultTtlSeconds);
         this.defaultTtlMillis = this.defaultTtlSeconds * 1_000L;
@@ -85,14 +84,14 @@ public final class RedisDistributedLock {
     public String acquireNaive(String resource) {
         String key = keyPrefix + resource;
         String token = UUID.randomUUID().toString();
-        try (Jedis jedis = pool.getResource()) {
-            long acquired = jedis.setnx(key, token);   // step 1 — NOT atomic with step 2
-            if (acquired == 1L) {
-                jedis.expire(key, defaultTtlSeconds);   // step 2 — crash here → stuck lock ⚠
+        return exec.execute(c -> {
+            Boolean acquired = c.setnx(key, token);   // step 1 — NOT atomic with step 2
+            if (Boolean.TRUE.equals(acquired)) {
+                c.expire(key, defaultTtlSeconds);      // step 2 — crash here → stuck lock ⚠
                 return token;
             }
             return null;
-        }
+        });
     }
 
     // ── Approach 2: Lua script (atomic SET NX PX) ────────────────────────────────
@@ -107,13 +106,11 @@ public final class RedisDistributedLock {
     public String acquireWithLua(String resource) {
         String key = keyPrefix + resource;
         String token = UUID.randomUUID().toString();
-        try (Jedis jedis = pool.getResource()) {
-            Object result = jedis.eval(
-                    ACQUIRE_LUA,
-                    List.of(key),
-                    List.of(token, Long.toString(defaultTtlMillis)));
-            return result instanceof Number n && n.longValue() == 1L ? token : null;
-        }
+        Long result = exec.execute(c -> c.eval(
+                ACQUIRE_LUA, ScriptOutputType.INTEGER,
+                new String[]{key},
+                token, Long.toString(defaultTtlMillis)));
+        return result != null && result == 1L ? token : null;
     }
 
     // ── Approach 3: SET NX PX (single atomic command — recommended) ──────────────
@@ -127,10 +124,8 @@ public final class RedisDistributedLock {
     public String acquire(String resource) {
         String key = keyPrefix + resource;
         String token = UUID.randomUUID().toString();
-        try (Jedis jedis = pool.getResource()) {
-            String result = jedis.set(key, token, SetParams.setParams().nx().px(defaultTtlMillis));
-            return "OK".equals(result) ? token : null;
-        }
+        String result = exec.execute(c -> c.set(key, token, SetArgs.Builder.nx().px(defaultTtlMillis)));
+        return "OK".equals(result) ? token : null;
     }
 
     // ── Safe release (shared path) ────────────────────────────────────────────────
@@ -145,10 +140,9 @@ public final class RedisDistributedLock {
     public boolean release(String resource, String token) {
         if (token == null || token.isBlank()) return false;
         String key = keyPrefix + resource;
-        try (Jedis jedis = pool.getResource()) {
-            Object result = jedis.eval(RELEASE_LUA, List.of(key), List.of(token));
-            return result instanceof Number n && n.longValue() == 1L;
-        }
+        Long result = exec.execute(c -> c.eval(RELEASE_LUA, ScriptOutputType.INTEGER,
+                new String[]{key}, token));
+        return result != null && result == 1L;
     }
 
     /** Returns the configured default TTL in seconds. */

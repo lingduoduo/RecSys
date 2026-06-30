@@ -6,8 +6,9 @@ import com.recsys.application.feature.FeatureEncoder;
 import com.recsys.application.retrieval.UserTowerInferenceService;
 
 import ai.onnxruntime.OrtException;
-import com.recsys.infrastructure.redis.RedisConnectionFactory;
+import com.recsys.infrastructure.redis.LettuceClientFactory;
 import com.recsys.infrastructure.redis.RedisEmbeddingStore;
+import com.recsys.infrastructure.redis.RedisExecutor;
 import com.recsys.config.ABTestConfig;
 import com.recsys.infrastructure.dataloading.DataManager;
 import com.recsys.infrastructure.vectordb.CandidateGenerator;
@@ -29,8 +30,6 @@ import org.springframework.beans.factory.annotation.Value;
 import org.slf4j.Logger;
 import org.slf4j.LoggerFactory;
 import org.springframework.stereotype.Service;
-import redis.clients.jedis.Jedis;
-import redis.clients.jedis.util.Pool;
 
 import java.io.IOException;
 import java.util.LinkedHashSet;
@@ -61,8 +60,8 @@ public class ModelRuntimeProvider implements SmartInitializingSingleton {
     private final String itemEmbeddingsSource;
     private final String redisItemEmbeddingPrefix;
     private final Map<String, ModelRuntime> runtimes = new ConcurrentHashMap<>();
-    private Pool<Jedis> redisItemEmbeddingPool;
-    private Pool<Jedis> recallPool;
+    private RedisExecutor redisItemEmbeddingPool;
+    private RedisExecutor recallPool;
     private CandidateGenerator candidateGenerator;
     private TrendingStore topkStore;
     private GlobalPopularityStore globalPopStore;
@@ -156,7 +155,7 @@ public class ModelRuntimeProvider implements SmartInitializingSingleton {
     private void ensureRecallInfra() {
         synchronized (recallLock) {
             if (candidateGenerator != null) return;
-            recallPool = RedisConnectionFactory.fromEnv(RECALL_REDIS_TIMEOUT_MS);
+            recallPool = LettuceClientFactory.fromEnv(RECALL_REDIS_TIMEOUT_MS);
             DataManager dataManager = DataManager.getInstance();
             candidateGenerator = new CandidateGenerator(dataManager, new RedisEmbeddingStore(recallPool, "u2vEmb"));
             topkStore = new ShardedTopKStore(recallPool, "topk:");
@@ -250,7 +249,7 @@ public class ModelRuntimeProvider implements SmartInitializingSingleton {
             return null;
         }
         if (redisItemEmbeddingPool == null) {
-            redisItemEmbeddingPool = RedisConnectionFactory.fromEnv();
+            redisItemEmbeddingPool = LettuceClientFactory.fromEnv();
         }
         return new RedisEmbeddingStore(redisItemEmbeddingPool, redisItemEmbeddingPrefix);
     }

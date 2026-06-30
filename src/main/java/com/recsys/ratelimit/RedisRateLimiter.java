@@ -1,11 +1,11 @@
 package com.recsys.ratelimit;
 
 import com.recsys.config.EnvConfig;
+import com.recsys.infrastructure.redis.RedisExecutor;
 import com.recsys.resilience.CircuitBreaker;
+import io.lettuce.core.ScriptOutputType;
 import org.slf4j.Logger;
 import org.slf4j.LoggerFactory;
-import redis.clients.jedis.Jedis;
-import redis.clients.jedis.util.Pool;
 
 import java.util.List;
 import java.util.concurrent.atomic.AtomicLong;
@@ -43,7 +43,7 @@ public final class RedisRateLimiter {
     private static final int  DEFAULT_CIRCUIT_FAILURE_THRESHOLD = 5;
     private static final long DEFAULT_CIRCUIT_RESET_MS          = 30_000L;
 
-    private final Pool<Jedis> pool;
+    private final RedisExecutor exec;
     private final String keyPrefix;
     private final long limit;
     private final int windowSeconds;
@@ -59,32 +59,32 @@ public final class RedisRateLimiter {
 
     public enum CircuitState { CLOSED, OPEN, HALF_OPEN }
 
-    public RedisRateLimiter(Pool<Jedis> pool) {
+    public RedisRateLimiter(RedisExecutor exec) {
         this(
-                pool,
+                exec,
                 "rate:online:",
                 EnvConfig.readLong("ONLINE_REDIS_RATE_LIMIT_QPS", 0L),
                 EnvConfig.readInt("ONLINE_REDIS_RATE_LIMIT_WINDOW_SECONDS", 1)
         );
     }
 
-    RedisRateLimiter(Pool<Jedis> pool, String keyPrefix, long limit, int windowSeconds) {
-        this(pool, keyPrefix, limit, windowSeconds, 0.7);
+    RedisRateLimiter(RedisExecutor exec, String keyPrefix, long limit, int windowSeconds) {
+        this(exec, keyPrefix, limit, windowSeconds, 0.7);
     }
 
-    RedisRateLimiter(Pool<Jedis> pool, String keyPrefix, long limit, int windowSeconds,
+    RedisRateLimiter(RedisExecutor exec, String keyPrefix, long limit, int windowSeconds,
                      double localPassFraction) {
-        this(pool, keyPrefix, limit, windowSeconds, localPassFraction,
+        this(exec, keyPrefix, limit, windowSeconds, localPassFraction,
                 DEFAULT_CIRCUIT_FAILURE_THRESHOLD, DEFAULT_CIRCUIT_RESET_MS);
     }
 
-    RedisRateLimiter(Pool<Jedis> pool, String keyPrefix, long limit, int windowSeconds,
+    RedisRateLimiter(RedisExecutor exec, String keyPrefix, long limit, int windowSeconds,
                      double localPassFraction, int circuitFailureThreshold, long circuitResetMs) {
-        this.pool = pool;
+        this.exec = exec;
         this.keyPrefix = keyPrefix;
         this.limit = Math.max(0L, limit);
         this.windowSeconds = Math.max(1, windowSeconds);
-        this.enabled = pool != null && this.limit > 0L;
+        this.enabled = exec != null && this.limit > 0L;
         this.localPassThreshold = (long) (Math.max(0L, this.limit) * Math.max(0.0, Math.min(1.0, localPassFraction)));
         this.circuit = new CircuitBreaker(Math.max(1, circuitFailureThreshold), Math.max(1L, circuitResetMs));
     }
@@ -116,12 +116,13 @@ public final class RedisRateLimiter {
         }
 
         String key = keyPrefix + normalizeBucket(bucket);
-        try (Jedis jedis = pool.getResource()) {
-            Object raw = jedis.eval(
+        try {
+            List<Object> raw = exec.execute(c -> c.eval(
                     SCRIPT,
-                    List.of(key),
-                    List.of(Long.toString(limit), Integer.toString(windowSeconds))
-            );
+                    ScriptOutputType.MULTI,
+                    new String[]{key},
+                    Long.toString(limit), Integer.toString(windowSeconds)
+            ));
             circuit.recordSuccess();
             return parseDecision(raw);
         } catch (Exception e) {

@@ -23,7 +23,7 @@ class ShardedRecordStoreIntegrationTest extends RedisShardingTestBase {
     @BeforeEach
     void setUp() {
         ring  = new ConsistentHashRing(1, 150); // single shard for easy assertions
-        store = new ShardedRecordStore(pool, ring, new SequenceGenerator(pool, "sr:"), "sr:");
+        store = new ShardedRecordStore(exec, ring, new SequenceGenerator(exec, "sr:"), "sr:");
     }
 
     @Test

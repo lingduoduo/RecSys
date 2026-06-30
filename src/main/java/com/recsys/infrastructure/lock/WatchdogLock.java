@@ -1,12 +1,11 @@
 package com.recsys.infrastructure.lock;
 
+import com.recsys.infrastructure.redis.RedisExecutor;
+import io.lettuce.core.ScriptOutputType;
+import io.lettuce.core.SetArgs;
 import org.slf4j.Logger;
 import org.slf4j.LoggerFactory;
-import redis.clients.jedis.Jedis;
-import redis.clients.jedis.params.SetParams;
-import redis.clients.jedis.util.Pool;
 
-import java.util.List;
 import java.util.UUID;
 import java.util.concurrent.Executors;
 import java.util.concurrent.ScheduledExecutorService;
@@ -38,7 +37,7 @@ import java.util.concurrent.atomic.AtomicBoolean;
  *
  * Usage:
  * <pre>{@code
- *   WatchdogLock lock = WatchdogLock.tryAcquire(pool, "order:42");
+ *   WatchdogLock lock = WatchdogLock.tryAcquire(exec, "order:42");
  *   if (lock == null) return; // another instance holds the lock
  *   try (lock) {
  *     processOrderLongRunning(); // watchdog keeps TTL alive throughout
@@ -80,7 +79,7 @@ public final class WatchdogLock implements AutoCloseable {
             return 0
             """;
 
-    private final Pool<Jedis> pool;
+    private final RedisExecutor exec;
     private final String lockKey;
     private final String token;
     private final long leaseTtlSeconds;
@@ -91,10 +90,10 @@ public final class WatchdogLock implements AutoCloseable {
     private final AtomicBoolean lostOwnership = new AtomicBoolean(false);
     private volatile long leaseDeadlineMillis;
 
-    private WatchdogLock(Pool<Jedis> pool, String lockKey, String token,
+    private WatchdogLock(RedisExecutor exec, String lockKey, String token,
                          long leaseTtlSeconds, long leaseDeadlineMillis,
                          ScheduledExecutorService watchdog) {
-        this.pool = pool;
+        this.exec = exec;
         this.lockKey = lockKey;
         this.token = token;
         this.leaseTtlSeconds = leaseTtlSeconds;
@@ -109,31 +108,29 @@ public final class WatchdogLock implements AutoCloseable {
      * @return a {@link WatchdogLock} with a running renewal watchdog on success,
      *         or {@code null} if another client currently holds the lock
      */
-    public static WatchdogLock tryAcquire(Pool<Jedis> pool, String resource) {
-        return tryAcquire(pool, "wdlock:", resource, DEFAULT_LEASE_TTL_SECONDS);
+    public static WatchdogLock tryAcquire(RedisExecutor exec, String resource) {
+        return tryAcquire(exec, "wdlock:", resource, DEFAULT_LEASE_TTL_SECONDS);
     }
 
-    static WatchdogLock tryAcquire(Pool<Jedis> pool, String keyPrefix, String resource,
+    static WatchdogLock tryAcquire(RedisExecutor exec, String keyPrefix, String resource,
                                    long leaseTtlSeconds) {
-        return tryAcquire(pool, keyPrefix, resource, leaseTtlSeconds, SHARED_WATCHDOG);
+        return tryAcquire(exec, keyPrefix, resource, leaseTtlSeconds, SHARED_WATCHDOG);
     }
 
-    static WatchdogLock tryAcquire(Pool<Jedis> pool, String keyPrefix, String resource,
+    static WatchdogLock tryAcquire(RedisExecutor exec, String keyPrefix, String resource,
                                    long leaseTtlSeconds, ScheduledExecutorService executor) {
         String lockKey = keyPrefix + resource;
         String token = UUID.randomUUID().toString();
 
         // Atomic SET NX EX — single command, no crash window.
-        try (Jedis jedis = pool.getResource()) {
-            String result = jedis.set(lockKey, token,
-                    SetParams.setParams().nx().ex(leaseTtlSeconds));
-            if (!"OK".equals(result)) return null;
-        }
+        String result = exec.execute(c -> c.set(lockKey, token,
+                SetArgs.Builder.nx().ex(leaseTtlSeconds)));
+        if (!"OK".equals(result)) return null;
 
         // Lock acquired — schedule renewal on the shared scheduler; the per-lock task is
         // cancelled (not the executor shut down) when this lock is released or lost.
         long renewIntervalSeconds = Math.max(1L, leaseTtlSeconds / RENEWAL_DIVISOR);
-        WatchdogLock lock = new WatchdogLock(pool, lockKey, token, leaseTtlSeconds,
+        WatchdogLock lock = new WatchdogLock(exec, lockKey, token, leaseTtlSeconds,
                 System.currentTimeMillis() + TimeUnit.SECONDS.toMillis(leaseTtlSeconds), executor);
         lock.renewalTask = executor.scheduleWithFixedDelay(
                 lock::renewLease,
@@ -147,10 +144,10 @@ public final class WatchdogLock implements AutoCloseable {
             cancelRenewal();
             return;
         }
-        try (Jedis jedis = pool.getResource()) {
-            Object result = jedis.eval(RENEW_SCRIPT,
-                    List.of(lockKey), List.of(token, Long.toString(leaseTtlMillis)));
-            if (result instanceof Number n && n.longValue() == 1L) {
+        try {
+            Long result = exec.execute(c -> c.eval(RENEW_SCRIPT, ScriptOutputType.INTEGER,
+                    new String[]{lockKey}, token, String.valueOf(leaseTtlMillis)));
+            if (result != null && result == 1L) {
                 leaseDeadlineMillis = System.currentTimeMillis() + leaseTtlMillis;
                 if (held.get()) {
                     log.debug("Watchdog: renewed TTL for {} (+{}ms)", lockKey, leaseTtlMillis);
@@ -190,9 +187,10 @@ public final class WatchdogLock implements AutoCloseable {
     public boolean release() {
         if (!held.compareAndSet(true, false)) return false;
         cancelRenewal();
-        try (Jedis jedis = pool.getResource()) {
-            Object result = jedis.eval(RELEASE_SCRIPT, List.of(lockKey), List.of(token));
-            return result instanceof Number n && n.longValue() == 1L;
+        try {
+            Long result = exec.execute(c -> c.eval(RELEASE_SCRIPT, ScriptOutputType.INTEGER,
+                    new String[]{lockKey}, token));
+            return result != null && result == 1L;
         } catch (Exception e) {
             log.warn("Watchdog: release error for {}: {}", lockKey, e.toString());
             return false;
