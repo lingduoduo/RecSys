@@ -11,7 +11,7 @@
 ## Global Constraints
 
 - Edit only `Dockerfile` and `.dockerignore`. No application-code changes. No CI changes (repo has none).
-- Java 17 (Amazon Corretto). Build stage `maven:3.9-amazoncorretto-17` (glibc). Any jlink step runs in an alpine-corretto (musl) stage so the trimmed JRE matches the musl alpine final base — never jlink glibc→musl.
+- Java 17 (Amazon Corretto). Build stage `maven:3.9-amazoncorretto-17` (glibc). **Phase 3 runtime base is `debian:12-slim` (glibc)** — required because ONNX Runtime's native lib is glibc-built and cannot run on musl/alpine. jlink runs in the glibc build stage so the trimmed JRE matches the glibc final base (libc must match between jlink JVM and runtime base).
 - Preserve the existing deps-before-classes layer ordering (dependency layer must rebuild only on `pom.xml` change).
 - Preserve the non-root `recsys` user, `EXPOSE 8010`, `JAVA_OPTS` passthrough, and per-service `RECSYS_MAIN_CLASS` override mechanism (k8s sets it; the Dockerfile only supplies a runnable default).
 - One commit per phase. Each phase must leave a buildable, runnable image.
@@ -218,114 +218,151 @@ Co-Authored-By: Claude Opus 4.8 (1M context) <noreply@anthropic.com>"
 
 ---
 
-### Task 3: Phase 3 — jlink-trimmed musl JRE on a slim alpine base (ONNX-gated)
+### Task 3: Phase 3 — jlink-trimmed glibc JRE on `debian:12-slim` (slim win + ONNX fix)
+
+> **Revised after the Phase-2 ONNX discovery.** ONNX Runtime's `libonnxruntime.so` is
+> glibc-built (needs `ld-linux-aarch64.so.1` + `libstdc++.so.6`) and cannot run on
+> musl/alpine — `com.recsys.api.rest.ModelApplication` crashes on the current
+> `amazoncorretto:17-alpine` base with `UnsatisfiedLinkError`. This task moves the runtime
+> to a **glibc** base, which is the whole point: it makes the image smaller AND fixes the
+> pre-existing model-serving crash. jlink runs in the already-glibc `maven` build stage.
+> The Phase-2 AppCDS archive (musl) is regenerated here on the glibc JVM.
 
 **Files:**
-- Modify: `Dockerfile` (add a musl jlink builder stage; replace the runtime base + JRE)
+- Modify: `Dockerfile` (add jlink to the build stage; replace the runtime base with `debian:12-slim` + jlinked JRE; regenerate AppCDS on the glibc JVM)
 
 **Interfaces:**
-- Consumes: `/workspace/target/classes`, `/workspace/target/dependency`, `/workspace/app.jsa` from prior stages.
-- Produces: a runtime image based on `alpine:3.20` carrying a custom `/opt/jre` JRE; the entrypoint invokes `/opt/jre/bin/java`.
+- Consumes (from the `build` stage): `/workspace/app-classes.jar`, `/workspace/target/dependency`, and a new `/opt/jre` (the jlinked JRE).
+- Produces: a `debian:12-slim` runtime image with `/opt/jre` on PATH, `/app/app-classes.jar`, `/app/dependency/`, and a freshly generated `/app/app.jsa`. Entrypoint `java` resolves to `/opt/jre/bin/java`.
 
-- [ ] **Step 1: Add a musl jlink builder stage**
+- [ ] **Step 1: Add a jlink step to the (glibc) build stage**
 
-Insert after the existing `FROM maven:... AS build` stage (and before the runtime `FROM`):
+The `maven:3.9-amazoncorretto-17` build stage is already glibc and has `jdeps`/`jlink`. After the existing `RUN jar cf /workspace/app-classes.jar ...` line, add:
 
 ```dockerfile
-# Build a minimal musl JRE with jlink. amazoncorretto:17-alpine is a full musl JDK,
-# so the resulting JRE is musl-native and runs on an alpine final base.
-FROM amazoncorretto:17-alpine AS jre
-WORKDIR /workspace
-COPY --from=build /workspace/target/classes ./classes
-COPY --from=build /workspace/target/dependency ./dependency
-# Detect required modules from the actual classpath, then union with a safety set for
-# modules pulled in reflectively (crypto, naming/JNDI, JDBC, management, instrumentation)
-# that jdeps cannot see — ONNX Runtime and Spring both rely on these.
+# Build a minimal glibc JRE with jlink (this stage is glibc, matching the runtime base).
+# Detect modules from the real classpath, then union a safety set for reflectively-loaded
+# modules jdeps cannot see (crypto, JNDI, JDBC, management, instrumentation, locales) that
+# Spring and ONNX Runtime rely on.
 RUN set -eux; \
     MODS="$(jdeps --print-module-deps --ignore-missing-deps --multi-release 17 \
-              -cp 'dependency/*' --recursive classes 2>/dev/null || echo java.base)"; \
-    MODS="${MODS},jdk.unsupported,jdk.crypto.ec,jdk.crypto.cryptoki,java.naming,java.management,java.sql,jdk.zipfs,java.security.jgss,java.instrument,jdk.jfr"; \
+              -cp '/workspace/target/dependency/*' --recursive /workspace/app-classes.jar 2>/dev/null || echo java.base)"; \
+    MODS="${MODS},jdk.unsupported,jdk.crypto.ec,jdk.crypto.cryptoki,java.naming,java.management,java.sql,jdk.zipfs,java.security.jgss,java.instrument,jdk.jfr,jdk.localedata"; \
     jlink --add-modules "$MODS" --strip-debug --no-man-pages --no-header-files \
           --compress=2 --output /opt/jre; \
     /opt/jre/bin/java -version
 ```
 
-- [ ] **Step 2: Replace the runtime stage base and JRE**
+- [ ] **Step 2: Replace the runtime stage base, install ONNX's glibc deps, copy the JRE**
 
-Change the runtime stage from `FROM amazoncorretto:17-alpine` to a slim alpine that gets the jlinked JRE. Replace the runtime `FROM` line and add the JRE copy + PATH:
+Replace the runtime stage header (currently `FROM amazoncorretto:17-alpine` + `WORKDIR /app` + `RUN addgroup -S recsys && adduser -S -G recsys recsys` + the two `COPY --from=build ...` lines) with:
 
 ```dockerfile
-FROM alpine:3.20
+FROM debian:12-slim
 WORKDIR /app
 
-# musl runtime libs needed by the JRE and ONNX native .so files
-RUN apk add --no-cache libstdc++ libgcc \
-    && addgroup -S recsys && adduser -S -G recsys recsys
-COPY --from=jre /opt/jre /opt/jre
+# glibc C++/OpenMP runtime libs that ONNX Runtime's native .so needs (libc6/libgcc-s1 are
+# already in the base; libstdc++6 + libgomp1 are not). This is what fixes the ONNX crash.
+RUN apt-get update \
+    && apt-get install -y --no-install-recommends libstdc++6 libgomp1 \
+    && rm -rf /var/lib/apt/lists/* \
+    && groupadd -r recsys && useradd -r -g recsys recsys
+
+COPY --from=build /opt/jre /opt/jre
 ENV PATH="/opt/jre/bin:${PATH}"
+
+COPY --from=build /workspace/app-classes.jar /app/app-classes.jar
+COPY --from=build /workspace/target/dependency /app/dependency
 ```
 
-Keep the existing `COPY --from=build ... classes`, `COPY --from=build ... dependency`, `COPY --from=build /workspace/app.jsa /app/app.jsa`, the `ENV RECSYS_MAIN_CLASS=...`, `ENV JAVA_OPTS=""`, `USER recsys`, `EXPOSE 8010`, and the `ENTRYPOINT` lines unchanged (the entrypoint's `java` now resolves to `/opt/jre/bin/java` via PATH). Remove the old `RUN addgroup ... adduser ...` line from the runtime stage since user creation now lives in the `apk add` RUN above.
+- [ ] **Step 3: Regenerate the AppCDS archive on the glibc JVM**
 
-- [ ] **Step 3: Build the image (test)**
+The Phase-2 archive was built on the musl JVM and would be rejected here. Keep the same
+two-step static-CDS mechanism (it already targets the JAR classpath with `/app` paths so
+generation and runtime match) — it now runs on the jlinked glibc JVM. The existing CDS
+`RUN` block stays, but its `chown` only needs `/app/app.jsa` (the jar is copied as root
+and is world-readable). Ensure the runtime-stage CDS block reads:
 
-Run:
+```dockerfile
+# Regenerate the shared AppCDS archive with the glibc jlink JVM (the musl Phase-2 archive
+# would be rejected cross-build). -Xshare:auto at runtime falls back silently if incompatible.
+RUN (timeout -s TERM 40 java \
+         -XX:DumpLoadedClassList=/app/app.classlist \
+         -cp '/app/app-classes.jar:/app/dependency/*' com.recsys.api.gateway.MicroserviceGatewayServer \
+         || true) \
+    && test -s /app/app.classlist \
+    && java -Xshare:dump \
+         -XX:SharedClassListFile=/app/app.classlist \
+         -XX:SharedArchiveFile=/app/app.jsa \
+         -cp '/app/app-classes.jar:/app/dependency/*' \
+    && rm -f /app/app.classlist \
+    && test -s /app/app.jsa \
+    && chown recsys:recsys /app/app.jsa
+```
+
+The `ENV RECSYS_MAIN_CLASS=...`, `ENV JAVA_OPTS=""`, `USER recsys`, `EXPOSE 8010`, and the
+`ENTRYPOINT` line are unchanged — the entrypoint `java` now resolves to `/opt/jre/bin/java`
+via PATH.
+
+- [ ] **Step 4: Build the image (test)**
 
 ```bash
-docker build -t recsys:phase3 .
+docker buildx build -t recsys:phase3 .
 ```
 
-Expected: build succeeds, including `jlink` and the `/opt/jre/bin/java -version` self-check.
+Expected: build succeeds, including `jlink`, the `/opt/jre/bin/java -version` self-check, and the `test -s /app/app.jsa` guard.
 
-- [ ] **Step 4: GATE — start the ONNX model-serving service and exercise it**
+- [ ] **Step 5: GATE — confirm ONNX now LOADS in model-serving**
 
-This is the decisive verification; ONNX Runtime loads native `.so`s and uses service-loading that `jdeps` can miss.
+This is the decisive verification: on the old alpine base this crashed with `UnsatisfiedLinkError`. It must now succeed.
 
 ```bash
-docker run --rm -d --name recsys-p3-onnx -p 8080:8080 \
-  -e RECSYS_MAIN_CLASS=com.recsys.api.rest.ModelApplication recsys:phase3
-sleep 15
-docker logs recsys-p3-onnx 2>&1 | grep -iE "onnx|UnsatisfiedLink|NoClassDefFound|ClassNotFound|Exception in thread|started|8080" | head -30
-curl -s -o /dev/null -w "%{http_code}\n" http://localhost:8080/actuator/health || true
-docker rm -f recsys-p3-onnx
+docker rm -f p3onnx 2>/dev/null
+docker run -d --name p3onnx -e RECSYS_MAIN_CLASS=com.recsys.api.rest.ModelApplication recsys:phase3
+sleep 18
+docker inspect -f '{{.State.Status}} exit={{.State.ExitCode}}' p3onnx
+docker logs p3onnx 2>&1 | grep -iE "UnsatisfiedLink|onnx|Pre-warming|Started ModelApplication|Tomcat started|Error starting" | head -20
+docker rm -f p3onnx
 ```
 
-Expected: model-serving starts, NO `UnsatisfiedLinkError` / missing-module / ONNX native-load failure, and the health endpoint responds (or the service is clearly up in logs).
+Expected: status `running` (NOT exited), NO `UnsatisfiedLinkError`, the `Pre-warming model runtime` line is followed by a successful `Started ModelApplication` (no ONNX crash). If a `jdeps`-missed module surfaces as `NoClassDefFound`/missing-module, add it to the `MODS` safety set in Step 1 and rebuild.
 
-- [ ] **Step 5: Smoke-start the other three services**
+- [ ] **Step 6: Smoke-start the other three services**
 
 ```bash
 for MC in com.recsys.api.gateway.MicroserviceGatewayServer \
           com.recsys.api.serving.RecSysServer \
           com.recsys.api.online.OnlinePredictionServer; do
   echo "== $MC =="; \
-  docker run --rm -d --name p3smoke -e RECSYS_MAIN_CLASS=$MC recsys:phase3; \
+  docker rm -f p3smoke 2>/dev/null; \
+  docker run -d --name p3smoke -e RECSYS_MAIN_CLASS=$MC recsys:phase3; \
   sleep 8; \
-  docker logs p3smoke 2>&1 | grep -iE "UnsatisfiedLink|NoClassDefFound|ClassNotFound|Exception in thread" | head -10; \
+  docker logs p3smoke 2>&1 | grep -iE "UnsatisfiedLink|NoClassDefFound|ClassNotFound|Exception in thread|module" | head -10; \
   docker rm -f p3smoke; \
 done
 ```
 
-Expected: none of the three logs a missing-module / native-load / entrypoint-class error (downstream Redis-connection errors are acceptable — they are unrelated to the JRE trim).
+Expected: none logs a missing-module / native-load / entrypoint-class error (downstream Redis-connection errors are acceptable — unrelated to the JRE trim).
 
-- [ ] **Step 6: Confirm the size win**
+- [ ] **Step 7: Confirm the size win**
 
 ```bash
-docker images --format '{{.Repository}}:{{.Tag}} {{.Size}}' | grep -E 'recsys:(phase1|phase3)'
+docker images --format '{{.Repository}}:{{.Tag}} {{.Size}}' | grep -E 'recsys:phase3'
+docker history --no-trunc recsys:phase3 | head -5
 ```
 
-Expected: `recsys:phase3` is materially smaller than `recsys:phase1` (target ~70–100 MB vs ~170 MB).
+Expected: `recsys:phase3` is materially smaller than the ~170 MB full-corretto image (target ~90–120 MB with the jlinked JRE on debian-slim).
 
-- [ ] **Step 7: Commit (only if Steps 4–5 fully passed)**
+- [ ] **Step 8: Commit (only if Steps 5–6 fully passed)**
 
 ```bash
 git add Dockerfile
-git commit -m "perf(docker): ship a jlink-trimmed musl JRE on slim alpine base
+git commit -m "perf(docker): jlink glibc JRE on debian:12-slim; fixes ONNX, shrinks image
 
 Co-Authored-By: Claude Opus 4.8 (1M context) <noreply@anthropic.com>"
 ```
 
-**Fallback (mandatory if the ONNX gate fails):** if Step 4 shows any `UnsatisfiedLinkError`, missing module, or ONNX native-load failure that cannot be fixed by adding the named module to the `MODS` safety set in Step 1, revert this task (`git checkout Dockerfile`) and stop at the Phase-2 conservative image. Do NOT ship a half-broken runtime.
+**If the ONNX gate (Step 5) fails** with a *missing JDK module* (`NoClassDefFound` for a `java.*`/`jdk.*` class), that is fixable — add the module to the `MODS` set and rebuild. If it fails for a non-module reason you cannot resolve (e.g. ONNX needs a glibc lib beyond `libstdc++6`/`libgomp1`), report BLOCKED with the exact error rather than committing — do not ship a model-serving image that still crashes.
 
 ---
 
@@ -334,10 +371,10 @@ Co-Authored-By: Claude Opus 4.8 (1M context) <noreply@anthropic.com>"
 **Spec coverage:**
 - Phase 1 (`.m2` cache mount, drop `go-offline`, fix main class, tighten `.dockerignore`) → Task 1. ✓
 - Phase 2 (build-time AppCDS, keep alpine-corretto, single shared `.jsa`) → Task 2. ✓
-- Phase 3 (jlink slim JRE, ONNX gate + fallback, alpine base) → Task 3. ✓
+- Phase 3 (jlink glibc JRE on `debian:12-slim`, ONNX positive gate, AppCDS regen) → Task 3 (revised). ✓
 - Cross-cutting: deps-before-classes preserved (Task 1 Interfaces + Global Constraints); one commit per phase (each task's final Step); local-build verification (every task's build/smoke steps). ✓
-- Spec's "stay on alpine" → Task 3 keeps `alpine:3.20`; the plan adds the musl-consistency correction (jlink in alpine-corretto stage) discovered after the spec, which is a faithful refinement, not a scope change. ✓
+- **Revision note:** the spec's original "stay on alpine" was invalidated by the Phase-2 discovery that ONNX requires glibc; Task 3 now targets `debian:12-slim` (glibc), which both delivers the slim win and fixes the pre-existing model-serving ONNX crash. jlink runs in the glibc `maven` build stage; the AppCDS archive is regenerated on the glibc JVM. ✓
 
 **Placeholder scan:** no TBD/TODO/"handle edge cases"; all RUN/ENTRYPOINT/command blocks are concrete. ✓
 
-**Type/path consistency:** `/workspace/target/classes`, `/workspace/target/dependency`, `/workspace/app.jsa`, `/app/app.jsa`, `/opt/jre`, and `com.recsys.api.gateway.MicroserviceGatewayServer` are used identically across tasks. ✓
+**Type/path consistency:** `/workspace/app-classes.jar`, `/workspace/target/dependency`, `/opt/jre`, `/app/app-classes.jar`, `/app/dependency`, `/app/app.jsa`, and `com.recsys.api.gateway.MicroserviceGatewayServer` are used identically across tasks. (Note: Task 1's original `/app/classes` directory was eliminated in the Task-2 fix in favour of `/app/app-classes.jar`.) ✓

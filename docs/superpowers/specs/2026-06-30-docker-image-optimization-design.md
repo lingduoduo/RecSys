@@ -55,24 +55,42 @@ faster pod readiness → faster rollouts. No native-library risk.
 **Verify:** build, start each of the four main classes, confirm the CDS archive loads
 (no `-Xshare` warnings) and startup logs are clean.
 
-## Phase 3 — jlink slim JRE (biggest pull-size win, verified with fallback)
+## Phase 3 — jlink slim JRE on a glibc base (slim win **and** ONNX fix)
 
-Separate runtime stage: `jdeps --print-module-deps` against the full classpath →
-`jlink` a minimal JRE → base the runtime on a **slim alpine** image (decision below)
-with that JRE copied in. Target ~70–100 MB vs ~170 MB.
+> **Revised after a Phase-2 discovery (2026-06-30).** The original plan kept an
+> alpine (musl) base. During Phase-2 verification we found that ONNX Runtime's
+> `libonnxruntime.so` is **glibc-built** — it requires `ld-linux-aarch64.so.1` and
+> `libstdc++.so.6`, neither of which exists on musl/alpine. On `amazoncorretto:17-alpine`,
+> `com.recsys.api.rest.ModelApplication` starts Tomcat and then crashes (exit 1) the moment
+> `ModelRuntimeProvider` warms the ONNX runtime (`UnsatisfiedLinkError`). This is a
+> **pre-existing bug**: the original Dockerfile used the same alpine base, so the
+> k8s `model-serving` deployment has been crash-looping on ONNX init independent of this work.
+> Adding `libstdc++` only surfaces the next glibc dependency (`ld-linux`), so there is no
+> alpine-only fix. **Decision (user-approved): move the runtime base to glibc**, which both
+> delivers the slim-image goal and fixes the ONNX crash in one move.
 
-**ONNX risk is explicit and gates this phase.** ONNX Runtime loads native `.so` libraries
-and uses reflection / service-loading that `jdeps` can miss. Procedure:
+Separate runtime: `jdeps --print-module-deps` against the full classpath → `jlink` a
+minimal JRE **from the `maven:3.9-amazoncorretto-17` build stage (already glibc)** → base
+the runtime on **`debian:12-slim`** (glibc, ships `libstdc++6`/`libgcc-s`, retains a shell
+for debugging) with that JRE copied in. Target ~90–120 MB vs the broken ~170 MB alpine image.
 
-1. Build the jlink image.
-2. **Actually start `com.recsys.api.rest.ModelApplication`** (the ONNX service) and
-   exercise a prediction; smoke-start the other three services.
-3. If native libs or module resolution break → **fall back to the Phase-2 conservative
-   image and stop.** No half-broken image ships.
+Because the runtime JVM changes from the musl alpine JVM to a glibc jlink JRE, the Phase-2
+AppCDS archive (generated on musl) would be rejected cross-build — so **the AppCDS archive
+is regenerated in Phase 3 on the glibc JVM** (same two-step static-CDS mechanism Phase 2
+settled on, run against `app-classes.jar` + `dependency/*`).
 
-**Base image decision:** stay on **alpine** (slim, retains a shell for debugging) rather
-than distroless-static. Rationale: consistent with the phased/fallback posture and easier
-to debug a broken ONNX native-lib path. Flip to distroless later if image size demands it.
+**ONNX is now a positive gate, not a risk-of-regression.** Procedure:
+
+1. Build the jlink/debian-slim image.
+2. **Actually start `com.recsys.api.rest.ModelApplication`** and confirm ONNX now loads
+   (no `UnsatisfiedLinkError`) and a prediction works; smoke-start the other three services.
+3. If `jdeps` missed a reflectively-loaded module, add it to the explicit module set and
+   rebuild. The base change is the whole point of this phase — there is no "fall back to
+   the alpine image," because that image is the broken one.
+
+**Base image decision:** **`debian:12-slim`** (glibc, has a shell). Rejected alternatives:
+alpine+`gcompat` (unreliable for ONNX), `distroless/cc-debian12` (smaller but no shell —
+harder to debug the native-lib path during this very change).
 
 ## Cross-cutting
 
