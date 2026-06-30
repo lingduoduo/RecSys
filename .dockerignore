@@ -9,3 +9,12 @@ src/test/
 streaming/
 k8s/
 *.md
+recsys-architecture.*
+docs/
+.github/
+.understand-anything/
+.pytest_cache/
+.vscode/
+.codex/
+.superpowers/
+config/
