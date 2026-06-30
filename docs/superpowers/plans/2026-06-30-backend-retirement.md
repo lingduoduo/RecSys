@@ -352,7 +352,7 @@ run() {
   fi
 }
 
-kc() { run kubectl "${KCTX[@]}" -n "$NAMESPACE" "$@"; }
+kc() { run kubectl ${KCTX[@]+"${KCTX[@]}"} -n "$NAMESPACE" "$@"; }
 
 log() { echo "[retire] $*"; }
 
@@ -367,11 +367,11 @@ verify_drained() {
   local waited=0
   while true; do
     local ready
-    ready="$(kubectl "${KCTX[@]}" -n "$NAMESPACE" get deploy "$deploy" \
+    ready="$(kubectl ${KCTX[@]+"${KCTX[@]}"} -n "$NAMESPACE" get deploy "$deploy" \
               -o jsonpath='{.status.readyReplicas}' 2>/dev/null || echo 0)"
     ready="${ready:-0}"
     local pods
-    pods="$(kubectl "${KCTX[@]}" -n "$NAMESPACE" get pods \
+    pods="$(kubectl ${KCTX[@]+"${KCTX[@]}"} -n "$NAMESPACE" get pods \
              -l app="$deploy" --no-headers 2>/dev/null | wc -l | tr -d ' ')"
     if [[ "$ready" == "0" && "$pods" == "0" ]]; then
       log "$deploy fully drained"
@@ -389,7 +389,7 @@ verify_drained() {
 
 phase0_preflight() {
   log "PHASE 0: pre-flight"
-  run kubectl "${KCTX[@]}" config current-context
+  run kubectl ${KCTX[@]+"${KCTX[@]}"} config current-context
   kc get deploy -o wide || true
   log "All runtime state is DISPOSABLE. This is IRREVERSIBLE."
   if [[ "$ASSUME_YES" == false && "$DRY_RUN" == false ]]; then
@@ -432,7 +432,7 @@ phase3_infra() {
 phase4_manifests() {
   log "PHASE 4: delete manifests"
   if [[ -d k8s/base ]]; then
-    run kubectl "${KCTX[@]}" delete -k k8s/base --ignore-not-found
+    run kubectl ${KCTX[@]+"${KCTX[@]}"} delete -k k8s/base --ignore-not-found
   else
     log "k8s/base not found in CWD; delete manifests manually per runbook."
   fi
