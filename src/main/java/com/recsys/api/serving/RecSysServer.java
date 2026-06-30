@@ -8,6 +8,7 @@ import com.linecorp.armeria.server.cors.CorsService;
 import com.recsys.infrastructure.dataloading.DataLoader;
 import com.recsys.infrastructure.dataloading.DataManager;
 import com.recsys.application.model.PairPredictionService;
+import com.recsys.loadshed.GracefulExecutors;
 import com.recsys.infrastructure.cache.LocalEmbeddingCache;
 import com.recsys.infrastructure.redis.GlobalPopularityStore;
 import com.recsys.infrastructure.redis.LettuceClientFactory;
@@ -149,7 +150,7 @@ public class RecSysServer {
             Server server = sb.build();
             Runtime.getRuntime().addShutdownHook(new Thread(() -> {
                 server.stop().join();
-                com.recsys.loadshed.GracefulExecutors.shutdownGracefully(executor);
+                GracefulExecutors.shutdownGracefully(executor);
                 jedisPool.close();
             }, "recsys-shutdown"));
             log.info("Starting RecSys serving API on port {}", port);
