@@ -1,6 +1,6 @@
 package com.recsys.application.auth;
 
-import com.recsys.application.model.LazyRedisExecutor;
+import com.recsys.infrastructure.redis.LazyRedisExecutor;
 import com.recsys.infrastructure.redis.LettuceClientFactory;
 import com.recsys.infrastructure.redis.RedisExecutor;
 import com.recsys.config.SubmitTokenProperties;
@@ -27,7 +27,7 @@ public class SubmitTokenService {
             """;
 
     private final SubmitTokenProperties properties;
-    private final LazyRedisExecutor redis;
+    private final RedisExecutor redis;
 
     @Autowired
     public SubmitTokenService(SubmitTokenProperties properties) {
