@@ -5,17 +5,14 @@ COPY pom.xml .
 COPY src ./src
 RUN --mount=type=cache,target=/root/.m2 \
     mvn -q -DskipTests package dependency:copy-dependencies -DincludeScope=runtime
+RUN jar cf /workspace/app-classes.jar -C /workspace/target/classes .
 
 FROM amazoncorretto:17-alpine
 WORKDIR /app
 
 RUN addgroup -S recsys && adduser -S -G recsys recsys
-COPY --from=build /workspace/target/classes /app/classes
+COPY --from=build /workspace/app-classes.jar /app/app-classes.jar
 COPY --from=build /workspace/target/dependency /app/dependency
-
-# Package app classes into a JAR so the classpath is JAR-only at both archive
-# generation time and runtime (CDS requires the same classpath entries for both).
-RUN jar cf /app/app-classes.jar -C /app/classes .
 
 # Generate one shared AppCDS archive over the common classpath using the runtime JVM.
 # All four services share app-classes+dependency; only the main class differs.
