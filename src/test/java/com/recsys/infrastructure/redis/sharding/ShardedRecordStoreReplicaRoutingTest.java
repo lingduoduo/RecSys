@@ -6,7 +6,6 @@ import io.lettuce.core.RedisClient;
 import io.lettuce.core.RedisURI;
 import io.lettuce.core.api.StatefulRedisConnection;
 import io.lettuce.core.api.sync.RedisCommands;
-import io.lettuce.core.codec.StringCodec;
 import org.apache.commons.pool2.impl.GenericObjectPoolConfig;
 import org.junit.jupiter.api.AfterEach;
 import org.junit.jupiter.api.BeforeEach;
@@ -48,10 +47,9 @@ class ShardedRecordStoreReplicaRoutingTest {
     private static RedisExecutor newExecutor(GenericContainer<?> container) {
         RedisClient client = RedisClient.create(
                 RedisURI.create(container.getHost(), container.getMappedPort(6379)));
-        StatefulRedisConnection<String, String> conn = client.connect(StringCodec.UTF8);
         GenericObjectPoolConfig<StatefulRedisConnection<String, String>> cfg =
                 new GenericObjectPoolConfig<>();
-        return new LettuceRedisExecutor(client, conn, cfg, true);
+        return new LettuceRedisExecutor(client, cfg, true);
     }
 
     private static RedisCommands<String, String> cmd(RedisExecutor exec) {

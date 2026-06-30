@@ -6,7 +6,6 @@ import io.lettuce.core.RedisClient;
 import io.lettuce.core.RedisURI;
 import io.lettuce.core.api.StatefulRedisConnection;
 import io.lettuce.core.api.sync.RedisCommands;
-import io.lettuce.core.codec.StringCodec;
 import org.apache.commons.pool2.impl.GenericObjectPoolConfig;
 import org.junit.jupiter.api.AfterAll;
 import org.junit.jupiter.api.AfterEach;
@@ -22,20 +21,17 @@ public abstract class RedisShardingTestBase {
     static final GenericContainer<?> REDIS =
             new GenericContainer<>("redis:7-alpine").withExposedPorts(6379);
 
-    private static RedisClient client;
-    private static StatefulRedisConnection<String, String> connection;
-
     /** Single-endpoint executor backed by the test container; used for both reads and writes. */
     protected static RedisExecutor exec;
 
     @BeforeAll
     static void startRedis() {
-        client = RedisClient.create(
+        RedisClient client = RedisClient.create(
                 RedisURI.create(REDIS.getHost(), REDIS.getMappedPort(6379)));
-        connection = client.connect(StringCodec.UTF8);
         GenericObjectPoolConfig<StatefulRedisConnection<String, String>> cfg =
                 new GenericObjectPoolConfig<>();
-        exec = new LettuceRedisExecutor(client, connection, cfg, true);
+        // exec owns the client and shuts it down (and the lazily-opened connection) on close.
+        exec = new LettuceRedisExecutor(client, cfg, true);
     }
 
     @AfterAll

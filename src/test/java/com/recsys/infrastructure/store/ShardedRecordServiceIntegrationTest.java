@@ -12,8 +12,6 @@ import com.recsys.infrastructure.redis.sharding.SequenceGenerator;
 import com.recsys.infrastructure.redis.sharding.ShardedRecordStore;
 import io.lettuce.core.RedisClient;
 import io.lettuce.core.RedisURI;
-import io.lettuce.core.api.StatefulRedisConnection;
-import io.lettuce.core.codec.StringCodec;
 import org.apache.commons.pool2.impl.GenericObjectPoolConfig;
 import org.junit.jupiter.api.AfterAll;
 import org.junit.jupiter.api.AfterEach;
@@ -53,9 +51,7 @@ class ShardedRecordServiceIntegrationTest {
         protected void configure(ServerBuilder sb) {
             RedisClient client = RedisClient.create(
                     RedisURI.create(REDIS.getHost(), REDIS.getMappedPort(6379)));
-            StatefulRedisConnection<String, String> conn = client.connect(StringCodec.UTF8);
-            exec = new LettuceRedisExecutor(client, conn,
-                    new GenericObjectPoolConfig<>(), true);
+            exec = new LettuceRedisExecutor(client, new GenericObjectPoolConfig<>(), true);
             ShardedRecordStore store = new ShardedRecordStore(
                     exec,
                     new ConsistentHashRing(2, 150),

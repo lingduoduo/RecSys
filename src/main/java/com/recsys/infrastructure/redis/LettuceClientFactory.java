@@ -1,10 +1,11 @@
 package com.recsys.infrastructure.redis;
 
 import com.recsys.config.RedisProperties;
+import io.lettuce.core.ClientOptions;
 import io.lettuce.core.RedisClient;
 import io.lettuce.core.RedisURI;
+import io.lettuce.core.TimeoutOptions;
 import io.lettuce.core.api.StatefulRedisConnection;
-import io.lettuce.core.codec.StringCodec;
 import org.apache.commons.pool2.impl.GenericObjectPoolConfig;
 
 import java.time.Duration;
@@ -101,8 +102,24 @@ public final class LettuceClientFactory {
     static RedisExecutor executor(RedisURI uri,
                                   GenericObjectPoolConfig<StatefulRedisConnection<String, String>> poolCfg) {
         RedisClient client = RedisClient.create(uri);
-        StatefulRedisConnection<String, String> shared = client.connect(StringCodec.UTF8);
-        return new LettuceRedisExecutor(client, shared, poolCfg, true);
+        client.setOptions(failFastOptions());
+        // Connection is opened lazily by the executor (Jedis-pool parity).
+        return new LettuceRedisExecutor(client, poolCfg, true);
+    }
+
+    /**
+     * Bounds command latency the way the previous Jedis socket timeout did. The
+     * {@link RedisURI} timeout governs the per-command deadline; {@code TimeoutOptions.enabled()}
+     * makes that deadline apply even to commands queued while disconnected, and
+     * {@code REJECT_COMMANDS} fails commands immediately when the connection is down
+     * instead of buffering them — so a down Redis fails fast (e.g. the recall path's
+     * 150 ms cap) instead of stalling callers past their budget.
+     */
+    static ClientOptions failFastOptions() {
+        return ClientOptions.builder()
+                .timeoutOptions(TimeoutOptions.enabled())
+                .disconnectedBehavior(ClientOptions.DisconnectedBehavior.REJECT_COMMANDS)
+                .build();
     }
 
     static RedisURI uriFromEnv(Map<String, String> env, int maxTimeoutMs) {

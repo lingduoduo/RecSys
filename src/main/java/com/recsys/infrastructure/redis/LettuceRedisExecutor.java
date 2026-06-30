@@ -16,28 +16,50 @@ import java.util.function.Function;
  * normal sync commands and a commons-pool2 pool of dedicated connections for
  * pipelined batches (auto-flush is toggled per-connection, so pipelines must not
  * share the primary connection).
+ *
+ * <p>The shared connection and pooled connections are established <em>lazily</em>
+ * on first use, mirroring the previous {@code JedisPool} behaviour: constructing
+ * an executor against a down Redis never fails, so startup paths that build
+ * stores up-front (e.g. the model-serving recall infra) keep working and only
+ * fail — fast — at request time, where callers fall back.
  */
 public final class LettuceRedisExecutor implements RedisExecutor {
 
     private final RedisClient client;
-    private final StatefulRedisConnection<String, String> shared;
     private final GenericObjectPool<StatefulRedisConnection<String, String>> pool;
     private final boolean ownsClient;
 
+    private volatile StatefulRedisConnection<String, String> shared;
+    private final Object sharedLock = new Object();
+
     public LettuceRedisExecutor(RedisClient client,
-                                StatefulRedisConnection<String, String> shared,
                                 GenericObjectPoolConfig<StatefulRedisConnection<String, String>> poolCfg,
                                 boolean ownsClient) {
         this.client = client;
-        this.shared = shared;
         this.ownsClient = ownsClient;
+        // Pool creation does not open connections — they are created lazily on borrow.
         this.pool = ConnectionPoolSupport.createGenericObjectPool(
                 () -> client.connect(StringCodec.UTF8), poolCfg);
     }
 
+    /** Lazily opens the shared connection on first use (double-checked locking). */
+    private StatefulRedisConnection<String, String> shared() {
+        StatefulRedisConnection<String, String> current = shared;
+        if (current == null) {
+            synchronized (sharedLock) {
+                current = shared;
+                if (current == null) {
+                    current = client.connect(StringCodec.UTF8);
+                    shared = current;
+                }
+            }
+        }
+        return current;
+    }
+
     @Override
     public <T> T execute(Function<RedisCommands<String, String>, T> fn) {
-        return fn.apply(shared.sync());
+        return fn.apply(shared().sync());
     }
 
     @Override
@@ -68,7 +90,8 @@ public final class LettuceRedisExecutor implements RedisExecutor {
     @Override
     public void close() {
         pool.close();
-        shared.close();
+        StatefulRedisConnection<String, String> current = shared;
+        if (current != null) current.close();
         if (ownsClient) client.shutdown();
     }
 }
