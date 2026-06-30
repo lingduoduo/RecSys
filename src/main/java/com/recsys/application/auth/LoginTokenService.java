@@ -1,6 +1,6 @@
 package com.recsys.application.auth;
 
-import com.recsys.application.model.LazyRedisExecutor;
+import com.recsys.infrastructure.redis.LazyRedisExecutor;
 import com.recsys.infrastructure.redis.LettuceClientFactory;
 import com.recsys.infrastructure.redis.RedisExecutor;
 import com.recsys.exception.UnauthorizedException;
@@ -22,7 +22,7 @@ public class LoginTokenService {
     static final String KEY_PREFIX = "login:";
     public static final int TTL_SECONDS = 86_400; // 24 hours
 
-    private final LazyRedisExecutor redis;
+    private final RedisExecutor redis;
 
     public LoginTokenService() {
         this(() -> LettuceClientFactory.fromEnv());
