@@ -14,11 +14,15 @@ WebACL — provision it out-of-band and reference it by ARN.
 The WebACL scope MUST be `REGIONAL` (ALB), not `CLOUDFRONT`, and MUST be in the
 same region as the cluster/ALB.
 
-Recommended rules (each with action **Block**), highest priority first:
+Recommended rules, highest priority first. Managed rule groups keep their own
+built-in rule actions, so wire each with `OverrideAction: None` (NOT a top-level
+`Action` — using `Action` on a `ManagedRuleGroupStatement` fails validation); the
+rate-based rule takes `Action: Block`:
 1. `AWSManagedRulesAmazonIpReputationList` (AWS managed) — known malicious IPs.
 2. `AWSManagedRulesKnownBadInputsRuleSet` (AWS managed) — exploit signatures.
 3. `AWSManagedRulesCommonRuleSet` (AWS managed) — OWASP-style common protections.
-4. A **rate-based rule** — limit ~2000 requests / 5-minute window per source IP.
+4. A **rate-based rule** (`Action: Block`) — limit ~2000 requests / 5-minute
+   window per source IP.
 
 Default WebACL action: **Allow** (rules block specific traffic).
 
