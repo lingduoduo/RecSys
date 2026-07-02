@@ -30,4 +30,25 @@ class LlmProxyServiceTest {
         // A normal header is preserved.
         assertEquals("keep-me", upstream.get("x-custom"));
     }
+
+    @Test
+    void buildUpstreamHeaders_stripsGatewayConsumedCredentials() {
+        RequestHeaders incoming = RequestHeaders.builder(HttpMethod.POST, "/api/llm/explain")
+                .add("x-api-key", "secret-key")
+                .add("authorization", "Bearer secret.jwt.token")
+                .add("x-custom", "keep-me")
+                .build();
+        ServiceRequestContext ctx = ServiceRequestContext.of(HttpRequest.of(incoming));
+        GatewayPrincipal principal = GatewayPrincipal.ofApiKey("secret-key");
+
+        RequestHeaders upstream = LlmProxyService.buildUpstreamHeaders(
+                incoming, "/llm/explain", ctx, principal);
+
+        // The gateway's own credentials are consumed here, not forwarded to the backend.
+        assertNull(upstream.get("x-api-key"));
+        assertNull(upstream.get("authorization"));
+        // Identity + normal headers still pass through.
+        assertEquals("service", upstream.get("x-authenticated-client-id"));
+        assertEquals("keep-me", upstream.get("x-custom"));
+    }
 }
