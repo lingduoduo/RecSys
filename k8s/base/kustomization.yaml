@@ -12,3 +12,6 @@ resources:
   - hpa.yaml
   - network-policy.yaml
   - servicemonitor.yaml
+images:
+  - name: recsys-backend-service
+    newTag: local

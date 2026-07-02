@@ -39,7 +39,7 @@ COPY --from=build /workspace/target/dependency /app/dependency
 
 # Regenerate the shared AppCDS archive with the glibc jlink JVM (the musl Phase-2 archive
 # would be rejected cross-build). -Xshare:auto at runtime falls back silently if incompatible.
-RUN (timeout -s TERM 40 java \
+RUN (timeout -s TERM 15 java \
          -XX:DumpLoadedClassList=/app/app.classlist \
          -cp '/app/app-classes.jar:/app/dependency/*' com.recsys.api.gateway.MicroserviceGatewayServer \
          || true) \
