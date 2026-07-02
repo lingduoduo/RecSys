@@ -21,6 +21,7 @@ import static org.junit.jupiter.api.Assertions.assertEquals;
 import static org.junit.jupiter.api.Assertions.assertNull;
 import static org.junit.jupiter.api.Assertions.assertNotNull;
 import static org.junit.jupiter.api.Assertions.assertFalse;
+import static org.junit.jupiter.api.Assertions.assertThrows;
 
 class GatewayAuthenticatorTest {
     private static final Base64.Encoder URL_ENCODER = Base64.getUrlEncoder().withoutPadding();
@@ -83,6 +84,13 @@ class GatewayAuthenticatorTest {
         GatewayAuthenticator auth = GatewayAuthenticator.fromEnvironment(Map.<String, String>of()::get);
         assertFalse(auth.isEnabled());
         assertNull(auth.check(RequestHeaders.of(HttpMethod.GET, "/model/predict"), "/model/predict"));
+    }
+
+    @Test
+    void fromEnvironment_requiresAudienceWhenIssuerSet() {
+        java.util.Map<String, String> env = java.util.Map.of(
+                "GATEWAY_COGNITO_ISSUER", "https://cognito-idp.us-east-1.amazonaws.com/us-east-1_demo");
+        assertThrows(IllegalStateException.class, () -> GatewayAuthenticator.fromEnvironment(env::get));
     }
 
     private GatewayAuthenticator authenticator(KeyPair keyPair) {

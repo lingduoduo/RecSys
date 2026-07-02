@@ -16,6 +16,10 @@ record CognitoConfig(String issuer, String audience, Set<String> tokenUses) {
     static CognitoConfig fromEnvironment(EnvVars.EnvReader env) {
         String issuer = stripTrailingSlash(read(env, "GATEWAY_COGNITO_ISSUER", ""));
         String audience = read(env, "GATEWAY_COGNITO_AUDIENCE", "");
+        if (!issuer.isBlank() && audience.isBlank()) {
+            throw new IllegalStateException(
+                    "GATEWAY_COGNITO_AUDIENCE is required when GATEWAY_COGNITO_ISSUER is set");
+        }
         String tokenUseCsv = read(env, "GATEWAY_COGNITO_TOKEN_USE", "access");
         Set<String> tokenUses = Stream.of(tokenUseCsv.split(","))
                 .map(value -> value.trim().toLowerCase(Locale.ROOT))

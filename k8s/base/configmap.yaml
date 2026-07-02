@@ -19,7 +19,8 @@ data:
   RANKING_SERVICE_URL: "http://recsys-model-serving:8080"
   LLM_SERVICE_URL: "http://ollama:11434"
   LLM_EXPLANATION_SERVICE_URL: "http://ollama:11434"
-  # Cognito JWT auth (blank = disabled; gateway then uses API keys only).
+  # Cognito JWT auth (blank issuer = disabled; gateway then uses API keys only).
+  # GATEWAY_COGNITO_AUDIENCE is REQUIRED when GATEWAY_COGNITO_ISSUER is set (startup fails otherwise).
   GATEWAY_COGNITO_ISSUER: ""
   GATEWAY_COGNITO_AUDIENCE: ""
   GATEWAY_COGNITO_TOKEN_USE: "access"

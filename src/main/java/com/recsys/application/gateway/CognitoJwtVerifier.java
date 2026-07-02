@@ -23,6 +23,7 @@ import java.util.HashMap;
 import java.util.Iterator;
 import java.util.Map;
 import java.util.Objects;
+import java.util.concurrent.atomic.AtomicBoolean;
 
 /**
  * Verifies AWS Cognito RS256 JWTs against the pool's JWKS using only the JDK and Jackson.
@@ -32,6 +33,7 @@ final class CognitoJwtVerifier {
     private static final ObjectMapper MAPPER = new ObjectMapper();
     private static final Base64.Decoder URL_DECODER = Base64.getUrlDecoder();
     private static final Duration JWKS_CACHE_TTL = Duration.ofMinutes(5);
+    private static final Duration UNKNOWN_KID_REFETCH_INTERVAL = Duration.ofSeconds(30);
     private static final Duration JWKS_REQUEST_TIMEOUT = Duration.ofSeconds(2);
     private static final long ALLOWED_CLOCK_SKEW_SECONDS = 60L;
 
@@ -188,6 +190,8 @@ final class CognitoJwtVerifier {
         private final HttpClient httpClient;
         private volatile Map<String, PublicKey> cachedKeys = Map.of();
         private volatile long expiresAtMillis = 0L;
+        private volatile long nextUnknownKidRefetchAtMillis = 0L;
+        private final AtomicBoolean refetchInProgress = new AtomicBoolean(false);
 
         private HttpJwkProvider(String issuer, HttpClient httpClient) {
             this.jwksUri = issuer + "/.well-known/jwks.json";
@@ -197,17 +201,25 @@ final class CognitoJwtVerifier {
         @Override
         public PublicKey key(String kid) {
             Map<String, PublicKey> keys = cachedKeys;
+            PublicKey key = keys.get(kid);
             long now = System.currentTimeMillis();
-            if (!keys.containsKey(kid) || now >= expiresAtMillis) {
-                synchronized (this) {
-                    if (!cachedKeys.containsKey(kid) || now >= expiresAtMillis) {
-                        cachedKeys = fetchKeys();
-                        expiresAtMillis = now + JWKS_CACHE_TTL.toMillis();
-                    }
-                    keys = cachedKeys;
+            boolean expired = now >= expiresAtMillis;
+            // Refetch when the cache has expired, or the kid is unknown and we have not
+            // refetched for an unknown kid recently. The rate limit bounds refetches driven
+            // by a flood of tokens carrying random kids; a single-flight guard (CAS) runs the
+            // network fetch WITHOUT holding a lock across the I/O.
+            boolean needsRefetch = expired || (key == null && now >= nextUnknownKidRefetchAtMillis);
+            if (needsRefetch && refetchInProgress.compareAndSet(false, true)) {
+                try {
+                    nextUnknownKidRefetchAtMillis = now + UNKNOWN_KID_REFETCH_INTERVAL.toMillis();
+                    Map<String, PublicKey> fresh = fetchKeys();
+                    cachedKeys = fresh;
+                    expiresAtMillis = now + JWKS_CACHE_TTL.toMillis();
+                    key = fresh.get(kid);
+                } finally {
+                    refetchInProgress.set(false);
                 }
             }
-            PublicKey key = keys.get(kid);
             if (key == null) {
                 throw new JwtAuthException(401, "unknown JWT kid");
             }
