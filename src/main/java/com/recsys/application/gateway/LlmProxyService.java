@@ -285,7 +285,7 @@ public final class LlmProxyService implements HttpService {
 
     // ── Helpers ─────────────────────────────────────────────────────────────────────────────────
 
-    private static RequestHeaders buildUpstreamHeaders(RequestHeaders incoming, String targetPath,
+    static RequestHeaders buildUpstreamHeaders(RequestHeaders incoming, String targetPath,
                                                        ServiceRequestContext ctx, GatewayPrincipal principal) {
         RequestHeadersBuilder b = RequestHeaders.builder(incoming.method(), targetPath);
         incoming.forEach((name, value) -> {
