@@ -24,6 +24,10 @@ import java.util.Iterator;
 import java.util.Map;
 import java.util.Objects;
 import java.util.concurrent.atomic.AtomicBoolean;
+import java.util.function.LongSupplier;
+
+import org.slf4j.Logger;
+import org.slf4j.LoggerFactory;
 
 /**
  * Verifies AWS Cognito RS256 JWTs against the pool's JWKS using only the JDK and Jackson.
@@ -35,7 +39,9 @@ final class CognitoJwtVerifier {
     private static final Duration JWKS_CACHE_TTL = Duration.ofMinutes(5);
     private static final Duration UNKNOWN_KID_REFETCH_INTERVAL = Duration.ofSeconds(30);
     private static final Duration JWKS_REQUEST_TIMEOUT = Duration.ofSeconds(2);
+    private static final Duration STALE_RETRY_BACKOFF = Duration.ofSeconds(30);
     private static final long ALLOWED_CLOCK_SKEW_SECONDS = 60L;
+    private static final Logger log = LoggerFactory.getLogger(CognitoJwtVerifier.class);
 
     private final CognitoConfig config;
     private final JwkProvider jwkProvider;
@@ -185,37 +191,63 @@ final class CognitoJwtVerifier {
         }
     }
 
-    private static final class HttpJwkProvider implements JwkProvider {
-        private final String jwksUri;
-        private final HttpClient httpClient;
+    @FunctionalInterface
+    interface KeyFetcher {
+        Map<String, PublicKey> fetch();
+    }
+
+    static final class HttpJwkProvider implements JwkProvider {
+        private final KeyFetcher fetcher;
+        private final LongSupplier nowMillis;
         private volatile Map<String, PublicKey> cachedKeys = Map.of();
         private volatile long expiresAtMillis = 0L;
         private volatile long nextUnknownKidRefetchAtMillis = 0L;
         private final AtomicBoolean refetchInProgress = new AtomicBoolean(false);
 
-        private HttpJwkProvider(String issuer, HttpClient httpClient) {
-            this.jwksUri = issuer + "/.well-known/jwks.json";
-            this.httpClient = Objects.requireNonNull(httpClient, "httpClient is required");
+        HttpJwkProvider(KeyFetcher fetcher, LongSupplier nowMillis) {
+            this.fetcher = Objects.requireNonNull(fetcher, "fetcher is required");
+            this.nowMillis = Objects.requireNonNull(nowMillis, "nowMillis is required");
+        }
+
+        HttpJwkProvider(String issuer, HttpClient httpClient) {
+            this(httpFetcher(issuer, httpClient), System::currentTimeMillis);
+        }
+
+        private static KeyFetcher httpFetcher(String issuer, HttpClient httpClient) {
+            Objects.requireNonNull(httpClient, "httpClient is required");
+            String jwksUri = issuer + "/.well-known/jwks.json";
+            return () -> httpFetch(jwksUri, httpClient);
         }
 
         @Override
         public PublicKey key(String kid) {
             Map<String, PublicKey> keys = cachedKeys;
             PublicKey key = keys.get(kid);
-            long now = System.currentTimeMillis();
+            long now = nowMillis.getAsLong();
             boolean expired = now >= expiresAtMillis;
             // Refetch when the cache has expired, or the kid is unknown and we have not
             // refetched for an unknown kid recently. The rate limit bounds refetches driven
             // by a flood of tokens carrying random kids; a single-flight guard (CAS) runs the
-            // network fetch WITHOUT holding a lock across the I/O.
+            // fetch WITHOUT holding a lock across the I/O.
             boolean needsRefetch = expired || (key == null && now >= nextUnknownKidRefetchAtMillis);
             if (needsRefetch && refetchInProgress.compareAndSet(false, true)) {
                 try {
                     nextUnknownKidRefetchAtMillis = now + UNKNOWN_KID_REFETCH_INTERVAL.toMillis();
-                    Map<String, PublicKey> fresh = fetchKeys();
+                    Map<String, PublicKey> fresh = fetcher.fetch();
                     cachedKeys = fresh;
                     expiresAtMillis = now + JWKS_CACHE_TTL.toMillis();
                     key = fresh.get(kid);
+                } catch (JwtAuthException fetchError) {
+                    // Serve-stale: a transient JWKS fetch failure must not reject tokens whose
+                    // signing key we already hold. Keep the last-good cache and serve the stale
+                    // key; retry at most once per STALE_RETRY_BACKOFF so a down endpoint is not
+                    // hammered. Token exp/claims are validated independently in verify().
+                    if (key == null) {
+                        throw fetchError;
+                    }
+                    expiresAtMillis = now + STALE_RETRY_BACKOFF.toMillis();
+                    log.warn("Cognito JWKS fetch failed; serving cached signing keys (stale), "
+                            + "retrying in {}s: {}", STALE_RETRY_BACKOFF.toSeconds(), fetchError.getMessage());
                 } finally {
                     refetchInProgress.set(false);
                 }
@@ -226,7 +258,7 @@ final class CognitoJwtVerifier {
             return key;
         }
 
-        private Map<String, PublicKey> fetchKeys() {
+        private static Map<String, PublicKey> httpFetch(String jwksUri, HttpClient httpClient) {
             try {
                 HttpRequest request = HttpRequest.newBuilder(URI.create(jwksUri))
                         .timeout(JWKS_REQUEST_TIMEOUT)
@@ -245,7 +277,7 @@ final class CognitoJwtVerifier {
             }
         }
 
-        private Map<String, PublicKey> parseJwks(String body) throws IOException {
+        private static Map<String, PublicKey> parseJwks(String body) throws IOException {
             JsonNode keysNode = MAPPER.readTree(body).get("keys");
             if (keysNode == null || !keysNode.isArray()) {
                 throw new JwtAuthException(503, "Cognito JWKS response has no keys");
@@ -262,7 +294,7 @@ final class CognitoJwtVerifier {
             return parsed;
         }
 
-        private RSAPublicKey rsaKey(String modulus, String exponent) {
+        private static RSAPublicKey rsaKey(String modulus, String exponent) {
             try {
                 BigInteger n = new BigInteger(1, URL_DECODER.decode(modulus));
                 BigInteger e = new BigInteger(1, URL_DECODER.decode(exponent));
