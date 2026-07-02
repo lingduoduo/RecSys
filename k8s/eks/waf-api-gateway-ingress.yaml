@@ -1,0 +1,31 @@
+# EKS-only: WAF-protected ALB as the SOLE public entry to the API gateway.
+# AWS WAF cannot attach to an NLB, so the gateway Service is switched to ClusterIP
+# (see kustomization.yaml) and this ALB Ingress fronts it. The WAFv2 WebACL is
+# created out-of-band (Terraform/console) and referenced by ARN — see
+# docs/runbooks/waf-webacl.md. The Ingress renders with the placeholder ARN, but
+# the AWS Load Balancer Controller rejects an invalid ARN at apply time.
+apiVersion: networking.k8s.io/v1
+kind: Ingress
+metadata:
+  name: recsys-api-gateway-waf
+  namespace: recsys
+  annotations:
+    # Deprecated but universally supported; avoids assuming a pre-existing
+    # IngressClass resource. Modern alternative: spec.ingressClassName: alb.
+    kubernetes.io/ingress.class: alb
+    alb.ingress.kubernetes.io/scheme: internet-facing
+    alb.ingress.kubernetes.io/target-type: ip
+    alb.ingress.kubernetes.io/listen-ports: '[{"HTTP":80}]'
+    alb.ingress.kubernetes.io/healthcheck-path: /health
+    alb.ingress.kubernetes.io/wafv2-acl-arn: arn:aws:wafv2:us-east-1:123456789012:regional/webacl/recsys-api-gateway/REPLACE_ME
+spec:
+  rules:
+    - http:
+        paths:
+          - path: /
+            pathType: Prefix
+            backend:
+              service:
+                name: recsys-api-gateway
+                port:
+                  number: 80
