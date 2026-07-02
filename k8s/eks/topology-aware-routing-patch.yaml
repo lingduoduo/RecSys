@@ -1,0 +1,32 @@
+# EKS-specific: prefer same-AZ endpoints for the in-cluster backend Services to
+# cut inter-AZ traffic. trafficDistribution: PreferClose is best-effort — it falls
+# back to cluster-wide routing when a zone has no ready endpoints (rollout,
+# scale-down, or replicas < AZ count), so there is no blackholing risk. Requires
+# Kubernetes 1.31+ (GA); on older clusters replace each `spec` block below with
+# `metadata.annotations: { service.kubernetes.io/topology-mode: Auto }`.
+#
+# Only the internal backend ClusterIP Services get this. The gateway is an
+# external NLB (client ingress is inherently cross-zone) and is excluded.
+apiVersion: v1
+kind: Service
+metadata:
+  name: recsys-catalog-serving
+  namespace: recsys
+spec:
+  trafficDistribution: PreferClose
+---
+apiVersion: v1
+kind: Service
+metadata:
+  name: recsys-model-serving
+  namespace: recsys
+spec:
+  trafficDistribution: PreferClose
+---
+apiVersion: v1
+kind: Service
+metadata:
+  name: recsys-online-serving
+  namespace: recsys
+spec:
+  trafficDistribution: PreferClose

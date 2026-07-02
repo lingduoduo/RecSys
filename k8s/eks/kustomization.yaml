@@ -21,7 +21,7 @@ replicas:
 patches:
   # Add Cloud Map registration annotations to every ClusterIP Service.
   - path: cloud-map-service-patch.yaml
-  # Switch gateway env vars to Cloud Map private DNS names.
+  # Set gateway timeout; in-cluster service URLs use kube-DNS (see the patch's comment).
   - path: configmap-patch.yaml
   # Force Always pull policy so ECR tag reassignment is picked up on every rollout.
   - path: image-pull-policy-patch.yaml
@@ -29,3 +29,5 @@ patches:
   - path: redis-elasticache-patch.yaml
   # Patch gateway Deployment to use the IRSA ServiceAccount.
   - path: gateway-irsa.yaml
+  # Prefer same-AZ endpoints for in-cluster backend Services (cut inter-AZ traffic).
+  - path: topology-aware-routing-patch.yaml
