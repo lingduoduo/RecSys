@@ -79,8 +79,9 @@ public final class GatewayProxyService implements HttpService {
     public HttpResponse serve(ServiceRequestContext ctx, HttpRequest req) {
         String path = ctx.path();
 
-        HttpResponse authRejection = authenticator.check(req.headers(), path);
-        if (authRejection != null) return authRejection;
+        GatewayAuthResult auth = authenticator.check(req.headers(), path);
+        if (auth.rejected()) return auth.rejection();
+        GatewayPrincipal principal = auth.principal();
 
         MicroserviceRoute route = routeTable.match(path);
         if (route == null) {
@@ -116,7 +117,7 @@ public final class GatewayProxyService implements HttpService {
         // The RetryingClient decorator also needs a buffered body for retry attempts.
         return HttpResponse.of(
                 req.aggregate().thenCompose(aggReq -> {
-                    RequestHeaders upstreamHeaders = buildUpstreamHeaders(aggReq.headers(), targetPath, ctx);
+                    RequestHeaders upstreamHeaders = buildUpstreamHeaders(aggReq.headers(), targetPath, ctx, principal);
                     HttpRequest upstreamReq = HttpRequest.of(upstreamHeaders, aggReq.content());
                     HttpResponse upstream = client.execute(upstreamReq);
                     return upstream.aggregate()
@@ -135,11 +136,16 @@ public final class GatewayProxyService implements HttpService {
     }
 
     private static RequestHeaders buildUpstreamHeaders(RequestHeaders incoming, String targetPath,
-                                                       ServiceRequestContext ctx) {
+                                                       ServiceRequestContext ctx, GatewayPrincipal principal) {
         RequestHeadersBuilder b = RequestHeaders.builder(incoming.method(), targetPath);
         incoming.forEach((name, value) -> {
-            if (!isHopByHop(name.toString())) b.add(name, value);
+            String n = name.toString();
+            // Strip any client-supplied identity header — the gateway is the sole authority.
+            if (!isHopByHop(n) && !n.regionMatches(true, 0, "x-authenticated-", 0, 16)) {
+                b.add(name, value);
+            }
         });
+        principal.identityHeaders().forEach((hn, hv) -> b.set(HttpHeaderNames.of(hn), hv));
         b.set(HttpHeaderNames.of("x-gateway-service"), "recsys-api-gateway");
         String host = incoming.get(HttpHeaderNames.HOST);
         if (host != null && !host.isBlank()) {

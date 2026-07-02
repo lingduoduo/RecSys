@@ -108,8 +108,9 @@ public final class LlmProxyService implements HttpService {
     public HttpResponse serve(ServiceRequestContext ctx, HttpRequest req) {
         String path = ctx.path();
 
-        HttpResponse authRejection = authenticator.check(req.headers(), path);
-        if (authRejection != null) return authRejection;
+        GatewayAuthResult auth = authenticator.check(req.headers(), path);
+        if (auth.rejected()) return auth.rejection();
+        GatewayPrincipal principal = auth.principal();
 
         // Aggregate the request body once so we can inspect (stream flag, token count)
         // and forward it. Must happen before any further dispatching.
@@ -168,7 +169,7 @@ public final class LlmProxyService implements HttpService {
                             + (target.getRawQuery() != null ? "?" + target.getRawQuery() : "");
 
                     RequestHeaders upstreamHeaders = buildUpstreamHeaders(
-                            aggReq.headers(), targetPath, ctx);
+                            aggReq.headers(), targetPath, ctx, principal);
                     HttpRequest upstreamReq = HttpRequest.of(upstreamHeaders, aggReq.content());
 
                     if (streaming) {
@@ -285,11 +286,16 @@ public final class LlmProxyService implements HttpService {
     // ── Helpers ─────────────────────────────────────────────────────────────────────────────────
 
     private static RequestHeaders buildUpstreamHeaders(RequestHeaders incoming, String targetPath,
-                                                       ServiceRequestContext ctx) {
+                                                       ServiceRequestContext ctx, GatewayPrincipal principal) {
         RequestHeadersBuilder b = RequestHeaders.builder(incoming.method(), targetPath);
         incoming.forEach((name, value) -> {
-            if (!isHopByHop(name.toString())) b.add(name, value);
+            String n = name.toString();
+            // Strip any client-supplied identity header — the gateway is the sole authority.
+            if (!isHopByHop(n) && !n.regionMatches(true, 0, "x-authenticated-", 0, 16)) {
+                b.add(name, value);
+            }
         });
+        principal.identityHeaders().forEach((hn, hv) -> b.set(HttpHeaderNames.of(hn), hv));
         b.set(HttpHeaderNames.of("x-gateway-service"), "recsys-llm-gateway");
         String host = incoming.get(HttpHeaderNames.HOST);
         if (host != null && !host.isBlank()) {

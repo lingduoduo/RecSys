@@ -21,6 +21,7 @@ import static org.junit.jupiter.api.Assertions.assertEquals;
 import static org.junit.jupiter.api.Assertions.assertNull;
 import static org.junit.jupiter.api.Assertions.assertNotNull;
 import static org.junit.jupiter.api.Assertions.assertFalse;
+import static org.junit.jupiter.api.Assertions.assertTrue;
 import static org.junit.jupiter.api.Assertions.assertThrows;
 
 class GatewayAuthenticatorTest {
@@ -32,7 +33,7 @@ class GatewayAuthenticatorTest {
         GatewayAuthenticator auth = authenticator(rsaKeyPairOrThrow());
         RequestHeaders headers = RequestHeaders.of(HttpMethod.GET, "/model/predict",
                 HttpHeaderNames.of("x-api-key"), "key-1");
-        assertNull(auth.check(headers, "/model/predict"));
+        assertFalse(auth.check(headers, "/model/predict").rejected());
     }
 
     @Test
@@ -45,29 +46,31 @@ class GatewayAuthenticatorTest {
                         + "\"token_use\":\"access\",\"exp\":1780000000");
         RequestHeaders headers = RequestHeaders.of(HttpMethod.GET, "/model/predict",
                 HttpHeaderNames.AUTHORIZATION, "Bearer " + jwt);
-        assertNull(auth.check(headers, "/model/predict"));
+        GatewayAuthResult r = auth.check(headers, "/model/predict");
+        assertFalse(r.rejected());
+        assertEquals("user:user-1", r.principal().rateLimitKey());
     }
 
     @Test
     void check_rejectsWhenNeitherCredentialPresent() {
         GatewayAuthenticator auth = authenticator(rsaKeyPairOrThrow());
         RequestHeaders headers = RequestHeaders.of(HttpMethod.GET, "/model/predict");
-        HttpResponse rejection = auth.check(headers, "/model/predict");
-        assertNotNull(rejection);
-        assertEquals(401, rejection.aggregate().join().status().code());
+        GatewayAuthResult r = auth.check(headers, "/model/predict");
+        assertTrue(r.rejected());
+        assertEquals(401, r.rejection().aggregate().join().status().code());
     }
 
     @Test
     void check_bypassesPublicPath() {
         GatewayAuthenticator auth = authenticator(rsaKeyPairOrThrow());
         RequestHeaders headers = RequestHeaders.of(HttpMethod.GET, "/health");
-        assertNull(auth.check(headers, "/health"));
+        assertFalse(auth.check(headers, "/health").rejected());
     }
 
     @Test
     void check_disabledPassesThrough() {
         RequestHeaders headers = RequestHeaders.of(HttpMethod.GET, "/model/predict");
-        assertNull(GatewayAuthenticator.disabled().check(headers, "/model/predict"));
+        assertFalse(GatewayAuthenticator.disabled().check(headers, "/model/predict").rejected());
     }
 
     @Test
@@ -76,14 +79,14 @@ class GatewayAuthenticatorTest {
         GatewayAuthenticator auth = GatewayAuthenticator.fromEnvironment(Map.of("GATEWAY_API_KEYS", "alpha")::get);
         RequestHeaders headers = RequestHeaders.of(HttpMethod.GET, "/model/predict",
                 HttpHeaderNames.AUTHORIZATION, "Bearer alpha");
-        assertNull(auth.check(headers, "/model/predict"));
+        assertFalse(auth.check(headers, "/model/predict").rejected());
     }
 
     @Test
     void fromEnvironment_disabledWhenNothingConfigured() {
         GatewayAuthenticator auth = GatewayAuthenticator.fromEnvironment(Map.<String, String>of()::get);
         assertFalse(auth.isEnabled());
-        assertNull(auth.check(RequestHeaders.of(HttpMethod.GET, "/model/predict"), "/model/predict"));
+        assertFalse(auth.check(RequestHeaders.of(HttpMethod.GET, "/model/predict"), "/model/predict").rejected());
     }
 
     @Test
