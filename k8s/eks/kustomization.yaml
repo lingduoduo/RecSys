@@ -4,6 +4,7 @@ resources:
   - ../base
   - gateway-irsa-sa.yaml    # IRSA ServiceAccount for the API gateway
   - patches/irsa-model-serving.yaml
+  - waf-api-gateway-ingress.yaml   # WAF-protected ALB; sole public entry to the gateway
 
 images:
   - name: recsys-backend-service
@@ -31,3 +32,16 @@ patches:
   - path: gateway-irsa.yaml
   # Prefer same-AZ endpoints for in-cluster backend Services (cut inter-AZ traffic).
   - path: topology-aware-routing-patch.yaml
+  # Drop the NLB: the WAF ALB Ingress (waf-api-gateway-ingress.yaml) is the sole
+  # public entry, so the gateway Service becomes ClusterIP and its NLB-only
+  # aws-load-balancer-* annotations are removed.
+  - target:
+      kind: Service
+      name: recsys-api-gateway
+      namespace: recsys
+    patch: |
+      - op: replace
+        path: /spec/type
+        value: ClusterIP
+      - op: remove
+        path: /metadata/annotations
