@@ -113,10 +113,10 @@ class GatewayServerIntegrationTest {
     void authRejectsNoKey() {
         GatewayAuthenticator auth = GatewayAuthenticator.fromEnvironment(
                 Map.of("GATEWAY_API_KEYS", "secret")::get);
-        var rejection = auth.check(
+        var result = auth.check(
                 com.linecorp.armeria.common.RequestHeaders.of(HttpMethod.GET, "/api/recsys/health"),
                 "/api/recsys/health");
-        assertThat(rejection).isNotNull();
-        assertThat(rejection.aggregate().join().status()).isEqualTo(HttpStatus.UNAUTHORIZED);
+        assertThat(result.rejected()).isTrue();
+        assertThat(result.rejection().aggregate().join().status()).isEqualTo(HttpStatus.UNAUTHORIZED);
     }
 }

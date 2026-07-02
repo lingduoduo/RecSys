@@ -66,12 +66,14 @@ public final class GatewayAuthenticator {
     }
 
     /**
-     * Check whether the request is authorized. Returns {@code null} if the request
-     * is allowed through; returns a non-null {@link HttpResponse} (401) if it must
-     * be rejected.
+     * Check whether the request is authorized. Returns an allowed {@link GatewayAuthResult}
+     * carrying the authenticated {@link GatewayPrincipal} if the request may proceed; returns
+     * a rejected result (401) if it must be rejected.
      */
-    public HttpResponse check(RequestHeaders headers, String path) {
-        if (!isEnabled() || isPublic(path)) return null;
+    public GatewayAuthResult check(RequestHeaders headers, String path) {
+        if (!isEnabled() || isPublic(path)) {
+            return GatewayAuthResult.allowed(GatewayPrincipal.anonymous());
+        }
 
         String bearer = bearerToken(headers.get(HttpHeaderNames.AUTHORIZATION));
         String provided = firstNonBlank(headers.get(HttpHeaderNames.of("x-api-key")), bearer);
@@ -81,27 +83,31 @@ public final class GatewayAuthenticator {
             for (String key : apiKeys) {
                 matched |= constantTimeEquals(key, provided);
             }
-            if (matched) return null;
+            if (matched) {
+                return GatewayAuthResult.allowed(GatewayPrincipal.ofApiKey(provided));
+            }
         }
 
-        if (jwtVerifier != null && bearer != null && jwtAccepts(bearer)) {
-            return null;
+        if (jwtVerifier != null && bearer != null) {
+            CognitoJwtVerifier.VerifiedClaims claims = jwtVerify(bearer);
+            if (claims != null) {
+                return GatewayAuthResult.allowed(GatewayPrincipal.ofJwt(claims));
+            }
         }
 
-        return HttpResponse.of(
+        return GatewayAuthResult.rejected(HttpResponse.of(
                 ResponseHeaders.builder(HttpStatus.UNAUTHORIZED)
                         .set(HttpHeaderNames.WWW_AUTHENTICATE, "Bearer")
                         .contentType(MediaType.JSON_UTF_8)
                         .build(),
-                HttpData.ofUtf8("{\"error\":\"missing or invalid gateway API key\"}"));
+                HttpData.ofUtf8("{\"error\":\"missing or invalid gateway API key\"}")));
     }
 
-    private boolean jwtAccepts(String token) {
+    private CognitoJwtVerifier.VerifiedClaims jwtVerify(String token) {
         try {
-            jwtVerifier.verify(token);
-            return true;
+            return jwtVerifier.verify(token);
         } catch (CognitoJwtVerifier.JwtAuthException e) {
-            return false;
+            return null;
         }
     }
 

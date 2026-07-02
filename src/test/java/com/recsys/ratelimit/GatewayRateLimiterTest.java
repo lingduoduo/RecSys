@@ -24,7 +24,7 @@ class GatewayRateLimiterTest {
         );
 
         assertFalse(limiter.isEnabled());
-        assertTrue(limiter.tryAcquire("catalog").allowed());
+        assertTrue(limiter.tryAcquire("catalog", "p1").allowed());
     }
 
     @Test
@@ -39,13 +39,13 @@ class GatewayRateLimiterTest {
                 now::get
         );
 
-        assertTrue(limiter.tryAcquire("model").allowed());
-        assertTrue(limiter.tryAcquire("model").allowed());
-        assertFalse(limiter.tryAcquire("model").allowed());
+        assertTrue(limiter.tryAcquire("model", "p1").allowed());
+        assertTrue(limiter.tryAcquire("model", "p1").allowed());
+        assertFalse(limiter.tryAcquire("model", "p1").allowed());
 
         now.addAndGet(TimeUnit.MILLISECONDS.toNanos(500));
 
-        assertTrue(limiter.tryAcquire("model").allowed());
+        assertTrue(limiter.tryAcquire("model", "p1").allowed());
     }
 
     @Test
@@ -62,12 +62,38 @@ class GatewayRateLimiterTest {
                 now::get
         );
 
-        assertTrue(limiter.tryAcquire("catalog").allowed());
-        assertTrue(limiter.tryAcquire("catalog").allowed());
-        assertFalse(limiter.tryAcquire("catalog").allowed());
+        assertTrue(limiter.tryAcquire("catalog", "p1").allowed());
+        assertTrue(limiter.tryAcquire("catalog", "p1").allowed());
+        assertFalse(limiter.tryAcquire("catalog", "p1").allowed());
 
-        assertTrue(limiter.tryAcquire("online").allowed());
-        assertFalse(limiter.tryAcquire("online").allowed());
+        assertTrue(limiter.tryAcquire("online", "p1").allowed());
+        assertFalse(limiter.tryAcquire("online", "p1").allowed());
+    }
+
+    @Test
+    void isolatesBucketsPerPrincipalOnSameRoute() {
+        AtomicLong now = new AtomicLong(0L);
+        GatewayRateLimiter limiter = GatewayRateLimiter.fromEnvironment(
+                List.of(route("model")),
+                Map.of("GATEWAY_RATE_LIMIT_RPS", "1", "GATEWAY_RATE_LIMIT_BURST", "1")::get,
+                now::get);
+
+        assertTrue(limiter.tryAcquire("model", "user:a").allowed());
+        assertFalse(limiter.tryAcquire("model", "user:a").allowed());   // A exhausted
+        assertTrue(limiter.tryAcquire("model", "user:b").allowed());    // B independent
+    }
+
+    @Test
+    void samePrincipalIndependentAcrossRoutes() {
+        AtomicLong now = new AtomicLong(0L);
+        GatewayRateLimiter limiter = GatewayRateLimiter.fromEnvironment(
+                List.of(route("model"), route("catalog")),
+                Map.of("GATEWAY_RATE_LIMIT_RPS", "1", "GATEWAY_RATE_LIMIT_BURST", "1")::get,
+                now::get);
+
+        assertTrue(limiter.tryAcquire("model", "user:a").allowed());
+        assertFalse(limiter.tryAcquire("model", "user:a").allowed());    // model exhausted for A
+        assertTrue(limiter.tryAcquire("catalog", "user:a").allowed());   // catalog independent for A
     }
 
     private static MicroserviceRoute route(String name) {
