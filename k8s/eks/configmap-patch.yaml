@@ -1,19 +1,20 @@
-# EKS-specific ConfigMap patch: use Cloud Map private DNS names for inter-service URLs.
+# EKS-specific ConfigMap patch.
 #
-# Within the cluster, Kubernetes DNS (recsys-model-serving.recsys.svc.cluster.local) is
-# still the fast path. These Cloud Map hostnames are resolved via the Route 53 Resolver
-# endpoint that VPC Lattice / Cloud Map registers in the VPC's private hosted zone, so
-# the same names work for both in-cluster pods and external callers (Lambda, other clusters).
+# In-cluster service-to-service calls use Kubernetes ClusterIP (kube-DNS) names,
+# inherited from k8s/base/configmap.yaml (e.g. http://recsys-model-serving:8080).
+# A ClusterIP is a stable virtual IP and rides the kube-proxy path — which is what
+# lets topology-aware routing (trafficDistribution: PreferClose, see
+# topology-aware-routing-patch.yaml) keep these calls in the same AZ.
 #
-# DNS TTL for Cloud Map private namespaces defaults to 15 s. The gateway JVM is configured
-# to cap its DNS cache at 30 s (networkaddress.cache.ttl=30) so endpoint changes propagate.
+# Cloud Map (*.recsys.internal) is retained ONLY for callers outside the cluster
+# (Lambda/EC2) and blue/green cutover — see cloud-map-service-patch.yaml, which
+# keeps the Service registration annotations. It is intentionally NOT used for
+# in-cluster calls: Cloud Map DNS is topology-blind and bypasses kube-proxy, so
+# routing through it forces most calls across AZ boundaries.
 apiVersion: v1
 kind: ConfigMap
 metadata:
   name: recsys-config
   namespace: recsys
 data:
-  CATALOG_SERVICE_URL: "http://catalog-serving.recsys.internal:6010"
-  MODEL_SERVICE_URL: "http://model-serving.recsys.internal:8080"
-  ONLINE_SERVICE_URL: "http://online-serving.recsys.internal:7010"
   GATEWAY_TIMEOUT_MS: "3000"
