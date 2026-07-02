@@ -29,3 +29,5 @@ patches:
   - path: redis-elasticache-patch.yaml
   # Patch gateway Deployment to use the IRSA ServiceAccount.
   - path: gateway-irsa.yaml
+  # Prefer same-AZ endpoints for in-cluster backend Services (cut inter-AZ traffic).
+  - path: topology-aware-routing-patch.yaml
