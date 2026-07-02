@@ -5,8 +5,9 @@
 # Kubernetes 1.31+ (GA); on older clusters replace each `spec` block below with
 # `metadata.annotations: { service.kubernetes.io/topology-mode: Auto }`.
 #
-# Only the internal backend ClusterIP Services get this. The gateway is an
-# external NLB (client ingress is inherently cross-zone) and is excluded.
+# Only the internal backend ClusterIP Services get this. The gateway is the
+# external edge (WAF ALB Ingress; client ingress is inherently cross-zone) and
+# is excluded.
 apiVersion: v1
 kind: Service
 metadata:
