@@ -20,6 +20,7 @@ import java.util.Set;
 import static org.junit.jupiter.api.Assertions.assertEquals;
 import static org.junit.jupiter.api.Assertions.assertNull;
 import static org.junit.jupiter.api.Assertions.assertNotNull;
+import static org.junit.jupiter.api.Assertions.assertFalse;
 
 class GatewayAuthenticatorTest {
     private static final Base64.Encoder URL_ENCODER = Base64.getUrlEncoder().withoutPadding();
@@ -66,6 +67,22 @@ class GatewayAuthenticatorTest {
     void check_disabledPassesThrough() {
         RequestHeaders headers = RequestHeaders.of(HttpMethod.GET, "/model/predict");
         assertNull(GatewayAuthenticator.disabled().check(headers, "/model/predict"));
+    }
+
+    @Test
+    void check_allowsBearerTokenAsApiKey() {
+        // Backward-compat: an API key presented as a bearer token is still accepted (no JWT involved).
+        GatewayAuthenticator auth = GatewayAuthenticator.fromEnvironment(Map.of("GATEWAY_API_KEYS", "alpha")::get);
+        RequestHeaders headers = RequestHeaders.of(HttpMethod.GET, "/model/predict",
+                HttpHeaderNames.AUTHORIZATION, "Bearer alpha");
+        assertNull(auth.check(headers, "/model/predict"));
+    }
+
+    @Test
+    void fromEnvironment_disabledWhenNothingConfigured() {
+        GatewayAuthenticator auth = GatewayAuthenticator.fromEnvironment(Map.<String, String>of()::get);
+        assertFalse(auth.isEnabled());
+        assertNull(auth.check(RequestHeaders.of(HttpMethod.GET, "/model/predict"), "/model/predict"));
     }
 
     private GatewayAuthenticator authenticator(KeyPair keyPair) {
