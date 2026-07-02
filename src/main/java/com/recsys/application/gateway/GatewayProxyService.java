@@ -135,7 +135,7 @@ public final class GatewayProxyService implements HttpService {
                 }));
     }
 
-    private static RequestHeaders buildUpstreamHeaders(RequestHeaders incoming, String targetPath,
+    static RequestHeaders buildUpstreamHeaders(RequestHeaders incoming, String targetPath,
                                                        ServiceRequestContext ctx, GatewayPrincipal principal) {
         RequestHeadersBuilder b = RequestHeaders.builder(incoming.method(), targetPath);
         incoming.forEach((name, value) -> {
