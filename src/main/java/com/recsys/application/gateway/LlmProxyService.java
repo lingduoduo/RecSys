@@ -63,6 +63,9 @@ public final class LlmProxyService implements HttpService {
             "proxy-authenticate", "proxy-authorization", "te", "trailer",
             "transfer-encoding", "upgrade");
 
+    // Credentials the gateway consumes at its auth boundary — never forwarded upstream.
+    private static final Set<String> GATEWAY_CONSUMED_CREDENTIALS = Set.of("authorization", "x-api-key");
+
     private final MicroserviceRoute route;
     private final WebClient webClient;
     private final RouteCircuitBreaker circuitBreaker;
@@ -291,7 +294,8 @@ public final class LlmProxyService implements HttpService {
         incoming.forEach((name, value) -> {
             String n = name.toString();
             // Strip any client-supplied identity header — the gateway is the sole authority.
-            if (!isHopByHop(n) && !n.regionMatches(true, 0, "x-authenticated-", 0, 16)) {
+            if (!isHopByHop(n) && !isGatewayCredential(n)
+                    && !n.regionMatches(true, 0, "x-authenticated-", 0, 16)) {
                 b.add(name, value);
             }
         });
@@ -353,6 +357,10 @@ public final class LlmProxyService implements HttpService {
 
     private static boolean isHopByHop(String name) {
         return name != null && HOP_BY_HOP.contains(name.toLowerCase(Locale.ROOT));
+    }
+
+    private static boolean isGatewayCredential(String name) {
+        return name != null && GATEWAY_CONSUMED_CREDENTIALS.contains(name.toLowerCase(Locale.ROOT));
     }
 
     /**

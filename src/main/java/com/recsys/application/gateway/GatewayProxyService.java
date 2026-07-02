@@ -36,6 +36,9 @@ public final class GatewayProxyService implements HttpService {
             "proxy-authenticate", "proxy-authorization", "te", "trailer",
             "transfer-encoding", "upgrade");
 
+    // Credentials the gateway consumes at its auth boundary — never forwarded upstream.
+    private static final Set<String> GATEWAY_CONSUMED_CREDENTIALS = Set.of("authorization", "x-api-key");
+
     private final MicroserviceRouteTable routeTable;
     private final Map<String, WebClient> routeClients;
     private final Map<String, RouteCircuitBreaker> circuitBreakers;
@@ -141,7 +144,8 @@ public final class GatewayProxyService implements HttpService {
         incoming.forEach((name, value) -> {
             String n = name.toString();
             // Strip any client-supplied identity header — the gateway is the sole authority.
-            if (!isHopByHop(n) && !n.regionMatches(true, 0, "x-authenticated-", 0, 16)) {
+            if (!isHopByHop(n) && !isGatewayCredential(n)
+                    && !n.regionMatches(true, 0, "x-authenticated-", 0, 16)) {
                 b.add(name, value);
             }
         });
@@ -169,5 +173,9 @@ public final class GatewayProxyService implements HttpService {
 
     private static boolean isHopByHop(String name) {
         return name != null && HOP_BY_HOP.contains(name.toLowerCase(Locale.ROOT));
+    }
+
+    private static boolean isGatewayCredential(String name) {
+        return name != null && GATEWAY_CONSUMED_CREDENTIALS.contains(name.toLowerCase(Locale.ROOT));
     }
 }
