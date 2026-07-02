@@ -7,6 +7,8 @@ import org.springframework.stereotype.Service;
 
 import java.io.IOException;
 import java.io.InputStream;
+import java.net.URISyntaxException;
+import java.net.URL;
 import java.nio.file.Files;
 import java.nio.file.Path;
 
@@ -98,13 +100,26 @@ public class ModelArtifactLocator {
         if (!sparkDir.isBlank()) {
             return Path.of(sparkDir).resolve(relativePath).normalize();
         }
+        ClassPathResource resource = new ClassPathResource(SPARK_CLASSPATH_DIR + "/" + relativePath);
         try {
-            return new ClassPathResource(SPARK_CLASSPATH_DIR + "/" + relativePath).getFile().toPath();
-        } catch (IOException e) {
-            throw new IllegalStateException(
-                    "Cannot resolve filesystem path for classpath:" + SPARK_CLASSPATH_DIR + "/" + relativePath
-                    + ". Set recsys.spark.artifacts-dir when running from a JAR.", e);
+            // A "file:" URL means the resource is exploded on disk (local dev / mvn runs)
+            // and can be exposed as a real filesystem Path. Inside a jar the URL is
+            // "jar:"/nested and has no filesystem Path — getFile() would throw there, so we
+            // never call it; we fall through to the actionable error below instead.
+            URL url = resource.getURL();
+            if ("file".equals(url.getProtocol())) {
+                return Path.of(url.toURI()).normalize();
+            }
+        } catch (IOException | URISyntaxException e) {
+            throw new IllegalStateException(sparkPathUnavailableMessage(relativePath), e);
         }
+        throw new IllegalStateException(sparkPathUnavailableMessage(relativePath));
+    }
+
+    private static String sparkPathUnavailableMessage(String relativePath) {
+        return "Cannot resolve filesystem path for classpath:" + SPARK_CLASSPATH_DIR + "/" + relativePath
+                + " (packaged in a JAR has no filesystem Path). "
+                + "Set recsys.spark.artifacts-dir to an external directory when running from a JAR.";
     }
 
     public String describeSparkLocation(String relativePath) {

@@ -115,6 +115,31 @@ class ModelArtifactLocatorTest {
                 .isEqualTo("classpath:artifacts/pyspark/als_model_metadata.json");
     }
 
+    @Test
+    void resolveSparkPath_externalDir_returnsResolvedPath(@TempDir Path tmp) {
+        var locator = new ModelArtifactLocator("", tmp.toString());
+        Path resolved = locator.resolveSparkPath("als/metadata");
+        assertThat(resolved).isEqualTo(tmp.resolve("als").resolve("metadata").normalize());
+    }
+
+    @Test
+    void resolveSparkPath_classpathExploded_returnsExistingFilesystemPath() {
+        // When resources are exploded on disk (as in mvn test runs), a real, existing
+        // filesystem Path is returned — without the jar-hostile getFile() call.
+        var locator = new ModelArtifactLocator("", "");
+        Path resolved = locator.resolveSparkPath("als_model_metadata.json");
+        assertThat(resolved).exists();
+        assertThat(resolved.getFileName().toString()).isEqualTo("als_model_metadata.json");
+    }
+
+    @Test
+    void resolveSparkPath_missingClasspathResource_throwsIllegalState() {
+        var locator = new ModelArtifactLocator("", "");
+        assertThatThrownBy(() -> locator.resolveSparkPath("nonexistent_spark_dir"))
+                .isInstanceOf(IllegalStateException.class)
+                .hasMessageContaining("recsys.spark.artifacts-dir");
+    }
+
     // ---- whitespace-only overrides are treated as classpath ----
 
     @Test
