@@ -56,5 +56,9 @@ ENV RECSYS_MAIN_CLASS=com.recsys.api.gateway.MicroserviceGatewayServer
 ENV JAVA_OPTS=""
 
 USER recsys
-EXPOSE 8010
+# This single image runs all four services, selected at runtime via RECSYS_MAIN_CLASS;
+# document every service port, not just the gateway's. (EXPOSE is informational — the k8s
+# manifests' containerPort/Service govern actual networking.)
+#   6010 recsys/catalog serving · 7010 online serving · 8010 api gateway · 8080 model serving
+EXPOSE 6010 7010 8010 8080
 ENTRYPOINT ["sh", "-c", "exec java $JAVA_OPTS -XX:SharedArchiveFile=/app/app.jsa -Xshare:auto -cp /app/app-classes.jar:/app/dependency/* $RECSYS_MAIN_CLASS"]
