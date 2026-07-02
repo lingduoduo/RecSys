@@ -88,7 +88,7 @@ public final class GatewayProxyService implements HttpService {
             return gatewayError(HttpStatus.NOT_FOUND, "no route found");
         }
 
-        TokenBucket.Decision rateDecision = rateLimiter.tryAcquire(route.name());
+        TokenBucket.Decision rateDecision = rateLimiter.tryAcquire(route.name(), principal.rateLimitKey());
         if (!rateDecision.allowed()) {
             int retryAfter = Math.max(1, (int) Math.ceil(rateDecision.retryAfter().toMillis() / 1000.0));
             return HttpResponse.of(
