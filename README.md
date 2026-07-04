@@ -74,12 +74,12 @@ Run each service in its own terminal. Redis must be running first (step 1 above)
 
 ```bash
 # Port 6010 — Catalog & Recommendation Serving
-mvn exec:java -Dexec.mainClass=com.recsys.serving.RecSysServer
+mvn exec:java -Dexec.mainClass=com.recsys.api.serving.RecSysServer
 curl http://localhost:6010/health
 # {"ok":true}
 
 # Port 7010 — Online Prediction Server
-mvn exec:java -Dexec.mainClass=com.recsys.online.serving.OnlinePredictionServer
+mvn exec:java -Dexec.mainClass=com.recsys.api.online.OnlinePredictionServer
 curl http://localhost:7010/online/ops
 # {"servedAt":"...","metrics":{...},"load":{...},"capacity":{...}}
 
@@ -89,7 +89,7 @@ curl http://localhost:8080/health/ready
 # {"status":"UP",...}
 
 # Port 8010 — API Gateway
-mvn exec:java -Dexec.mainClass=com.recsys.microservice.MicroserviceGatewayServer
+mvn exec:java -Dexec.mainClass=com.recsys.api.gateway.MicroserviceGatewayServer
 curl http://localhost:8010/health
 # {"status":"UP","services":{...}}
 ```
@@ -142,13 +142,13 @@ Start each service individually with JVM tuning:
 ```bash
 # Catalog / Recommendation Serving — port 6010
 env PORT=6010 sh scripts/run-with-jvm-tuning.sh recsys-serving -- \
-  mvn exec:java -Dexec.mainClass=com.recsys.serving.RecSysServer
+  mvn exec:java -Dexec.mainClass=com.recsys.api.serving.RecSysServer
 curl http://localhost:6010/health
 # {"ok":true}
 
 # Online Prediction Server — port 7010
 env ONLINE_DEMO_PORT=7010 sh scripts/run-with-jvm-tuning.sh online-serving -- \
-  mvn exec:java -Dexec.mainClass=com.recsys.online.serving.OnlinePredictionServer
+  mvn exec:java -Dexec.mainClass=com.recsys.api.online.OnlinePredictionServer
 curl http://localhost:7010/online/ops
 # {"servedAt":"...","metrics":{...},"load":{...},"capacity":{...}}
 
@@ -160,7 +160,7 @@ curl http://localhost:8080/health/ready
 
 # API Gateway — port 8010
 env GATEWAY_PORT=8010 sh scripts/run-with-jvm-tuning.sh api-gateway -- \
-  mvn exec:java -Dexec.mainClass=com.recsys.microservice.MicroserviceGatewayServer
+  mvn exec:java -Dexec.mainClass=com.recsys.api.gateway.MicroserviceGatewayServer
 curl http://localhost:8010/health
 # {"status":"UP","services":{...}}
 ```
@@ -294,10 +294,10 @@ The vector backend for the embedding channel is controlled by `RECSYS_VECTOR_BAC
 
 ```bash
 # Approximate (default) — SimHash random-projection + inner-product reranking
-RECSYS_VECTOR_BACKEND=lsh mvn exec:java -Dexec.mainClass=com.recsys.serving.RecSysServer
+RECSYS_VECTOR_BACKEND=lsh mvn exec:java -Dexec.mainClass=com.recsys.api.serving.RecSysServer
 
 # Exact — full-scan inner-product top-k (deterministic, slower)
-RECSYS_VECTOR_BACKEND=exact mvn exec:java -Dexec.mainClass=com.recsys.serving.RecSysServer
+RECSYS_VECTOR_BACKEND=exact mvn exec:java -Dexec.mainClass=com.recsys.api.serving.RecSysServer
 ```
 
 #### Recommendations v2 — cursor pagination (`/v2/recommend`)
@@ -763,7 +763,7 @@ readinessProbe:
 
 ### Port 8010 — API Gateway
 
-Overall API gateway and single entry point for all three upstream services (6010, 7010, 8080). Strips the route prefix, proxies to the correct backend, and enforces per-route circuit breakers (`RouteCircuitBreaker`), token-bucket rate limiting (`GatewayRateLimiter`), and optional API-key auth. Also includes a dedicated LLM proxy with token budgets, SSE streaming passthrough, and SHA-256 response caching.
+Overall API gateway and single entry point for all three upstream services (6010, 7010, 8080). Strips the route prefix, proxies to the correct backend, and enforces per-route circuit breakers (`RouteCircuitBreaker`), per-`(route, principal)` token-bucket rate limiting (`GatewayRateLimiter`), and optional auth (static API key **or** Cognito JWT). It authenticates at the edge, propagates the caller identity to backends as `x-authenticated-*` headers, and strips the raw credentials before proxying upstream. Also includes a dedicated LLM proxy with token budgets, SSE streaming passthrough, and SHA-256 response caching.
 
 | Gateway prefix | Backend | Direct equivalent |
 |---|---|---|
@@ -819,7 +819,7 @@ curl -X POST "http://localhost:8010/api/llm/api/generate" \
   -d '{"model":"llama3","prompt":"Summarize this movie: Inception","max_tokens":200}'
 ```
 
-> **Hostname note:** `localhost:8010` is for local dev. In Kubernetes use the ClusterIP name (e.g. `recsys-api-gateway:8010`); on EKS with Cloud Map use `api-gateway.recsys.internal:8010`.
+> **Hostname note:** `localhost:8010` is for local dev. In Kubernetes use the ClusterIP name (e.g. `recsys-api-gateway:8010`); on EKS, external clients reach the gateway through the WAF-protected ALB (see [Kubernetes & EKS](#kubernetes--eks)), while in-cluster callers use kube-DNS ClusterIP names.
 
 ---
 
@@ -1015,7 +1015,7 @@ Keep SQL reads off latency-critical recommendation paths unless the data is inde
 
 ## Microservice Gateway
 
-`MicroserviceGatewayServer` is the single public edge for the local microservice topology. It strips the route prefix and proxies to the right backend, while adding circuit breaking, token-bucket rate limiting, API-key auth, and a dedicated LLM proxy with token budgets and response caching. All four services sit behind it — clients only need to know one hostname and port.
+`MicroserviceGatewayServer` is the single public edge for the local microservice topology. It strips the route prefix and proxies to the right backend, while adding circuit breaking, per-`(route, principal)` token-bucket rate limiting, edge auth (API key or Cognito JWT) with identity propagation and credential stripping, and a dedicated LLM proxy with token budgets and response caching. All four services sit behind it — clients only need to know one hostname and port.
 
 ### Route table
 
@@ -1055,7 +1055,7 @@ sh scripts/run-microservices-local.sh
 
 # Start only the gateway (when backends are already running)
 sh scripts/run-with-jvm-tuning.sh api-gateway -- \
-  mvn exec:java -Dexec.mainClass=com.recsys.microservice.MicroserviceGatewayServer
+  mvn exec:java -Dexec.mainClass=com.recsys.api.gateway.MicroserviceGatewayServer
 
 # Enable LLM routes (requires Ollama)
 brew install ollama && ollama serve &
@@ -1116,37 +1116,67 @@ curl http://localhost:8010/health | jq '.services["model"].circuitState'
 
 ### Rate limiting (`GatewayRateLimiter`)
 
-Token-bucket rate limiting per route. Each bucket refills at `GATEWAY_RATE_LIMIT_RPS` tokens/second with a `GATEWAY_RATE_LIMIT_BURST` burst. Excess requests get `429 Too Many Requests`.
+Token-bucket rate limiting keyed **per `(route, principal)`**, so one noisy caller can't exhaust another's budget. Each bucket refills at `GATEWAY_RATE_LIMIT_RPS` tokens/second with a `GATEWAY_RATE_LIMIT_BURST` burst; excess requests get `429 Too Many Requests`. The principal is the authenticated identity (Cognito `sub` or a hashed API-key id; `anonymous` when auth is disabled). Buckets live in a bounded Caffeine cache (`GATEWAY_RL_MAX_PRINCIPALS`, default `100000`) so a flood of distinct identities can't grow memory without limit.
 
 Per-route overrides use the route name uppercased with hyphens replaced by underscores: e.g., route `recommendation-retrieval` → `GATEWAY_RATE_LIMIT_RECOMMENDATION_RETRIEVAL_RPS`.
 
 ```bash
 # Enable global rate limit (5 req/s, burst 10)
 GATEWAY_RATE_LIMIT_RPS=5 GATEWAY_RATE_LIMIT_BURST=10 \
-  mvn exec:java -Dexec.mainClass=com.recsys.microservice.MicroserviceGatewayServer
+  mvn exec:java -Dexec.mainClass=com.recsys.api.gateway.MicroserviceGatewayServer
 
 # Per-route overrides (route name → UPPER_SNAKE suffix)
 GATEWAY_RATE_LIMIT_MODEL_RPS=2 GATEWAY_RATE_LIMIT_MODEL_BURST=3 \
-  mvn exec:java -Dexec.mainClass=com.recsys.microservice.MicroserviceGatewayServer
+  mvn exec:java -Dexec.mainClass=com.recsys.api.gateway.MicroserviceGatewayServer
 GATEWAY_RATE_LIMIT_RECOMMENDATION_RETRIEVAL_RPS=10 GATEWAY_RATE_LIMIT_RECOMMENDATION_RETRIEVAL_BURST=20 \
-  mvn exec:java -Dexec.mainClass=com.recsys.microservice.MicroserviceGatewayServer
+  mvn exec:java -Dexec.mainClass=com.recsys.api.gateway.MicroserviceGatewayServer
 ```
 
-### API-key authentication (`GatewayAuthenticator`)
+### Authentication (`GatewayAuthenticator`)
 
-When `GATEWAY_API_KEYS` is set, requests must send a valid key via `X-API-Key` or `Authorization: Bearer`. Public paths (default: `/health`) bypass auth.
+The gateway accepts **either** a static API key **or** an AWS Cognito JWT, whichever is configured. Auth is enabled as soon as `GATEWAY_API_KEYS` **or** `GATEWAY_COGNITO_ISSUER` is set; with neither set the gateway runs open. Public paths (default: `/health`, plus any prefix in `GATEWAY_PUBLIC_PATHS`) always bypass auth.
+
+**API key.** When `GATEWAY_API_KEYS` is set, requests must present a valid key via `X-API-Key` or `Authorization: Bearer <key>`. Keys are compared in constant time.
 
 ```bash
 GATEWAY_API_KEYS=secret-key-1,secret-key-2 \
-  mvn exec:java -Dexec.mainClass=com.recsys.microservice.MicroserviceGatewayServer
+  mvn exec:java -Dexec.mainClass=com.recsys.api.gateway.MicroserviceGatewayServer
 
-# Authenticated request
 curl -H "X-API-Key: secret-key-1" http://localhost:8010/api/catalog/item?id=1
 curl -H "Authorization: Bearer secret-key-1" http://localhost:8010/api/catalog/item?id=1
 
 # Health always works without auth
 curl http://localhost:8010/health
 ```
+
+**Cognito JWT** (`CognitoJwtVerifier`). Set `GATEWAY_COGNITO_ISSUER` (and the required `GATEWAY_COGNITO_AUDIENCE`) to accept RS256 JWTs from a Cognito user pool. The verifier is dependency-free (JDK + Jackson only): it fetches the pool's JWKS from `<issuer>/.well-known/jwks.json`, caches keys for 5 minutes, and validates signature, `iss`, `aud`, `exp`, and `token_use`.
+
+```bash
+GATEWAY_COGNITO_ISSUER=https://cognito-idp.us-east-1.amazonaws.com/us-east-1_ABC123 \
+GATEWAY_COGNITO_AUDIENCE=1a2b3c4d5e6f7g8h9i \
+  mvn exec:java -Dexec.mainClass=com.recsys.api.gateway.MicroserviceGatewayServer
+
+curl -H "Authorization: Bearer <cognito-access-token>" http://localhost:8010/api/catalog/item?id=1
+```
+
+A bearer token is tried as an API key first, then as a JWT; a request that matches neither gets `401` with `WWW-Authenticate: Bearer`. Hardening: an unknown `kid` triggers at most one JWKS refetch per 30 s (bounds a token-forgery flood), and if a JWKS fetch fails transiently the verifier **serves the last-good keys stale** rather than rejecting tokens whose signing key it already holds.
+
+#### Principal propagation & identity-header stripping
+
+On a successful auth the gateway derives a `GatewayPrincipal` (Cognito `sub` / `client_id` / `token_use`, or a hashed API-key id) and forwards it to the backend as trusted, gateway-authored identity headers:
+
+| Header | Source |
+|---|---|
+| `x-authenticated-subject` | JWT `sub` |
+| `x-authenticated-client-id` | JWT `client_id` (or `service` for API-key callers) |
+| `x-authenticated-token-use` | JWT `token_use` |
+| `x-gateway-service` | constant `recsys-api-gateway` (`recsys-llm-gateway` on the LLM proxy) |
+
+**Anti-spoofing:** the gateway strips **any** client-supplied `x-authenticated-*` header before proxying upstream — backends may trust `x-authenticated-*` only because the gateway is their sole source. This holds for both the service proxy and the LLM proxy.
+
+#### Credential stripping (upstream)
+
+The gateway is the trust boundary, so it removes the caller's raw credentials — `x-api-key` and `Authorization` — from the request before proxying to any backend. Upstream services never see the API key or bearer token; they receive only the derived `x-authenticated-*` identity headers. Hop-by-hop headers are dropped as well.
 
 ### LLM proxy (`LlmProxyService`)
 
@@ -1227,9 +1257,13 @@ curl -v -X POST http://localhost:8010/api/llm/api/generate \
 | `LLM_SERVICE_URL` | _(unset)_ | Enables `/api/llm` — set to Ollama URL to activate |
 | `LLM_EXPLANATION_SERVICE_URL` | _(unset)_ | Enables `/api/explanations` |
 | `GATEWAY_API_KEYS` | _(unset)_ | Comma-separated API keys; enables `X-API-Key` / `Authorization: Bearer` auth |
-| `GATEWAY_PUBLIC_PATHS` | `/health` | Paths that bypass API-key auth |
-| `GATEWAY_RATE_LIMIT_RPS` | `0` | Global token-bucket rate; `0` = disabled |
+| `GATEWAY_COGNITO_ISSUER` | _(unset)_ | Cognito user-pool issuer URL; enables JWT auth (JWKS from `<issuer>/.well-known/jwks.json`) |
+| `GATEWAY_COGNITO_AUDIENCE` | _(unset)_ | Required when issuer is set — expected `aud` / client id |
+| `GATEWAY_COGNITO_TOKEN_USE` | `access` | Comma-separated accepted `token_use` values (e.g. `access,id`) |
+| `GATEWAY_PUBLIC_PATHS` | `/health` | Comma-separated path prefixes that bypass auth |
+| `GATEWAY_RATE_LIMIT_RPS` | `0` | Global token-bucket rate (per route+principal); `0` = disabled |
 | `GATEWAY_RATE_LIMIT_<ROUTE>_RPS` | _(unset)_ | Per-route override, e.g. `GATEWAY_RATE_LIMIT_MODEL_RPS` |
+| `GATEWAY_RL_MAX_PRINCIPALS` | `100000` | Max distinct rate-limit buckets held in the Caffeine cache |
 
 ### Model Serving — Spring Boot (port 8080)
 
@@ -1258,50 +1292,52 @@ curl -v -X POST http://localhost:8010/api/llm/api/generate \
 
 ## Project Layout
 
+The code follows a clean-architecture layering under `com.recsys`: the package name advertises a class's *role* (transport, use-case, domain, adapter), not the service that happens to use it. Each layer has feature sub-packages.
+
 ```text
 src/main/java/com/recsys/
-├── domain/         Shared value objects: Movie, User, Rating, RecommendationQuery, MovieCandidate
-├── data/           DataLoader / DataManager — bundled classpath movie+user+rating data
-├── infrastructure/
-│   ├── redis/      RedisConnectionFactory, RedisEmbeddingStore, ShardedTopKStore, RedisReadReplicaRouter, ReplicaConfig
-│   │   └── sharding/ ConsistentHashRing, Hashing (FNV-1a), ShardedRecordStore, ShardTopology* (versioned topology)
-│   ├── vectordb/   CandidateGenerator, VectorIndex (LSH + exact), EmbeddingStore
-│   ├── cache/      LocalEmbeddingCache, MultiLevelEmbeddingCache, HotKeyDetector
-│   ├── messaging/  AsyncEventPublisher + SQS/Kafka transports, AsyncEventPublisherFactory
+├── api/            Transport / entry points (all four services live here)
+│   ├── serving/    RecSysServer (Armeria, port 6010) + RecommendationService
+│   ├── online/     OnlinePredictionServer (Armeria, port 7010)
+│   ├── gateway/    MicroserviceGatewayServer (Armeria, port 8010)
+│   ├── rest/       ModelApplication (Spring Boot, port 8080) + controllers
+│   └── request · response · converter · envelope   Wire DTOs and mappers
+├── application/    Use-case orchestration
+│   ├── recommendation/ RecommendationOrchestrator — recall → rank → paginate → hydrate
+│   ├── retrieval/  MultiChannelRecallService, RecallConfig, QuotaPolicy, recall channels
+│   ├── ranking/    ScoreRanker, CandidateRanker
+│   ├── feature/    Feature assembly
+│   ├── experiment/ A/B testing (ABTestService)
+│   ├── model/      ONNX pipeline & artifacts (ModelRuntimeProvider, OnnxInferencePipeline)
+│   ├── online/     OnlineLearner and online use-cases
+│   ├── gateway/    GatewayProxyService, GatewayAuthenticator, CognitoJwtVerifier, LlmProxyService
+│   ├── pagination/ MillionScalePaginationSql, cursor/seek paging
+│   ├── auth · knowledge · saga/   SagaOrchestrators (Standard / Tcc)
+├── domain/         Value types: item, user, rating, recommendation, prediction, online, knowledge, saga
+├── infrastructure/ Technical adapters
+│   ├── redis/      RedisExecutor (Lettuce port), embedding store, ShardedTopKStore, read-replica router
+│   │   └── sharding/ ConsistentHashRing, Hashing (FNV-1a), ShardedRecordStore, versioned ShardTopology
+│   ├── vectordb/   CandidateGenerator, VectorIndex (LSH + exact)
+│   ├── cache/      MultiLevelEmbeddingCache, LocalEmbeddingCache, HotKeyDetector
+│   ├── store/      OnlineFeatureStore, trending store
+│   ├── messaging/  AsyncEventPublisher + SQS/Kafka transports
+│   ├── persistence/ MySqlClient (opt-in JDBC + HikariCP)
+│   ├── featureflags/ FeatureFlagService, PostHog + environment-backed flags
+│   ├── lock · dataloading · resilience/   Distributed lock, classpath loaders, bloom/hotkey/single-flight
 │   ├── alb/        ApplicationLoadBalancer (L7 listener/target-group routing)
 │   └── autoscaling/ Auto-scaling signal publishers
-├── service/
-│   ├── retrieval/  MultiChannelRecallService, RecallConfig, QuotaPolicy, recall channels (Embedding, Trending, GenreHistory, OnlineRecentHistory, Popularity, ColdStart)
-│   ├── ranking/    Ranking pipeline
-│   ├── recommendation/ Shared recall → rank → paginate → hydrate pipeline
-│   ├── hydrator/   Item/user hydration
-│   ├── feedback/   Feedback processing
-│   └── pagination/ Cursor-based result pagination
-├── serving/        Armeria HTTP services for port 6010 (RecSysServer)
-├── online/         Online serving layer for port 7010
-│   ├── serving/    OnlinePredictionServer, OnlinePredictionService, OnlineFeaturesService
-│   ├── flink/      Flink job — writes history + embeddings + trending to Redis
-│   ├── learner/    OnlineLearner, OnlineJoiner, ExperienceCollector, LogCollector
-│   ├── ops/        OnlineLoadShedder, OnlineCapacityService, OnlineServingMetricsService, OnlineOpsService
-│   ├── redis/      RedisRateLimiter, WatchdogLock
-│   ├── store/      OnlineFeatureStore, ShardedRecordStore, TrendingStore
-│   └── event/      AsyncEventPublisher
-├── model/          Spring Boot ONNX model serving for port 8080
-│   ├── controller/ RecommendationController, HealthController, VersionController
-│   ├── service/    RecommendationService, ModelRuntimeProvider, ABTestService, LoadShedder, GcEventTracker
-│   ├── request/    RecommendRequest, ModelVersionRequest
-│   ├── response/   RecommendResponse, ModelVersionResponse, SubmitTokenResponse
-│   ├── dto/        ScoredItem
-│   ├── exception/  RateLimitExceededException, ServiceOverloadedException
-│   └── vo/         Value objects
-├── microservice/   API gateway: routing, circuit breakers, rate limiting, LLM proxy
-├── config/         Spring @ConfigurationProperties (ABTestConfig, HealthProperties, etc.)
-├── featureflags/   FeatureFlagService, PostHog integration, environment-backed flags
-├── annotation/     Custom annotations
-├── mysql/          Thin JDBC wrapper (opt-in)
-├── saga/           AWS Step Functions saga orchestration (SagaOrchestrator, TccSagaOrchestrator)
-└── training/
-    └── rulebased/  Spark Word2Vec item embedding job (ItemEmbeddingJob)
+├── metrics/        Request/inference metrics (Micrometer + Armeria)
+├── jvm/            GcEventTracker, JvmMemoryMonitor
+├── tracing/        TraceIdAspect (trace-id propagation)
+├── ratelimit/      TokenBucket, GatewayRateLimiter, LLM/model/Redis limiters
+├── loadshed/       Load shedders, admission control, graceful shutdown
+├── resilience/     Circuit breaker, bulkhead, fault injector
+├── health/         Online-serving health/ops endpoints + capacity sizing
+├── config/         Spring config + @ConfigurationProperties, EnvConfig / EnvVars
+├── exception/      Exception types + GlobalExceptionHandler
+├── data/           Bundled classpath movie + user + rating data
+├── online/flink/          Flink job — writes history + embeddings + trending to Redis  (excluded from Maven compile)
+└── training/rulebased/    Spark Word2Vec item embedding job (ItemEmbeddingJob)         (excluded from Maven compile)
 
 src/main/resources/
 ├── dssm_model.onnx           Bundled DSSM demo model
@@ -1312,8 +1348,10 @@ src/main/resources/
 └── logback-spring.xml        Logging config
 
 k8s/base/     Kustomize base manifests for all four services
-k8s/eks/      EKS overlays (IRSA, Cloud Map, ECR image)
+k8s/eks/      EKS overlays (IRSA, Cloud Map, ECR image, WAF ALB Ingress, topology-aware routing)
 ```
+
+> `online/flink/` and `training/rulebased/` need Spark/Flink classpaths and are intentionally left outside the layer scheme and the Maven compile.
 
 ---
 
@@ -1562,7 +1600,7 @@ docker compose -f streaming/online-serving/docker-compose.yml up -d
 sh streaming/online-serving/scripts/load_online_features.sh
 
 sh scripts/run-with-jvm-tuning.sh online-serving -- \
-  mvn exec:java -Dexec.mainClass=com.recsys.online.serving.OnlinePredictionServer
+  mvn exec:java -Dexec.mainClass=com.recsys.api.online.OnlinePredictionServer
 
 # Verify
 curl "http://localhost:7010/online/recommendation?userId=123&window=last_hour&k=5"
@@ -1779,7 +1817,7 @@ curl -X POST http://localhost:8080/api/v1/recommend \
 
 | | Rule-based (Spark) | Model-based (ONNX) | Serving API (classpath) |
 |---|---|---|---|
-| Written by | Spark → Jedis pipeline | External PyTorch/ONNX pipeline | Bundled text resources |
+| Written by | Spark → Lettuce pipeline | External PyTorch/ONNX pipeline | Bundled text resources |
 | Stored in | Redis `i2vEmb:<id>` | ONNX + config artifacts; item embeddings in Redis | Classpath + JVM heap |
 | Retrieval | Redis MGET → exact inner-product | DSSM ONNX pair scoring | `VectorIndex`: `lsh` or `exact` |
 | TTL | 86400 s default | Redis-configurable | Reloads on restart |
@@ -1823,14 +1861,16 @@ MODEL_SERVICE_URL=http://recsys-model-serving:8080
 ONLINE_SERVICE_URL=http://recsys-online-serving:7010
 ```
 
-On EKS with Cloud Map, DNS names follow the pattern `http://<service>.recsys.internal:<port>`.
-
 ```bash
-# Deploy EKS overlay (ECR image, IRSA, Cloud Map)
+# Deploy EKS overlay (ECR image, IRSA, Cloud Map, WAF ALB, topology-aware routing)
 kubectl apply -k k8s/eks
 ```
 
-See [docs/aws/eks-deployment.md](docs/aws/eks-deployment.md) for ECR push and EKS commands.
+**Public edge — WAF-protected ALB (EKS).** The EKS overlay makes a WAFv2-protected ALB `Ingress` (`waf-api-gateway-ingress.yaml`) the *sole* public entry to the gateway. AWS WAF cannot attach to an NLB, so the overlay drops the NLB: the gateway Service is patched to `ClusterIP` and its NLB-only annotations are removed. The WebACL is created out-of-band (Terraform/console) and referenced by ARN via `alb.ingress.kubernetes.io/wafv2-acl-arn` — see [docs/runbooks/waf-webacl.md](docs/runbooks/waf-webacl.md).
+
+**In-cluster traffic — kube-DNS + same-AZ.** Service-to-service calls resolve through Kubernetes ClusterIP (kube-DNS) names, not Cloud Map. Cloud Map DNS is topology-blind and bypasses kube-proxy, so it can't keep traffic same-AZ; using ClusterIP names lets EKS topology-aware routing (`trafficDistribution: PreferClose`, `topology-aware-routing-patch.yaml`) prefer same-AZ endpoints and cut cross-AZ data-transfer cost. Cloud Map (`*.recsys.internal`) is retained **only** for callers outside the cluster.
+
+The overlay manifests live under [k8s/eks/](k8s/eks/); the WAF WebACL wiring is documented in [docs/runbooks/waf-webacl.md](docs/runbooks/waf-webacl.md).
 
 ---
 
@@ -1911,9 +1951,9 @@ jps -lv                                                     # find the PID
 sh scripts/arthas-diagnostics.sh <pid> thread               # CPU threads + deadlock
 sh scripts/arthas-diagnostics.sh <pid> cpu 60               # flame graph (60 s)
 sh scripts/arthas-diagnostics.sh <pid> watch \
-  com.recsys.model.service.RankingService rank              # inspect params/return/cost
+  com.recsys.application.ranking.ScoreRanker rank           # inspect params/return/cost
 sh scripts/arthas-diagnostics.sh <pid> trace \
-  com.recsys.model.service.RecommendationService recommend  # call path cost
+  com.recsys.application.recommendation.RecommendationOrchestrator recommend  # call path cost
 ```
 
 MAT heap analysis:
@@ -2020,12 +2060,12 @@ done
 
 ## AWS Saga Orchestration
 
-`com.recsys.saga` provides durable multi-step orchestration for eventual-consistency workflows, backed by AWS Step Functions.
+`com.recsys.application.saga` provides durable multi-step orchestration for eventual-consistency workflows, backed by AWS Step Functions.
 
 | Class | Pattern | Use when |
 |---|---|---|
-| `SagaOrchestrator` | Compensating transaction | Sequential steps with best-effort rollback |
-| `TccSagaOrchestrator` | Try / Confirm / Cancel | Stronger consistency — Try reserves, Confirm commits, Cancel releases |
+| `SagaOrchestrators.Standard` | Compensating transaction | Sequential steps with best-effort rollback |
+| `SagaOrchestrators.Tcc` | Try / Confirm / Cancel | Stronger consistency — Try reserves, Confirm commits, Cancel releases |
 
 Both use full-jitter exponential backoff (matching `MaxDelaySeconds: 30`, `JitterStrategy: FULL` in generated ASL).
 
