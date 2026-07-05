@@ -82,6 +82,8 @@ public final class OnlineLoadShedder {
 
     public Snapshot snapshot() {
         double utilization = utilization();
+        // Reuse the single `utilization` read above (not shouldDrain(), which recomputes it) so the
+        // snapshot's utilization field and the draining/retryAfterSeconds decision reflect one consistent read.
         boolean draining = shuttingDown || utilization >= drainUtilization;
         int retryAfterSeconds = draining ? 1 : 0;
         int suggestedWeight = shuttingDown ? 0 : Math.max(0, (int) Math.round((1.0 - utilization) * 100.0));
