@@ -9,7 +9,10 @@ resources:
 images:
   - name: recsys-backend-service
     newName: 123456789012.dkr.ecr.us-east-1.amazonaws.com/recsys-backend-service
-    newTag: latest
+    # Immutable digest — a cached node skips ECR on scale-up (IfNotPresent). This value is a
+    # PLACEHOLDER; the deploy process pins the real digest with scripts/set-eks-image-digest.sh
+    # before `kubectl apply`. See docs/runbooks/deploy-image-digest.md.
+    digest: sha256:0000000000000000000000000000000000000000000000000000000000000000
 
 replicas:
   - name: redis-primary
@@ -24,8 +27,6 @@ patches:
   - path: cloud-map-service-patch.yaml
   # Set gateway timeout; in-cluster service URLs use kube-DNS (see the patch's comment).
   - path: configmap-patch.yaml
-  # Force Always pull policy so ECR tag reassignment is picked up on every rollout.
-  - path: image-pull-policy-patch.yaml
   # Override Redis config for ElastiCache (standalone mode, disable Sentinel env vars).
   - path: redis-elasticache-patch.yaml
   # Patch gateway Deployment to use the IRSA ServiceAccount.
