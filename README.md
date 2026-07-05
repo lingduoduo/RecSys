@@ -307,20 +307,30 @@ RECSYS_VECTOR_BACKEND=exact mvn exec:java -Dexec.mainClass=com.recsys.api.servin
 The cursor is a *keyset* anchor on the last item's `(score, itemId)` — **not** an absolute offset — so excluding items or a shifting ranked list between pages never silently skips or duplicates results. Recall is bounded to a window of `5 × limit` candidates and recomputed each request, so this paginates within a fresh recall window rather than over a frozen million-row snapshot.
 
 ```bash
-# First page
-curl -X POST "http://localhost:6010/v2/recommend" \
-  -H "Content-Type: application/json" \
-  -d '{"userId":"123","limit":10,"excludedItemIds":["1","2"]}'
+# First page — no cursor. Keep excludedItemIds fixed for the whole browse.
+curl -s -X POST http://localhost:6010/v2/recommend \
+  -H 'Content-Type: application/json' \
+  -d '{
+        "userId": "42",
+        "limit": 20,
+        "excludedItemIds": ["101", "205"]
+      }'
 
-# Next page — pass back the nextCursor from the previous response
-curl -X POST "http://localhost:6010/v2/recommend" \
-  -H "Content-Type: application/json" \
-  -d '{"userId":"123","limit":10,"cursor":"<nextCursor>"}'
+# Next page — same excludedItemIds, cursor = the previous response's nextCursor.
+# Repeat, feeding nextCursor back in, until "nextCursor": null.
+curl -s -X POST http://localhost:6010/v2/recommend \
+  -H 'Content-Type: application/json' \
+  -d '{
+        "userId": "42",
+        "limit": 20,
+        "excludedItemIds": ["101", "205"],
+        "cursor": "djI6MC45Mzo0"
+      }'
 ```
 
 ```json
 {
-  "userId": "123",
+  "userId": "42",
   "items": [
     {"itemId": "4", "score": 0.93, "rank": 1, "features": {"title": "The Matrix", "year": 1999}}
   ],
@@ -421,6 +431,18 @@ Both serving ports run the **same** `MultiChannelRecallService` — only their p
 The per-channel timeout is the one knob shared across both ports — set `RECALL_CHANNEL_TIMEOUT_MS=<ms>` once to tune 6010 and 7010 together (unset → 200 ms, unchanged).
 
 `QuotaPolicy` encodes each port's warm/cold quota as ordered fraction maps plus a *residual* channel that absorbs leftover slots; the [6010](#port-6010--catalog--recommendation-serving) and [7010](#port-7010--online-prediction-server-feature-store) tables above show the resolved percentages.
+
+**Try it — one user, both ports.** The *same warm user* runs through the *same shared core*; only the per-port `RecallConfig` (channel set + quota) differs, so the returned mix differs:
+
+```bash
+# Port 6010 — genre_history in the channel set, QuotaPolicy.defaultMovie()
+curl "http://localhost:6010/getrecommendation?userId=123&k=10"
+
+# Port 7010 — online_recent_history instead of genre_history, QuotaPolicy.defaultOnline()
+curl "http://localhost:7010/online/recommendation?userId=123&k=10"
+```
+
+Both classify user `123` as **warm** (it has a `u2vEmb:123` embedding) and lead with embedding ANN; 6010 fills its residual from genre history while 7010 fills its from recent-watch history. Swap in the built-in cold user (`200`) to see both ports flip to the `cold_start` / `trending` / `popularity` mix from the same code path.
 
 ### Port 7010 — Online Prediction Server (Feature Store)
 
