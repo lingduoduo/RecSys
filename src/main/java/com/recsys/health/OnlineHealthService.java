@@ -39,7 +39,8 @@ public final class OnlineHealthService extends BaseApiService {
                     "qps", metrics.qps(),
                     "inFlightRequests", load.inFlightRequests(),
                     "maxConcurrentRequests", load.maxConcurrentRequests(),
-                    "suggestedWeight", load.suggestedWeight()
+                    "suggestedWeight", load.suggestedWeight(),
+                    "shuttingDown", load.shuttingDown()
             ));
         }, ctx.blockingTaskExecutor()));
     }
