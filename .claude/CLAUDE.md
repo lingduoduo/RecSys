@@ -48,7 +48,7 @@ mvn exec:java -Dexec.mainClass=com.recsys.api.online.OnlinePredictionServer
 mvn exec:java -Dexec.mainClass=com.recsys.api.gateway.MicroserviceGatewayServer
 ```
 
-Key env vars: `REDIS_HOST`, `REDIS_PORT`, `PORT`/`ONLINE_DEMO_PORT`/`GATEWAY_PORT`, `SERVER_PORT`, `RECALL_CHANNEL_TIMEOUT_MS` (per-channel recall timeout for both serving ports; default 200).
+Key env vars: `REDIS_HOST`, `REDIS_PORT`, `PORT`/`ONLINE_DEMO_PORT`/`GATEWAY_PORT`, `SERVER_PORT`, `RECALL_CHANNEL_TIMEOUT_MS` (per-channel recall timeout for both serving ports; default 200), `LLM_WARMUP_ENABLED` (default true; gateway pre-connects to each LLM upstream's health path at startup), `LLM_CONNECT_TIMEOUT_MS` (default 2000), `LLM_IDLE_TIMEOUT_MS` (default 60000), `LLM_PING_INTERVAL_MS` (default 20000, HTTP/2 keepalive) — the last three tune the gateway's dedicated LLM `ClientFactory`. Keep `LLM_PING_INTERVAL_MS` below `LLM_IDLE_TIMEOUT_MS`.
 
 ## Architecture
 

@@ -133,16 +133,21 @@ public final class LlmProxyService implements HttpService {
      * that real requests will reuse. Never blocks startup and never throws — failures are logged.
      */
     public CompletableFuture<Void> warmUp() {
-        URI healthUri = route.healthUri();
-        String rawQuery = healthUri.getRawQuery();
-        String target = rawQuery != null ? healthUri.getRawPath() + "?" + rawQuery : healthUri.getRawPath();
-        return webClient.get(target).aggregate()
-                .thenAccept(agg -> log.info("LLM warmup for {} -> {}", route.name(), agg.status()))
-                .exceptionally(t -> {
-                    log.warn("LLM warmup for {} failed (non-fatal): {}", route.name(), t.toString());
-                    return null;
-                })
-                .toCompletableFuture();
+        try {
+            URI healthUri = route.healthUri();
+            String rawQuery = healthUri.getRawQuery();
+            String target = rawQuery != null ? healthUri.getRawPath() + "?" + rawQuery : healthUri.getRawPath();
+            return webClient.get(target).aggregate()
+                    .thenAccept(agg -> log.info("LLM warmup for {} -> {}", route.name(), agg.status()))
+                    .exceptionally(t -> {
+                        log.warn("LLM warmup for {} failed (non-fatal): {}", route.name(), t.toString());
+                        return null;
+                    })
+                    .toCompletableFuture();
+        } catch (Throwable t) {
+            log.warn("LLM warmup for {} failed to start (non-fatal): {}", route.name(), t.toString());
+            return CompletableFuture.completedFuture(null);
+        }
     }
 
     @Override

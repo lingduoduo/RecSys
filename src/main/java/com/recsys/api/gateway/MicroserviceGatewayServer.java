@@ -81,6 +81,7 @@ public final class MicroserviceGatewayServer {
 
         // LLM path: build a tuned, shared ClientFactory (only when LLM routes exist) and register
         // each LLM route from it, then best-effort pre-connect so the first request is warm.
+        // Register LLM routes before the catch-all so Armeria's more-specific prefix wins.
         ClientFactory llmClientFactory = null;
         if (!llmRoutes.isEmpty()) {
             llmClientFactory = buildLlmClientFactory(System::getenv);
