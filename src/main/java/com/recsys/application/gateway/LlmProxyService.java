@@ -6,6 +6,7 @@ import com.recsys.infrastructure.cache.LlmResponseCache;
 
 import com.fasterxml.jackson.databind.JsonNode;
 import com.fasterxml.jackson.databind.ObjectMapper;
+import com.linecorp.armeria.client.ClientFactory;
 import com.linecorp.armeria.client.WebClient;
 import com.linecorp.armeria.common.HttpData;
 import com.linecorp.armeria.common.HttpHeaderNames;
@@ -20,6 +21,9 @@ import com.linecorp.armeria.common.RequestHeadersBuilder;
 import com.linecorp.armeria.common.ResponseHeaders;
 import com.linecorp.armeria.server.HttpService;
 import com.linecorp.armeria.server.ServiceRequestContext;
+
+import org.slf4j.Logger;
+import org.slf4j.LoggerFactory;
 
 import java.net.URI;
 import java.time.Duration;
@@ -57,6 +61,7 @@ public final class LlmProxyService implements HttpService {
 
     private static final int SC_TOO_MANY_REQUESTS = 429;
     private static final ObjectMapper MAPPER = new ObjectMapper();
+    private static final Logger log = LoggerFactory.getLogger(LlmProxyService.class);
 
     private static final Set<String> HOP_BY_HOP = Set.of(
             "connection", "content-length", "expect", "host", "keep-alive",
@@ -83,7 +88,8 @@ public final class LlmProxyService implements HttpService {
                     int defaultTokenEstimate,
                     long maxRetryWaitMs) {
         this(route, timeout, circuitBreaker, tokenRateLimiter, responseCache,
-                defaultTokenEstimate, maxRetryWaitMs, GatewayAuthenticator.disabled());
+                defaultTokenEstimate, maxRetryWaitMs, GatewayAuthenticator.disabled(),
+                ClientFactory.ofDefault());
     }
 
     public LlmProxyService(MicroserviceRoute route,
@@ -94,6 +100,19 @@ public final class LlmProxyService implements HttpService {
                     int defaultTokenEstimate,
                     long maxRetryWaitMs,
                     GatewayAuthenticator authenticator) {
+        this(route, timeout, circuitBreaker, tokenRateLimiter, responseCache,
+                defaultTokenEstimate, maxRetryWaitMs, authenticator, ClientFactory.ofDefault());
+    }
+
+    public LlmProxyService(MicroserviceRoute route,
+                    Duration timeout,
+                    RouteCircuitBreaker circuitBreaker,
+                    LlmTokenRateLimiter tokenRateLimiter,
+                    LlmResponseCache responseCache,
+                    int defaultTokenEstimate,
+                    long maxRetryWaitMs,
+                    GatewayAuthenticator authenticator,
+                    ClientFactory clientFactory) {
         this.route = route;
         this.circuitBreaker = circuitBreaker;
         this.tokenRateLimiter = tokenRateLimiter;
@@ -103,8 +122,27 @@ public final class LlmProxyService implements HttpService {
         this.authenticator = authenticator == null ? GatewayAuthenticator.disabled() : authenticator;
 
         this.webClient = WebClient.builder(route.baseUri().toString())
+                .factory(clientFactory == null ? ClientFactory.ofDefault() : clientFactory)
                 .responseTimeoutMillis(timeout.toMillis())
                 .build();
+    }
+
+    /**
+     * Best-effort pre-connect: issues a GET to the upstream health path through this service's
+     * own {@link WebClient}, seating the pooled connection (DNS + TCP + TLS + HTTP/2 preface)
+     * that real requests will reuse. Never blocks startup and never throws — failures are logged.
+     */
+    public CompletableFuture<Void> warmUp() {
+        URI healthUri = route.healthUri();
+        String rawQuery = healthUri.getRawQuery();
+        String target = rawQuery != null ? healthUri.getRawPath() + "?" + rawQuery : healthUri.getRawPath();
+        return webClient.get(target).aggregate()
+                .thenAccept(agg -> log.info("LLM warmup for {} -> {}", route.name(), agg.status()))
+                .exceptionally(t -> {
+                    log.warn("LLM warmup for {} failed (non-fatal): {}", route.name(), t.toString());
+                    return null;
+                })
+                .toCompletableFuture();
     }
 
     @Override
