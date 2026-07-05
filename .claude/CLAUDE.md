@@ -4,6 +4,10 @@ This file provides guidance to Claude Code (claude.ai/code) when working with co
 
 ## Build & Test
 
+Requires JDK 17 (e.g. `JAVA_HOME=$(/usr/libexec/java_home -v 17) mvn ...`). On newer JDKs (25), the default
+toolchain fails a clean compile of two pre-existing files (`LlmResponseCache.java`, `RecommendationCache.java`)
+due to stricter generics handling of a diamond-operator-with-anonymous-class.
+
 ```bash
 # Build (skip tests)
 mvn package -DskipTests

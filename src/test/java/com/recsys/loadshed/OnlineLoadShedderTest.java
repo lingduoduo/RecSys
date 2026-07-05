@@ -59,4 +59,38 @@ class OnlineLoadShedderTest {
         assertThat(shedder.snapshot().retryAfterSeconds()).isEqualTo(1);
         assertThat(shedder.retryAfterSeconds()).isEqualTo(1);
     }
+
+    @Test
+    void markShuttingDown_rejectsNewRequestsAndFlipsDrain() {
+        var shedder = new OnlineLoadShedder(4, 0.95); // plenty of headroom, not utilization-draining
+
+        assertThat(shedder.isShuttingDown()).isFalse();
+        assertThat(shedder.shouldDrain()).isFalse();
+
+        shedder.markShuttingDown();
+
+        assertThat(shedder.isShuttingDown()).isTrue();
+        assertThat(shedder.tryAcquire()).isFalse();          // new work rejected during drain
+        assertThat(shedder.shouldDrain()).isTrue();           // readiness will report 503
+
+        var snap = shedder.snapshot();
+        assertThat(snap.shuttingDown()).isTrue();
+        assertThat(snap.suggestedWeight()).isEqualTo(0);      // advertise zero weight while draining
+        assertThat(snap.retryAfterSeconds()).isEqualTo(1);
+    }
+
+    @Test
+    void markShuttingDown_isIdempotent() {
+        var shedder = new OnlineLoadShedder(2, 0.95);
+        shedder.markShuttingDown();
+        shedder.markShuttingDown();
+        assertThat(shedder.isShuttingDown()).isTrue();
+        assertThat(shedder.tryAcquire()).isFalse();
+    }
+
+    @Test
+    void defaultConstructor_drainUtilizationIsNinetyFive() {
+        // Verifies DEFAULT_DRAIN_UTILIZATION; assumes ONLINE_DRAIN_UTILIZATION env is unset.
+        assertThat(new OnlineLoadShedder().snapshot().drainUtilization()).isEqualTo(0.95);
+    }
 }

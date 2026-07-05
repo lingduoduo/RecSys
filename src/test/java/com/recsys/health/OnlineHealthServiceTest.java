@@ -37,4 +37,31 @@ class OnlineHealthServiceTest {
             SHEDDER.release();
         }
     }
+
+    // Dedicated shedder for the shutdown case — markShuttingDown() is one-way, so it must not be
+    // shared with the utilization-draining test above.
+    private static final OnlineLoadShedder SHUTDOWN_SHEDDER = new OnlineLoadShedder(4, 0.95);
+
+    @RegisterExtension
+    static final ServerExtension shutdownServer = new ServerExtension() {
+        @Override
+        protected void configure(ServerBuilder sb) {
+            sb.service("/health/ready",
+                    new OnlineHealthService(new OnlineServingMetricsService(), SHUTDOWN_SHEDDER));
+        }
+    };
+
+    @Test
+    void sigtermFlipsReadinessToUnavailableAndBodyShowsShuttingDown() {
+        // Healthy before SIGTERM: low utilization, not shutting down.
+        var before = shutdownServer.blockingWebClient().get("/health/ready");
+        assertThat(before.status()).isEqualTo(HttpStatus.OK);
+        assertThat(before.contentUtf8()).contains("\"shuttingDown\":false");
+
+        SHUTDOWN_SHEDDER.markShuttingDown();
+
+        var after = shutdownServer.blockingWebClient().get("/health/ready");
+        assertThat(after.status()).isEqualTo(HttpStatus.SERVICE_UNAVAILABLE);
+        assertThat(after.contentUtf8()).contains("\"shuttingDown\":true");
+    }
 }

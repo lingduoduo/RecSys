@@ -10,13 +10,16 @@ import java.util.concurrent.atomic.AtomicLong;
  */
 public final class OnlineLoadShedder {
     private static final int DEFAULT_MAX_CONCURRENT_REQUESTS = 64;
-    private static final double DEFAULT_DRAIN_UTILIZATION = 0.90;
+    private static final double DEFAULT_DRAIN_UTILIZATION = 0.95;
 
     private final int maxConcurrentRequests;
     private final double drainUtilization;
     private final AtomicInteger inFlightRequests = new AtomicInteger();
     private final AtomicLong acceptedRequests = new AtomicLong();
     private final AtomicLong rejectedRequests = new AtomicLong();
+
+    // Set once on SIGTERM; volatile so all threads see it immediately. One-way, never reset.
+    private volatile boolean shuttingDown = false;
 
     public OnlineLoadShedder() {
         this(
@@ -30,7 +33,23 @@ public final class OnlineLoadShedder {
         this.drainUtilization = Math.min(1.0, Math.max(0.0, drainUtilization));
     }
 
+    /**
+     * Called on SIGTERM so readiness returns 503 and admission control rejects new requests,
+     * letting load balancers drain this instance before in-flight work is interrupted.
+     */
+    public void markShuttingDown() {
+        shuttingDown = true;
+    }
+
+    public boolean isShuttingDown() {
+        return shuttingDown;
+    }
+
     public boolean tryAcquire() {
+        if (shuttingDown) {
+            rejectedRequests.incrementAndGet();
+            return false;
+        }
         while (true) {
             int current = inFlightRequests.get();
             if (current >= maxConcurrentRequests) {
@@ -53,7 +72,7 @@ public final class OnlineLoadShedder {
     }
 
     public boolean shouldDrain() {
-        return utilization() >= drainUtilization;
+        return shuttingDown || utilization() >= drainUtilization;
     }
 
     /** Suggested Retry-After value in seconds; 1 when draining, 0 otherwise. */
@@ -63,7 +82,11 @@ public final class OnlineLoadShedder {
 
     public Snapshot snapshot() {
         double utilization = utilization();
-        int retryAfterSeconds = utilization >= drainUtilization ? 1 : 0;
+        // Reuse the single `utilization` read above (not shouldDrain(), which recomputes it) so the
+        // snapshot's utilization field and the draining/retryAfterSeconds decision reflect one consistent read.
+        boolean draining = shuttingDown || utilization >= drainUtilization;
+        int retryAfterSeconds = draining ? 1 : 0;
+        int suggestedWeight = shuttingDown ? 0 : Math.max(0, (int) Math.round((1.0 - utilization) * 100.0));
         return new Snapshot(
                 inFlightRequests.get(),
                 maxConcurrentRequests,
@@ -71,8 +94,9 @@ public final class OnlineLoadShedder {
                 drainUtilization,
                 acceptedRequests.get(),
                 rejectedRequests.get(),
-                Math.max(0, (int) Math.round((1.0 - utilization) * 100.0)),
-                retryAfterSeconds
+                suggestedWeight,
+                retryAfterSeconds,
+                shuttingDown
         );
     }
 
@@ -88,6 +112,7 @@ public final class OnlineLoadShedder {
             long acceptedRequests,
             long rejectedRequests,
             int suggestedWeight,
-            int retryAfterSeconds
+            int retryAfterSeconds,
+            boolean shuttingDown
     ) {}
 }

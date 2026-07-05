@@ -9,6 +9,7 @@ import com.recsys.ratelimit.LlmTokenRateLimiter;
 import com.recsys.ratelimit.GatewayRateLimiter;
 import com.recsys.resilience.RouteCircuitBreaker;
 import com.recsys.infrastructure.cache.LlmResponseCache;
+import com.recsys.loadshed.GracefulServers;
 
 import com.linecorp.armeria.client.ClientFactory;
 import com.linecorp.armeria.server.Server;
@@ -95,6 +96,8 @@ public final class MicroserviceGatewayServer {
         // Catch-all proxy — handles all non-LLM routes.
         sb.service("prefix:/",
                 new GatewayProxyService(proxyRoutes, timeout, circuitBreakers, rateLimiter, authenticator));
+
+        GracefulServers.applyShutdownWindow(sb);
 
         Server server = sb.build();
 
