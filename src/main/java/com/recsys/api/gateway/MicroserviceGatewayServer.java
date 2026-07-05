@@ -10,15 +10,18 @@ import com.recsys.ratelimit.GatewayRateLimiter;
 import com.recsys.resilience.RouteCircuitBreaker;
 import com.recsys.infrastructure.cache.LlmResponseCache;
 
+import com.linecorp.armeria.client.ClientFactory;
 import com.linecorp.armeria.server.Server;
 import com.linecorp.armeria.server.ServerBuilder;
 import org.slf4j.Logger;
 import org.slf4j.LoggerFactory;
 
 import java.time.Duration;
+import java.util.ArrayList;
 import java.util.List;
 import java.util.Map;
 import java.util.Set;
+import java.util.concurrent.CompletableFuture;
 import java.util.stream.Collectors;
 
 public final class MicroserviceGatewayServer {
@@ -76,23 +79,16 @@ public final class MicroserviceGatewayServer {
         // Health endpoint — exposes per-route circuit state and upstream reachability.
         sb.service("/health", new GatewayHealthService(allRoutes, timeout, circuitBreakers, port));
 
-        // Register LLM services before the catch-all so Armeria's more-specific prefix wins.
-        for (MicroserviceRoute llmRoute : llmRoutes) {
-            LlmProxyService llmProxyService = new LlmProxyService(
-                    llmRoute,
-                    llmTimeout,
-                    circuitBreakers.get(llmRoute.name()),
-                    llmTokenRateLimiter,
-                    llmResponseCache,
-                    llmDefaultTokenEstimate,
-                    llmMaxRetryWaitMs,
-                    authenticator
-            );
-            sb.service(
-                    com.linecorp.armeria.server.Route.builder()
-                            .pathPrefix(llmRoute.prefix() + "/")
-                            .build(),
-                    llmProxyService);
+        // LLM path: build a tuned, shared ClientFactory (only when LLM routes exist) and register
+        // each LLM route from it, then best-effort pre-connect so the first request is warm.
+        ClientFactory llmClientFactory = null;
+        if (!llmRoutes.isEmpty()) {
+            llmClientFactory = buildLlmClientFactory(System::getenv);
+            boolean warmupEnabled = EnvVars.readBool("LLM_WARMUP_ENABLED", true);
+            registerLlmRoutes(sb, llmRoutes, llmClientFactory, llmTimeout, circuitBreakers,
+                    llmTokenRateLimiter, llmResponseCache, llmDefaultTokenEstimate, llmMaxRetryWaitMs,
+                    authenticator, warmupEnabled);
+            // Warmup futures are intentionally not joined — startup must not block on the upstream.
         }
 
         // Catch-all proxy — handles all non-LLM routes.
@@ -101,9 +97,13 @@ public final class MicroserviceGatewayServer {
 
         Server server = sb.build();
 
+        final ClientFactory llmFactoryToClose = llmClientFactory;
         Runtime.getRuntime().addShutdownHook(new Thread(() -> {
             log.info("Shutting down API gateway...");
             server.stop().join();
+            if (llmFactoryToClose != null) {
+                llmFactoryToClose.close();
+            }
         }));
 
         log.info("Starting RecSys API gateway on port {}", port);
@@ -125,5 +125,52 @@ public final class MicroserviceGatewayServer {
 
         server.start().join();
         server.blockUntilShutdown();
+    }
+
+    static ClientFactory buildLlmClientFactory(EnvVars.EnvReader env) {
+        long connectMs = EnvVars.readLong(env, "LLM_CONNECT_TIMEOUT_MS", 2000L);
+        long idleMs = EnvVars.readLong(env, "LLM_IDLE_TIMEOUT_MS", 60_000L);
+        long pingMs = EnvVars.readLong(env, "LLM_PING_INTERVAL_MS", 20_000L);
+        return ClientFactory.builder()
+                .connectTimeout(Duration.ofMillis(connectMs))
+                .idleTimeout(Duration.ofMillis(idleMs))
+                .pingIntervalMillis(pingMs)
+                .build();
+    }
+
+    static List<CompletableFuture<Void>> registerLlmRoutes(
+            ServerBuilder sb,
+            List<MicroserviceRoute> llmRoutes,
+            ClientFactory llmClientFactory,
+            Duration llmTimeout,
+            Map<String, RouteCircuitBreaker> circuitBreakers,
+            LlmTokenRateLimiter tokenRateLimiter,
+            LlmResponseCache responseCache,
+            int defaultTokenEstimate,
+            long maxRetryWaitMs,
+            GatewayAuthenticator authenticator,
+            boolean warmupEnabled) {
+        List<CompletableFuture<Void>> warmups = new ArrayList<>();
+        for (MicroserviceRoute llmRoute : llmRoutes) {
+            LlmProxyService llmProxyService = new LlmProxyService(
+                    llmRoute,
+                    llmTimeout,
+                    circuitBreakers.get(llmRoute.name()),
+                    tokenRateLimiter,
+                    responseCache,
+                    defaultTokenEstimate,
+                    maxRetryWaitMs,
+                    authenticator,
+                    llmClientFactory);
+            sb.service(
+                    com.linecorp.armeria.server.Route.builder()
+                            .pathPrefix(llmRoute.prefix() + "/")
+                            .build(),
+                    llmProxyService);
+            if (warmupEnabled) {
+                warmups.add(llmProxyService.warmUp());
+            }
+        }
+        return warmups;
     }
 }
