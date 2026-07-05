@@ -7,6 +7,16 @@ RUN --mount=type=cache,target=/root/.m2 \
     mvn -q -DskipTests package dependency:copy-dependencies -DincludeScope=runtime
 RUN jar cf /workspace/app-classes.jar -C /workspace/target/classes .
 
+# Strip ONNX Runtime natives for platforms this image never runs on (macOS + Windows, incl.
+# their dSYM debug symbols), keeping only the Linux .so files. ~81 MB off the shared dependency
+# layer that all four services carry. Both linux arches kept so the image runs on x64 or Graviton.
+# zip -d exits non-zero if nothing matches, so a future jar-layout change fails the build loudly.
+RUN yum install -y zip >/dev/null 2>&1 \
+    && zip -d /workspace/target/dependency/onnxruntime-*.jar \
+         'ai/onnxruntime/native/osx-x64/*' \
+         'ai/onnxruntime/native/osx-aarch64/*' \
+         'ai/onnxruntime/native/win-x64/*'
+
 # Build a minimal glibc JRE with jlink (this stage is glibc, matching the runtime base).
 # Detect modules from the real classpath, then union a safety set for reflectively-loaded
 # modules jdeps cannot see (crypto, JNDI, JDBC, management, instrumentation, locales) that
