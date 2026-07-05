@@ -63,7 +63,7 @@ public final class LlmResponseCache {
         }
     }
 
-    static LlmResponseCache disabled() {
+    public static LlmResponseCache disabled() {
         return new LlmResponseCache(0, 0);
     }
 
