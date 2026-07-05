@@ -25,7 +25,7 @@ public final class ShardTopologyProvider {
     private final LongSupplier clockMs;
 
     private volatile Snapshot snapshot;          // null until first successful refresh / fixed()
-    private ScheduledExecutorService scheduler;
+    ScheduledExecutorService scheduler;   // package-private for shutdown assertions in tests
 
     public ShardTopologyProvider(ShardTopologyStore store, int vnodes, int initialShardCount,
                                  long refreshMs, LongSupplier clockMs) {
@@ -113,7 +113,16 @@ public final class ShardTopologyProvider {
     }
 
     public void stop() {
-        if (scheduler != null) scheduler.shutdownNow();
+        if (scheduler == null) return;
+        scheduler.shutdown();
+        try {
+            if (!scheduler.awaitTermination(1, TimeUnit.SECONDS)) {
+                scheduler.shutdownNow();
+            }
+        } catch (InterruptedException e) {
+            scheduler.shutdownNow();
+            Thread.currentThread().interrupt();
+        }
     }
 
     /** Immutable triple swapped atomically on refresh. */

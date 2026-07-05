@@ -64,4 +64,26 @@ class ShardTopologyProviderTest {
         assertThat(p.current().shardCount()).isEqualTo(2);
         assertThat(p.previousIfActive()).isNull();
     }
+
+    @Test
+    void stop_shutsDownScheduler() {
+        ShardTopologyStore store = mock(ShardTopologyStore.class);
+        when(store.load()).thenReturn(snap(1, 2, 0L, null, null, null));
+        ShardTopologyProvider p = new ShardTopologyProvider(store, 150, 2, 30_000L, () -> 0L);
+        p.start();
+        assertThat(p.scheduler).isNotNull();
+
+        p.stop();
+
+        assertThat(p.scheduler.isShutdown()).isTrue();
+    }
+
+    @Test
+    void stop_onUnstartedProvider_doesNotThrow() {
+        ShardTopologyStore store = mock(ShardTopologyStore.class);
+        ShardTopologyProvider p = new ShardTopologyProvider(store, 150, 2, 30_000L, () -> 0L);
+        // never started -> scheduler is null
+        p.stop(); // must not throw
+        assertThat(p.scheduler).isNull();
+    }
 }
