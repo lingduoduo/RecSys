@@ -9,6 +9,7 @@ import com.recsys.infrastructure.dataloading.DataLoader;
 import com.recsys.infrastructure.dataloading.DataManager;
 import com.recsys.application.model.PairPredictionService;
 import com.recsys.loadshed.GracefulExecutors;
+import com.recsys.loadshed.GracefulServers;
 import com.recsys.infrastructure.cache.LocalEmbeddingCache;
 import com.recsys.infrastructure.redis.GlobalPopularityStore;
 import com.recsys.infrastructure.redis.LettuceClientFactory;
@@ -146,6 +147,8 @@ public class RecSysServer {
                                 HttpMethod.PATCH, HttpMethod.DELETE, HttpMethod.OPTIONS, HttpMethod.HEAD)
                         .newDecorator());
             }
+
+            GracefulServers.applyShutdownWindow(sb);
 
             Server server = sb.build();
             Runtime.getRuntime().addShutdownHook(new Thread(() -> {

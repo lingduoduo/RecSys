@@ -32,6 +32,7 @@ import com.recsys.application.online.LearnerFlushScheduler;
 import com.recsys.application.online.OnlineLearner;
 import com.recsys.resilience.FaultInjector;
 import com.recsys.loadshed.GracefulExecutors;
+import com.recsys.loadshed.GracefulServers;
 import com.recsys.loadshed.OnlineAdmissionControl;
 import com.recsys.health.OnlineCapacityService;
 import com.recsys.health.OnlineHealthService;
@@ -124,7 +125,6 @@ public final class OnlinePredictionServer {
             ServerBuilder sb = Server.builder();
             sb.http(port)
               .requestTimeoutMillis(requestTimeoutMs)
-              .gracefulShutdownTimeoutMillis(1_000L, 30_000L)
               .meterRegistry(registry)
               .decorator(MetricCollectingService.newDecorator(
                       MeterIdPrefixFunction.ofDefault("online_serving")))
@@ -154,6 +154,8 @@ public final class OnlinePredictionServer {
                               readIntEnv("SHARDED_RECORD_MAX_TTL_SECONDS", 86_400) * 1000L,
                               System::currentTimeMillis));
 
+            GracefulServers.applyShutdownWindow(sb);
+
             Server server = sb.build();
             metricsService.registerGauges(registry);
             LearnerFlushScheduler activeLearnerFlushScheduler = learnerFlushScheduler;
@@ -161,6 +163,7 @@ public final class OnlinePredictionServer {
 
             ExecutorService activeRecallExecutor = recallExecutor;
             Runtime.getRuntime().addShutdownHook(new Thread(() -> {
+                loadShedder.markShuttingDown();   // flip readiness to 503 + shed new load before draining
                 server.stop().join();
                 asyncEventPublisher.close();
                 activeLearnerFlushScheduler.close();
