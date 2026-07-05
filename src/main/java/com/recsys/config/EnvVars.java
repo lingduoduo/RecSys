@@ -45,4 +45,21 @@ public final class EnvVars {
     public static long readLong(String name, long def) {
         return readLong(System::getenv, name, def);
     }
+
+    public static boolean readBool(EnvReader env, String name, boolean def) {
+        String raw = env.get(name);
+        if (raw == null || raw.isBlank()) return def;
+        switch (raw.trim().toLowerCase(java.util.Locale.ROOT)) {
+            case "true": case "1": case "yes": case "on":
+                return true;
+            case "false": case "0": case "no": case "off":
+                return false;
+            default:
+                return def;
+        }
+    }
+
+    public static boolean readBool(String name, boolean def) {
+        return readBool(System::getenv, name, def);
+    }
 }
