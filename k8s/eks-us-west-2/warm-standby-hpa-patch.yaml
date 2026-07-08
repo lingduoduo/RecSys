@@ -1,0 +1,35 @@
+# Warm standby: keep every service running but at ~50% of primary minReplicas.
+# maxReplicas is inherited from base (unchanged) so HPA + cluster-autoscaler can
+# surge to full capacity on failover. Primary minReplicas: gateway 2, catalog 2,
+# model 3, online 2 -> standby: 1, 1, 2, 1.
+apiVersion: autoscaling/v2
+kind: HorizontalPodAutoscaler
+metadata:
+  name: recsys-api-gateway
+  namespace: recsys
+spec:
+  minReplicas: 1
+---
+apiVersion: autoscaling/v2
+kind: HorizontalPodAutoscaler
+metadata:
+  name: recsys-catalog-serving
+  namespace: recsys
+spec:
+  minReplicas: 1
+---
+apiVersion: autoscaling/v2
+kind: HorizontalPodAutoscaler
+metadata:
+  name: recsys-model-serving
+  namespace: recsys
+spec:
+  minReplicas: 2
+---
+apiVersion: autoscaling/v2
+kind: HorizontalPodAutoscaler
+metadata:
+  name: recsys-online-serving
+  namespace: recsys
+spec:
+  minReplicas: 1

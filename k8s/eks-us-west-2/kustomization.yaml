@@ -1,0 +1,23 @@
+# us-west-2 DR overlay (warm standby). Reuses ../base + ../eks-shared; overrides
+# only region-specific values. Keep the image `digest` identical to k8s/eks
+# (ECR cross-region replication). See docs/superpowers/specs/2026-07-08-multi-region-dr-failover-design.md.
+apiVersion: kustomize.config.k8s.io/v1beta1
+kind: Kustomization
+resources:
+  - ../base
+  - waf-api-gateway-ingress.yaml   # us-west-2 regional WAF ARN
+
+components:
+  - ../eks-shared
+
+images:
+  - name: recsys-backend-service
+    newName: 123456789012.dkr.ecr.us-west-2.amazonaws.com/recsys-backend-service
+    # PLACEHOLDER; pinned by scripts/set-eks-image-digest.sh. MUST match the
+    # digest in k8s/eks/kustomization.yaml (same image, replicated to us-west-2 ECR).
+    digest: sha256:0000000000000000000000000000000000000000000000000000000000000000
+
+patches:
+  - path: redis-elasticache-patch.yaml   # us-west-2 ElastiCache secondary endpoint
+  - path: region-config-patch.yaml       # AWS_REGION=us-west-2
+  - path: warm-standby-hpa-patch.yaml    # reduced minReplicas

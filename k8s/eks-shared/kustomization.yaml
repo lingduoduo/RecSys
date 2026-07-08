@@ -1,0 +1,38 @@
+# Region-agnostic EKS overlay pieces, shared by every region overlay
+# (k8s/eks = us-east-1, k8s/eks-us-west-2 = DR). Referenced via `components:`.
+# Anything here MUST be identical across regions — no ECR region, no ElastiCache
+# endpoint, no WAF ARN, no AWS_REGION. Those live in the per-region overlays.
+apiVersion: kustomize.config.k8s.io/v1alpha1
+kind: Component
+
+resources:
+  - gateway-irsa-sa.yaml            # IRSA ServiceAccount for the API gateway (IAM is global)
+  - patches/irsa-model-serving.yaml
+
+replicas:
+  # In-cluster Redis is replaced by ElastiCache in every EKS region; scale the
+  # StatefulSets/Deployments to zero.
+  - name: redis-primary
+    count: 0
+  - name: redis-replica
+    count: 0
+  - name: redis-sentinel
+    count: 0
+
+patches:
+  - path: cloud-map-service-patch.yaml       # Cloud Map registration annotations
+  - path: configmap-patch.yaml               # GATEWAY_TIMEOUT_MS; in-cluster URLs use kube-DNS
+  - path: gateway-irsa.yaml                  # gateway Deployment -> IRSA ServiceAccount
+  - path: topology-aware-routing-patch.yaml  # PreferClose same-AZ routing
+  # Drop the NLB: the WAF ALB Ingress is the sole public entry, so the gateway
+  # Service becomes ClusterIP and its NLB-only annotations are removed.
+  - target:
+      kind: Service
+      name: recsys-api-gateway
+      namespace: recsys
+    patch: |
+      - op: replace
+        path: /spec/type
+        value: ClusterIP
+      - op: remove
+        path: /metadata/annotations

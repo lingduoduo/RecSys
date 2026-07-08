@@ -1,0 +1,26 @@
+# us-west-2 WAF-protected ALB — sole public entry to the API gateway in the DR
+# region. WAFv2 WebACL is regional and created out-of-band; note the us-west-2
+# ARN. See docs/runbooks/waf-webacl.md.
+apiVersion: networking.k8s.io/v1
+kind: Ingress
+metadata:
+  name: recsys-api-gateway-waf
+  namespace: recsys
+  annotations:
+    kubernetes.io/ingress.class: alb
+    alb.ingress.kubernetes.io/scheme: internet-facing
+    alb.ingress.kubernetes.io/target-type: ip
+    alb.ingress.kubernetes.io/listen-ports: '[{"HTTP":80}]'
+    alb.ingress.kubernetes.io/healthcheck-path: /health
+    alb.ingress.kubernetes.io/wafv2-acl-arn: arn:aws:wafv2:us-west-2:123456789012:regional/webacl/recsys-api-gateway/REPLACE_ME
+spec:
+  rules:
+    - http:
+        paths:
+          - path: /
+            pathType: Prefix
+            backend:
+              service:
+                name: recsys-api-gateway
+                port:
+                  number: 80

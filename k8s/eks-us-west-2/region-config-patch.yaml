@@ -1,0 +1,10 @@
+# us-west-2 region config. AWS_REGION drives the SQS client (application.yml:
+# region: ${RECSYS_EVENTS_SQS_REGION:${AWS_REGION:us-east-1}}). Injected into all
+# pods via envFrom configMapRef: recsys-config.
+apiVersion: v1
+kind: ConfigMap
+metadata:
+  name: recsys-config
+  namespace: recsys
+data:
+  AWS_REGION: "us-west-2"

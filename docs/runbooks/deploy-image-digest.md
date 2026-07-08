@@ -5,6 +5,11 @@ The EKS overlay pins the shared image by an **immutable digest** (not a mutable 
 pull on scale-up/rollout. The digest in `k8s/eks/kustomization.yaml` is a placeholder; the deploy
 process pins the real digest before applying.
 
+> **Multi-region:** `scripts/set-eks-image-digest.sh` pins the digest in **both**
+> `k8s/eks` (us-east-1) and `k8s/eks-us-west-2` (DR) to the identical value. ECR
+> cross-region replication makes that digest valid in both regions. Deploy the
+> standby alongside the primary — see `docs/runbooks/dr-regional-failover.md`.
+
 ## Deploy
 
 ```bash

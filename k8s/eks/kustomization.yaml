@@ -2,47 +2,20 @@ apiVersion: kustomize.config.k8s.io/v1beta1
 kind: Kustomization
 resources:
   - ../base
-  - gateway-irsa-sa.yaml    # IRSA ServiceAccount for the API gateway
-  - patches/irsa-model-serving.yaml
-  - waf-api-gateway-ingress.yaml   # WAF-protected ALB; sole public entry to the gateway
+  - waf-api-gateway-ingress.yaml   # WAF-protected ALB; sole public entry (us-east-1 regional ARN)
+
+components:
+  - ../eks-shared
 
 images:
   - name: recsys-backend-service
     newName: 123456789012.dkr.ecr.us-east-1.amazonaws.com/recsys-backend-service
-    # Immutable digest — a cached node skips ECR on scale-up (IfNotPresent). This value is a
-    # PLACEHOLDER; the deploy process pins the real digest with scripts/set-eks-image-digest.sh
-    # before `kubectl apply`. See docs/runbooks/deploy-image-digest.md.
+    # Immutable digest — a cached node skips ECR on scale-up (IfNotPresent). PLACEHOLDER;
+    # scripts/set-eks-image-digest.sh pins the real digest before `kubectl apply`.
+    # The SAME digest is pinned in k8s/eks-us-west-2 (ECR cross-region replication).
+    # See docs/runbooks/deploy-image-digest.md.
     digest: sha256:0000000000000000000000000000000000000000000000000000000000000000
 
-replicas:
-  - name: redis-primary
-    count: 0
-  - name: redis-replica
-    count: 0
-  - name: redis-sentinel
-    count: 0
-
 patches:
-  # Add Cloud Map registration annotations to every ClusterIP Service.
-  - path: cloud-map-service-patch.yaml
-  # Set gateway timeout; in-cluster service URLs use kube-DNS (see the patch's comment).
-  - path: configmap-patch.yaml
-  # Override Redis config for ElastiCache (standalone mode, disable Sentinel env vars).
+  # Override Redis config for ElastiCache (us-east-1 primary endpoint).
   - path: redis-elasticache-patch.yaml
-  # Patch gateway Deployment to use the IRSA ServiceAccount.
-  - path: gateway-irsa.yaml
-  # Prefer same-AZ endpoints for in-cluster backend Services (cut inter-AZ traffic).
-  - path: topology-aware-routing-patch.yaml
-  # Drop the NLB: the WAF ALB Ingress (waf-api-gateway-ingress.yaml) is the sole
-  # public entry, so the gateway Service becomes ClusterIP and its NLB-only
-  # aws-load-balancer-* annotations are removed.
-  - target:
-      kind: Service
-      name: recsys-api-gateway
-      namespace: recsys
-    patch: |
-      - op: replace
-        path: /spec/type
-        value: ClusterIP
-      - op: remove
-        path: /metadata/annotations
