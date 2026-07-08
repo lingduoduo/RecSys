@@ -36,6 +36,14 @@ data:
   RECSYS_RECOMMENDATION_CACHE_MAX_ENTRIES: "10000"
   RECSYS_HEALTH_MAX_CONCURRENT_REQUESTS: "64"
   RECSYS_HEALTH_MAX_IN_FLIGHT_UTILIZATION: "0.95"
+  # RecSys Serving (6010) concurrency admission (mirrors ONLINE_MAX_CONCURRENT_REQUESTS).
+  # Guards the recall/ranking routes (/getrecommendation, /v2/recommend, /similar); 429 above the cap.
+  CATALOG_MAX_CONCURRENT_REQUESTS: "64"
+  CATALOG_DRAIN_UTILIZATION: "0.90"
+  # --- Overload protection (see docs/runbooks/overload-protection.md) ---
+  # ONLINE_REDIS_RATE_LIMIT_QPS: single GLOBAL cluster-wide ceiling (fixed 1s window; up to
+  #   ~2x across a window boundary). GATEWAY_RATE_LIMIT_*: per authenticated caller PER route.
+  #   Concurrency gates (*_MAX_CONCURRENT_REQUESTS) are PER instance. Values need load-test validation.
   # Gateway local rate limiting (token-bucket, per gateway replica).
   # Set MODEL_RPS lower: ONNX inference is CPU-heavy and cannot absorb the same burst.
   GATEWAY_RATE_LIMIT_RPS: "100"

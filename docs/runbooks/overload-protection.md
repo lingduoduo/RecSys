@@ -1,0 +1,37 @@
+# Runbook: Overload Protection & Rate Limits
+
+The system sheds overload in layers. This documents what each layer protects, its shape,
+and how to tune it. Design: `docs/superpowers/specs/2026-07-08-overload-protection-design.md`.
+
+## Layers
+
+| Layer | Mechanism | Scope | Config | Response |
+|---|---|---|---|---|
+| Gateway 8010 | per-route × per-caller token bucket | per instance | `GATEWAY_RATE_LIMIT_RPS`=100 / `_BURST`=200 (model 50/100) | 429 + Retry-After |
+| Gateway 8010 | per-route circuit breaker | per instance | `GATEWAY_CB_FAILURE_THRESHOLD`=5 / `_COOLDOWN_MS`=10000 | 503 |
+| Online 7010 | concurrency admission | per instance | `ONLINE_MAX_CONCURRENT_REQUESTS`=64 / `ONLINE_DRAIN_UTILIZATION`=0.90 | 429 |
+| Online 7010 | Redis fixed-window QPS | **cluster-wide (global)** | `ONLINE_REDIS_RATE_LIMIT_QPS`=200 / `_WINDOW_SECONDS`=1 | 429 |
+| Model 8080 | per-user token bucket + semaphore | per instance | `recsys.model.rate-limit.*`, `RECSYS_HEALTH_MAX_CONCURRENT_REQUESTS`=64 | 429 / 503 (degrade-to-cache first) |
+| RecSys 6010 | concurrency admission | per instance | `CATALOG_MAX_CONCURRENT_REQUESTS`=64 / `CATALOG_DRAIN_UTILIZATION`=0.90 | 429 |
+| 6010 & 7010 | recall WorkerBulkhead (bounded queue) | per instance | `RECALL_BULKHEAD_QUEUE_CAPACITY` (default poolSize×4) | per-channel empty result |
+| all serving | request/recall timeouts | per request | `ONLINE_REQUEST_TIMEOUT_MS`=500, `RECALL_CHANNEL_TIMEOUT_MS`=200 | bounded work |
+
+## Key caveats
+
+- **Online QPS is a single GLOBAL ceiling** (bucket `rate:online:global`), not per-caller —
+  200 QPS is the total across all online-serving instances. The gateway limits, by contrast,
+  are per authenticated caller per route.
+- **Fixed-window boundary burst:** the online limiter can admit up to ~2× the limit across a
+  1s window boundary. Acceptable as a coarse safety ceiling; use a token bucket if smoothness
+  matters.
+- **Concurrency gates are per instance** — aggregate cluster concurrency = perInstance × replicas.
+- **Rate limiters fail open** (disabled at 0, and allow on Redis error). **Load shedders are
+  always on** and reject when the concurrency counter is full.
+
+## Tuning
+
+All values above are starting points, not load-validated. To tune: run a load test to find the
+knee (latency/error inflection) per service, set the concurrency gate just below it, and set the
+online global QPS to the aggregate sustainable throughput. Raise `RECALL_BULKHEAD_QUEUE_CAPACITY`
+if normal bursts cause premature per-channel shedding; lower it to fail faster under sustained
+overload.
