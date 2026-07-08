@@ -30,5 +30,5 @@ Run this after DNS has failed over (see `dr-regional-failover.md`) to restore th
 ## 4. Verify write path
 
 - Exercise a feedback/write request end-to-end against
-  `https://api.recsys.example.com` and confirm it persists (Aurona row / Redis
+  `https://api.recsys.example.com` and confirm it persists (Aurora row / Redis
   key written in us-west-2).
