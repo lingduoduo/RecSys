@@ -23,6 +23,7 @@ import com.recsys.infrastructure.redis.RedisExecutor;
 import com.recsys.infrastructure.redis.ShardedTopKStore;
 import com.recsys.infrastructure.vectordb.CandidateGenerator;
 import com.recsys.resilience.FaultInjector;
+import com.recsys.resilience.WorkerBulkhead;
 import com.recsys.application.recommendation.RecommendationHydrator;
 import com.recsys.application.pagination.CursorPaginationService;
 import com.recsys.application.ranking.ScoreRanker;
@@ -38,7 +39,6 @@ import org.slf4j.Logger;
 import org.slf4j.LoggerFactory;
 import java.util.List;
 import java.util.concurrent.ExecutorService;
-import java.util.concurrent.Executors;
 
 public class RecSysServer {
 
@@ -89,9 +89,10 @@ public class RecSysServer {
             CandidateGenerator candidateGenerator = new CandidateGenerator(dataManager, userEmbCache);
 
             GlobalPopularityStore globalPopStore = new GlobalPopularityStore(jedisPool);
-            ExecutorService executor = Executors.newFixedThreadPool(
-                    Runtime.getRuntime().availableProcessors() * 2,
-                    r -> new Thread(r, "recall-channel"));
+            int recallPoolSize = Runtime.getRuntime().availableProcessors() * 2;
+            WorkerBulkhead recallBulkhead = new WorkerBulkhead("recall-catalog", recallPoolSize,
+                    EnvConfig.readInt("RECALL_BULKHEAD_QUEUE_CAPACITY", recallPoolSize * 4));
+            ExecutorService executor = recallBulkhead.asExecutorService();
 
             MultiChannelRecallService recallService = MultiChannelRecallService.from(
                     RecallConfig.builder()
