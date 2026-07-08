@@ -15,9 +15,14 @@ stale-cache stack), but four concrete gaps remain:
    `topologySpreadConstraints` with `whenUnsatisfiable: ScheduleAnyway` and no hard
    anti-affinity, so replicas *can* co-locate in one AZ — losing that AZ can drop a
    service harder than expected.
-2. **The AZ-aware Redis reader is dead code.** `RedisReadReplicaRouter` exists but
-   `REDIS_REPLICA_NODES` is never set in any config, so `readable()` returns the single
-   ElastiCache primary. Reads stall for the ~30s of a primary-AZ Multi-AZ DNS failover.
+2. **The AZ-aware Redis reader is dead code.** `RedisReadReplicaRouter` exists and is
+   bean-registered, but no production read path calls `readable()`/`writable()` — every
+   read path injects the primary `RedisExecutor` directly, and `OnlinePredictionServer`
+   builds its client via `LettuceClientFactory.fromEnv()` (primary only). Setting
+   `REDIS_REPLICA_NODES` alone builds replica executors nothing uses; reads still stall
+   for the ~30s of a primary-AZ Multi-AZ DNS failover. Activating the router requires a
+   behavioral code change (wiring `router.readable()` into the read paths), not just
+   config — out of scope for a manifests-and-config-only branch.
 3. **A PDB can block recovery.** model-serving's PDB is `minAvailable: 2` (of 3
    replicas) and its Deployment sets `maxUnavailable: 0`; once an AZ loss leaves 2 pods,
    node drains / rollouts are blocked while degraded.
@@ -28,8 +33,11 @@ stale-cache stack), but four concrete gaps remain:
 
 - A single-AZ loss in us-east-1 leaves every service with running replicas in the
   surviving AZs, and recovery scheduling is not blocked by our own constraints.
-- Reads survive a primary-AZ ElastiCache failover instead of stalling ~30s.
 - The operational assumptions that make zonal survival possible are written down.
+
+Deferred (not achieved by this branch): reads surviving a primary-AZ ElastiCache
+failover instead of stalling ~30s. That requires wiring `RedisReadReplicaRouter` into
+production read paths, which is a behavioral code change — see gap #2 below.
 
 ## Non-Goals
 
@@ -44,8 +52,8 @@ stale-cache stack), but four concrete gaps remain:
 | Question | Decision |
 |---|---|
 | Spread guarantee (gap #1) | **Hard spread** (`DoNotSchedule`) **+ `nodeTaintsPolicy: Honor`** so a dead AZ's tainted nodes are excluded from the skew calc and don't block recovery scheduling |
-| AZ-aware Redis reads (gap #2) | **Wire `REDIS_REPLICA_NODES`** to the ElastiCache reader endpoint, activating the existing router |
-| Gap #2 scope | **us-east-1 (`k8s/eks`) only** on this branch; mirror to `k8s/eks-us-west-2` as a follow-up once DR PR #176 merges (avoids a cross-branch conflict) |
+| AZ-aware Redis reads (gap #2) | **Descoped to a follow-up.** `REDIS_REPLICA_NODES` config alone is inert — no read path calls the router. Activating it requires wiring `router.readable()` into the read paths plus injecting the pod's AZ (`AWS_AZ`), a behavioral code change out of scope for this branch |
+| Gap #2 scope | **Descoped for both regions** (`k8s/eks` and `k8s/eks-us-west-2`) pending the router-wiring follow-up; not a per-region rollout question |
 | PDB fix (gap #3) | model-serving PDB `minAvailable: 2` → **`maxUnavailable: 1`** |
 | Infra assumptions (gap #4) | New **`docs/runbooks/zonal-resilience.md`** |
 | Branch | `feat/zonal-hardening` off `main`, independent of PR #176 |
@@ -81,21 +89,26 @@ construction; hard spread guarantees those 2 replicas are in *different* AZs, so
 single-AZ loss leaves at least 1 replica. This is the intended behavior at current
 replica counts (raising floors is a non-goal).
 
-### Gap #2 — activate the AZ-aware Redis reader (us-east-1)
+### Gap #2 — AZ-aware Redis reads (deferred follow-up, not done on this branch)
 
-In `k8s/eks/redis-elasticache-patch.yaml`, add `REDIS_REPLICA_NODES` set to the
-ElastiCache **reader** endpoint (placeholder value, matching the existing `REDIS_HOST`
-placeholder convention), and update the header comment to document the reader-endpoint
-requirement.
+Earlier drafts of this design planned to add `REDIS_REPLICA_NODES` to
+`k8s/eks/redis-elasticache-patch.yaml` to activate `RedisReadReplicaRouter`. That plan
+was wrong: setting the config alone does nothing, because **no production read path
+calls the router**. Every read path (`RecSysServer`'s recall/serving code, the online
+prediction server, etc.) injects the primary `RedisExecutor` directly, and
+`OnlinePredictionServer` builds its Redis client via `LettuceClientFactory.fromEnv()`,
+which only ever points at the primary. `application.yml:92` does bind
+`replica-nodes: ${REDIS_REPLICA_NODES:}` into the router bean, and the router's own
+`readable()`/`writable()` logic is correct and unit-tested — but nothing in the
+call graph invokes it. So `REDIS_REPLICA_NODES` would build replica `RedisExecutor`
+instances that sit unused, and reads would still stall for ~30s on a primary-AZ
+ElastiCache DNS failover exactly as they do today.
 
-Binding path (already present): `application.yml:92` binds
-`replica-nodes: ${REDIS_REPLICA_NODES:}`, consumed by `RedisReadReplicaRouter`. With a
-non-empty list, `readable()` prefers a same-AZ replica; reads then survive a primary-AZ
-loss. With the list empty (every other profile), behavior is unchanged — reads go to the
-primary. So this change is additive and scoped to the EKS overlay only.
-
-**Follow-up (out of scope here):** the DR branch's `k8s/eks-us-west-2/redis-elasticache-patch.yaml`
-needs the same `REDIS_REPLICA_NODES` line; tracked as a follow-up once PR #176 merges.
+This branch reverts the inert config (commit 80d6e72) rather than ship a setting that
+implies protection it doesn't provide. Making reads actually survive a primary-AZ loss
+is a behavioral code change: route reads through `router.readable()` at each call site
+and inject the pod's AZ (`AWS_AZ`, from the Kubernetes Downward API) so the router can
+prefer a same-AZ replica. Tracked as follow-up work, not part of this branch's scope.
 
 ### Gap #3 — fix the recovery-blocking PDB
 
@@ -111,14 +124,18 @@ floors they already permit one disruption.
 New `docs/runbooks/zonal-resilience.md` covering:
 
 - **Required infra:** ALB spans ≥2 AZ subnets; node groups span all 3 AZs; ElastiCache
-  Multi-AZ + automatic failover enabled with a reader endpoint provisioned.
+  Multi-AZ + automatic failover enabled (AZ-aware reads are a documented follow-up, not
+  yet wired).
 - **What survives a single-AZ loss automatically:** cross-zone ALB, `PreferClose`
-  cluster-wide fallback, enforced pod spread (post gap #1), AZ-aware Redis reads (post
-  gap #2).
-- **Expected degradation profile:** brief endpoint-not-ready blip until readiness marks
-  dead-AZ pods out; writes still ride the ~30s ElastiCache primary DNS flip (reads now
-  covered by the reader endpoint); HPA re-scales survivors on remaining capacity.
+  cluster-wide fallback, enforced pod spread (post gap #1).
+- **Expected degradation profile:** dead-AZ endpoints are removed after Kubernetes
+  node-not-ready detection (~40s) plus taint-based eviction, absorbed by `PreferClose`
+  fallback and app-layer retry/timeouts; reads and writes both still ride the ~30s
+  ElastiCache primary DNS flip when the primary's AZ is lost, with the online path's
+  stale-TTL caches absorbing most read impact; HPA re-scales survivors on remaining
+  capacity.
 - **What still needs an operator:** confirming ALB/node-group AZ coverage (out-of-band).
+- **Follow-up:** wiring `RedisReadReplicaRouter` into production read paths (gap #2).
 
 Cross-link from `.claude/CLAUDE.md` (Kubernetes section).
 
@@ -130,11 +147,10 @@ Live AZ-failure testing is not feasible (no CI, no provisioned infra). Layered s
   - `kubectl kustomize k8s/base` — each of the four Deployments renders
     `whenUnsatisfiable: DoNotSchedule` and `nodeTaintsPolicy: Honor`; the model-serving
     PDB renders `maxUnavailable: 1` (and no longer `minAvailable`).
-  - `kubectl kustomize k8s/eks` — the merged `recsys-config` ConfigMap carries
-    `REDIS_REPLICA_NODES`.
 - **One unit test** — `RedisReadReplicaRouter`: `readable()` returns a replica when the
-  replica-nodes list is non-empty, and falls back to the primary when empty. Locks in
-  that the newly-wired path behaves and the empty-default is preserved. This is the only
+  replica-nodes list is non-empty, and falls back to the primary when empty. This locks
+  in that the router's own logic is correct; it has no manifest deliverable on this
+  branch since gap #2 is descoped (no read path calls the router). This is the only
   Java change and it is test-only.
 - **Existing suite** — `mvn test` must stay green (JDK 17 per the repo build note).
 
@@ -144,8 +160,8 @@ Live AZ-failure testing is not feasible (no CI, no provisioned infra). Layered s
   updates; with `nodeTaintsPolicy: Honor` and healthy AZs this is fine, but if node
   groups are ever misconfigured to a single AZ, pods would go `Pending`. The runbook
   (gap #4) calls out the multi-AZ node-group requirement.
-- **Reader-endpoint staleness.** ElastiCache replica reads are asynchronous; the online
-  path already tolerates stale reads (stale-TTL caches), so this is acceptable, but it is
-  a read-your-writes relaxation worth noting.
-- **us-west-2 mirror deferred.** Until the follow-up lands, the DR region does not have
-  AZ-aware reads. Tracked explicitly.
+- **Gap #2 descoped for both regions.** `RedisReadReplicaRouter` is not wired into any
+  production read path in either region. PR #176 (multi-region DR) is merged and
+  `k8s/eks-us-west-2/` is in-tree, but that does not change gap #2's status — activating
+  AZ-aware reads requires the same router-wiring + `AWS_AZ` injection follow-up in
+  us-east-1 first, then mirroring to us-west-2. Neither region has AZ-aware reads today.
