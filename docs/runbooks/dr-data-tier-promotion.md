@@ -5,6 +5,9 @@ Run this after DNS has failed over (see `dr-regional-failover.md`) to restore th
 
 ## 1. Promote Aurora Global Database
 
+> Only if MySQL is enabled (`MYSQL_ENABLED=true`). The default deployment runs with
+> MySQL disabled and writes only to Redis + SQS — in that case skip to step 2.
+
 - Console/CLI: on the us-west-2 secondary cluster, perform "Remove from Global"
   (managed failover) or "Promote" to make it a standalone writable cluster.
 - Confirm the writer endpoint is available:

@@ -85,7 +85,8 @@ RecSys serving is **read-dominant**. This shapes the whole recovery story:
   fails traffic over, the standby serves reads **immediately** — no promotion needed.
 - **Write path** (feedback ingestion, online-learning parameter updates, saga event
   publishing) requires a **writable** data tier. Until the standby's Aurora/ElastiCache
-  is promoted to primary, writes are unavailable or degraded.
+  is promoted to primary, writes are unavailable or degraded (Aurora promotion applies
+  only when MySQL is enabled; the app's live write stores are ElastiCache Redis and SQS).
 
 So: automatic DNS failover restores *serving* in seconds; full *write* capability
 returns after data-tier promotion (managed or runbook), targeted at minutes.
@@ -97,7 +98,7 @@ runbooks. Replication scope was chosen to be comprehensive (all four stores).
 
 | Store | Mechanism | On failover |
 |---|---|---|
-| **MySQL** | Aurora Global Database — writer in us-east-1, read-replica cluster in us-west-2 (RPO ~1s) | Promote us-west-2 cluster (Aurora Global managed failover, or runbook) |
+| **MySQL** (only when `MYSQL_ENABLED=true`; default deployment runs with MySQL disabled) | Aurora Global Database — writer in us-east-1, read-replica cluster in us-west-2 (RPO ~1s) | Promote us-west-2 cluster (Aurora Global managed failover, or runbook) |
 | **ElastiCache Redis** | Global Datastore — secondary replica in us-west-2, readable | Promote secondary. Much Redis data is also re-seedable (embeddings from classpath, top-K from streaming) as a fallback |
 | **Model artifacts** | ECR cross-region replication — pinned image digests replicate to us-west-2 ECR (extends the existing digest-pinning work) | No action; the pinned digest is identical in both regions |
 | **Streaming (SQS/Kafka)** | Standby region runs its own queues/topics with warm Flink consumers | Producers repoint to the us-west-2 endpoint (runbook); no cross-region broker replication assumed |
@@ -170,6 +171,10 @@ strategy is layered:
 - **Warm-standby sizing vs. cost.** `minReplicas ≈ 50%` is a starting point; the real
   number depends on how fast HPA + cluster autoscaler can absorb a full-traffic surge.
   Revisit with load data.
+  - At warm-standby replica counts (1/1/2/1), the base PodDisruptionBudgets
+    (`minAvailable: 1`, model `2`) leave zero voluntary-disruption headroom, so node
+    drains block in the standby region until the deployment scales up — revisit
+    alongside sizing.
 - **Data-tier promotion is not automatic in v1.** Reads fail over automatically; writes
   wait on a runbook. Aurora Global managed failover can automate this later.
 - **Streaming RPO gap.** In-flight events on the failed region's queue are lost/delayed.
