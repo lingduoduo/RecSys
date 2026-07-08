@@ -126,7 +126,6 @@ public class MultiChannelRecallService {
                         .orTimeout(channelTimeoutMs, TimeUnit.MILLISECONDS)
                         .exceptionally(ex -> new ChannelResult(name, List.of(), ex));
             } catch (RejectedExecutionException rex) {
-                healthMonitor.recordFailure(name);
                 log.warn("Channel '{}' rejected by recall bulkhead (queue full)", name);
                 future = CompletableFuture.completedFuture(new ChannelResult(name, List.of(), rex));
             }
