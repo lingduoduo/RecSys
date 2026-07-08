@@ -40,6 +40,11 @@ public final class LazyRedisExecutor implements RedisExecutor {
         delegate().executePipelined(fn);
     }
 
+    @Override
+    public void executeReadPipelined(Consumer<StatefulRedisConnection<String, String>> fn) {
+        delegate().executeReadPipelined(fn);
+    }
+
     private RedisExecutor delegate() {
         RedisExecutor current = delegate;
         if (current == null) {

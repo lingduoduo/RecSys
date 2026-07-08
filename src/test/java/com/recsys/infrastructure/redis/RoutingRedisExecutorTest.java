@@ -75,6 +75,30 @@ class RoutingRedisExecutorTest {
     }
 
     @Test
+    void executeReadPipelined_goesToReplicaWhenConfigured() {
+        RedisExecutor primary = mock(RedisExecutor.class);
+        RedisExecutor replica = mock(RedisExecutor.class);
+        var router = new RedisReadReplicaRouter(primary,
+                List.of(new RedisReadReplicaRouter.AzExecutor(replica, "us-east-1b")), "us-east-1b");
+        try (var exec = new RoutingRedisExecutor(router)) {
+            exec.executeReadPipelined(conn -> { /* no-op */ });
+        }
+        verify(replica).executeReadPipelined(any());
+        verify(primary, never()).executePipelined(any());
+        verify(primary, never()).executeReadPipelined(any());
+    }
+
+    @Test
+    void executeReadPipelined_fallsBackToPrimaryWhenNoReplicas() {
+        RedisExecutor primary = mock(RedisExecutor.class);
+        var router = new RedisReadReplicaRouter(primary, List.of(), "us-east-1a");
+        try (var exec = new RoutingRedisExecutor(router)) {
+            exec.executeReadPipelined(conn -> { });
+        }
+        verify(primary).executeReadPipelined(any());
+    }
+
+    @Test
     void close_closesRouterAndAllExecutors() {
         RedisExecutor primary = mock(RedisExecutor.class);
         RedisExecutor replica = mock(RedisExecutor.class);

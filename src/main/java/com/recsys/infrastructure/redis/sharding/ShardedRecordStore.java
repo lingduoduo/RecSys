@@ -229,7 +229,7 @@ public final class ShardedRecordStore {
         if (seqNums.isEmpty()) return List.of();
         @SuppressWarnings("unchecked")
         RedisFuture<Map<String, String>>[] responses = new RedisFuture[seqNums.size()];
-        readExec.executePipelined(conn -> {
+        readExec.executeReadPipelined(conn -> {
             var async = conn.async();
             for (int i = 0; i < seqNums.size(); i++) {
                 responses[i] = async.hgetall(recKey(version, shardIndex, seqNums.get(i)));

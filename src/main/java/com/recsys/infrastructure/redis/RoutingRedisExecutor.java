@@ -42,6 +42,11 @@ public final class RoutingRedisExecutor implements RedisExecutor {
     }
 
     @Override
+    public void executeReadPipelined(Consumer<StatefulRedisConnection<String, String>> fn) {
+        router.readable().executeReadPipelined(fn);
+    }
+
+    @Override
     public void close() {
         router.close();
     }

@@ -35,6 +35,14 @@ public interface RedisExecutor extends Closeable {
      */
     void executePipelined(Consumer<StatefulRedisConnection<String, String>> fn);
 
+    /**
+     * Like {@link #executePipelined} but routed to a replica when one is available.
+     * Single-endpoint implementations delegate to {@link #executePipelined}.
+     */
+    default void executeReadPipelined(Consumer<StatefulRedisConnection<String, String>> fn) {
+        executePipelined(fn);
+    }
+
     @Override
     void close();
 }
