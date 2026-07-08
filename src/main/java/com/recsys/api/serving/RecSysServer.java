@@ -172,6 +172,7 @@ public class RecSysServer {
 
             Server server = sb.build();
             Runtime.getRuntime().addShutdownHook(new Thread(() -> {
+                loadShedder.markShuttingDown();   // readiness -> 503 so LBs drain this pod first
                 server.stop().join();
                 GracefulExecutors.shutdownGracefully(executor);
                 jedisPool.close();

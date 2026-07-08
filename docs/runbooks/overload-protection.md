@@ -27,6 +27,13 @@ and how to tune it. Design: `docs/superpowers/specs/2026-07-08-overload-protecti
 - **Concurrency gates are per instance** — aggregate cluster concurrency = perInstance × replicas.
 - **Rate limiters fail open** (disabled at 0, and allow on Redis error). **Load shedders are
   always on** and reject when the concurrency counter is full.
+- **On RecSys 6010, the recall bulkhead saturates before the concurrency gate returns 429.**
+  Each admitted request fans out ~6 channel tasks onto the shared `WorkerBulkhead`
+  (poolSize + queue ≈ availableProcessors×2 + availableProcessors×8 ≈ availableProcessors×10
+  tasks), which is a much lower ceiling than `CATALOG_MAX_CONCURRENT_REQUESTS`=64 admitted
+  requests. So under load 6010 tends to degrade to partial/empty results (per-channel
+  shedding, HTTP 200) well before it starts returning 429 — operators should expect silent
+  quality degradation as the first symptom, not 429s.
 
 ## Tuning
 
