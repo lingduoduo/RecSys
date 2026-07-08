@@ -75,7 +75,7 @@ public class RedisEmbeddingStore implements EmbeddingStore {
 
     @Override
     public float[] getEmbedding(int movieId) {
-        String v = exec.execute(c -> c.get(keyPrefix + ":" + movieId));
+        String v = exec.executeRead(c -> c.get(keyPrefix + ":" + movieId));
         if (v == null || v.isBlank()) return null;
         return VectorMath.parseVector(v);
     }
@@ -137,7 +137,7 @@ public class RedisEmbeddingStore implements EmbeddingStore {
                 keys[i - start] = keyPrefix + ":" + ids.get(i);
             }
             final int batchStart = start;
-            List<KeyValue<String, String>> values = exec.execute(c -> c.mget(keys));
+            List<KeyValue<String, String>> values = exec.executeRead(c -> c.mget(keys));
             for (int j = 0; j < values.size(); j++) {
                 String value = values.get(j).getValueOrElse(null);
                 if (value == null || value.isBlank()) continue;

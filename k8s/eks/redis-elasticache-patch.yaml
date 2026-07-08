@@ -5,6 +5,8 @@
 #   - Engine mode: Redis (not Cluster Mode)
 #   - Multi-AZ: enabled
 #   - Automatic failover: enabled
+#   - A reader endpoint provisioned for the replicas, referenced by
+#     REDIS_REPLICA_NODES below. Reads route there and survive a primary-AZ loss.
 #   - Snapshot retention window: >= 1 day
 #   - Preferred snapshot window: set to an off-peak hour (e.g. 03:00-04:00 UTC)
 #
@@ -20,5 +22,10 @@ data:
   REDIS_MODE: "standalone"
   REDIS_HOST: "<elasticache-primary-endpoint>.cache.amazonaws.com"
   REDIS_PORT: "6379"
+  # AZ-aware reads: the single ElastiCache READER endpoint (host:port). Reads
+  # (executeRead) route here via RoutingRedisExecutor and survive a primary-AZ
+  # failover; the reader endpoint auto-ejects failed replicas. az defaults to
+  # "unknown" (no same-AZ locality — that is an optional later optimization).
+  REDIS_REPLICA_NODES: "<elasticache-reader-endpoint>.cache.amazonaws.com:6379"
   REDIS_SENTINEL_MASTER: ""
   REDIS_SENTINEL_NODES: ""

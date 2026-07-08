@@ -156,7 +156,7 @@ public class ModelRuntimeProvider implements SmartInitializingSingleton {
     private void ensureRecallInfra() {
         synchronized (recallLock) {
             if (candidateGenerator != null) return;
-            recallPool = LettuceClientFactory.fromEnv(RECALL_REDIS_TIMEOUT_MS);
+            recallPool = LettuceClientFactory.routingFromEnv(RECALL_REDIS_TIMEOUT_MS);
             DataManager dataManager = DataManager.getInstance();
             candidateGenerator = new CandidateGenerator(dataManager, new RedisEmbeddingStore(recallPool, "u2vEmb"));
             topkStore = new ShardedTopKStore(recallPool, "topk:");
@@ -250,7 +250,7 @@ public class ModelRuntimeProvider implements SmartInitializingSingleton {
             return null;
         }
         if (redisItemEmbeddingPool == null) {
-            redisItemEmbeddingPool = LettuceClientFactory.fromEnv();
+            redisItemEmbeddingPool = LettuceClientFactory.routingFromEnv();
         }
         return new RedisEmbeddingStore(redisItemEmbeddingPool, redisItemEmbeddingPrefix);
     }

@@ -60,7 +60,7 @@ public class RecSysServer {
 
     public void run() throws Exception {
         int port = readIntEnv("PORT", DEFAULT_PORT);
-        RedisExecutor jedisPool = LettuceClientFactory.fromEnv();
+        RedisExecutor jedisPool = LettuceClientFactory.routingFromEnv();
         try {
             DataManager dataManager = DataManager.getInstance();
             PairPredictionService pairPredictionService = new PairPredictionService();

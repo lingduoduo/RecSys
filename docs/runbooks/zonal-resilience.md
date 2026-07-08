@@ -12,10 +12,9 @@ full-region outage see the multi-region DR runbooks (`dr-*.md`).
 - **Node groups span all 3 AZs.** Hard pod spread (`DoNotSchedule`, see below)
   requires real nodes in each AZ; if node groups collapse to one AZ, pods go
   `Pending`. Keep the managed node group / Karpenter provisioners multi-AZ.
-- **ElastiCache Multi-AZ + automatic failover enabled.** AZ-aware same-AZ reads
-  (routing reads through a replica) are a documented follow-up — see below;
-  today reads and writes both ride the ElastiCache primary's Multi-AZ DNS
-  failover.
+- **ElastiCache Multi-AZ + automatic failover enabled**, with a **reader
+  endpoint** configured via `REDIS_REPLICA_NODES` (reads route there via
+  `RoutingRedisExecutor`).
 
 ## What survives a single-AZ loss automatically
 
@@ -27,6 +26,9 @@ full-region outage see the multi-region DR runbooks (`dr-*.md`).
   guarantees replicas sit in different AZs, so a single-AZ loss always leaves ≥1
   replica per service. `nodeTaintsPolicy: Honor` excludes the dead AZ's tainted
   nodes from the skew calc, so replacement pods still schedule in surviving AZs.
+- **Redis reads** — routed to the ElastiCache reader endpoint via
+  `RoutingRedisExecutor`; a primary-AZ loss no longer stalls reads (writes
+  still ride the ~30s primary DNS failover).
 
 ## Expected degradation profile
 
@@ -36,9 +38,10 @@ full-region outage see the multi-region DR runbooks (`dr-*.md`).
   retry/timeouts (recall 200ms fail-open, route circuit breakers, load
   shedding, stale-TTL caches) absorb the interim. (Readiness probes only
   govern a pod-level, not node-level, outage.)
-- **Reads and writes** both ride the ~30s ElastiCache primary DNS failover
-  when the primary's AZ is lost. The online path's 60s stale-TTL caches
-  absorb most read impact during that window.
+- **Reads** route to the ElastiCache reader endpoint and survive a
+  primary-AZ loss. **Writes** ride the ~30s ElastiCache primary DNS flip
+  when the primary's AZ is lost; the online path's 60s stale-TTL caches
+  absorb residual read impact.
 - HPA re-scales survivors onto remaining capacity (node headroom permitting).
 
 ## Operator checklist during a suspected AZ event
@@ -48,17 +51,13 @@ full-region outage see the multi-region DR runbooks (`dr-*.md`).
    `kubectl -n recsys get pods -o wide` (check the NODE/zone spread).
 3. Confirm no service is stuck with `Pending` pods (would indicate node groups
    are not multi-AZ — see Required infrastructure).
-4. If the ElastiCache primary was in the lost AZ, expect a ~30s read+write blip
-   during the ElastiCache DNS failover; the online path serves reads from
-   stale caches meanwhile.
+4. If the ElastiCache primary was in the lost AZ, expect a ~30s **write** blip
+   during the ElastiCache DNS failover; reads continue via the reader
+   endpoint.
 5. After AZ recovery, confirm pods rebalance and PDBs are satisfied.
 
 ## Follow-up: AZ-aware reads
 
-`RedisReadReplicaRouter` exists (and is bean-registered) but is not yet
-invoked by any production read path — every read path injects the primary
-`RedisExecutor` directly, and `OnlinePredictionServer` builds its Redis client
-via `LettuceClientFactory.fromEnv()` (primary only). Making reads survive a
-primary-AZ ElastiCache failover requires a behavioral code change: routing
-reads through `router.readable()` and injecting the pod's AZ (`AWS_AZ`) so the
-router can prefer a same-AZ replica. Tracked as future work.
+Same-AZ read locality (per-node endpoints + `AWS_AZ` injection) is an
+**optional** cross-AZ-cost optimization; reads already survive via the
+reader endpoint.
