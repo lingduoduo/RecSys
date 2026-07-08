@@ -62,7 +62,7 @@ public final class OnlinePredictionServer {
         int port = readIntEnv("ONLINE_DEMO_PORT", DEFAULT_PORT);
         int requestTimeoutMs = readIntEnv("ONLINE_REQUEST_TIMEOUT_MS", 500);
 
-        RedisExecutor jedisPool = LettuceClientFactory.fromEnv();
+        RedisExecutor jedisPool = LettuceClientFactory.routingFromEnv();
         AsyncEventPublisher asyncEventPublisher = createAsyncEventPublisher();
         LearnerFlushScheduler learnerFlushScheduler = null;
         ExecutorService recallExecutor = null;
