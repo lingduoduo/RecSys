@@ -8,7 +8,11 @@
 set -euo pipefail
 
 REPO_ROOT="$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)"
-KUSTOMIZATION="$REPO_ROOT/k8s/eks/kustomization.yaml"
+# Pin every region overlay so both regions run the identical replicated digest.
+KUSTOMIZATIONS=(
+  "$REPO_ROOT/k8s/eks/kustomization.yaml"
+  "$REPO_ROOT/k8s/eks-us-west-2/kustomization.yaml"
+)
 REPO_NAME="recsys-backend-service"
 
 usage() {
@@ -38,13 +42,13 @@ if ! printf '%s' "$DIGEST" | grep -Eq '^sha256:[0-9a-f]{64}$'; then
   exit 1
 fi
 
-if ! grep -Eq '^[[:space:]]*digest:[[:space:]]' "$KUSTOMIZATION"; then
-  echo "error: no 'digest:' line found in $KUSTOMIZATION (was the overlay pinned by digest?)" >&2
-  exit 1
-fi
-
-# Replace the value on the single 'digest:' line in the EKS kustomization images entry.
-sed -i.bak -E "s|^([[:space:]]*digest:[[:space:]]*).*|\1${DIGEST}|" "$KUSTOMIZATION"
-rm -f "$KUSTOMIZATION.bak"
-
-echo "Pinned $REPO_NAME to $DIGEST in $KUSTOMIZATION"
+for KUSTOMIZATION in "${KUSTOMIZATIONS[@]}"; do
+  if ! grep -Eq '^[[:space:]]*digest:[[:space:]]' "$KUSTOMIZATION"; then
+    echo "error: no 'digest:' line found in $KUSTOMIZATION (was the overlay pinned by digest?)" >&2
+    exit 1
+  fi
+  # Replace the value on the single 'digest:' line in this overlay's images entry.
+  sed -i.bak -E "s|^([[:space:]]*digest:[[:space:]]*).*|\1${DIGEST}|" "$KUSTOMIZATION"
+  rm -f "$KUSTOMIZATION.bak"
+  echo "Pinned $REPO_NAME to $DIGEST in $KUSTOMIZATION"
+done
