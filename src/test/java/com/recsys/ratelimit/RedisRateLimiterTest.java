@@ -111,8 +111,11 @@ class RedisRateLimiterTest {
         when(cmd.eval(any(String.class), any(ScriptOutputType.class), any(String[].class), any(String[].class)))
                 .thenReturn(List.of(1L, 2L, 1L));
         RedisExecutor exec = execFor(cmd);
-        // limit=5, localPassFraction=0.6 → localPassThreshold=3
-        RedisRateLimiter limiter = new RedisRateLimiter(exec, "rate:test:", 5L, 1, 0.6);
+        // limit=5, localPassFraction=0.6 → localPassThreshold=3.
+        // Fixed clock pins the local window so it can't roll over mid-test (the flake:
+        // a wall-clock second boundary between calls reset localCount, letting the 4th
+        // call pass locally instead of hitting Redis).
+        RedisRateLimiter limiter = new RedisRateLimiter(exec, "rate:test:", 5L, 1, 0.6, () -> 1_000_000L);
 
         for (int i = 0; i < 3; i++) limiter.tryAcquire("online"); // exhaust local threshold
         limiter.tryAcquire("online"); // 4th call must hit Redis

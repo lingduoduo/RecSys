@@ -27,7 +27,7 @@ class OnlineAdmissionControlTest {
         protected void configure(ServerBuilder sb) {
             sb.service("/controlled", new OnlineAdmissionControl(
                     (ctx, req) -> HttpResponse.delayed(HttpResponse.of(HttpStatus.OK),
-                            java.time.Duration.ofMillis(100)),
+                            java.time.Duration.ofMillis(500)),
                     SHEDDER, METRICS));
         }
     };
@@ -35,6 +35,12 @@ class OnlineAdmissionControlTest {
     @Test
     void rejectsBeforeDelegateWhenPermitUnavailableAndReleasesOnCompletion() {
         var first = server.webClient().get("/controlled").aggregate();
+
+        // Deterministic ordering: wait until `first` has actually acquired the single
+        // permit before sending the request we expect to be rejected. Without this, the
+        // async `first` may not have reached the admission gate yet, so `rejected` could
+        // win the permit and get 200 instead of 429 (the flake).
+        assertInFlightEventually(1, Duration.ofSeconds(2));
 
         var rejected = server.blockingWebClient().get("/controlled");
         assertThat(rejected.status()).isEqualTo(HttpStatus.TOO_MANY_REQUESTS);
