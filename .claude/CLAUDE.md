@@ -121,3 +121,6 @@ values:
 (ECR cross-region replication). DR operations are documented in
 `docs/runbooks/dr-*.md`; the design is
 `docs/superpowers/specs/2026-07-08-multi-region-dr-failover-design.md`.
+
+Single-AZ failure resilience (pod spread, AZ-aware Redis reads, PDB tuning) is
+documented in `docs/runbooks/zonal-resilience.md`.

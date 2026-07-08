@@ -26,7 +26,7 @@ metadata:
   name: recsys-model-serving-pdb
   namespace: recsys
 spec:
-  minAvailable: 2
+  maxUnavailable: 1
   selector:
     matchLabels:
       app: recsys-model-serving
