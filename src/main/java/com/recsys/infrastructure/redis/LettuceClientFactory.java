@@ -49,6 +49,20 @@ public final class LettuceClientFactory {
         return executor(uriFrom(props), poolConfig(props.getPool()));
     }
 
+    // ── Routing executors (execute→primary, executeRead→replica) ──────────────
+
+    /** A read/write-splitting executor: reads use a replica (reader endpoint) when
+     *  {@code REDIS_REPLICA_NODES} is set, writes use the primary. */
+    public static RedisExecutor routingFromEnv() {
+        return new RoutingRedisExecutor(routerFromEnv(System.getenv()));
+    }
+
+    /** Latency-capped routing variant (recall pool): caps primary and replica
+     *  command timeouts to {@code maxTimeoutMs}. */
+    public static RedisExecutor routingFromEnv(int maxTimeoutMs) {
+        return new RoutingRedisExecutor(routerFromEnv(System.getenv(), maxTimeoutMs));
+    }
+
     // ── Routers ───────────────────────────────────────────────────────────────
 
     public static RedisReadReplicaRouter routerFromEnv() {
@@ -57,10 +71,14 @@ public final class LettuceClientFactory {
     }
 
     static RedisReadReplicaRouter routerFromEnv(Map<String, String> env) {
+        return routerFromEnv(env, Integer.MAX_VALUE);
+    }
+
+    static RedisReadReplicaRouter routerFromEnv(Map<String, String> env, int maxTimeoutMs) {
         GenericObjectPoolConfig<StatefulRedisConnection<String, String>> poolCfg = poolConfig(defaultPoolKnobs(env));
-        int timeoutMs = readPositiveInt(env, "REDIS_TIMEOUT_MS", DEFAULT_TIMEOUT_MS);
+        int timeoutMs = Math.min(readPositiveInt(env, "REDIS_TIMEOUT_MS", DEFAULT_TIMEOUT_MS), maxTimeoutMs);
         String password = env.getOrDefault("REDIS_PASSWORD", "");
-        RedisExecutor primary = executor(uriFromEnv(env, Integer.MAX_VALUE), poolCfg);
+        RedisExecutor primary = executor(uriFromEnv(env, maxTimeoutMs), poolCfg);
         String localAz = env.getOrDefault("AWS_AZ", env.getOrDefault("AVAILABILITY_ZONE", "unknown"));
 
         List<RedisReadReplicaRouter.AzExecutor> replicas = new ArrayList<>();
