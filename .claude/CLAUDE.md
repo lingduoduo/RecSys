@@ -107,4 +107,17 @@ JVM options live in `jvm.options` (default), `jvm-g1.options` (G1GC), and `jvm-z
 
 ## Kubernetes
 
-`k8s/base/` contains Kustomize manifests for all four services. `k8s/eks/` has EKS-specific patches (IRSA for gateway, Cloud Map, image pull policy).
+`k8s/base/` contains Kustomize manifests for all four services. `k8s/eks-shared/`
+is a Kustomize *component* holding the region-agnostic EKS patches (IRSA, Cloud
+Map, topology-aware routing, gateway ClusterIP, in-cluster Redis → 0). Each region
+overlay composes `../base` + `../eks-shared` and overrides only region-specific
+values:
+
+- `k8s/eks/` — **us-east-1** (primary).
+- `k8s/eks-us-west-2/` — **us-west-2** warm-standby DR (reduced HPA minReplicas,
+  us-west-2 ECR/ElastiCache/WAF, `AWS_REGION=us-west-2`).
+
+`scripts/set-eks-image-digest.sh` pins the identical digest into both overlays
+(ECR cross-region replication). DR operations are documented in
+`docs/runbooks/dr-*.md`; the design is
+`docs/superpowers/specs/2026-07-08-multi-region-dr-failover-design.md`.

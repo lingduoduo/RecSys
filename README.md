@@ -1894,6 +1894,9 @@ kubectl apply -k k8s/eks
 
 The overlay manifests live under [k8s/eks/](k8s/eks/); the WAF WebACL wiring is documented in [docs/runbooks/waf-webacl.md](docs/runbooks/waf-webacl.md).
 
+For DR, `k8s/eks-us-west-2` is a warm-standby overlay for a second region
+(us-west-2); see `docs/runbooks/dr-regional-failover.md`.
+
 ---
 
 ## Capacity Planning
