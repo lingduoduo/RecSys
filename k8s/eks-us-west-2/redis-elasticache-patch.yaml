@@ -1,0 +1,14 @@
+# ConfigMap patch: point prod Redis at the us-west-2 ElastiCache Global Datastore
+# SECONDARY endpoint (read replica; promoted to primary on failover — see
+# docs/runbooks/dr-data-tier-promotion.md). Set REDIS_HOST before deploying.
+apiVersion: v1
+kind: ConfigMap
+metadata:
+  name: recsys-config
+  namespace: recsys
+data:
+  REDIS_MODE: "standalone"
+  REDIS_HOST: "<us-west-2-elasticache-endpoint>.cache.amazonaws.com"
+  REDIS_PORT: "6379"
+  REDIS_SENTINEL_MASTER: ""
+  REDIS_SENTINEL_NODES: ""
