@@ -1,14 +1,19 @@
 package com.recsys.loadshed;
 import com.recsys.metrics.OnlineServingMetricsService;
 
+import com.linecorp.armeria.common.AggregatedHttpResponse;
+import com.linecorp.armeria.common.HttpRequest;
 import com.linecorp.armeria.common.HttpResponse;
 import com.linecorp.armeria.common.HttpStatus;
+import com.linecorp.armeria.server.HttpService;
 import com.linecorp.armeria.server.ServerBuilder;
+import com.linecorp.armeria.server.ServiceRequestContext;
 import com.linecorp.armeria.testing.junit5.server.ServerExtension;
 import org.junit.jupiter.api.Test;
 import org.junit.jupiter.api.extension.RegisterExtension;
 
 import java.time.Duration;
+import java.util.concurrent.atomic.AtomicInteger;
 
 import static org.assertj.core.api.Assertions.assertThat;
 
@@ -57,5 +62,41 @@ class OnlineAdmissionControlTest {
         } while (System.nanoTime() < deadline);
 
         assertThat(actual).isEqualTo(expected);
+    }
+
+    private static ServiceRequestContext ctx() {
+        return ServiceRequestContext.of(HttpRequest.of(com.linecorp.armeria.common.HttpMethod.GET, "/x"));
+    }
+
+    @Test
+    void rejectsWithRetryAfterAndRunsCallbackWhenAtCapacity() throws Exception {
+        OnlineLoadShedder shedder = new OnlineLoadShedder(1, 0.9);
+        AtomicInteger rejects = new AtomicInteger();
+        // Occupy the one slot so the next request is rejected.
+        assertThat(shedder.tryAcquire()).isTrue();
+
+        HttpService delegate = (c, r) -> HttpResponse.of(HttpStatus.OK);
+        OnlineAdmissionControl gate = new OnlineAdmissionControl(delegate, shedder, rejects::incrementAndGet);
+
+        AggregatedHttpResponse resp = gate.serve(ctx(), HttpRequest.of(
+                com.linecorp.armeria.common.HttpMethod.GET, "/x")).aggregate().join();
+
+        assertThat(resp.status()).isEqualTo(HttpStatus.TOO_MANY_REQUESTS);
+        assertThat(resp.headers().get(com.linecorp.armeria.common.HttpHeaderNames.RETRY_AFTER)).isNotNull();
+        assertThat(rejects.get()).isEqualTo(1);
+    }
+
+    @Test
+    void admitsAndReleasesWhenUnderCapacity() throws Exception {
+        OnlineLoadShedder shedder = new OnlineLoadShedder(2, 0.9);
+        HttpService delegate = (c, r) -> HttpResponse.of(HttpStatus.OK);
+        OnlineAdmissionControl gate = new OnlineAdmissionControl(delegate, shedder, () -> {});
+
+        AggregatedHttpResponse resp = gate.serve(ctx(), HttpRequest.of(
+                com.linecorp.armeria.common.HttpMethod.GET, "/x")).aggregate().join();
+
+        assertThat(resp.status()).isEqualTo(HttpStatus.OK);
+        // slot released after completion
+        assertThat(shedder.snapshot().inFlightRequests()).isZero();
     }
 }

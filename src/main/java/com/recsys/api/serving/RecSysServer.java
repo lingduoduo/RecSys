@@ -1,15 +1,20 @@
 package com.recsys.api.serving;
 
 import com.linecorp.armeria.common.HttpMethod;
+import com.linecorp.armeria.common.HttpResponse;
+import com.linecorp.armeria.common.HttpStatus;
 import com.linecorp.armeria.server.Route;
 import com.linecorp.armeria.server.Server;
 import com.linecorp.armeria.server.ServerBuilder;
 import com.linecorp.armeria.server.cors.CorsService;
+import com.recsys.config.EnvConfig;
 import com.recsys.infrastructure.dataloading.DataLoader;
 import com.recsys.infrastructure.dataloading.DataManager;
 import com.recsys.application.model.PairPredictionService;
 import com.recsys.loadshed.GracefulExecutors;
 import com.recsys.loadshed.GracefulServers;
+import com.recsys.loadshed.OnlineAdmissionControl;
+import com.recsys.loadshed.OnlineLoadShedder;
 import com.recsys.infrastructure.cache.LocalEmbeddingCache;
 import com.recsys.infrastructure.redis.GlobalPopularityStore;
 import com.recsys.infrastructure.redis.LettuceClientFactory;
@@ -18,6 +23,7 @@ import com.recsys.infrastructure.redis.RedisExecutor;
 import com.recsys.infrastructure.redis.ShardedTopKStore;
 import com.recsys.infrastructure.vectordb.CandidateGenerator;
 import com.recsys.resilience.FaultInjector;
+import com.recsys.resilience.WorkerBulkhead;
 import com.recsys.application.recommendation.RecommendationHydrator;
 import com.recsys.application.pagination.CursorPaginationService;
 import com.recsys.application.ranking.ScoreRanker;
@@ -33,7 +39,6 @@ import org.slf4j.Logger;
 import org.slf4j.LoggerFactory;
 import java.util.List;
 import java.util.concurrent.ExecutorService;
-import java.util.concurrent.Executors;
 
 public class RecSysServer {
 
@@ -84,9 +89,10 @@ public class RecSysServer {
             CandidateGenerator candidateGenerator = new CandidateGenerator(dataManager, userEmbCache);
 
             GlobalPopularityStore globalPopStore = new GlobalPopularityStore(jedisPool);
-            ExecutorService executor = Executors.newFixedThreadPool(
-                    Runtime.getRuntime().availableProcessors() * 2,
-                    r -> new Thread(r, "recall-channel"));
+            int recallPoolSize = Runtime.getRuntime().availableProcessors() * 2;
+            WorkerBulkhead recallBulkhead = new WorkerBulkhead("recall-catalog", recallPoolSize,
+                    EnvConfig.readInt("RECALL_BULKHEAD_QUEUE_CAPACITY", recallPoolSize * 4));
+            ExecutorService executor = recallBulkhead.asExecutorService();
 
             MultiChannelRecallService recallService = MultiChannelRecallService.from(
                     RecallConfig.builder()
@@ -118,19 +124,33 @@ public class RecSysServer {
 
             String corsOrigin = System.getenv("CORS_ALLOWED_ORIGIN");
 
+            OnlineLoadShedder loadShedder = new OnlineLoadShedder(
+                    EnvConfig.readInt("CATALOG_MAX_CONCURRENT_REQUESTS", 64),
+                    EnvConfig.readDouble("CATALOG_DRAIN_UTILIZATION", 0.90));
+
             ServerBuilder sb = Server.builder()
                     .http(port)
                     .service(ROUTE_ITEM, movieService)
                     .service(ROUTE_ITEM_ALIAS, movieService)
                     .service(ROUTE_USER, userService)
                     .service(ROUTE_USER_ALIAS, userService)
-                    .service(ROUTE_SIMILAR, new RecommendationService.Similar(embCache))
-                    .service(ROUTE_RECOMMENDATION, recommendationService)
-                    .service(ROUTE_RECOMMENDATION_ALIAS, recommendationService)
+                    .service(ROUTE_SIMILAR,
+                            new OnlineAdmissionControl(new RecommendationService.Similar(embCache),
+                                    loadShedder, () -> {}))
+                    .service(ROUTE_RECOMMENDATION,
+                            new OnlineAdmissionControl(recommendationService, loadShedder, () -> {}))
+                    .service(ROUTE_RECOMMENDATION_ALIAS,
+                            new OnlineAdmissionControl(recommendationService, loadShedder, () -> {}))
                     .service(ROUTE_SET_EMBEDDING, new EmbeddingService.SetMovie(embCache, candidateGenerator))
                     .service(ROUTE_SET_USER_EMBEDDING, new EmbeddingService.SetUser(userEmbCache))
                     .service(ROUTE_HEALTH, new RecommendationService.Health())
-                    .service(ROUTE_V2_RECOMMEND, new RecommendationService.V2(orchestrator))
+                    .service("/health/ready", (ctx, req) ->
+                            loadShedder.shouldDrain()
+                                    ? HttpResponse.of(HttpStatus.SERVICE_UNAVAILABLE)
+                                    : HttpResponse.of(HttpStatus.OK))
+                    .service(ROUTE_V2_RECOMMEND,
+                            new OnlineAdmissionControl(new RecommendationService.V2(orchestrator),
+                                    loadShedder, () -> {}))
                     // exact() encodes ':' as '%3A' so the literal path never matches;
                     // regex routing matches against the decoded path.
                     .service(Route.builder()
@@ -152,6 +172,7 @@ public class RecSysServer {
 
             Server server = sb.build();
             Runtime.getRuntime().addShutdownHook(new Thread(() -> {
+                loadShedder.markShuttingDown();   // readiness -> 503 so LBs drain this pod first
                 server.stop().join();
                 GracefulExecutors.shutdownGracefully(executor);
                 jedisPool.close();

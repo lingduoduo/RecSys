@@ -30,7 +30,9 @@ import com.recsys.infrastructure.vectordb.CandidateGenerator;
 import com.recsys.infrastructure.messaging.AsyncEventPublisher;
 import com.recsys.application.online.LearnerFlushScheduler;
 import com.recsys.application.online.OnlineLearner;
+import com.recsys.config.EnvConfig;
 import com.recsys.resilience.FaultInjector;
+import com.recsys.resilience.WorkerBulkhead;
 import com.recsys.loadshed.GracefulExecutors;
 import com.recsys.loadshed.GracefulServers;
 import com.recsys.loadshed.OnlineAdmissionControl;
@@ -51,7 +53,6 @@ import com.recsys.application.retrieval.multichannel.MultiChannelRecallService;
 import com.recsys.application.retrieval.multichannel.RecallConfig;
 import java.util.List;
 import java.util.concurrent.ExecutorService;
-import java.util.concurrent.Executors;
 
 public final class OnlinePredictionServer {
     private static final int DEFAULT_PORT = 7010;
@@ -81,9 +82,10 @@ public final class OnlinePredictionServer {
             OnlineFeatureStore onlineFeatureStore = new OnlineFeatureStore(jedisPool);
             OnlineLearner onlineLearner = new OnlineLearner();
             GlobalPopularityStore globalPopStore = new GlobalPopularityStore(jedisPool);
-            recallExecutor = Executors.newFixedThreadPool(
-                    Runtime.getRuntime().availableProcessors() * 2,
-                    r -> new Thread(r, "online-recall-channel"));
+            int recallPoolSize = Runtime.getRuntime().availableProcessors() * 2;
+            WorkerBulkhead recallBulkhead = new WorkerBulkhead("recall-online", recallPoolSize,
+                    EnvConfig.readInt("RECALL_BULKHEAD_QUEUE_CAPACITY", recallPoolSize * 4));
+            recallExecutor = recallBulkhead.asExecutorService();
             MultiChannelRecallService recallService = MultiChannelRecallService.from(
                     RecallConfig.builder()
                             .channels(List.of(

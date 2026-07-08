@@ -22,20 +22,28 @@ public final class OnlineAdmissionControl extends SimpleDecoratingHttpService {
             HttpData.ofUtf8("{\"error\":\"online serving overloaded\",\"reason\":\"concurrency_limit\"}");
 
     private final OnlineLoadShedder loadShedder;
-    private final OnlineServingMetricsService metricsService;
+    private final Runnable onReject;
 
+    /** Backward-compatible: reports rejections to the online metrics service. */
     public OnlineAdmissionControl(HttpService delegate,
                                   OnlineLoadShedder loadShedder,
                                   OnlineServingMetricsService metricsService) {
+        this(delegate, loadShedder, metricsService::recordRejected);
+    }
+
+    /** General: {@code onReject} runs once per rejected request (e.g. a metrics counter or no-op). */
+    public OnlineAdmissionControl(HttpService delegate,
+                                  OnlineLoadShedder loadShedder,
+                                  Runnable onReject) {
         super(delegate);
         this.loadShedder = loadShedder;
-        this.metricsService = metricsService;
+        this.onReject = onReject;
     }
 
     @Override
     public HttpResponse serve(ServiceRequestContext ctx, HttpRequest req) throws Exception {
         if (!loadShedder.tryAcquire()) {
-            metricsService.recordRejected();
+            onReject.run();
             ResponseHeaders headers = ResponseHeaders.builder(HttpStatus.TOO_MANY_REQUESTS)
                     .contentType(MediaType.JSON_UTF_8)
                     .set(HttpHeaderNames.RETRY_AFTER,

@@ -65,7 +65,7 @@ spec:
             periodSeconds: 5
           readinessProbe:
             httpGet:
-              path: /health
+              path: /health/ready
               port: http
             periodSeconds: 5
           livenessProbe:

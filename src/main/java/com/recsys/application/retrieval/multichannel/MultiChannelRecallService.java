@@ -21,6 +21,7 @@ import java.util.Set;
 import java.util.concurrent.CompletableFuture;
 import java.util.concurrent.ExecutorService;
 import java.util.concurrent.ForkJoinPool;
+import java.util.concurrent.RejectedExecutionException;
 import java.util.concurrent.TimeUnit;
 
 public class MultiChannelRecallService {
@@ -114,14 +115,20 @@ public class MultiChannelRecallService {
                 continue;
             }
             String name = channel.name();
-            CompletableFuture<ChannelResult> future = CompletableFuture
-                    .supplyAsync(() -> {
-                        faultInjector.maybeInject("channel:" + name);
-                        // Over-fetch to limit so gap fill can pick unselected candidates
-                        return new ChannelResult(name, channel.recall(query, limit), null);
-                    }, executor)
-                    .orTimeout(channelTimeoutMs, TimeUnit.MILLISECONDS)
-                    .exceptionally(ex -> new ChannelResult(name, List.of(), ex));
+            CompletableFuture<ChannelResult> future;
+            try {
+                future = CompletableFuture
+                        .supplyAsync(() -> {
+                            faultInjector.maybeInject("channel:" + name);
+                            // Over-fetch to limit so gap fill can pick unselected candidates
+                            return new ChannelResult(name, channel.recall(query, limit), null);
+                        }, executor)
+                        .orTimeout(channelTimeoutMs, TimeUnit.MILLISECONDS)
+                        .exceptionally(ex -> new ChannelResult(name, List.of(), ex));
+            } catch (RejectedExecutionException rex) {
+                log.warn("Channel '{}' rejected by recall bulkhead (queue full)", name);
+                future = CompletableFuture.completedFuture(new ChannelResult(name, List.of(), rex));
+            }
             futures.add(future);
         }
 
