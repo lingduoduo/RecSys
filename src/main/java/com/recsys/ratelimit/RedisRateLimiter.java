@@ -9,6 +9,7 @@ import org.slf4j.LoggerFactory;
 
 import java.util.List;
 import java.util.concurrent.atomic.AtomicLong;
+import java.util.function.LongSupplier;
 
 /**
  * Redis-backed fixed-window rate limiter for cross-instance request protection.
@@ -54,6 +55,9 @@ public final class RedisRateLimiter {
     private volatile long localWindowBucket = -1L;
     private final AtomicLong localCount = new AtomicLong(0L);
 
+    // Clock backing the local-window bucket; injectable so tests get a fixed window.
+    private final LongSupplier nowMillis;
+
     // Circuit breaker state (cache avalanche / rate-limit degradation).
     private final CircuitBreaker circuit;
 
@@ -80,6 +84,20 @@ public final class RedisRateLimiter {
 
     RedisRateLimiter(RedisExecutor exec, String keyPrefix, long limit, int windowSeconds,
                      double localPassFraction, int circuitFailureThreshold, long circuitResetMs) {
+        this(exec, keyPrefix, limit, windowSeconds, localPassFraction,
+                circuitFailureThreshold, circuitResetMs, System::currentTimeMillis);
+    }
+
+    /** Test seam: inject the clock backing the local-window bucket (default circuit knobs). */
+    RedisRateLimiter(RedisExecutor exec, String keyPrefix, long limit, int windowSeconds,
+                     double localPassFraction, LongSupplier nowMillis) {
+        this(exec, keyPrefix, limit, windowSeconds, localPassFraction,
+                DEFAULT_CIRCUIT_FAILURE_THRESHOLD, DEFAULT_CIRCUIT_RESET_MS, nowMillis);
+    }
+
+    RedisRateLimiter(RedisExecutor exec, String keyPrefix, long limit, int windowSeconds,
+                     double localPassFraction, int circuitFailureThreshold, long circuitResetMs,
+                     LongSupplier nowMillis) {
         this.exec = exec;
         this.keyPrefix = keyPrefix;
         this.limit = Math.max(0L, limit);
@@ -87,6 +105,7 @@ public final class RedisRateLimiter {
         this.enabled = exec != null && this.limit > 0L;
         this.localPassThreshold = (long) (Math.max(0L, this.limit) * Math.max(0.0, Math.min(1.0, localPassFraction)));
         this.circuit = new CircuitBreaker(Math.max(1, circuitFailureThreshold), Math.max(1L, circuitResetMs));
+        this.nowMillis = nowMillis;
     }
 
     public static RedisRateLimiter disabled() {
@@ -99,7 +118,7 @@ public final class RedisRateLimiter {
         }
 
         // Local fast path: skip Redis when clearly under threshold for this window.
-        long nowBucket = System.currentTimeMillis() / (windowSeconds * 1_000L);
+        long nowBucket = nowMillis.getAsLong() / (windowSeconds * 1_000L);
         if (nowBucket != localWindowBucket) {
             localWindowBucket = nowBucket;
             localCount.set(0L);

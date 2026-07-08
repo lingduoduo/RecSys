@@ -77,7 +77,14 @@ class CognitoJwtVerifierTest {
                         + "\"client_id\":\"app-client\","
                         + "\"token_use\":\"access\","
                         + "\"exp\":1780000000");
-        String tampered = valid.substring(0, valid.length() - 2) + "xx";
+        // Flip the FIRST char of the signature segment so a whole signature byte changes.
+        // (Tampering the trailing base64url chars is not reliable: the final byte's low
+        // bits are unrepresented, so e.g. an "xx" suffix can decode to the same bytes —
+        // the flake. The first sig char encodes the top bits of signature byte 0.)
+        int sigStart = valid.lastIndexOf('.') + 1;
+        char orig = valid.charAt(sigStart);
+        char flipped = (orig == 'A') ? 'B' : 'A';
+        String tampered = valid.substring(0, sigStart) + flipped + valid.substring(sigStart + 1);
 
         assertThrows(CognitoJwtVerifier.JwtAuthException.class, () -> verifier.verify(tampered));
     }
