@@ -100,7 +100,7 @@ sub-packages.
 - `topk:<window>` — sharded top-K trending store (windows: `last_hour`, `last_day`, `last_month`)
 - Online feature store keys are written by the Flink job (`streaming/flink/OnlineFeatureStreamingJob`)
 - `shard:topology` — authoritative versioned shard-topology snapshot (JSON); instances refresh every 30s
-- `svc:registry:<serviceName>` — opt-in service registry (`SERVICE_REGISTRY_ENABLED`): advertised address string, TTL-renewed by each backend's heartbeat; liveness = key present, gateway MGETs known services and falls back to static route addresses
+- `svc:registry:<serviceName>` — opt-in service registry (`SERVICE_REGISTRY_ENABLED`): advertised address string, TTL-renewed by each backend's heartbeat (all four services register — the Armeria ones directly, the Spring model service via `ServiceRegistryConfig`); liveness = key present, gateway MGETs known services and falls back to static route addresses. When enabled, the gateway `/health` response includes a `registry` section reporting each service's resolution `source` (`registry` vs `static` fallback) and the snapshot age.
 - `sr:rec:{shard}:{seq}` / `sr:dev:{shard}:{id}` / `sr:stream:{shard}` / `sr:seq:{shard}` — generation 1 (unversioned)
 - `sr:g{version}:rec:…` etc. — generation ≥2 keys after a reshard; reads dual-read the previous generation for one max-TTL window
 - Shard-level reads (`GET /shards/shard`, `readAllShards`) are generation-current — during a migration window they do not dual-read the previous generation (device reads do).
