@@ -22,9 +22,6 @@ import com.linecorp.armeria.common.ResponseHeaders;
 import com.linecorp.armeria.server.HttpService;
 import com.linecorp.armeria.server.ServiceRequestContext;
 
-import org.slf4j.Logger;
-import org.slf4j.LoggerFactory;
-
 import java.net.URI;
 import java.time.Duration;
 import java.util.List;
@@ -61,7 +58,6 @@ public final class LlmProxyService implements HttpService {
 
     private static final int SC_TOO_MANY_REQUESTS = 429;
     private static final ObjectMapper MAPPER = new ObjectMapper();
-    private static final Logger log = LoggerFactory.getLogger(LlmProxyService.class);
 
     private static final Set<String> HOP_BY_HOP = Set.of(
             "connection", "content-length", "expect", "host", "keep-alive",
@@ -125,29 +121,6 @@ public final class LlmProxyService implements HttpService {
                 .factory(clientFactory == null ? ClientFactory.ofDefault() : clientFactory)
                 .responseTimeoutMillis(timeout.toMillis())
                 .build();
-    }
-
-    /**
-     * Best-effort pre-connect: issues a GET to the upstream health path through this service's
-     * own {@link WebClient}, seating the pooled connection (DNS + TCP + TLS + HTTP/2 preface)
-     * that real requests will reuse. Never blocks startup and never throws — failures are logged.
-     */
-    public CompletableFuture<Void> warmUp() {
-        try {
-            URI healthUri = route.healthUri();
-            String rawQuery = healthUri.getRawQuery();
-            String target = rawQuery != null ? healthUri.getRawPath() + "?" + rawQuery : healthUri.getRawPath();
-            return webClient.get(target).aggregate()
-                    .thenAccept(agg -> log.info("LLM warmup for {} -> {}", route.name(), agg.status()))
-                    .exceptionally(t -> {
-                        log.warn("LLM warmup for {} failed (non-fatal): {}", route.name(), t.toString());
-                        return null;
-                    })
-                    .toCompletableFuture();
-        } catch (Throwable t) {
-            log.warn("LLM warmup for {} failed to start (non-fatal): {}", route.name(), t.toString());
-            return CompletableFuture.completedFuture(null);
-        }
     }
 
     @Override
