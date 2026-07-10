@@ -71,12 +71,15 @@ code it can only mislead. It is removed from operator documentation.
 ## Testing
 
 - Delete `LlmProxyServiceWarmupTest` — it exclusively exercises `warmUp()`.
-- Delete `LlmGatewayWarmupIntegrationTest` — it exclusively exercises the
-  `registerLlmRoutes` warmup wiring (enabled hits the health path, disabled does
-  not); both branches disappear with the flag.
-- No new tests are required: removing warmup means gateway startup performs no
-  upstream I/O, which is the trivially-guaranteed post-condition the deleted
-  "disabled" test used to assert. The remaining gateway integration and
+- `LlmGatewayWarmupIntegrationTest` mixes two concerns: the two warmup-wiring
+  tests (`registerLlmRoutes_warmupEnabled_hitsHealthPath`,
+  `registerLlmRoutes_warmupDisabled_noUpstreamHit`) and one unrelated
+  `buildLlmClientFactory_returnsUsableFactory`. Remove the warmup file and
+  preserve the factory coverage by moving that single test into a new focused
+  `LlmClientFactoryTest`.
+- No new behavioral tests are required: removing warmup means gateway startup
+  performs no upstream I/O, which is the trivially-guaranteed post-condition the
+  deleted "disabled" test used to assert. The remaining gateway integration and
   route-table tests continue to cover registration and forwarding.
 - The focused gateway test suite and the full Maven test suite must pass before
   completion.
