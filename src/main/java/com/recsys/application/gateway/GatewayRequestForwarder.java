@@ -46,6 +46,16 @@ public final class GatewayRequestForwarder implements java.io.Closeable {
                                    Duration timeout,
                                    Map<String, RouteCircuitBreaker> circuitBreakers,
                                    GatewayRateLimiter rateLimiter) {
+        this(routes, timeout, circuitBreakers, rateLimiter,
+                UpstreamEndpointGroups.HealthCheckConfig.fromEnvironment());
+    }
+
+    // Package-private: lets tests inject an explicit health-check config (e.g. a short probe interval).
+    GatewayRequestForwarder(List<MicroserviceRoute> routes,
+                            Duration timeout,
+                            Map<String, RouteCircuitBreaker> circuitBreakers,
+                            GatewayRateLimiter rateLimiter,
+                            UpstreamEndpointGroups.HealthCheckConfig healthConfig) {
         this.circuitBreakers = Map.copyOf(circuitBreakers);
         this.rateLimiter = rateLimiter == null ? GatewayRateLimiter.disabled() : rateLimiter;
 
@@ -64,8 +74,7 @@ public final class GatewayRequestForwarder implements java.io.Closeable {
                         .maxTotalAttempts(2)
                         .newDecorator();
 
-        this.upstreams = UpstreamEndpointGroups.create(
-                routes, timeout, retryDecorator, UpstreamEndpointGroups.HealthCheckConfig.fromEnvironment());
+        this.upstreams = UpstreamEndpointGroups.create(routes, timeout, retryDecorator, healthConfig);
     }
 
     @Override
@@ -111,7 +120,7 @@ public final class GatewayRequestForwarder implements java.io.Closeable {
                 })
                 .exceptionally(t -> {
                     if (cb != null) cb.recordFailure();
-                    if (isEmptyEndpointGroup(t)) {
+                    if (isNoHealthyEndpoint(t)) {
                         return GatewayProxyService.gatewayError(HttpStatus.SERVICE_UNAVAILABLE,
                                 route.name() + " upstream unavailable — no healthy endpoint");
                     }
@@ -147,9 +156,13 @@ public final class GatewayRequestForwarder implements java.io.Closeable {
         return b.build();
     }
 
-    private static boolean isEmptyEndpointGroup(Throwable t) {
+    // True when the upstream call failed because no healthy endpoint could be selected — either the group
+    // was empty (EmptyEndpointGroupException) or selection timed out waiting for one
+    // (EndpointSelectionTimeoutException). Both mean "upstream unavailable", surfaced to clients as 503.
+    private static boolean isNoHealthyEndpoint(Throwable t) {
         for (Throwable c = t; c != null; c = c.getCause()) {
-            if (c instanceof com.linecorp.armeria.client.endpoint.EmptyEndpointGroupException) {
+            if (c instanceof com.linecorp.armeria.client.endpoint.EmptyEndpointGroupException
+                    || c instanceof com.linecorp.armeria.client.endpoint.EndpointSelectionTimeoutException) {
                 return true;
             }
         }

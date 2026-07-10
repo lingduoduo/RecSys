@@ -119,12 +119,15 @@ final class UpstreamEndpointGroups implements java.io.Closeable {
         if (!config.healthCheckEnabled()) {
             return endpoint;
         }
-        // A selection timeout equal to the response budget means an empty (all-unhealthy) group never
-        // blocks longer than a normal request would before fast-failing.
+        // allowEmptyEndpoints(false): when every endpoint is unhealthy the group fails a selection
+        // immediately with EmptyEndpointGroupException instead of waiting out the selection timeout,
+        // so the gateway fast-fails with 503 rather than hanging. The selection timeout still bounds any
+        // brief resolution window to no more than a normal request would take.
         return HealthCheckedEndpointGroup.builder(endpoint, healthPath)
                 .protocol(protocol)
                 .retryIntervalMillis(config.healthCheckIntervalMs())
                 .selectionTimeoutMillis(responseTimeout.toMillis())
+                .allowEmptyEndpoints(false)
                 .build();
     }
 
