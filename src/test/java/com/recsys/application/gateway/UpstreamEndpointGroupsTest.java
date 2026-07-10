@@ -17,7 +17,7 @@ class UpstreamEndpointGroupsTest {
     }
 
     private static UpstreamEndpointGroups.HealthCheckConfig cfg(boolean enabled) {
-        return new UpstreamEndpointGroups.HealthCheckConfig(enabled, 10_000L, 30);
+        return new UpstreamEndpointGroups.HealthCheckConfig(enabled, 10_000L);
     }
 
     @Test
