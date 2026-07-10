@@ -26,9 +26,8 @@ import java.util.Locale;
 import java.util.Map;
 import java.util.Set;
 import java.util.function.Function;
-import java.util.stream.Collectors;
 
-public final class GatewayRequestForwarder {
+public final class GatewayRequestForwarder implements java.io.Closeable {
 
     private static final int SC_TOO_MANY_REQUESTS = 429;
     private static final Set<String> HOP_BY_HOP = Set.of(
@@ -39,7 +38,7 @@ public final class GatewayRequestForwarder {
     // Credentials the gateway consumes at its auth boundary — never forwarded upstream.
     private static final Set<String> GATEWAY_CONSUMED_CREDENTIALS = Set.of("authorization", "x-api-key");
 
-    private final Map<String, WebClient> routeClients;
+    private final UpstreamEndpointGroups upstreams;
     private final Map<String, RouteCircuitBreaker> circuitBreakers;
     private final GatewayRateLimiter rateLimiter;
 
@@ -65,12 +64,13 @@ public final class GatewayRequestForwarder {
                         .maxTotalAttempts(2)
                         .newDecorator();
 
-        this.routeClients = routes.stream().collect(Collectors.toUnmodifiableMap(
-                MicroserviceRoute::name,
-                r -> WebClient.builder(r.baseUri().toString())
-                        .responseTimeoutMillis(timeout.toMillis())
-                        .decorator(retryDecorator)
-                        .build()));
+        this.upstreams = UpstreamEndpointGroups.create(
+                routes, timeout, retryDecorator, UpstreamEndpointGroups.HealthCheckConfig.fromEnvironment());
+    }
+
+    @Override
+    public void close() {
+        upstreams.close();
     }
 
     HttpResponse forward(ServiceRequestContext ctx,
@@ -97,7 +97,7 @@ public final class GatewayRequestForwarder {
                     route.name() + " circuit open — upstream unavailable, retry later");
         }
 
-        WebClient client = routeClients.get(route.name());
+        WebClient client = upstreams.clientFor(route.name());
         RequestHeaders upstreamHeaders = buildUpstreamHeaders(request.headers(), targetPath, ctx, principal);
         HttpRequest upstreamReq = HttpRequest.of(upstreamHeaders, request.content());
         HttpResponse upstream = client.execute(upstreamReq);
@@ -111,6 +111,10 @@ public final class GatewayRequestForwarder {
                 })
                 .exceptionally(t -> {
                     if (cb != null) cb.recordFailure();
+                    if (isEmptyEndpointGroup(t)) {
+                        return GatewayProxyService.gatewayError(HttpStatus.SERVICE_UNAVAILABLE,
+                                route.name() + " upstream unavailable — no healthy endpoint");
+                    }
                     return GatewayProxyService.gatewayError(HttpStatus.BAD_GATEWAY, "upstream unreachable");
                 }));
     }
@@ -141,6 +145,15 @@ public final class GatewayRequestForwarder {
             b.set(HttpHeaderNames.of("x-forwarded-for"), newValue);
         }
         return b.build();
+    }
+
+    private static boolean isEmptyEndpointGroup(Throwable t) {
+        for (Throwable c = t; c != null; c = c.getCause()) {
+            if (c instanceof com.linecorp.armeria.client.endpoint.EmptyEndpointGroupException) {
+                return true;
+            }
+        }
+        return false;
     }
 
     private static boolean isHopByHop(String name) {
