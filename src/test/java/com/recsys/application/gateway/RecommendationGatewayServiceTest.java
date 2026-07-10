@@ -81,6 +81,12 @@ class RecommendationGatewayServiceTest {
         }
     };
 
+    @RegisterExtension @Order(7)
+    static final ServerExtension rateLimitedGateway = gatewayWithPolicies(true, false);
+
+    @RegisterExtension @Order(8)
+    static final ServerExtension openOnlineCircuitGateway = gatewayWithPolicies(false, true);
+
     @ParameterizedTest
     @CsvSource({
             "embedding,embed-recall",
@@ -193,12 +199,65 @@ class RecommendationGatewayServiceTest {
                         "clientId=service", "tokenUse=null", "requestId=trace-123");
     }
 
+    @Test
+    void rateLimitsTheSelectedUnderlyingRouteWithRetryHeaders() {
+        assertThat(postJson(rateLimitedGateway, "{\"userId\":42,\"strategy\":\"online\"}").status())
+                .isEqualTo(HttpStatus.OK);
+
+        AggregatedHttpResponse limited = postJson(
+                rateLimitedGateway, "{\"userId\":42,\"strategy\":\"online\"}");
+
+        assertThat(limited.status()).isEqualTo(HttpStatus.TOO_MANY_REQUESTS);
+        assertThat(limited.headers().get(HttpHeaderNames.RETRY_AFTER)).isEqualTo("1");
+        assertThat(limited.headers().get("x-ratelimit-limit")).isEqualTo("1");
+        assertThat(limited.headers().get("x-ratelimit-remaining")).isEqualTo("0");
+        assertThat(limited.contentUtf8()).isEqualTo("{\"error\":\"online-blend gateway rate limited\"}");
+        assertThat(postJson(rateLimitedGateway,
+                "{\"userId\":42,\"strategy\":\"embedding\"}").status()).isEqualTo(HttpStatus.OK);
+    }
+
+    @Test
+    void openCircuitForSelectedUnderlyingRouteReturnsServiceUnavailable() {
+        AggregatedHttpResponse unavailable = postJson(
+                openOnlineCircuitGateway, "{\"userId\":42,\"strategy\":\"online\"}");
+
+        assertThat(unavailable.status()).isEqualTo(HttpStatus.SERVICE_UNAVAILABLE);
+        assertThat(unavailable.contentUtf8()).contains("online-blend circuit open");
+        assertThat(postJson(openOnlineCircuitGateway,
+                "{\"userId\":42,\"strategy\":\"model\"}").status()).isEqualTo(HttpStatus.OK);
+    }
+
+    @Test
+    void passesThroughUpstreamErrorStatusHeadersAndBody() {
+        RequestHeaders headers = RequestHeaders.builder(HttpMethod.POST, "/api/recommend")
+                .contentType(MediaType.JSON_UTF_8)
+                .add("x-test-upstream-error", "true")
+                .build();
+
+        AggregatedHttpResponse response = gateway.webClient().execute(HttpRequest.of(
+                headers, HttpData.ofUtf8("{\"userId\":42,\"strategy\":\"online\"}")))
+                .aggregate().join();
+
+        assertThat(response.status()).isEqualTo(HttpStatus.UNPROCESSABLE_ENTITY);
+        assertThat(response.headers().get("x-upstream-result")).isEqualTo("rejected");
+        assertThat(response.contentUtf8()).isEqualTo("{\"error\":\"online upstream rejected request\"}");
+    }
+
     private static ServerExtension upstream(String strategyName) {
         return new ServerExtension() {
             @Override
             protected void configure(ServerBuilder sb) {
-                sb.service("prefix:/", (ctx, req) -> HttpResponse.of(req.aggregate().thenApply(request ->
-                        HttpResponse.of(HttpStatus.OK, MediaType.JSON_UTF_8,
+                sb.service("prefix:/", (ctx, req) -> HttpResponse.of(req.aggregate().thenApply(request -> {
+                    if (request.headers().contains("x-test-upstream-error")) {
+                        return HttpResponse.of(
+                                com.linecorp.armeria.common.ResponseHeaders.builder(
+                                                HttpStatus.UNPROCESSABLE_ENTITY)
+                                        .contentType(MediaType.JSON_UTF_8)
+                                        .add("x-upstream-result", "rejected")
+                                        .build(),
+                                HttpData.ofUtf8("{\"error\":\"online upstream rejected request\"}"));
+                    }
+                    return HttpResponse.of(HttpStatus.OK, MediaType.JSON_UTF_8,
                                 strategyName + " " + ctx.path()
                                         + (ctx.query() == null ? "" : "?" + ctx.query())
                                         + " apiKey=" + request.headers().get("x-api-key")
@@ -207,7 +266,38 @@ class RecommendationGatewayServiceTest {
                                         + " clientId=" + request.headers().get("x-authenticated-client-id")
                                         + " tokenUse=" + request.headers().get("x-authenticated-token-use")
                                         + " requestId=" + request.headers().get("x-request-id")
-                                        + " " + request.contentUtf8()))));
+                                        + " " + request.contentUtf8());
+                })));
+            }
+        };
+    }
+
+    private static ServerExtension gatewayWithPolicies(boolean rateLimitOnline,
+                                                       boolean openOnlineCircuit) {
+        return new ServerExtension() {
+            @Override
+            protected void configure(ServerBuilder sb) {
+                List<MicroserviceRoute> routes = List.of(
+                        route("embed-recall", embedding),
+                        route("model-inference", model),
+                        route("online-blend", online),
+                        route("sequential", sequential));
+                RouteCircuitBreaker onlineBreaker = new RouteCircuitBreaker(1, 60_000);
+                if (openOnlineCircuit) onlineBreaker.recordFailure();
+                Map<String, RouteCircuitBreaker> breakers = Map.of(
+                        "embed-recall", new RouteCircuitBreaker(),
+                        "model-inference", new RouteCircuitBreaker(),
+                        "online-blend", onlineBreaker,
+                        "sequential", new RouteCircuitBreaker());
+                GatewayRateLimiter limiter = rateLimitOnline
+                        ? GatewayRateLimiter.fromEnvironment(routes, Map.of(
+                                "GATEWAY_RATE_LIMIT_ONLINE_BLEND_RPS", "1",
+                                "GATEWAY_RATE_LIMIT_ONLINE_BLEND_BURST", "1")::get, () -> 0L)
+                        : GatewayRateLimiter.disabled();
+                GatewayRequestForwarder forwarder = new GatewayRequestForwarder(
+                        routes, Duration.ofSeconds(2), breakers, limiter);
+                sb.service("/api/recommend", new RecommendationGatewayService(
+                        routes, forwarder, GatewayAuthenticator.disabled()));
             }
         };
     }
@@ -225,6 +315,13 @@ class RecommendationGatewayServiceTest {
         RequestHeaders headers = RequestHeaders.builder(HttpMethod.POST, path)
                 .contentType(MediaType.JSON_UTF_8).build();
         return gateway.webClient().execute(HttpRequest.of(headers, HttpData.ofUtf8(body)))
+                .aggregate().join();
+    }
+
+    private static AggregatedHttpResponse postJson(ServerExtension target, String body) {
+        RequestHeaders headers = RequestHeaders.builder(HttpMethod.POST, "/api/recommend")
+                .contentType(MediaType.JSON_UTF_8).build();
+        return target.webClient().execute(HttpRequest.of(headers, HttpData.ofUtf8(body)))
                 .aggregate().join();
     }
 
