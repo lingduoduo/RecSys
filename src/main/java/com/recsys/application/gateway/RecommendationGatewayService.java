@@ -1,5 +1,6 @@
 package com.recsys.application.gateway;
 
+import com.fasterxml.jackson.databind.DeserializationFeature;
 import com.fasterxml.jackson.databind.JsonNode;
 import com.fasterxml.jackson.databind.ObjectMapper;
 import com.fasterxml.jackson.databind.node.ObjectNode;
@@ -23,7 +24,8 @@ import java.util.function.Function;
 import java.util.stream.Collectors;
 
 public final class RecommendationGatewayService implements HttpService {
-    private static final ObjectMapper MAPPER = new ObjectMapper();
+    private static final ObjectMapper MAPPER = new ObjectMapper()
+            .enable(DeserializationFeature.FAIL_ON_TRAILING_TOKENS);
     static final Map<String, String> STRATEGY_ROUTES = Map.of(
             "embedding", "embed-recall",
             "model", "model-inference",

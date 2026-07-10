@@ -23,6 +23,7 @@ import java.net.URI;
 import java.time.Duration;
 import java.util.List;
 import java.util.Map;
+import java.util.Set;
 
 import static org.assertj.core.api.Assertions.assertThat;
 
@@ -55,6 +56,28 @@ class RecommendationGatewayServiceTest {
                     routes, Duration.ofSeconds(2), breakers, GatewayRateLimiter.disabled());
             sb.service("/api/recommend", new RecommendationGatewayService(
                     routes, forwarder, GatewayAuthenticator.disabled()));
+        }
+    };
+
+    @RegisterExtension @Order(6)
+    static final ServerExtension authenticatedGateway = new ServerExtension() {
+        @Override
+        protected void configure(ServerBuilder sb) {
+            List<MicroserviceRoute> routes = List.of(
+                    route("embed-recall", embedding),
+                    route("model-inference", model),
+                    route("online-blend", online),
+                    route("sequential", sequential));
+            Map<String, RouteCircuitBreaker> breakers = Map.of(
+                    "embed-recall", new RouteCircuitBreaker(),
+                    "model-inference", new RouteCircuitBreaker(),
+                    "online-blend", new RouteCircuitBreaker(),
+                    "sequential", new RouteCircuitBreaker());
+            GatewayRequestForwarder forwarder = new GatewayRequestForwarder(
+                    routes, Duration.ofSeconds(2), breakers, GatewayRateLimiter.disabled());
+            sb.service("/api/recommend", new RecommendationGatewayService(
+                    routes, forwarder,
+                    GatewayAuthenticator.forTesting(Set.of("valid-key"), Set.of(), null)));
         }
     };
 
@@ -91,6 +114,12 @@ class RecommendationGatewayServiceTest {
     }
 
     @Test
+    void rejectsTrailingJsonTokens() {
+        assertBadRequest("{\"userId\":42} {\"strategy\":\"online\"}",
+                "request body must be a JSON object");
+    }
+
+    @Test
     void rejectsNonStringStrategy() {
         assertBadRequest("{\"strategy\":3}", "strategy must be a string");
     }
@@ -110,13 +139,75 @@ class RecommendationGatewayServiceTest {
         assertThat(response.headers().get(HttpHeaderNames.ALLOW)).isEqualTo("POST");
     }
 
+    @Test
+    void preservesRawQueryWhenDispatching() {
+        AggregatedHttpResponse response = postJson(
+                "/api/recommend?filter=a%2Fb&filter=c+d&empty=", "{\"userId\":42}");
+
+        assertThat(response.status()).isEqualTo(HttpStatus.OK);
+        assertThat(response.contentUtf8())
+                .contains("/v2/recommend?filter=a%2Fb&filter=c+d&empty=");
+    }
+
+    @Test
+    void returnsAuthenticationRejectionUnchanged() {
+        AggregatedHttpResponse response = authenticatedGateway.webClient().execute(
+                HttpRequest.of(RequestHeaders.builder(HttpMethod.POST, "/api/recommend")
+                                .contentType(MediaType.JSON_UTF_8).build(),
+                        HttpData.ofUtf8("{\"userId\":42}"))).aggregate().join();
+
+        assertThat(response.status()).isEqualTo(HttpStatus.UNAUTHORIZED);
+        assertThat(response.headers().get(HttpHeaderNames.WWW_AUTHENTICATE)).isEqualTo("Bearer");
+        assertThat(response.contentType()).isEqualTo(MediaType.JSON_UTF_8);
+        assertThat(response.contentUtf8())
+                .isEqualTo("{\"error\":\"missing or invalid gateway API key\"}");
+    }
+
+    @Test
+    void rejectsMethodBeforeAuthentication() {
+        AggregatedHttpResponse response = authenticatedGateway.webClient().execute(
+                HttpRequest.of(HttpMethod.GET, "/api/recommend")).aggregate().join();
+
+        assertThat(response.status()).isEqualTo(HttpStatus.METHOD_NOT_ALLOWED);
+        assertThat(response.headers().get(HttpHeaderNames.ALLOW)).isEqualTo("POST");
+    }
+
+    @Test
+    void reconstructsUpstreamHeadersAtAuthenticatedBoundary() {
+        RequestHeaders headers = RequestHeaders.builder(HttpMethod.POST, "/api/recommend")
+                .contentType(MediaType.JSON_UTF_8)
+                .add("x-api-key", "valid-key")
+                .add(HttpHeaderNames.AUTHORIZATION, "Bearer attacker-token")
+                .add("x-authenticated-subject", "attacker")
+                .add("x-authenticated-client-id", "attacker")
+                .add("x-authenticated-token-use", "attacker")
+                .add("x-request-id", "trace-123")
+                .build();
+
+        AggregatedHttpResponse response = authenticatedGateway.webClient().execute(
+                HttpRequest.of(headers, HttpData.ofUtf8("{\"userId\":42}"))).aggregate().join();
+
+        assertThat(response.status()).isEqualTo(HttpStatus.OK);
+        assertThat(response.contentUtf8())
+                .contains("apiKey=null", "authorization=null", "subject=null",
+                        "clientId=service", "tokenUse=null", "requestId=trace-123");
+    }
+
     private static ServerExtension upstream(String strategyName) {
         return new ServerExtension() {
             @Override
             protected void configure(ServerBuilder sb) {
                 sb.service("prefix:/", (ctx, req) -> HttpResponse.of(req.aggregate().thenApply(request ->
                         HttpResponse.of(HttpStatus.OK, MediaType.JSON_UTF_8,
-                                strategyName + " " + ctx.path() + " " + request.contentUtf8()))));
+                                strategyName + " " + ctx.path()
+                                        + (ctx.query() == null ? "" : "?" + ctx.query())
+                                        + " apiKey=" + request.headers().get("x-api-key")
+                                        + " authorization=" + request.headers().get(HttpHeaderNames.AUTHORIZATION)
+                                        + " subject=" + request.headers().get("x-authenticated-subject")
+                                        + " clientId=" + request.headers().get("x-authenticated-client-id")
+                                        + " tokenUse=" + request.headers().get("x-authenticated-token-use")
+                                        + " requestId=" + request.headers().get("x-request-id")
+                                        + " " + request.contentUtf8()))));
             }
         };
     }
@@ -127,7 +218,11 @@ class RecommendationGatewayServiceTest {
     }
 
     private static AggregatedHttpResponse postJson(String body) {
-        RequestHeaders headers = RequestHeaders.builder(HttpMethod.POST, "/api/recommend")
+        return postJson("/api/recommend", body);
+    }
+
+    private static AggregatedHttpResponse postJson(String path, String body) {
+        RequestHeaders headers = RequestHeaders.builder(HttpMethod.POST, path)
                 .contentType(MediaType.JSON_UTF_8).build();
         return gateway.webClient().execute(HttpRequest.of(headers, HttpData.ofUtf8(body)))
                 .aggregate().join();
