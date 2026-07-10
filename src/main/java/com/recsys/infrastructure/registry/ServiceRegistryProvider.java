@@ -26,6 +26,7 @@ public final class ServiceRegistryProvider {
     private final Runnable onRefresh;
 
     private volatile Map<String, String> snapshot = Map.of();
+    private volatile long lastRefreshAtMs;
     ScheduledExecutorService scheduler; // package-private for shutdown assertions
 
     public ServiceRegistryProvider(ServiceRegistryStore store, Collection<String> serviceNames,
@@ -52,6 +53,7 @@ public final class ServiceRegistryProvider {
         try {
             Map<String, String> loaded = store.lookup(serviceNames);
             this.snapshot = Map.copyOf(loaded);
+            this.lastRefreshAtMs = System.currentTimeMillis();
         } catch (Exception e) {
             log.warn("Service registry refresh failed — keeping last-good snapshot: {}", e.toString());
             return;
@@ -61,6 +63,11 @@ public final class ServiceRegistryProvider {
         } catch (Exception e) {
             log.warn("Service registry onRefresh callback failed (non-fatal): {}", e.toString());
         }
+    }
+
+    /** Wall-clock ms of the most recent successful refresh, or 0 if none has succeeded yet. */
+    public long lastRefreshAtMs() {
+        return lastRefreshAtMs;
     }
 
     public Optional<String> resolve(String serviceName) {

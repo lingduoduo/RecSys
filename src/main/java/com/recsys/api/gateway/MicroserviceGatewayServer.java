@@ -116,7 +116,7 @@ public final class MicroserviceGatewayServer {
         ServerBuilder sb = Server.builder().http(port);
 
         // Health endpoint — exposes per-route circuit state and upstream reachability.
-        sb.service("/health", new GatewayHealthService(allRoutes, timeout, circuitBreakers, port));
+        sb.service("/health", new GatewayHealthService(allRoutes, timeout, circuitBreakers, port, registryProvider));
 
         // LLM path: build a tuned, shared ClientFactory (only when LLM routes exist) and register
         // each LLM route from it. Register LLM routes before the catch-all so Armeria's

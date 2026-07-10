@@ -38,6 +38,22 @@ class ServiceRegistryProviderTest {
     }
 
     @Test
+    void lastRefreshAtMsIsZeroUntilSuccessThenSet() {
+        ServiceRegistryStore store = Mockito.mock(ServiceRegistryStore.class);
+        when(store.lookup(Mockito.anyCollection()))
+                .thenReturn(Map.of("a", "http://a:1"))
+                .thenThrow(new RuntimeException("redis down"));
+        ServiceRegistryProvider p = new ServiceRegistryProvider(store, List.of("a"), 0L, null);
+
+        assertThat(p.lastRefreshAtMs()).isZero();
+        p.refresh();
+        long afterGood = p.lastRefreshAtMs();
+        assertThat(afterGood).isGreaterThan(0L);
+        p.refresh(); // fails internally -> timestamp unchanged
+        assertThat(p.lastRefreshAtMs()).isEqualTo(afterGood);
+    }
+
+    @Test
     void onRefreshCallbackFiresAfterSwap() {
         ServiceRegistryStore store = Mockito.mock(ServiceRegistryStore.class);
         when(store.lookup(Mockito.anyCollection())).thenReturn(Map.of("a", "http://a:1"));
