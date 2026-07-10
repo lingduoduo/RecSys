@@ -20,11 +20,9 @@ import org.slf4j.Logger;
 import org.slf4j.LoggerFactory;
 
 import java.time.Duration;
-import java.util.ArrayList;
 import java.util.List;
 import java.util.Map;
 import java.util.Set;
-import java.util.concurrent.CompletableFuture;
 import java.util.stream.Collectors;
 
 public final class MicroserviceGatewayServer {
@@ -87,16 +85,14 @@ public final class MicroserviceGatewayServer {
         sb.service("/health", new GatewayHealthService(allRoutes, timeout, circuitBreakers, port));
 
         // LLM path: build a tuned, shared ClientFactory (only when LLM routes exist) and register
-        // each LLM route from it, then best-effort pre-connect so the first request is warm.
-        // Register LLM routes before the catch-all so Armeria's more-specific prefix wins.
+        // each LLM route from it. Register LLM routes before the catch-all so Armeria's
+        // more-specific prefix wins. Connections are established lazily on the first request.
         ClientFactory llmClientFactory = null;
         if (!llmRoutes.isEmpty()) {
             llmClientFactory = buildLlmClientFactory(System::getenv);
-            boolean warmupEnabled = EnvVars.readBool("LLM_WARMUP_ENABLED", true);
             registerLlmRoutes(sb, llmRoutes, llmClientFactory, llmTimeout, circuitBreakers,
                     llmTokenRateLimiter, llmResponseCache, llmDefaultTokenEstimate, llmMaxRetryWaitMs,
-                    authenticator, warmupEnabled);
-            // Warmup futures are intentionally not joined — startup must not block on the upstream.
+                    authenticator);
         }
 
         // Canonical recommendation endpoint — exact path takes precedence over the catch-all.
@@ -152,7 +148,7 @@ public final class MicroserviceGatewayServer {
                 .build();
     }
 
-    static List<CompletableFuture<Void>> registerLlmRoutes(
+    static void registerLlmRoutes(
             ServerBuilder sb,
             List<MicroserviceRoute> llmRoutes,
             ClientFactory llmClientFactory,
@@ -162,9 +158,7 @@ public final class MicroserviceGatewayServer {
             LlmResponseCache responseCache,
             int defaultTokenEstimate,
             long maxRetryWaitMs,
-            GatewayAuthenticator authenticator,
-            boolean warmupEnabled) {
-        List<CompletableFuture<Void>> warmups = new ArrayList<>();
+            GatewayAuthenticator authenticator) {
         for (MicroserviceRoute llmRoute : llmRoutes) {
             LlmProxyService llmProxyService = new LlmProxyService(
                     llmRoute,
@@ -181,10 +175,6 @@ public final class MicroserviceGatewayServer {
                             .pathPrefix(llmRoute.prefix() + "/")
                             .build(),
                     llmProxyService);
-            if (warmupEnabled) {
-                warmups.add(llmProxyService.warmUp());
-            }
         }
-        return warmups;
     }
 }
