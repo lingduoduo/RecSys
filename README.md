@@ -1144,7 +1144,8 @@ curl http://localhost:8010/health
     "user-profile":  {"status":"UP","prefix":"/api/users","baseUrl":"http://localhost:6010","healthUrl":"http://localhost:6010/health","statusCode":200,"latencyMs":2,"circuitState":"CLOSED"},
     "catalog":       {"status":"UP","prefix":"/api/catalog","baseUrl":"http://localhost:6010","healthUrl":"http://localhost:6010/health","statusCode":200,"latencyMs":1,"circuitState":"CLOSED"},
     "model":         {"status":"UP","prefix":"/api/model","baseUrl":"http://localhost:8080","healthUrl":"http://localhost:8080/health/ready","statusCode":200,"latencyMs":3,"circuitState":"CLOSED"},
-    "online":        {"status":"DOWN","prefix":"/api/online","baseUrl":"http://localhost:7010","healthUrl":"http://localhost:7010/health","statusCode":0,"latencyMs":500,"circuitState":"OPEN","error":"Connection refused"}
+    "online":        {"status":"DOWN","prefix":"/api/online","baseUrl":"http://localhost:7010","healthUrl":"http://localhost:7010/health","statusCode":0,"latencyMs":500,"circuitState":"OPEN","error":"Connection refused"},
+    "...": "abridged; additional registered routes omitted"
   }
 }
 ```
