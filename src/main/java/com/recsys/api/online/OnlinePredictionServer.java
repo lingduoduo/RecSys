@@ -64,6 +64,13 @@ public final class OnlinePredictionServer {
         int requestTimeoutMs = readIntEnv("ONLINE_REQUEST_TIMEOUT_MS", 500);
 
         RedisExecutor jedisPool = LettuceClientFactory.routingFromEnv();
+        final com.recsys.infrastructure.registry.ServiceRegistrar registrar =
+                com.recsys.infrastructure.registry.ServiceRegistrar.fromEnvironment(
+                        new com.recsys.infrastructure.registry.ServiceRegistryStore(
+                                jedisPool, com.recsys.infrastructure.registry.ServiceRegistryStore.DEFAULT_KEY_PREFIX));
+        if (registrar != null) {
+            registrar.start();
+        }
         AsyncEventPublisher asyncEventPublisher = createAsyncEventPublisher();
         LearnerFlushScheduler learnerFlushScheduler = null;
         ExecutorService recallExecutor = null;
@@ -171,6 +178,9 @@ public final class OnlinePredictionServer {
                 activeLearnerFlushScheduler.close();
                 GracefulExecutors.shutdownGracefully(activeRecallExecutor);
                 activeTopologyProvider.stop();
+                if (registrar != null) {
+                    registrar.close();
+                }
                 jedisPool.close();
             }));
 

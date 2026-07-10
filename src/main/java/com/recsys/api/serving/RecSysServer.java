@@ -66,6 +66,13 @@ public class RecSysServer {
     public void run() throws Exception {
         int port = readIntEnv("PORT", DEFAULT_PORT);
         RedisExecutor jedisPool = LettuceClientFactory.routingFromEnv();
+        final com.recsys.infrastructure.registry.ServiceRegistrar registrar =
+                com.recsys.infrastructure.registry.ServiceRegistrar.fromEnvironment(
+                        new com.recsys.infrastructure.registry.ServiceRegistryStore(
+                                jedisPool, com.recsys.infrastructure.registry.ServiceRegistryStore.DEFAULT_KEY_PREFIX));
+        if (registrar != null) {
+            registrar.start();
+        }
         try {
             DataManager dataManager = DataManager.getInstance();
             PairPredictionService pairPredictionService = new PairPredictionService();
@@ -175,6 +182,9 @@ public class RecSysServer {
                 loadShedder.markShuttingDown();   // readiness -> 503 so LBs drain this pod first
                 server.stop().join();
                 GracefulExecutors.shutdownGracefully(executor);
+                if (registrar != null) {
+                    registrar.close();
+                }
                 jedisPool.close();
             }, "recsys-shutdown"));
             log.info("Starting RecSys serving API on port {}", port);
