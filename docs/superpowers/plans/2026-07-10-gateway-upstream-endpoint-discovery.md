@@ -2,6 +2,22 @@
 
 > **For agentic workers:** REQUIRED SUB-SKILL: Use superpowers:subagent-driven-development (recommended) or superpowers:executing-plans to implement this plan task-by-task. Steps use checkbox (`- [ ]`) syntax for tracking.
 
+> **As-built deviations (kept for the record):** During TDD the endpoint-group
+> mechanism changed from the sketch below. `DnsAddressEndpointGroup` was dropped —
+> it issues Netty DNS *queries* that fail on literal IPs / `/etc/hosts` names — in
+> favor of a static `Endpoint.of(host, port)` wrapped in the
+> `HealthCheckedEndpointGroup`, so host resolution stays with Armeria's default
+> per-connection resolver (unchanged from the previous plain-`WebClient` path).
+> Consequently the `GATEWAY_UPSTREAM_DNS_TTL_MAX_S` knob was removed. Two
+> robustness additions: the group is built with `allowEmptyEndpoints(false)` so an
+> all-unhealthy group fails a selection immediately (→ 503) rather than waiting out
+> the selection timeout, and `UpstreamEndpointGroups.create(...)` performs a
+> bounded, non-fatal wait on `EndpointGroup.whenReady()` so an already-up upstream
+> is selectable on the first request instead of racing a cold health check. The
+> integration test asserts the two deterministic outcomes (healthy → forwarded,
+> no-healthy-endpoint → fast 503) rather than timing a live health flip. See the
+> updated design doc for the authoritative description.
+
 **Goal:** Give the gateway's data path application-layer, health-aware upstream discovery — resolve each upstream through an Armeria endpoint group (TTL-driven DNS refresh) wrapped in a health-checked group so a down upstream is dropped from selection and the gateway fast-fails with 503 instead of forwarding into a black hole. ClusterIP/kube-proxy/PreferClose are untouched.
 
 **Architecture:** A new package-internal `UpstreamEndpointGroups` builds, per unique `(host, port, healthPath)`, a `HealthCheckedEndpointGroup(DnsAddressEndpointGroup)` (or a plain `DnsAddressEndpointGroup` when health checks are disabled), shares it across all routes mapping to that backend, and exposes a `WebClient` per route name plus `close()` for the owned groups. `GatewayRequestForwarder` builds its clients through it, becomes `Closeable`, and `MicroserviceGatewayServer`'s shutdown hook closes it.

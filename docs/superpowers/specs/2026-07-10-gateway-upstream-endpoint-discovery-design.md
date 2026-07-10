@@ -28,8 +28,8 @@ cross-AZ-traffic-reduction work). This design must not disturb that.
 Give the gateway's data path **application-layer, health-aware upstream
 discovery** on top of the existing ClusterIP DNS:
 
-- Resolve each upstream through an Armeria endpoint group so DNS refresh is
-  driven by the record TTL instead of the blunt 30 s JVM cache.
+- Wrap each upstream in an Armeria health-checked endpoint group, keeping the
+  existing per-connection host resolution and Cloud Map DNS cache unchanged.
 - Actively health-check each upstream and drop an unhealthy one from selection so
   the gateway **fast-fails locally** (503) instead of forwarding into a black
   hole and waiting for the timeout.
@@ -57,26 +57,45 @@ A builder + holder that, given the proxy routes and config, produces:
 - A `Map<String routeName, WebClient>` the forwarder uses exactly as today
   (looked up by route name in `forward`).
 - The set of owned `EndpointGroup`s, exposed via `close()` so their background
-  DNS-refresh and health-check schedulers are stopped on shutdown.
+  health-check schedulers are stopped on shutdown.
 
-Endpoint groups are **deduplicated by `(host, port, healthPath)`**. The 11
-default routes collapse onto ~3 backend authorities, so this yields ~3 shared
-endpoint groups (each with one DNS refresher + one health checker) rather than 11
-redundant ones. WebClients are cheap and remain per-route, each built over its
-route's shared endpoint group.
+Endpoint groups are **deduplicated by `(protocol, host, port, healthPath)`**. The
+11 default routes collapse onto ~3 backend authorities, so this yields ~3 shared
+endpoint groups (each with one health checker) rather than 11 redundant ones.
+WebClients are cheap and remain per-route, each built over its route's shared
+endpoint group.
 
 Each shared group is:
 
 ```
-DnsAddressEndpointGroup(host, port)          // TTL-bounded DNS refresh
+Endpoint.of(host, port)                       // static endpoint; host resolved
   └─ wrapped by HealthCheckedEndpointGroup(healthPath)   // when enabled
-       → WebClient(SessionProtocol.HTTP, group), round-robin selection,
-         responseTimeout + the existing retry decorator
+       → WebClient(SessionProtocol, group), responseTimeout + retry decorator
 ```
 
-When health checking is disabled (config flag), the group is the plain
-`DnsAddressEndpointGroup` with no active probing — used for local development
-where not all backends run.
+Host resolution stays with Armeria's **default per-connection resolver** — the
+same mechanism the previous plain `WebClient.builder(baseUri)` used, which
+correctly handles literal IPs, `localhost`, and DNS names and already honors the
+30 s Cloud Map DNS cache. (An earlier iteration used `DnsAddressEndpointGroup`,
+but it issues Netty DNS *queries* for the host and fails on literal IPs /
+`/etc/hosts` names, so it was dropped for a static `Endpoint`; this also removed
+the need for any DNS-TTL config knob.) The health check only decides whether that
+endpoint is currently *selectable*.
+
+The health-checked group is built with `allowEmptyEndpoints(false)` so that when
+every endpoint is unhealthy a selection fails **immediately** with
+`EmptyEndpointGroupException` (surfaced as 503) rather than waiting out the
+selection timeout.
+
+After building all groups, construction performs a **bounded, non-fatal wait for
+initial endpoint readiness** (`EndpointGroup.whenReady()`, capped at the response
+timeout), so an already-up upstream is selectable on the very first request
+instead of racing a cold health check. An upstream not ready within the window
+simply fast-fails until it resolves; startup never blocks indefinitely.
+
+When health checking is disabled (config flag), the group is the bare static
+`Endpoint` with no active probing — used for local development where not all
+backends run; behavior then matches the previous plain-`WebClient` path.
 
 ### `GatewayRequestForwarder` (modified)
 
@@ -101,20 +120,23 @@ behavior:
 
 | Env var | Default | Meaning |
 |---|---|---|
-| `GATEWAY_UPSTREAM_HEALTHCHECK_ENABLED` | `true` | When `false`, use a plain `DnsAddressEndpointGroup` (no active probing). |
-| `GATEWAY_UPSTREAM_HEALTHCHECK_INTERVAL_MS` | `10000` | Health-probe interval per upstream. |
-| `GATEWAY_UPSTREAM_DNS_TTL_MAX_S` | `30` | Upper bound on DNS record caching, matching the existing Cloud Map TTL convention. |
+| `GATEWAY_UPSTREAM_HEALTHCHECK_ENABLED` | `true` | When `false`, use a bare static `Endpoint` with no active probing (matches the previous plain-`WebClient` behavior). |
+| `GATEWAY_UPSTREAM_HEALTHCHECK_INTERVAL_MS` | `10000` | Health-probe retry interval per upstream. |
 
-The existing `networkaddress.cache.ttl = 30` JVM setting stays (harmless; it
-governs any non-endpoint-group resolution and other clients).
+The existing `networkaddress.cache.ttl = 30` JVM setting stays and continues to
+govern host resolution (now as before, since resolution is unchanged). No
+separate DNS-TTL knob is introduced — the static `Endpoint` uses the default
+resolver, so DNS caching is exactly as it was.
 
 ## Failure behavior
 
 - **Upstream down / all health checks failing:** the endpoint group has no
-  healthy endpoint; selection fails fast and the gateway returns `503` with the
-  existing `"<route> upstream unavailable"` body — the same shape as an open
-  circuit — instead of forwarding and waiting for the response timeout. This is
-  the primary improvement over today.
+  healthy endpoint; because it is built with `allowEmptyEndpoints(false)`,
+  selection fails **immediately** (`EmptyEndpointGroupException`) and the gateway
+  returns `503` with a `"<route> upstream unavailable — no healthy endpoint"`
+  body — the same shape as an open circuit — instead of forwarding and waiting
+  for the response timeout. This is the primary improvement over today.
+  (`EndpointSelectionTimeoutException` is mapped to `503` the same way.)
 - **Transient DNS churn (Cloud Map re-register):** unchanged — the single
   retry-on-`IOException` still covers it, now over the endpoint group.
 - **Health-check flapping:** the probe hits the ClusterIP (i.e. "is at least one
@@ -157,8 +179,8 @@ unchanged.
 ## Expected outcome
 
 The gateway proactively avoids a downed upstream and fails fast with a clear
-503, and upstream DNS refresh is TTL-driven rather than a fixed 30 s cache — all
-while preserving ClusterIP/kube-proxy/`PreferClose` and requiring zero
+503 instead of hanging until the response timeout — all while preserving the
+existing host resolution, ClusterIP/kube-proxy/`PreferClose`, and requiring zero
 infrastructure changes. This is the low-risk first step; a Redis-backed registry
 (Option B) or headless client-side LB (Option A2) remain available as later,
 larger changes.
