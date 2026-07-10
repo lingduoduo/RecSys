@@ -110,6 +110,7 @@ public final class MicroserviceGatewayServer {
         Runtime.getRuntime().addShutdownHook(new Thread(() -> {
             log.info("Shutting down API gateway...");
             server.stop().join();
+            forwarder.close();
             if (llmFactoryToClose != null) {
                 llmFactoryToClose.close();
             }
