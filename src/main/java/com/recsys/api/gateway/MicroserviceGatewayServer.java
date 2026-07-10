@@ -1,9 +1,11 @@
 package com.recsys.api.gateway;
 import com.recsys.application.gateway.GatewayProxyService;
+import com.recsys.application.gateway.GatewayRequestForwarder;
 import com.recsys.application.gateway.LlmProxyService;
 import com.recsys.application.gateway.GatewayHealthService;
 import com.recsys.application.gateway.GatewayAuthenticator;
 import com.recsys.application.gateway.MicroserviceRoute;
+import com.recsys.application.gateway.RecommendationGatewayService;
 import com.recsys.config.EnvVars;
 import com.recsys.ratelimit.LlmTokenRateLimiter;
 import com.recsys.ratelimit.GatewayRateLimiter;
@@ -65,6 +67,10 @@ public final class MicroserviceGatewayServer {
 
         GatewayRateLimiter rateLimiter = GatewayRateLimiter.fromEnvironment(proxyRoutes);
         GatewayAuthenticator authenticator = GatewayAuthenticator.fromEnvironment();
+        GatewayRequestForwarder forwarder = new GatewayRequestForwarder(
+                proxyRoutes, timeout, circuitBreakers, rateLimiter);
+        RecommendationGatewayService recommendationService =
+                new RecommendationGatewayService(proxyRoutes, forwarder, authenticator);
 
         // LLM requests can take much longer than regular API calls (large context, slow inference).
         // Use a separate timeout so LLM latency does not block the shared proxy pool.
@@ -93,9 +99,12 @@ public final class MicroserviceGatewayServer {
             // Warmup futures are intentionally not joined — startup must not block on the upstream.
         }
 
-        // Catch-all proxy — handles all non-LLM routes.
+        // Canonical recommendation endpoint — exact path takes precedence over the catch-all.
+        sb.service("/api/recommend", recommendationService);
+
+        // Catch-all proxy — handles all non-LLM routes using the same forwarding pipeline.
         sb.service("prefix:/",
-                new GatewayProxyService(proxyRoutes, timeout, circuitBreakers, rateLimiter, authenticator));
+                new GatewayProxyService(proxyRoutes, forwarder, authenticator));
 
         GracefulServers.applyShutdownWindow(sb);
 
@@ -111,6 +120,7 @@ public final class MicroserviceGatewayServer {
         }));
 
         log.info("Starting RecSys API gateway on port {}", port);
+        log.info("Canonical recommendation routing is available at /api/recommend and defaults to model");
         for (MicroserviceRoute route : allRoutes) {
             log.info("Route {} {} -> {}", route.name(), route.prefix(), route.baseUri());
         }

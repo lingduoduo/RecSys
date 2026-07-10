@@ -30,9 +30,9 @@ public final class GatewayProxyService implements HttpService {
         this(routes, new GatewayRequestForwarder(routes, timeout, circuitBreakers, rateLimiter), authenticator);
     }
 
-    GatewayProxyService(List<MicroserviceRoute> routes,
-                        GatewayRequestForwarder forwarder,
-                        GatewayAuthenticator authenticator) {
+    public GatewayProxyService(List<MicroserviceRoute> routes,
+                               GatewayRequestForwarder forwarder,
+                               GatewayAuthenticator authenticator) {
         this.routeTable = new MicroserviceRouteTable(List.copyOf(routes));
         this.forwarder = Objects.requireNonNull(forwarder, "forwarder");
         this.authenticator = authenticator == null
