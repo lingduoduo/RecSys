@@ -61,7 +61,8 @@ curl http://localhost:8010/health
     "model-inference": {"status": "UP", "healthUrl": "http://localhost:8080/health/ready", "statusCode": 200, "latencyMs": 4},
     "catalog":  {"status": "UP", "healthUrl": "http://localhost:6010/health", "statusCode": 200, "latencyMs": 2},
     "model":    {"status": "UP", "healthUrl": "http://localhost:8080/health/ready", "statusCode": 200, "latencyMs": 3},
-    "online":   {"status": "UP", "healthUrl": "http://localhost:7010/health", "statusCode": 200, "latencyMs": 2}
+    "online":   {"status": "UP", "healthUrl": "http://localhost:7010/health", "statusCode": 200, "latencyMs": 2},
+    "...": "abridged; additional registered routes omitted"
   }
 }
 ```
@@ -1186,7 +1187,7 @@ GATEWAY_RATE_LIMIT_RPS=5 GATEWAY_RATE_LIMIT_BURST=10 \
 # Per-route overrides (route name → UPPER_SNAKE suffix)
 GATEWAY_RATE_LIMIT_MODEL_RPS=2 GATEWAY_RATE_LIMIT_MODEL_BURST=3 \
   mvn exec:java -Dexec.mainClass=com.recsys.api.gateway.MicroserviceGatewayServer
-GATEWAY_RATE_LIMIT_RECOMMENDATION_RETRIEVAL_RPS=10 GATEWAY_RATE_LIMIT_RECOMMENDATION_RETRIEVAL_BURST=20 \
+GATEWAY_RATE_LIMIT_MODEL_INFERENCE_RPS=10 GATEWAY_RATE_LIMIT_MODEL_INFERENCE_BURST=20 \
   mvn exec:java -Dexec.mainClass=com.recsys.api.gateway.MicroserviceGatewayServer
 ```
 
