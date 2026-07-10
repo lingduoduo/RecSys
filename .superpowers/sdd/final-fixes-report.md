@@ -2,7 +2,9 @@
 
 ## Status
 
-Implemented and committed the requested final-review coverage additions. Test execution is blocked by the execution environment's loopback-bind restriction and exhausted escalation allowance; JDK 17 test compilation completed successfully before Armeria setup failed.
+Implemented and committed the requested final-review coverage additions. Runtime verification, previously blocked by the codex sandbox's loopback-bind restriction, has now been completed outside the sandbox on JDK 17 — see "Runtime verification (completed)" below.
+
+Original blocker (for the record): test execution was blocked by the codex environment's loopback-bind restriction and exhausted escalation allowance; JDK 17 test compilation completed successfully before Armeria setup failed.
 
 ## Changes
 
@@ -57,7 +59,33 @@ Outcome before commit: `git diff --check` exited 0 with no output; status listed
 - The empty marker test was removed as requested.
 - Design, task briefs, and `.superpowers/sdd/progress.md` were not modified.
 
+## Runtime verification (completed)
+
+Rerun outside the codex sandbox with `JAVA_HOME=$(/usr/libexec/java_home -v 17)`; loopback binding succeeded, so Armeria-backed integration tests executed.
+
+### Focused gateway suite
+
+```bash
+JAVA_HOME=$(/usr/libexec/java_home -v 17) mvn test \
+  -Dtest='RecommendationGatewayServiceTest,GatewayRequestForwarderTest,GatewayRouteTableTest,GatewayServerIntegrationTest'
+```
+
+Result: **BUILD SUCCESS**, 39 tests, 0 failures, 0 errors, 0 skipped.
+
+- `GatewayServerIntegrationTest` — 10 (Armeria bound successfully; the prior sandbox setup error is gone)
+- `RecommendationGatewayServiceTest` — 21 (matches the predicted 18 existing + 3 new policy tests)
+- `GatewayRouteTableTest` — 6
+- `GatewayRequestForwarderTest` — 2
+
+### Full suite
+
+```bash
+JAVA_HOME=$(/usr/libexec/java_home -v 17) mvn test
+```
+
+Result: **BUILD SUCCESS**, **893 tests, 0 failures, 0 errors, 0 skipped** — exactly the predicted count (890 prior HEAD + 3 new invocations).
+
 ## Concerns
 
-- Runtime verification remains outstanding solely because local server port binding requires escalation and the approval service rejected escalation due to its usage limit. The parent/reviewer should rerun the focused gateway suite and full Maven suite in an environment permitted to bind loopback ports.
-- The pre-existing mixed-Netty-version warning appeared before the bind failure; it was already documented in earlier successful suite runs.
+- Runtime verification is no longer outstanding; both the focused gateway suite and the full Maven suite pass on JDK 17 (see above).
+- The pre-existing mixed-Netty-version warning still appears at startup; it is benign and was already documented in earlier successful suite runs.
