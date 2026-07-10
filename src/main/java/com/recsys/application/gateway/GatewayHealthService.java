@@ -21,6 +21,8 @@ public final class GatewayHealthService extends BaseApiService {
     private final List<MicroserviceRoute> routes;
     private final Map<String, RouteCircuitBreaker> circuitBreakers;
     private final int gatewayPort;
+    // Optional registry consumer — when present, the /health payload reports registry resolution.
+    private final com.recsys.infrastructure.registry.ServiceRegistryProvider registryProvider; // nullable
     // Per-route clients built from each route's base URI so we can call the health path directly.
     private final Map<String, WebClient> healthClients;
 
@@ -28,9 +30,18 @@ public final class GatewayHealthService extends BaseApiService {
                          Duration timeout,
                          Map<String, RouteCircuitBreaker> circuitBreakers,
                          int gatewayPort) {
+        this(routes, timeout, circuitBreakers, gatewayPort, null);
+    }
+
+    public GatewayHealthService(List<MicroserviceRoute> routes,
+                         Duration timeout,
+                         Map<String, RouteCircuitBreaker> circuitBreakers,
+                         int gatewayPort,
+                         com.recsys.infrastructure.registry.ServiceRegistryProvider registryProvider) {
         this.routes = List.copyOf(routes);
         this.circuitBreakers = Map.copyOf(circuitBreakers);
         this.gatewayPort = gatewayPort;
+        this.registryProvider = registryProvider;
         // Build one WebClient per route base URI. responseTimeout is set slightly above the
         // health-check timeout so Armeria's own timeout fires after our deadline.
         this.healthClients = routes.stream().collect(
@@ -76,6 +87,10 @@ public final class GatewayHealthService extends BaseApiService {
                             payload.put("checkedAt", Instant.now().toString());
                             payload.put("ports", ports);
                             payload.put("services", services);
+                            Map<String, Object> registry = registrySection();
+                            if (registry != null) {
+                                payload.put("registry", registry);
+                            }
                             try {
                                 byte[] body = MAPPER.writeValueAsBytes(payload);
                                 return HttpResponse.of(
@@ -85,6 +100,31 @@ public final class GatewayHealthService extends BaseApiService {
                                 return HttpResponse.of(HttpStatus.INTERNAL_SERVER_ERROR);
                             }
                         }));
+    }
+
+    /** Registry observability, or null when the registry consumer is not wired. */
+    private Map<String, Object> registrySection() {
+        if (registryProvider == null) {
+            return null;
+        }
+        Map<String, Object> out = new LinkedHashMap<>();
+        out.put("enabled", Boolean.TRUE);
+        long last = registryProvider.lastRefreshAtMs();
+        out.put("snapshotAgeMs", last == 0 ? null : System.currentTimeMillis() - last);
+        Map<String, Object> services = new LinkedHashMap<>();
+        for (MicroserviceRoute route : routes) {
+            String service = route.serviceName();
+            if (service == null || services.containsKey(service)) {
+                continue;
+            }
+            Map<String, Object> entry = new LinkedHashMap<>();
+            String resolved = registryProvider.resolve(service).orElse(null);
+            entry.put("source", resolved != null ? "registry" : "static");
+            entry.put("address", resolved);
+            services.put(service, entry);
+        }
+        out.put("services", services);
+        return out;
     }
 
     // Resolve a route's effective port: explicit port, or the scheme default when omitted.
