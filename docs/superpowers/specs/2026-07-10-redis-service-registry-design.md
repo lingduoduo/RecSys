@@ -44,11 +44,13 @@ New package `com.recsys.infrastructure.registry`:
 
 ### `ServiceRegistryStore`
 Redis adapter over the existing `RedisExecutor`. Key per service:
-`svc:registry:<serviceName>` → a small JSON document
-`{address, metadataJson, updatedAtMs}`.
+`svc:registry:<serviceName>` → the advertised **address string** (e.g.
+`http://recsys-catalog-serving:6010`). PR1 stores the bare address (no JSON) —
+the consumer needs only the address and the TTL is the liveness signal; richer
+per-instance metadata would switch the value to JSON in a later change.
 
-- `register(serviceName, address, ttlMs)` → `SET key json PX ttlMs` (idempotent;
-  replicas of one service write the same address, last-writer-wins).
+- `register(serviceName, address, ttlMs)` → `SET key address PX ttlMs`
+  (idempotent; replicas of one service write the same address, last-writer-wins).
 - `deregister(serviceName)` → `DEL key` (best-effort on shutdown).
 - `lookup(Collection<String> serviceNames)` → **MGET** over the exact keys →
   `Map<serviceName, address>` for present entries. Bounded by the number of
