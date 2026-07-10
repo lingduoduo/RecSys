@@ -9,7 +9,7 @@ import org.junit.jupiter.api.Test;
 import static org.junit.jupiter.api.Assertions.assertEquals;
 import static org.junit.jupiter.api.Assertions.assertNull;
 
-class GatewayProxyServiceTest {
+class GatewayRequestForwarderTest {
 
     @Test
     void buildUpstreamHeaders_stripsSpoofedIdentityAndInjectsPrincipal() {
@@ -20,7 +20,7 @@ class GatewayProxyServiceTest {
         ServiceRequestContext ctx = ServiceRequestContext.of(HttpRequest.of(incoming));
         GatewayPrincipal principal = GatewayPrincipal.ofApiKey("key-1");
 
-        RequestHeaders upstream = GatewayProxyService.buildUpstreamHeaders(
+        RequestHeaders upstream = GatewayRequestForwarder.buildUpstreamHeaders(
                 incoming, "/model/predict", ctx, principal);
 
         // Spoofed subject was stripped and NOT re-injected (api-key principal has no subject).
@@ -41,7 +41,7 @@ class GatewayProxyServiceTest {
         ServiceRequestContext ctx = ServiceRequestContext.of(HttpRequest.of(incoming));
         GatewayPrincipal principal = GatewayPrincipal.ofApiKey("secret-key");
 
-        RequestHeaders upstream = GatewayProxyService.buildUpstreamHeaders(
+        RequestHeaders upstream = GatewayRequestForwarder.buildUpstreamHeaders(
                 incoming, "/model/predict", ctx, principal);
 
         // The gateway's own credentials are consumed here, not forwarded to the backend.

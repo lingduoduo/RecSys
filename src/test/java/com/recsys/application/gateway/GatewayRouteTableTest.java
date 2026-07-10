@@ -4,6 +4,7 @@ import com.recsys.application.gateway.MicroserviceRoute;
 import org.junit.jupiter.api.Test;
 
 import java.util.List;
+import java.util.Map;
 import java.util.Set;
 import java.util.stream.Collectors;
 
@@ -12,6 +13,17 @@ import static org.assertj.core.api.Assertions.assertThat;
 class GatewayRouteTableTest {
 
     private final List<MicroserviceRoute> routes = MicroserviceRoute.defaults();
+
+    @Test
+    void canonicalStrategiesMapToProductionRoutes() {
+        assertThat(RecommendationGatewayService.STRATEGY_ROUTES).containsExactlyInAnyOrderEntriesOf(
+                Map.of("embedding", "embed-recall",
+                        "model", "model-inference",
+                        "online", "online-blend",
+                        "sequential", "sequential"));
+        assertThat(routes.stream().map(MicroserviceRoute::name))
+                .contains("embed-recall", "model-inference", "online-blend", "sequential");
+    }
 
     @Test
     void noDuplicatePrefixes() {
