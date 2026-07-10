@@ -9,26 +9,32 @@ public record MicroserviceRoute(String name,
                          String prefix,
                          String envVar,
                          URI baseUri,
-                         String healthPath) {
+                         String healthPath,
+                         String serviceName) {
+
+    /** Convenience constructor for routes with no registry service name (serviceName = null). */
+    public MicroserviceRoute(String name, String prefix, String envVar, URI baseUri, String healthPath) {
+        this(name, prefix, envVar, baseUri, healthPath, null);
+    }
 
     private static final List<MicroserviceRoute> DEFAULTS = buildDefaults();
 
     private static List<MicroserviceRoute> buildDefaults() {
         List<MicroserviceRoute> routes = new java.util.ArrayList<>();
         // Production recommendation routes
-        routes.add(fromEnv("embed-recall",    "/api/recommend/embedding",   "EMBED_RECALL_SERVICE_URL",    "http://localhost:6010", "/health"));
-        routes.add(fromEnv("model-inference", "/api/recommend/model",       "MODEL_INFERENCE_SERVICE_URL", "http://localhost:8080", "/health/ready"));
-        routes.add(fromEnv("online-blend",    "/api/recommend/online",      "ONLINE_BLEND_SERVICE_URL",    "http://localhost:7010", "/health"));
-        routes.add(fromEnv("sequential",      "/api/recommend/sequential",  "SEQUENTIAL_SERVICE_URL",      "http://localhost:8080", "/health/ready"));
+        routes.add(fromEnv("embed-recall",    "/api/recommend/embedding",   "EMBED_RECALL_SERVICE_URL",    "http://localhost:6010", "/health",       "recsys-catalog-serving"));
+        routes.add(fromEnv("model-inference", "/api/recommend/model",       "MODEL_INFERENCE_SERVICE_URL", "http://localhost:8080", "/health/ready", "recsys-model-serving"));
+        routes.add(fromEnv("online-blend",    "/api/recommend/online",      "ONLINE_BLEND_SERVICE_URL",    "http://localhost:7010", "/health",       "recsys-online-serving"));
+        routes.add(fromEnv("sequential",      "/api/recommend/sequential",  "SEQUENTIAL_SERVICE_URL",      "http://localhost:8080", "/health/ready", "recsys-model-serving"));
         // Data / catalog routes
-        routes.add(fromEnv("user-profile",    "/api/users",    "USER_PROFILE_SERVICE_URL",    "http://localhost:6010", "/health"));
-        routes.add(fromEnv("movie-metadata",  "/api/movies",   "MOVIE_METADATA_SERVICE_URL",  "http://localhost:6010", "/health"));
-        routes.add(fromEnv("feature",         "/api/features", "FEATURE_SERVICE_URL",          "http://localhost:7010", "/health"));
-        routes.add(fromEnv("knowledge",       "/api/knowledge","KNOWLEDGE_SERVICE_URL",        "http://localhost:8080", "/health/ready"));
+        routes.add(fromEnv("user-profile",    "/api/users",    "USER_PROFILE_SERVICE_URL",    "http://localhost:6010", "/health",       "recsys-catalog-serving"));
+        routes.add(fromEnv("movie-metadata",  "/api/movies",   "MOVIE_METADATA_SERVICE_URL",  "http://localhost:6010", "/health",       "recsys-catalog-serving"));
+        routes.add(fromEnv("feature",         "/api/features", "FEATURE_SERVICE_URL",          "http://localhost:7010", "/health",       "recsys-online-serving"));
+        routes.add(fromEnv("knowledge",       "/api/knowledge","KNOWLEDGE_SERVICE_URL",        "http://localhost:8080", "/health/ready", "recsys-model-serving"));
         // Backward-compatible routes kept for existing clients and smoke tests.
-        routes.add(fromEnv("catalog", "/api/catalog", "CATALOG_SERVICE_URL", "http://localhost:6010", "/health"));
-        routes.add(fromEnv("model",   "/api/model",   "MODEL_SERVICE_URL",   "http://localhost:8080", "/health/ready"));
-        routes.add(fromEnv("online",  "/api/online",  "ONLINE_SERVICE_URL",  "http://localhost:7010", "/health"));
+        routes.add(fromEnv("catalog", "/api/catalog", "CATALOG_SERVICE_URL", "http://localhost:6010", "/health",       "recsys-catalog-serving"));
+        routes.add(fromEnv("model",   "/api/model",   "MODEL_SERVICE_URL",   "http://localhost:8080", "/health/ready", "recsys-model-serving"));
+        routes.add(fromEnv("online",  "/api/online",  "ONLINE_SERVICE_URL",  "http://localhost:7010", "/health",       "recsys-online-serving"));
         // LLM routes are optional — only registered when the env var is explicitly set.
         // To enable: export LLM_SERVICE_URL=http://localhost:11434 (requires Ollama or compatible endpoint).
         fromEnvOptional("llm-explanation", "/api/explanations", "LLM_EXPLANATION_SERVICE_URL", "/api/tags").ifPresent(routes::add);
@@ -88,9 +94,10 @@ public record MicroserviceRoute(String name,
                                              String prefix,
                                              String envVar,
                                              String defaultBaseUri,
-                                             String healthPath) {
+                                             String healthPath,
+                                             String serviceName) {
         String raw = System.getenv().getOrDefault(envVar, defaultBaseUri);
-        return new MicroserviceRoute(name, prefix, envVar, URI.create(raw), healthPath);
+        return new MicroserviceRoute(name, prefix, envVar, URI.create(raw), healthPath, serviceName);
     }
 
     private static java.util.Optional<MicroserviceRoute> fromEnvOptional(String name,

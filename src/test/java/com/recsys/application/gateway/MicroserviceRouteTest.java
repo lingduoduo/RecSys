@@ -119,4 +119,23 @@ class MicroserviceRouteTest {
         assertFalse(names.contains("llm"),             "llm route must not appear without LLM_SERVICE_URL");
         assertFalse(names.contains("llm-explanation"), "llm-explanation must not appear without LLM_EXPLANATION_SERVICE_URL");
     }
+
+    @Test
+    void fiveArgConstructorDefaultsServiceNameToNull() {
+        MicroserviceRoute r = new MicroserviceRoute("x", "/api/x", "X_URL",
+                URI.create("http://localhost:6010"), "/health");
+        assertNull(r.serviceName());
+    }
+
+    @Test
+    void defaultsAssignBackendServiceNames() {
+        java.util.Map<String, String> byName = MicroserviceRoute.defaults().stream()
+                .collect(java.util.stream.Collectors.toMap(MicroserviceRoute::name,
+                        r -> String.valueOf(r.serviceName())));
+        assertEquals("recsys-catalog-serving", byName.get("embed-recall"));
+        assertEquals("recsys-model-serving", byName.get("model-inference"));
+        assertEquals("recsys-online-serving", byName.get("online-blend"));
+        assertEquals("recsys-online-serving", byName.get("feature"));
+        assertEquals("recsys-model-serving", byName.get("knowledge"));
+    }
 }

@@ -11,6 +11,10 @@ import com.recsys.ratelimit.LlmTokenRateLimiter;
 import com.recsys.ratelimit.GatewayRateLimiter;
 import com.recsys.resilience.RouteCircuitBreaker;
 import com.recsys.infrastructure.cache.LlmResponseCache;
+import com.recsys.infrastructure.redis.LettuceClientFactory;
+import com.recsys.infrastructure.redis.RedisExecutor;
+import com.recsys.infrastructure.registry.ServiceRegistryProvider;
+import com.recsys.infrastructure.registry.ServiceRegistryStore;
 import com.recsys.loadshed.GracefulServers;
 
 import com.linecorp.armeria.client.ClientFactory;
@@ -65,8 +69,38 @@ public final class MicroserviceGatewayServer {
 
         GatewayRateLimiter rateLimiter = GatewayRateLimiter.fromEnvironment(proxyRoutes);
         GatewayAuthenticator authenticator = GatewayAuthenticator.fromEnvironment();
-        GatewayRequestForwarder forwarder = new GatewayRequestForwarder(
-                proxyRoutes, timeout, circuitBreakers, rateLimiter);
+
+        // Upstream addressing: static route/env addresses by default. When the service registry is
+        // enabled, the gateway resolves upstreams from Redis (falling back to the static address per
+        // route) and rebuilds its endpoint groups when a resolved address changes. Redis is only
+        // opened when the flag is on.
+        boolean registryEnabled = EnvVars.readBool("SERVICE_REGISTRY_ENABLED", false);
+        RedisExecutor registryRedis = null;
+        ServiceRegistryProvider registryProvider = null;
+        GatewayRequestForwarder forwarder;
+        if (registryEnabled) {
+            registryRedis = LettuceClientFactory.routingFromEnv();
+            ServiceRegistryStore registryStore =
+                    new ServiceRegistryStore(registryRedis, ServiceRegistryStore.DEFAULT_KEY_PREFIX);
+            List<String> serviceNames = proxyRoutes.stream()
+                    .map(MicroserviceRoute::serviceName)
+                    .filter(java.util.Objects::nonNull)
+                    .distinct()
+                    .toList();
+            long refreshMs = EnvVars.readLong("SERVICE_REGISTRY_REFRESH_MS", 10_000L);
+            GatewayRequestForwarder[] holder = new GatewayRequestForwarder[1];
+            registryProvider = new ServiceRegistryProvider(registryStore, serviceNames, refreshMs,
+                    () -> { if (holder[0] != null) holder[0].rebuildUpstreamsIfChanged(); });
+            forwarder = GatewayRequestForwarder.registryBacked(
+                    proxyRoutes, timeout, circuitBreakers, rateLimiter, registryProvider);
+            holder[0] = forwarder;
+            registryProvider.start();
+            log.info("Service registry consumer enabled ({} services, refresh {} ms)",
+                    serviceNames.size(), refreshMs);
+        } else {
+            forwarder = new GatewayRequestForwarder(proxyRoutes, timeout, circuitBreakers, rateLimiter);
+        }
+
         RecommendationGatewayService recommendationService =
                 new RecommendationGatewayService(proxyRoutes, forwarder, authenticator);
 
@@ -107,10 +141,18 @@ public final class MicroserviceGatewayServer {
         Server server = sb.build();
 
         final ClientFactory llmFactoryToClose = llmClientFactory;
+        final ServiceRegistryProvider providerToStop = registryProvider;
+        final RedisExecutor redisToClose = registryRedis;
         Runtime.getRuntime().addShutdownHook(new Thread(() -> {
             log.info("Shutting down API gateway...");
             server.stop().join();
             forwarder.close();
+            if (providerToStop != null) {
+                providerToStop.stop();
+            }
+            if (redisToClose != null) {
+                redisToClose.close();
+            }
             if (llmFactoryToClose != null) {
                 llmFactoryToClose.close();
             }
