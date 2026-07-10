@@ -38,7 +38,8 @@ public final class GatewayRequestForwarder implements java.io.Closeable {
     // Credentials the gateway consumes at its auth boundary — never forwarded upstream.
     private static final Set<String> GATEWAY_CONSUMED_CREDENTIALS = Set.of("authorization", "x-api-key");
 
-    private final UpstreamEndpointGroups upstreams;
+    private final UpstreamEndpointGroups staticUpstreams;     // non-null when registry disabled
+    private final RegistryBackedUpstreams registryUpstreams;  // non-null when registry enabled
     private final Map<String, RouteCircuitBreaker> circuitBreakers;
     private final GatewayRateLimiter rateLimiter;
 
@@ -58,28 +59,68 @@ public final class GatewayRequestForwarder implements java.io.Closeable {
                             UpstreamEndpointGroups.HealthCheckConfig healthConfig) {
         this.circuitBreakers = Map.copyOf(circuitBreakers);
         this.rateLimiter = rateLimiter == null ? GatewayRateLimiter.disabled() : rateLimiter;
+        this.staticUpstreams = UpstreamEndpointGroups.create(routes, timeout, retryDecorator(), healthConfig);
+        this.registryUpstreams = null;
+    }
 
-        // One retry on IOException (not on timeout): Cloud Map instance registration/deregistration
-        // causes a brief window where DNS resolves to a departing endpoint. A single retry after
-        // 50 ms recovers from that transient failure without significantly increasing tail latency.
+    // Package-private: upstreams are registry-overlaid; built via registryBacked(...).
+    private GatewayRequestForwarder(Map<String, RouteCircuitBreaker> circuitBreakers,
+                                    GatewayRateLimiter rateLimiter,
+                                    RegistryBackedUpstreams registryUpstreams) {
+        this.circuitBreakers = Map.copyOf(circuitBreakers);
+        this.rateLimiter = rateLimiter == null ? GatewayRateLimiter.disabled() : rateLimiter;
+        this.staticUpstreams = null;
+        this.registryUpstreams = registryUpstreams;
+    }
+
+    /** Builds a forwarder whose upstreams are overlaid with registry-resolved addresses. */
+    public static GatewayRequestForwarder registryBacked(
+            List<MicroserviceRoute> routes, Duration timeout,
+            Map<String, RouteCircuitBreaker> circuitBreakers, GatewayRateLimiter rateLimiter,
+            com.recsys.infrastructure.registry.ServiceRegistryProvider provider) {
+        RegistryBackedUpstreams upstreams = new RegistryBackedUpstreams(
+                routes, timeout, retryDecorator(),
+                UpstreamEndpointGroups.HealthCheckConfig.fromEnvironment(), provider);
+        return new GatewayRequestForwarder(circuitBreakers, rateLimiter, upstreams);
+    }
+
+    /**
+     * Rebuilds the upstream endpoint groups if registry-resolved addresses have changed. Wired to the
+     * {@code ServiceRegistryProvider}'s onRefresh callback; a no-op when the registry is disabled.
+     */
+    public void rebuildUpstreamsIfChanged() {
+        if (registryUpstreams != null) {
+            registryUpstreams.rebuildIfChanged();
+        }
+    }
+
+    // One retry on IOException (not on timeout): Cloud Map instance registration/deregistration
+    // causes a brief window where DNS resolves to a departing endpoint. A single retry after
+    // 50 ms recovers from that transient failure without significantly increasing tail latency.
+    private static Function<? super com.linecorp.armeria.client.HttpClient, RetryingClient> retryDecorator() {
         RetryRule retryRule = RetryRule.builder()
                 .onException((ctx, cause) ->
                         cause instanceof java.io.IOException
                                 && !(cause instanceof java.net.SocketTimeoutException))
                 .thenBackoff(Backoff.fixed(50));
+        return RetryingClient.builder(retryRule)
+                .maxTotalAttempts(2)
+                .newDecorator();
+    }
 
-        Function<? super com.linecorp.armeria.client.HttpClient,
-                RetryingClient> retryDecorator =
-                RetryingClient.builder(retryRule)
-                        .maxTotalAttempts(2)
-                        .newDecorator();
-
-        this.upstreams = UpstreamEndpointGroups.create(routes, timeout, retryDecorator, healthConfig);
+    private WebClient clientFor(String routeName) {
+        return registryUpstreams != null
+                ? registryUpstreams.clientFor(routeName)
+                : staticUpstreams.clientFor(routeName);
     }
 
     @Override
     public void close() {
-        upstreams.close();
+        if (registryUpstreams != null) {
+            registryUpstreams.close();
+        } else {
+            staticUpstreams.close();
+        }
     }
 
     HttpResponse forward(ServiceRequestContext ctx,
@@ -106,7 +147,7 @@ public final class GatewayRequestForwarder implements java.io.Closeable {
                     route.name() + " circuit open — upstream unavailable, retry later");
         }
 
-        WebClient client = upstreams.clientFor(route.name());
+        WebClient client = clientFor(route.name());
         RequestHeaders upstreamHeaders = buildUpstreamHeaders(request.headers(), targetPath, ctx, principal);
         HttpRequest upstreamReq = HttpRequest.of(upstreamHeaders, request.content());
         HttpResponse upstream = client.execute(upstreamReq);
