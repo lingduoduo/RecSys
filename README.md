@@ -58,7 +58,7 @@ curl http://localhost:8010/health
   "checkedAt": "...",
   "ports": {"6010": "UP", "8080": "UP", "7010": "UP", "8010": "UP"},
   "services": {
-    "recommendation-retrieval": {"status": "UP", "healthUrl": "http://localhost:8080/health/ready", "statusCode": 200, "latencyMs": 4},
+    "model-inference": {"status": "UP", "healthUrl": "http://localhost:8080/health/ready", "statusCode": 200, "latencyMs": 4},
     "catalog":  {"status": "UP", "healthUrl": "http://localhost:6010/health", "statusCode": 200, "latencyMs": 2},
     "model":    {"status": "UP", "healthUrl": "http://localhost:8080/health/ready", "statusCode": 200, "latencyMs": 3},
     "online":   {"status": "UP", "healthUrl": "http://localhost:7010/health", "statusCode": 200, "latencyMs": 2}
@@ -787,22 +787,39 @@ readinessProbe:
 
 Overall API gateway and single entry point for all three upstream services (6010, 7010, 8080). Strips the route prefix, proxies to the correct backend, and enforces per-route circuit breakers (`RouteCircuitBreaker`), per-`(route, principal)` token-bucket rate limiting (`GatewayRateLimiter`), and optional auth (static API key **or** Cognito JWT). It authenticates at the edge, propagates the caller identity to backends as `x-authenticated-*` headers, and strips the raw credentials before proxying upstream. Also includes a dedicated LLM proxy with token budgets, SSE streaming passthrough, and SHA-256 response caching.
 
+| Method | Canonical path | Behavior |
+|---|---|---|
+| `POST` | `/api/recommend` | Optional JSON `strategy`: `embedding`, `model`, `online`, or `sequential`; defaults to `model` |
+
+The gateway removes `strategy` from the JSON body before forwarding the request. For example:
+
+```bash
+curl -X POST "http://localhost:8010/api/recommend" \
+  -H "Content-Type: application/json" \
+  -d '{"userId":123,"limit":10}'
+
+curl -X POST "http://localhost:8010/api/recommend" \
+  -H "Content-Type: application/json" \
+  -d '{"userId":123,"limit":10,"strategy":"online"}'
+```
+
 | Gateway prefix | Backend | Direct equivalent |
 |---|---|---|
+| `/api/recommend/embedding` † | `:6010` | Embedding recall recommendation API |
+| `/api/recommend/model` † | `:8080` | Model inference recommendation API |
+| `/api/recommend/online` † | `:7010` | Online blend recommendation API |
+| `/api/recommend/sequential` † | `:8080` | Sequential recommendation API |
 | `/api/users` | `:6010` | `GET /user?userId=123` |
 | `/api/movies` | `:6010` | `GET /movie?id=1` |
 | `/api/features` | `:7010` | `GET /online/features?userId=123` |
-| `/api/retrieval` | `:8080` | `POST /api/v1/recommend` |
-| `/api/ranking` | `:8080` | `POST /api/v1/recommend` |
-| `/api/agents` | `:8080` | agent workflow (placeholder) |
-| `/api/observability` | `:8080` | `GET /health/ready` |
+| `/api/knowledge` | `:8080` | Knowledge service API |
 | `/api/catalog` † | `:6010` | `GET /item?id=1`, `GET /getrecommendation?...` |
 | `/api/online` † | `:7010` | `GET /online/recommendation?userId=123` |
 | `/api/model` † | `:8080` | `POST /api/v1/recommend` |
 | `/api/llm` | `:11434` | opt-in — set `LLM_SERVICE_URL` |
 | `/api/explanations` | `:11434` | opt-in — set `LLM_EXPLANATION_SERVICE_URL` |
 
-† Backward-compatible routes kept for existing clients. See [Microservice Gateway](#microservice-gateway) for full route details, env var overrides, and circuit-breaker configuration.
+† Deprecated aliases that remain supported for existing clients. Prefer `POST /api/recommend` for recommendations. See [Microservice Gateway](#microservice-gateway) for full route details, env var overrides, and circuit-breaker configuration.
 
 #### Smoke tests
 
@@ -1041,25 +1058,44 @@ Keep SQL reads off latency-critical recommendation paths unless the data is inde
 
 ### Route table
 
-Domain-facing routes (preferred — each has its own env var and circuit breaker):
+| Method | Canonical path | Behavior |
+|---|---|---|
+| `POST` | `/api/recommend` | Optional JSON `strategy`: `embedding`, `model`, `online`, or `sequential`; defaults to `model` |
+
+The gateway selects the corresponding recommendation backend and removes the `strategy` selector before forwarding, so upstream services receive their normal request schema.
+
+```bash
+# Default model strategy
+curl -X POST "http://localhost:8010/api/recommend" \
+  -H "Content-Type: application/json" \
+  -d '{"userId":123,"limit":10}'
+
+# Explicit online strategy
+curl -X POST "http://localhost:8010/api/recommend" \
+  -H "Content-Type: application/json" \
+  -d '{"userId":123,"limit":10,"strategy":"online"}'
+```
+
+Registered backend routes (each has its own env var and circuit breaker):
 
 | Route name | Gateway prefix | Backend port | Notes |
 |---|---|---:|---|
+| `embed-recall` | `/api/recommend/embedding` | `6010` | Deprecated direct alias; override with `EMBED_RECALL_SERVICE_URL` |
+| `model-inference` | `/api/recommend/model` | `8080` | Deprecated direct alias; override with `MODEL_INFERENCE_SERVICE_URL` |
+| `online-blend` | `/api/recommend/online` | `7010` | Deprecated direct alias; override with `ONLINE_BLEND_SERVICE_URL` |
+| `sequential` | `/api/recommend/sequential` | `8080` | Deprecated direct alias; override with `SEQUENTIAL_SERVICE_URL` |
 | `user-profile` | `/api/users` | `6010` | User profile lookup; override with `USER_PROFILE_SERVICE_URL` |
 | `movie-metadata` | `/api/movies` | `6010` | Movie metadata lookup; override with `MOVIE_METADATA_SERVICE_URL` |
 | `feature` | `/api/features` | `7010` | Online feature snapshot; override with `FEATURE_SERVICE_URL` |
-| `recommendation-retrieval` | `/api/retrieval` | `8080` | ONNX-based retrieval; override with `RECOMMENDATION_RETRIEVAL_SERVICE_URL` |
-| `ranking` | `/api/ranking` | `8080` | ONNX-based ranking; override with `RANKING_SERVICE_URL` |
-| `agent-workflow` | `/api/agents` | `8080` | Agent workflow placeholder; override with `AGENT_WORKFLOW_SERVICE_URL` |
-| `observability` | `/api/observability` | `8080` | Model health and metrics; override with `OBSERVABILITY_SERVICE_URL` |
+| `knowledge` | `/api/knowledge` | `8080` | Knowledge service API; override with `KNOWLEDGE_SERVICE_URL` |
 
-Backward-compatible routes (kept for existing clients — same backends, different prefix):
+Deprecated aliases (kept supported for existing clients):
 
 | Route name | Gateway prefix | Backend port | Notes |
 |---|---|---:|---|
-| `catalog` | `/api/catalog` | `6010` | Recommendations, similar, pair prediction; override with `CATALOG_SERVICE_URL` |
-| `model` | `/api/model` | `8080` | Full recommend endpoint; override with `MODEL_SERVICE_URL` |
-| `online` | `/api/online` | `7010` | Real-time recommendations + ops; override with `ONLINE_SERVICE_URL` |
+| `catalog` | `/api/catalog` | `6010` | Deprecated catalog/service alias; override with `CATALOG_SERVICE_URL` |
+| `model` | `/api/model` | `8080` | Deprecated model/service alias; override with `MODEL_SERVICE_URL` |
+| `online` | `/api/online` | `7010` | Deprecated online/service alias; override with `ONLINE_SERVICE_URL` |
 
 Opt-in routes (registered only when the env var is set):
 
@@ -1140,7 +1176,7 @@ curl http://localhost:8010/health | jq '.services["model"].circuitState'
 
 Token-bucket rate limiting keyed **per `(route, principal)`**, so one noisy caller can't exhaust another's budget. Each bucket refills at `GATEWAY_RATE_LIMIT_RPS` tokens/second with a `GATEWAY_RATE_LIMIT_BURST` burst; excess requests get `429 Too Many Requests`. The principal is the authenticated identity (Cognito `sub` or a hashed API-key id; `anonymous` when auth is disabled). Buckets live in a bounded Caffeine cache (`GATEWAY_RL_MAX_PRINCIPALS`, default `100000`) so a flood of distinct identities can't grow memory without limit.
 
-Per-route overrides use the route name uppercased with hyphens replaced by underscores: e.g., route `recommendation-retrieval` → `GATEWAY_RATE_LIMIT_RECOMMENDATION_RETRIEVAL_RPS`.
+Per-route overrides use the route name uppercased with hyphens replaced by underscores: e.g., route `model-inference` → `GATEWAY_RATE_LIMIT_MODEL_INFERENCE_RPS`.
 
 ```bash
 # Enable global rate limit (5 req/s, burst 10)
