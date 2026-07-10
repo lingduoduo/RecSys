@@ -54,6 +54,24 @@ class ServiceRegistryProviderTest {
     }
 
     @Test
+    void refreshCountersTrackSuccessAndFailure() {
+        ServiceRegistryStore store = Mockito.mock(ServiceRegistryStore.class);
+        when(store.lookup(Mockito.anyCollection()))
+                .thenReturn(Map.of("a", "http://a:1"))
+                .thenThrow(new RuntimeException("redis down"))
+                .thenReturn(Map.of("a", "http://a:1"));
+        ServiceRegistryProvider p = new ServiceRegistryProvider(store, List.of("a"), 0L, null);
+
+        assertThat(p.refreshSuccessCount()).isZero();
+        assertThat(p.refreshFailureCount()).isZero();
+        p.refresh();  // success
+        p.refresh();  // failure (kept static)
+        p.refresh();  // success
+        assertThat(p.refreshSuccessCount()).isEqualTo(2L);
+        assertThat(p.refreshFailureCount()).isEqualTo(1L);
+    }
+
+    @Test
     void onRefreshCallbackFiresAfterSwap() {
         ServiceRegistryStore store = Mockito.mock(ServiceRegistryStore.class);
         when(store.lookup(Mockito.anyCollection())).thenReturn(Map.of("a", "http://a:1"));

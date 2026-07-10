@@ -18,8 +18,12 @@ import com.recsys.infrastructure.registry.ServiceRegistryStore;
 import com.recsys.loadshed.GracefulServers;
 
 import com.linecorp.armeria.client.ClientFactory;
+import com.linecorp.armeria.common.metric.PrometheusMeterRegistries;
 import com.linecorp.armeria.server.Server;
 import com.linecorp.armeria.server.ServerBuilder;
+import com.linecorp.armeria.server.metric.PrometheusExpositionService;
+import com.recsys.metrics.GatewayRegistryMetrics;
+import io.micrometer.prometheus.PrometheusMeterRegistry;
 import org.slf4j.Logger;
 import org.slf4j.LoggerFactory;
 
@@ -114,6 +118,20 @@ public final class MicroserviceGatewayServer {
         long llmMaxRetryWaitMs = EnvVars.readLong("LLM_MAX_RETRY_WAIT_MS", LlmProxyService.DEFAULT_MAX_RETRY_WAIT_MS);
 
         ServerBuilder sb = Server.builder().http(port);
+
+        // Prometheus metrics endpoint (always present, matching the other services). Registry meters
+        // are registered only when the registry consumer is active.
+        PrometheusMeterRegistry meterRegistry = PrometheusMeterRegistries.defaultRegistry();
+        sb.service("/metrics", PrometheusExpositionService.of(meterRegistry.getPrometheusRegistry()));
+        if (registryProvider != null) {
+            List<String> registrySvcNames = proxyRoutes.stream()
+                    .map(MicroserviceRoute::serviceName)
+                    .filter(java.util.Objects::nonNull)
+                    .distinct()
+                    .toList();
+            GatewayRegistryMetrics.register(meterRegistry, registryProvider, registrySvcNames,
+                    System::currentTimeMillis);
+        }
 
         // Health endpoint — exposes per-route circuit state and upstream reachability.
         sb.service("/health", new GatewayHealthService(allRoutes, timeout, circuitBreakers, port, registryProvider));
