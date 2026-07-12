@@ -7,7 +7,7 @@ A compact Maven workspace demonstrating recommendation-system serving, retrieval
 | Catalog / Recommendation Serving | `6010` | Kafka → Flink → Redis pipeline; cold-start fallback and multi-channel recall (embedding + trending + genre + popularity) |
 | Online Prediction Server | `7010` | Real-time feature store — serves per-user history and windowed trending written by the Flink job |
 | Model Serving (Spring Boot) | `8080` | Load ONNX model → encode user tower → score candidates; A/B variant management, result caching, load shedding |
-| API Gateway | `8010` | Single entry point for all three services: per-route circuit breakers, token-bucket rate limiting, LLM proxy |
+| API Gateway | `8010` | Single entry point for all three services: edge auth (API key / Cognito JWT), per-route circuit breakers, health-checked upstreams, optional registry-based discovery, token-bucket rate limiting, LLM proxy, Prometheus `/metrics` |
 
 ## Architecture Layers
 
@@ -112,6 +112,8 @@ curl http://localhost:8010/health
   - [Port 8010 — API Gateway](#port-8010--api-gateway)
 - [SQL Use Cases](#sql-use-cases)
 - [Microservice Gateway](#microservice-gateway)
+- [Service Registry](#service-registry)
+- [Overload Protection](#overload-protection)
 - [Configuration](#configuration)
 - [Project Layout](#project-layout)
 - [Model Serving Demo](#model-serving-demo)
@@ -1105,6 +1107,31 @@ Opt-in routes (registered only when the env var is set):
 | `llm` | `/api/llm` | `LLM_SERVICE_URL` |
 | `llm-explanation` | `/api/explanations` | `LLM_EXPLANATION_SERVICE_URL` |
 
+### Upstream health checking
+
+By default the gateway data path wraps every upstream in a health-checked Armeria endpoint group: each backend is probed on an interval and a down backend is dropped from selection, so a request to a dead upstream **fast-fails with `503`** instead of hanging until the timeout. Host resolution and the 30 s Cloud Map DNS cache are unchanged.
+
+```bash
+# Disable probing (e.g. local dev without all backends running)
+GATEWAY_UPSTREAM_HEALTHCHECK_ENABLED=false \
+  mvn exec:java -Dexec.mainClass=com.recsys.api.gateway.MicroserviceGatewayServer
+```
+
+| Env var | Default | Purpose |
+|---|---:|---|
+| `GATEWAY_UPSTREAM_HEALTHCHECK_ENABLED` | `true` | Wrap each upstream in a health-checked endpoint group |
+| `GATEWAY_UPSTREAM_HEALTHCHECK_INTERVAL_MS` | `10000` | Probe interval |
+
+Upstream *addressing* is static by default (route env var / configmap). Turn on the opt-in [Service Registry](#service-registry) to resolve upstream addresses dynamically from Redis instead.
+
+### Metrics (`/metrics`)
+
+The gateway exposes a Prometheus scrape endpoint at `GET /metrics` (Ports `7010` and `8080` expose one too). When the [Service Registry](#service-registry) is enabled it also publishes the `gateway_registry_*` meters described below.
+
+```bash
+curl http://localhost:8010/metrics | grep gateway_registry
+```
+
 ### Start
 
 ```bash
@@ -1261,6 +1288,80 @@ curl -v -X POST http://localhost:8010/api/llm/api/generate \
 
 ---
 
+## Service Registry
+
+Opt-in, Redis-backed service discovery for the gateway → backend hop. It is **off by default** (`SERVICE_REGISTRY_ENABLED=false`): the gateway opens no Redis connection and resolves every upstream from its static route address (env var / configmap), exactly as documented under [Microservice Gateway](#microservice-gateway). Turn it on to let backends advertise their own address and the gateway follow them without a redeploy.
+
+When `SERVICE_REGISTRY_ENABLED=true`:
+
+- **Backends self-register.** Each service writes its advertised address to `svc:registry:<serviceName>` and renews the key on a heartbeat (`SERVICE_REGISTRY_HEARTBEAT_MS`, default `10000`). The key carries a TTL (`SERVICE_REGISTRY_TTL_MS`, default `30000`) so a crashed instance's registration expires on its own. All four services register — the three Armeria services directly, the Spring model service via `ServiceRegistryConfig`.
+- **The gateway resolves from the registry.** It polls every `SERVICE_REGISTRY_REFRESH_MS` (default `10000`), `MGET`s the known services, and routes to the advertised address. Liveness = key present; whenever a service is unregistered or Redis is unavailable it **falls back to the static route address**, so a registry outage degrades to the default static behavior rather than failing.
+
+Configure per service (each backend sets its own name + advertised URL):
+
+```bash
+export SERVICE_REGISTRY_ENABLED=true
+export SERVICE_REGISTRY_SERVICE_NAME=recsys-catalog-serving
+export SERVICE_REGISTRY_ADVERTISE_URL=http://10.0.1.5:6010
+```
+
+| Env var | Default | Purpose |
+|---|---:|---|
+| `SERVICE_REGISTRY_ENABLED` | `false` | Master switch (gateway + backends). Off → no Redis connection, static routing |
+| `SERVICE_REGISTRY_SERVICE_NAME` | _(per service)_ | Name a backend registers under (`svc:registry:<name>`) |
+| `SERVICE_REGISTRY_ADVERTISE_URL` | _(per service)_ | Address a backend advertises to callers |
+| `SERVICE_REGISTRY_HEARTBEAT_MS` | `10000` | Backend re-registration interval |
+| `SERVICE_REGISTRY_TTL_MS` | `30000` | Registration key TTL (expires a dead instance) |
+| `SERVICE_REGISTRY_REFRESH_MS` | `10000` | Gateway registry poll interval |
+
+### Observability
+
+When the registry is enabled the gateway `/health` response gains a `registry` section reporting each service's resolution `source` (`registry` vs `static` fallback) and the snapshot age:
+
+```json
+"registry": {
+  "enabled": true,
+  "snapshotAgeMs": 1200,
+  "services": {
+    "recsys-catalog-serving": {"source": "registry", "address": "http://10.0.1.5:6010"},
+    "recsys-model-serving":   {"source": "static",   "address": null}
+  }
+}
+```
+
+The Prometheus [`/metrics`](#metrics-metrics) endpoint publishes registry meters (consumed via `GatewayRegistryMetrics`):
+
+| Meter | Meaning |
+|---|---|
+| `gateway_registry_services_total` | Services the gateway tracks |
+| `gateway_registry_services_resolved` | Services currently resolved from the registry (not static fallback) |
+| `gateway_registry_snapshot_age_seconds` | Age of the last successful registry snapshot |
+| `gateway_registry_refresh_total` | Registry refresh attempts |
+| `gateway_registry_refresh_failures_total` | Refresh attempts that fell back to the last-good snapshot |
+
+---
+
+## Overload Protection
+
+Layered admission control keeps the serving paths responsive under load instead of collapsing — a request that can't be served promptly is rejected fast (`429`/`503` with `Retry-After`) rather than queued unbounded. The full set of layers (per-service concurrency caps, bounded recall queues, load shedders, circuit breakers, and graceful drain) is documented in [docs/runbooks/overload-protection.md](docs/runbooks/overload-protection.md).
+
+**Catalog / Recommendation Serving (6010)** — an admission gate caps in-flight `/getrecommendation` work and drains via `/health` past a utilization threshold:
+
+| Env var | Default | Purpose |
+|---|---:|---|
+| `CATALOG_MAX_CONCURRENT_REQUESTS` | `64` | In-flight cap before requests are shed |
+| `CATALOG_DRAIN_UTILIZATION` | `0.90` | Utilization where the service reports drain for the load balancer |
+
+**Bounded recall queue (6010 + 7010)** — the shared multi-channel recall fan-out runs on a bounded work queue so a slow Redis or a channel backlog can't grow memory without limit:
+
+| Env var | Default | Purpose |
+|---|---:|---|
+| `RECALL_BULKHEAD_QUEUE_CAPACITY` | `4 × recall pool size` | Max queued recall tasks before overflow is rejected |
+
+The online server (7010) adds its own `ONLINE_MAX_CONCURRENT_REQUESTS` / `ONLINE_DRAIN_UTILIZATION` load shedder, and the model server (8080) its `recsys.health.max-concurrent-requests` cap — see [Configuration](#configuration). All four services share a consistent graceful-shutdown baseline: on `SIGTERM` every server waits for in-flight requests to drain before stopping. The load-shedding services (7010, 8080) additionally flip readiness to `503` and stop admitting new work during the drain; the catalog (6010) and gateway (8010) rely on Kubernetes Endpoint removal to stop new routing and just serve out the drain window.
+
+---
+
 ## Configuration
 
 ### Catalog / Recommendation Serving (port 6010)
@@ -1273,6 +1374,9 @@ curl -v -X POST http://localhost:8010/api/llm/api/generate \
 | `LOCAL_EMBEDDING_CACHE_MAX_ENTRIES` | `100000` | Max embeddings in JVM LRU cache |
 | `RECSYS_VECTOR_BACKEND` | `lsh` | `lsh` (approximate) or `exact` |
 | `RECALL_CHANNEL_TIMEOUT_MS` | `200` | Per-channel recall timeout (shared by both serving ports) |
+| `CATALOG_MAX_CONCURRENT_REQUESTS` | `64` | Admission-control in-flight cap ([Overload Protection](#overload-protection)) |
+| `CATALOG_DRAIN_UTILIZATION` | `0.90` | Utilization where the service reports drain |
+| `RECALL_BULKHEAD_QUEUE_CAPACITY` | `4 × recall pool` | Bounded recall work queue (also on 7010) |
 
 ### Online Prediction Server (port 7010)
 
@@ -1285,6 +1389,7 @@ curl -v -X POST http://localhost:8010/api/llm/api/generate \
 | `ONLINE_TOPK_CACHE_TTL_MS` | `2000` | Local hot-key cache TTL for the sharded trending store |
 | `ONLINE_MAX_CONCURRENT_REQUESTS` | `64` | Pre-queue in-flight cap before `429`; tune against Redis pool and load tests |
 | `ONLINE_DRAIN_UTILIZATION` | `0.90` | Utilization where `/health/ready` → `503` for drain |
+| `RECALL_BULKHEAD_QUEUE_CAPACITY` | `4 × recall pool` | Bounded recall work queue ([Overload Protection](#overload-protection)) |
 | `ONLINE_REDIS_RATE_LIMIT_QPS` | `0` | Cross-instance Redis rate limit; `0` = disabled |
 | `ONLINE_FEATURE_CACHE_MAX_USERS` | `10000` | Max Redis feature keys in JVM cache |
 | `ONLINE_FEATURE_STALE_TTL_MS` | `60000` | Maximum stale recent-history age served during Redis errors |
@@ -1324,6 +1429,10 @@ curl -v -X POST http://localhost:8010/api/llm/api/generate \
 | `GATEWAY_RATE_LIMIT_RPS` | `0` | Global token-bucket rate (per route+principal); `0` = disabled |
 | `GATEWAY_RATE_LIMIT_<ROUTE>_RPS` | _(unset)_ | Per-route override, e.g. `GATEWAY_RATE_LIMIT_MODEL_RPS` |
 | `GATEWAY_RL_MAX_PRINCIPALS` | `100000` | Max distinct rate-limit buckets held in the Caffeine cache |
+| `GATEWAY_UPSTREAM_HEALTHCHECK_ENABLED` | `true` | Health-check upstreams; drop down backends and fast-fail `503` ([Upstream health checking](#upstream-health-checking)) |
+| `GATEWAY_UPSTREAM_HEALTHCHECK_INTERVAL_MS` | `10000` | Upstream probe interval |
+
+> Service discovery for the gateway (`SERVICE_REGISTRY_*`) is opt-in and shared across all services — see [Service Registry](#service-registry). The dedicated LLM proxy client (`LLM_CONNECT_TIMEOUT_MS`, `LLM_IDLE_TIMEOUT_MS`, `LLM_PING_INTERVAL_MS`) is tuned under [LLM Gateway](#llm-gateway).
 
 ### Model Serving — Spring Boot (port 8080)
 
@@ -1646,6 +1755,7 @@ Redis key conventions:
 | `topk:<window>:s{0-3}` | Trending sorted set shards (physical keys written by Flink; `topk:<window>` is the legacy fallback) |
 | `user:<id>:recent_movies` | Per-user recent watch history (written by Flink) |
 | `feature:user:<id>:embedding` | User embedding from online Flink job |
+| `svc:registry:<serviceName>` | Opt-in [service registry](#service-registry): a backend's advertised address, TTL-renewed by its heartbeat |
 
 ---
 
@@ -1932,8 +2042,11 @@ kubectl apply -k k8s/eks
 
 The overlay manifests live under [k8s/eks/](k8s/eks/); the WAF WebACL wiring is documented in [docs/runbooks/waf-webacl.md](docs/runbooks/waf-webacl.md).
 
-For DR, `k8s/eks-us-west-2` is a warm-standby overlay for a second region
-(us-west-2); see `docs/runbooks/dr-regional-failover.md`.
+**Immutable image digests.** Deploys pin an image by content digest (`@sha256:…`), not a mutable tag, so a rollout is reproducible and can't drift when a tag is re-pushed. `scripts/set-eks-image-digest.sh` writes the identical digest into both region overlays (ECR replicates the image cross-region) — see [docs/runbooks/deploy-image-digest.md](docs/runbooks/deploy-image-digest.md).
+
+**Multi-region DR.** `k8s/eks-us-west-2/` is a warm-standby overlay for a second region (us-west-2, reduced HPA minReplicas, us-west-2 ECR/ElastiCache/WAF). Each region overlay composes `../base` + the `k8s/eks-shared/` component (region-agnostic EKS patches) and overrides only region-specific values. The failover design is [docs/superpowers/specs/2026-07-08-multi-region-dr-failover-design.md](docs/superpowers/specs/2026-07-08-multi-region-dr-failover-design.md); operations are in the DR runbooks — [dr-regional-failover.md](docs/runbooks/dr-regional-failover.md), [dr-failback.md](docs/runbooks/dr-failback.md), [dr-data-tier-promotion.md](docs/runbooks/dr-data-tier-promotion.md), and [dr-game-day.md](docs/runbooks/dr-game-day.md).
+
+**Single-AZ resilience.** Pod spread, AZ-aware Redis reads ([Redis Read Replicas](#redis-read-replicas)), and PDB tuning keep a zone failure from taking the service down — see [docs/runbooks/zonal-resilience.md](docs/runbooks/zonal-resilience.md).
 
 ---
 
@@ -2080,6 +2193,9 @@ curl http://localhost:8010/health | jq '.services | with_entries(select(.key | t
 |---|---:|---|
 | `LLM_SERVICE_URL` | _(unset)_ | Enables LLM routes; set to Ollama or any OpenAI-compatible URL |
 | `LLM_TIMEOUT_MS` | `120000` | Per-request timeout |
+| `LLM_CONNECT_TIMEOUT_MS` | `2000` | Connect timeout for the dedicated LLM `ClientFactory` |
+| `LLM_IDLE_TIMEOUT_MS` | `60000` | Idle-connection timeout for the LLM client |
+| `LLM_PING_INTERVAL_MS` | `20000` | HTTP/2 keepalive ping interval (keep below `LLM_IDLE_TIMEOUT_MS`) |
 | `LLM_TOKEN_RATE_LIMIT_TPS` | `0` | Tokens/second refill rate; `0` = disabled |
 | `LLM_TOKEN_RATE_LIMIT_BURST` | `0` | Burst token capacity |
 | `LLM_CACHE_MAX_SIZE` | `500` | Max cached non-streaming responses |
