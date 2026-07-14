@@ -47,6 +47,15 @@ spec:
               value: "8010"
             - name: JAVA_OPTS
               value: "-Xms256m -Xmx512m"
+            # Origin lockdown. Absent until the CDN rollout reaches step 4, at which point the
+            # Secret is created out-of-band (docs/runbooks/cdn-operations.md). optional: true keeps
+            # the pod schedulable before then and in local/base deploys with no CDN.
+            - name: GATEWAY_ORIGIN_SECRET
+              valueFrom:
+                secretKeyRef:
+                  name: recsys-gateway-origin-secret
+                  key: secret
+                  optional: true
           ports:
             - name: http
               containerPort: 8010
