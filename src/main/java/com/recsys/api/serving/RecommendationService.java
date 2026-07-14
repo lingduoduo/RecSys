@@ -113,6 +113,11 @@ public final class RecommendationService {
         private static final int LIMIT_PER_GENRE = 50;
         private static final int RECALL_MULTIPLIER = 5;
 
+        // Embeddings can be rewritten by POST /setembedding, so the fresh window is short.
+        // Bulk reloads additionally require an explicit CDN invalidation — see
+        // docs/runbooks/cdn-operations.md.
+        private static final String CACHE_CONTROL = HttpCaching.publicCache(300, 3600);
+
         private final EmbeddingStore store;
         private final DataManager dataManager;
 
@@ -133,12 +138,14 @@ public final class RecommendationService {
                     int k = optionalIntParam(ctx, "k", 10, 1, 200);
                     float[] queryVec = store.getEmbedding(movieId);
                     if (queryVec == null)
-                        return writeError(HttpStatus.NOT_FOUND, "embedding not found for movieId", "movieId", movieId);
+                        return writeNoStoreJson(HttpStatus.NOT_FOUND, Map.of(
+                                "error", "embedding not found for movieId", "movieId", movieId));
                     Set<Integer> candidateIds = selectCandidates(movieId, k);
                     Map<Integer, float[]> embeddings = store.getEmbeddings(candidateIds);
                     List<ScoredMovie> scored = ExactVectorIndex.search(embeddings, queryVec, k, Set.of(movieId))
                             .stream().map(r -> new ScoredMovie(r.id(), r.score())).toList();
-                    return writeJson(HttpStatus.OK, new SimilarMoviesResult(movieId, scored));
+                    return writeCacheableJson(HttpStatus.OK,
+                            new SimilarMoviesResult(movieId, scored), CACHE_CONTROL, req);
                 } catch (BadRequestException e) {
                     return writeError(HttpStatus.BAD_REQUEST, e.getMessage());
                 } catch (Exception e) {
