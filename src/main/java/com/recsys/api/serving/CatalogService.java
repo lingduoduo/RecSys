@@ -19,8 +19,11 @@ public final class CatalogService {
 
     private CatalogService() {}
 
-    /** GET /item, /movie — fetch a movie by numeric {@code id}. */
+    /** GET /item, /movie — fetch a movie by numeric {@code id}. Shared, non-personalized: cacheable. */
     public static final class Movies extends BaseApiService {
+
+        // Catalog metadata is effectively static; serve stale for a day while revalidating.
+        private static final String CACHE_CONTROL = HttpCaching.publicCache(3600, 86400);
 
         private final DataManager dataManager;
 
@@ -34,8 +37,11 @@ public final class CatalogService {
                 try {
                     int movieId = requiredIntParam(ctx, "id");
                     Movie movie = dataManager.getMovieById(movieId);
-                    if (movie == null) return writeError(HttpStatus.NOT_FOUND, "movie not found", "id", movieId);
-                    return writeJson(HttpStatus.OK, movie);
+                    // Not cacheable: the movie may be added later, and a pinned 404 at the edge
+                    // would outlive the gap.
+                    if (movie == null) return writeNoStoreJson(HttpStatus.NOT_FOUND,
+                            java.util.Map.of("error", "movie not found", "id", movieId));
+                    return writeCacheableJson(HttpStatus.OK, movie, CACHE_CONTROL, req);
                 } catch (BadRequestException e) {
                     return writeError(HttpStatus.BAD_REQUEST, e.getMessage());
                 } catch (Exception e) {
@@ -61,8 +67,9 @@ public final class CatalogService {
                 try {
                     int userId = requiredIntParam(ctx, "userId");
                     User user = dataManager.getUserById(userId);
-                    if (user == null) return writeError(HttpStatus.NOT_FOUND, "user not found", "userId", userId);
-                    return writeJson(HttpStatus.OK, user);
+                    if (user == null) return writeNoStoreJson(HttpStatus.NOT_FOUND,
+                            java.util.Map.of("error", "user not found", "userId", userId));
+                    return writeNoStoreJson(HttpStatus.OK, user);
                 } catch (BadRequestException e) {
                     return writeError(HttpStatus.BAD_REQUEST, e.getMessage());
                 } catch (Exception e) {
