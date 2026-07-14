@@ -4,6 +4,7 @@ import com.recsys.application.gateway.GatewayRequestForwarder;
 import com.recsys.application.gateway.LlmProxyService;
 import com.recsys.application.gateway.GatewayHealthService;
 import com.recsys.application.gateway.GatewayAuthenticator;
+import com.recsys.application.gateway.GatewayOriginSecret;
 import com.recsys.application.gateway.MicroserviceRoute;
 import com.recsys.application.gateway.RecommendationGatewayService;
 import com.recsys.config.EnvVars;
@@ -118,6 +119,13 @@ public final class MicroserviceGatewayServer {
         long llmMaxRetryWaitMs = EnvVars.readLong("LLM_MAX_RETRY_WAIT_MS", LlmProxyService.DEFAULT_MAX_RETRY_WAIT_MS);
 
         ServerBuilder sb = Server.builder().http(port);
+
+        // Origin lockdown: when CloudFront fronts this gateway, reject anything that did not come
+        // through our distribution. No-op when GATEWAY_ORIGIN_SECRET is unset (local dev).
+        GatewayOriginSecret originSecret = GatewayOriginSecret.fromEnvironment(System::getenv);
+        if (originSecret.isEnabled()) {
+            sb.decorator(GatewayOriginSecret.newDecorator(originSecret));
+        }
 
         // Prometheus metrics endpoint (always present, matching the other services). Registry meters
         // are registered only when the registry consumer is active.
