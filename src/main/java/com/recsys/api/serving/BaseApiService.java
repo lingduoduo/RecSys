@@ -4,6 +4,7 @@ import com.fasterxml.jackson.databind.ObjectMapper;
 import com.fasterxml.jackson.databind.exc.MismatchedInputException;
 import com.linecorp.armeria.common.AggregatedHttpRequest;
 import com.linecorp.armeria.common.HttpData;
+import com.linecorp.armeria.common.HttpRequest;
 import com.linecorp.armeria.common.HttpResponse;
 import com.linecorp.armeria.common.HttpStatus;
 import com.linecorp.armeria.common.MediaType;
@@ -28,6 +29,52 @@ public abstract class BaseApiService extends AbstractHttpService {
         } catch (Exception e) {
             return HttpResponse.of(HttpStatus.INTERNAL_SERVER_ERROR, MediaType.JSON_UTF_8,
                     "{\"error\":\"serialization error\"}");
+        }
+    }
+
+    /**
+     * Serialize {@code payload} once, derive a strong ETag from those exact bytes, and return
+     * either 304 (when the client's If-None-Match matches) or 200 with cache headers.
+     *
+     * <p>Only for non-personalized, shared responses. Anything keyed by user identity must use
+     * {@link #writeNoStoreJson}. See
+     * docs/superpowers/specs/2026-07-14-cdn-edge-acceleration-design.md.
+     */
+    protected static HttpResponse writeCacheableJson(HttpStatus status, Object payload,
+                                                     String cacheControl, HttpRequest req) {
+        try {
+            byte[] body = MAPPER.writeValueAsBytes(payload);
+            String etag = HttpCaching.etagFor(body);
+
+            if (HttpCaching.matches(req.headers().get(HttpHeaderNames.IF_NONE_MATCH), etag)) {
+                return HttpResponse.of(ResponseHeaders.builder(HttpStatus.NOT_MODIFIED)
+                        .set(HttpHeaderNames.CACHE_CONTROL, cacheControl)
+                        .set(HttpHeaderNames.ETAG, etag)
+                        .build());
+            }
+
+            ResponseHeaders headers = ResponseHeaders.builder(status)
+                    .contentType(MediaType.JSON_UTF_8)
+                    .set(HttpHeaderNames.CACHE_CONTROL, cacheControl)
+                    .set(HttpHeaderNames.ETAG, etag)
+                    .build();
+            return HttpResponse.of(headers, HttpData.wrap(body));
+        } catch (Exception e) {
+            return writeError(HttpStatus.INTERNAL_SERVER_ERROR, "serialization error");
+        }
+    }
+
+    /** Serialize {@code payload} with {@code Cache-Control: no-store}. Never cached anywhere. */
+    protected static HttpResponse writeNoStoreJson(HttpStatus status, Object payload) {
+        try {
+            byte[] body = MAPPER.writeValueAsBytes(payload);
+            ResponseHeaders headers = ResponseHeaders.builder(status)
+                    .contentType(MediaType.JSON_UTF_8)
+                    .set(HttpHeaderNames.CACHE_CONTROL, HttpCaching.NO_STORE)
+                    .build();
+            return HttpResponse.of(headers, HttpData.wrap(body));
+        } catch (Exception e) {
+            return writeError(HttpStatus.INTERNAL_SERVER_ERROR, "serialization error");
         }
     }
 
