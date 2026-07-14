@@ -125,10 +125,13 @@ in any case. Both are excluded.
 
 | Path pattern | Policy | Edge TTL | Cache key |
 |---|---|---|---|
-| `/api/catalog/item*` | Cache | `s-maxage=3600`, SWR 86400 | `id` |
-| `/api/catalog/similar*` | Cache | `s-maxage=300`, SWR 3600 | `movieId`, `k` |
+| `/api/catalog/item*` | Cache | `s-maxage=3600`, SWR 86400, SIE 86400 | `id` |
+| `/api/catalog/similar*` | Cache | `s-maxage=300`, SWR 3600, SIE 3600 | `movieId`, `k` |
 | `/health` | CachingDisabled | — | — |
 | `*` (default) | **CachingDisabled** | — | — |
+
+(SWR = `stale-while-revalidate`, SIE = `stale-if-error`; see "Freshness" below. CloudFront has
+supported both directives since May 2023.)
 
 **Default-deny is load-bearing.** Every POST, every personalized route, and any
 route added in future is uncacheable unless someone deliberately opts it in. This
@@ -184,7 +187,21 @@ Small, and independent of any CDN vendor.
   and the auth routes, so that even a misconfigured edge cannot retain them.
 - Gateway: validate a secret origin header when `GATEWAY_ORIGIN_SECRET` is set;
   reject mismatches with 403. **Defaults to disabled when the env var is unset**,
-  so `scripts/run-microservices-local.sh` and local dev are unaffected.
+  so `scripts/run-microservices-local.sh` and local dev are unaffected. `/health`
+  and `/metrics` are exempt from this check — see "Risks" below for what that
+  costs.
+
+**Accepted limitation: the origin secret rides in cleartext.** The origin is
+`http-only` (no regional TLS cert on the ALB), so `x-origin-secret` travels the
+POP-to-origin hop unencrypted — observable on-path and replayable once captured,
+which partially undercuts the origin-lockdown control the header exists to
+provide. This was weighed against standing up a second, regional ACM certificate
+(with its own renewal lifecycle) on the ALB, and the user chose to accept the
+cleartext exposure rather than take that on. Revisit if/when ACM-on-ALB happens
+for another reason — `scripts/create-cdn-distribution.sh` already sets
+`HTTPSPort: 443` and `OriginSslProtocols: ["TLSv1.2"]` on the custom origin
+config; both are inert under `http-only` today and exist as the hook for
+switching later. Details in `docs/runbooks/cdn-operations.md`.
 
 ## Freshness
 
@@ -321,3 +338,5 @@ curl checks in `docs/runbooks/cdn-operations.md` at rollout step 3, which assert
 | Cache serves stale `/similar` after an embedding reload | Operator invalidation step in the reload runbook; 300 s TTL bounds exposure |
 | Someone opts a personalized route into a cache behavior | Default-deny; opt-in requires an explicit new behavior |
 | Another AWS account's CloudFront reaches the origin via the shared prefix list | Secret origin header validated at the gateway |
+| Origin is `http-only`, so `x-origin-secret` crosses the POP-to-origin hop in cleartext and is replayable if observed | **Accepted.** Avoids a second regional ACM cert/renewal lifecycle; revisit if ACM-on-ALB happens for another reason. The `HTTPSPort`/`OriginSslProtocols` fields already in `scripts/create-cdn-distribution.sh` are the hook for switching later |
+| `/health` and `/metrics` must be exempt from the origin-secret check (probes/scrapes reach the pod directly, with no secret), so they stay reachable by any AWS account's CloudFront distribution once the SG opens to the shared prefix list; `/health` discloses per-route circuit-breaker state, upstream reachability, and registry topology | Not a new exposure — the ALB is already internet-facing today. If tighter isolation is wanted later: stop routing `/health`/`/metrics` through the distribution, or move them to a separate management port |

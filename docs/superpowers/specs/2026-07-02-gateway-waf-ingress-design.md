@@ -100,6 +100,10 @@ healthcheck defaults to the traffic port with path `/health`. HTTP:80 only
 New `docs/runbooks/waf-webacl.md` documenting the operator prerequisite (Kustomize
 cannot create the WebACL):
 
+> **Superseded (2026-07-14):** see
+> `docs/superpowers/specs/2026-07-14-cdn-edge-acceleration-design.md`. With CloudFront as the
+> front door, the edge WebACL is `CLOUDFRONT` scope and this REGIONAL WebACL is retired.
+
 - Create a **regional** WAFv2 WebACL (`--scope REGIONAL`; **not** CLOUDFRONT) in the
   same region as the EKS ALB, default action **Allow**.
 - Recommended rules (each action **Block**), in order:
