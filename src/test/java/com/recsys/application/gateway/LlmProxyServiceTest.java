@@ -51,4 +51,24 @@ class LlmProxyServiceTest {
         assertEquals("service", upstream.get("x-authenticated-client-id"));
         assertEquals("keep-me", upstream.get("x-custom"));
     }
+
+    @Test
+    void buildUpstreamHeaders_stripsOriginSecret() {
+        RequestHeaders incoming = RequestHeaders.builder(HttpMethod.POST, "/api/llm/explain")
+                .add(GatewayOriginSecret.HEADER, "cdn-only-secret")
+                .add("x-custom", "keep-me")
+                .build();
+        ServiceRequestContext ctx = ServiceRequestContext.of(HttpRequest.of(incoming));
+        GatewayPrincipal principal = GatewayPrincipal.ofApiKey("secret-key");
+
+        RequestHeaders upstream = LlmProxyService.buildUpstreamHeaders(
+                incoming, "/llm/explain", ctx, principal);
+
+        // The CloudFront origin secret must never reach the LLM upstream — LLM_SERVICE_URL is
+        // operator-configurable and may point at a third-party hosted API whose request logs
+        // we do not control.
+        assertNull(upstream.get(GatewayOriginSecret.HEADER));
+        // Normal headers still pass through.
+        assertEquals("keep-me", upstream.get("x-custom"));
+    }
 }

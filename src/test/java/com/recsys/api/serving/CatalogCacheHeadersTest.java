@@ -28,6 +28,7 @@ class CatalogCacheHeadersTest {
     static {
         when(mockData.getMovieById(anyInt())).thenReturn(null);
         when(mockData.getMovieById(1)).thenReturn(new Movie(1, "Test Movie", 2020, List.of("Action")));
+        when(mockData.getMovieById(500)).thenThrow(new RuntimeException("boom"));
         when(mockData.getUserById(anyInt())).thenReturn(new User(1, "Alice"));
     }
 
@@ -70,6 +71,22 @@ class CatalogCacheHeadersTest {
     void item_notFoundIsNotCacheable() {
         AggregatedHttpResponse res = client().get("/item?id=999").aggregate().join();
         assertThat(res.status()).isEqualTo(HttpStatus.NOT_FOUND);
+        assertThat(res.headers().get(HttpHeaderNames.CACHE_CONTROL)).isEqualTo("no-store");
+    }
+
+    @Test
+    void item_badRequestIsNotCacheable() {
+        // Non-numeric id -> BadRequestException -> 400. CloudFront's default Error Caching
+        // Minimum TTL (10s) would otherwise pin this at the edge for every "id=abc" request.
+        AggregatedHttpResponse res = client().get("/item?id=abc").aggregate().join();
+        assertThat(res.status()).isEqualTo(HttpStatus.BAD_REQUEST);
+        assertThat(res.headers().get(HttpHeaderNames.CACHE_CONTROL)).isEqualTo("no-store");
+    }
+
+    @Test
+    void item_internalErrorIsNotCacheable() {
+        AggregatedHttpResponse res = client().get("/item?id=500").aggregate().join();
+        assertThat(res.status()).isEqualTo(HttpStatus.INTERNAL_SERVER_ERROR);
         assertThat(res.headers().get(HttpHeaderNames.CACHE_CONTROL)).isEqualTo("no-store");
     }
 

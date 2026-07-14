@@ -82,6 +82,17 @@ public abstract class BaseApiService extends AbstractHttpService {
         return writeJson(status, Map.of("error", message == null ? "" : message));
     }
 
+    /**
+     * Same body as {@link #writeError(HttpStatus, String)} but with {@code Cache-Control: no-store}
+     * instead of no cache header at all. For error branches on otherwise-cacheable routes, where
+     * CloudFront's default Error Caching Minimum TTL (10 s) would pin the error response at the
+     * edge if we didn't opt out explicitly. See
+     * docs/superpowers/specs/2026-07-14-cdn-edge-acceleration-design.md.
+     */
+    protected static HttpResponse writeNoStoreError(HttpStatus status, String message) {
+        return writeNoStoreJson(status, Map.of("error", message == null ? "" : message));
+    }
+
     protected static HttpResponse writeError(HttpStatus status, String message, String field, int value) {
         return writeJson(status, Map.of("error", message == null ? "" : message, field, value));
     }

@@ -51,4 +51,23 @@ class GatewayRequestForwarderTest {
         assertEquals("service", upstream.get("x-authenticated-client-id"));
         assertEquals("keep-me", upstream.get("x-custom"));
     }
+
+    @Test
+    void buildUpstreamHeaders_stripsOriginSecret() {
+        RequestHeaders incoming = RequestHeaders.builder(HttpMethod.GET, "/api/model/predict")
+                .add(GatewayOriginSecret.HEADER, "cdn-only-secret")
+                .add("x-custom", "keep-me")
+                .build();
+        ServiceRequestContext ctx = ServiceRequestContext.of(HttpRequest.of(incoming));
+        GatewayPrincipal principal = GatewayPrincipal.ofApiKey("secret-key");
+
+        RequestHeaders upstream = GatewayRequestForwarder.buildUpstreamHeaders(
+                incoming, "/model/predict", ctx, principal);
+
+        // The CloudFront origin secret is a gateway-consumed credential — it must never reach
+        // any upstream (6010/7010/8080), regardless of which one this route targets.
+        assertNull(upstream.get(GatewayOriginSecret.HEADER));
+        // Normal headers still pass through.
+        assertEquals("keep-me", upstream.get("x-custom"));
+    }
 }

@@ -19,8 +19,17 @@ repo has no IaC. There is no state file and no drift detection.
 
 ## What is and is not cached
 
-Cached: `GET /api/catalog/item` (1 h fresh, 24 h stale-while-revalidate) and
-`GET /api/catalog/similar` (5 min fresh, 1 h stale-while-revalidate).
+Cached: `GET /api/catalog/item` (1 h fresh, 24 h `stale-while-revalidate` +
+`stale-if-error`) and `GET /api/catalog/similar` (5 min fresh, 1 h
+`stale-while-revalidate` + `stale-if-error`). The two directives cover different
+failure modes and both matter: `stale-while-revalidate` serves the stale copy
+while refreshing it in the background against a *healthy* origin — it says
+nothing about an unhealthy one. `stale-if-error` is what covers an origin
+outage: it lets the edge keep serving the cached object when the origin is
+unreachable or returns a 5xx, for the same window. `HttpCaching.publicCache`
+emits both with the same value, so a total origin outage still serves cached
+`/item` for up to 24 h and `/similar` for up to 1 h. See "Freshness" /
+"Availability" in the design doc for the full breakdown.
 
 Everything else, including `POST /api/recommend`, is `CachingDisabled` by default and always
 reaches the origin. **The hit ratio on the primary recommendation route is zero by design** —
@@ -108,6 +117,56 @@ reason. `scripts/create-cdn-distribution.sh` already sets `HTTPSPort: 443` and
 `OriginSslProtocols: ["TLSv1.2"]` in the `CustomOriginConfig` — both are inert while
 `OriginProtocolPolicy` is `http-only`, but they're left in place as the hook: switching to
 `https-only` later needs no new fields, just that one policy flip plus the ALB listener and cert.
+
+## Rotating the origin secret
+
+Rotating `GATEWAY_ORIGIN_SECRET` means two separate, unsynchronized writes to two separate
+systems: the k8s Secret (`recsys-gateway-origin-secret`, consumed by the gateway pods) and the
+CloudFront distribution's `CustomHeaders` (set by re-running `create-cdn-distribution.sh` with a
+new `ORIGIN_SECRET`). There is no shared transaction between them.
+
+**Read `GatewayOriginSecret.java` before assuming otherwise: it validates against exactly one
+expected value.** It does not accept a set of currently-valid secrets, so there is no way to add
+the new secret alongside the old one, let requests drain, and then remove the old one. A
+zero-downtime rotation is **not possible with the code as it exists today.** Whatever order you
+pick, there is a window where the value CloudFront is sending does not match the value the gateway
+expects, and every non-exempt request (i.e. everything except `/health` and `/metrics`) 403s for
+the duration of that window.
+
+**Minimize, don't eliminate, the window — update the distribution first, then the pods
+immediately after:**
+
+1. Re-run `create-cdn-distribution.sh` with the new `ORIGIN_SECRET`. `update-distribution`
+   propagates to CloudFront's edge locations over several minutes, not instantly and not all at
+   once — some POPs pick up the new config within seconds, others take longer.
+2. **Immediately** (do not wait for the distribution to reach `Deployed`) update the k8s Secret
+   and restart the gateway pods:
+   ```bash
+   kubectl -n recsys create secret generic recsys-gateway-origin-secret \
+     --from-literal=secret='<new ORIGIN_SECRET>' --dry-run=client -o yaml | kubectl apply -f -
+   kubectl -n recsys rollout restart deployment/recsys-api-gateway
+   kubectl -n recsys rollout status deployment/recsys-api-gateway
+   ```
+   The rollout restart finishes in well under a minute; CloudFront's propagation does not.
+
+This ordering — not the reverse — bounds the exposure: pods flip to the new expected value almost
+immediately, so only the shrinking sliver of edge POPs that haven't yet propagated the new
+`CustomHeaders` value produce 403s, and that sliver shrinks to zero as propagation finishes. Doing
+it the other way (pods first) means *every* POP is still sending the old secret to a gateway that
+now expects the new one — 100% of non-exempt traffic 403s the instant the rollout completes, for
+the same propagation duration, before it decays back down.
+
+Either way, a **brief 403 window is unavoidable today.** The only way to remove it entirely is to
+change `GatewayOriginSecret` to validate against a small accepted set (old + new) instead of a
+single value, so the distribution and the pods can be updated in either order with a safe overlap
+period before the old value is retired. That is a real follow-up, not something implemented here.
+
+**The reject path is silent.** `GatewayOriginSecret.isAllowed` returns `false` and the decorator
+answers with a bare 403 — no log line, no metric, no counter. If a rotation goes wrong, there is
+currently no origin-side signal to confirm it: the only observable symptom is a 4xx rate spike on
+the CloudFront side (e.g. the `4xxErrorRate` CloudWatch metric), with nothing on the gateway to
+confirm the cause is a secret mismatch versus something else. Keep this in mind while rotating —
+watch CloudFront's error rate, not the gateway's logs.
 
 ## Freshness after a bulk embedding reload
 

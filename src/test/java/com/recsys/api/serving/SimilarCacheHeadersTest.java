@@ -34,6 +34,7 @@ class SimilarCacheHeadersTest {
         when(mockData.getMovieById(anyInt())).thenReturn(null);
         when(mockEmb.getEmbedding(anyInt())).thenReturn(null);
         when(mockEmb.getEmbedding(1)).thenReturn(new float[]{0.1f, 0.2f, 0.3f});
+        when(mockEmb.getEmbedding(500)).thenThrow(new RuntimeException("boom"));
         when(mockEmb.getEmbeddings(any())).thenReturn(Map.of());
     }
 
@@ -75,6 +76,22 @@ class SimilarCacheHeadersTest {
     void similar_missingEmbeddingIsNotCacheable() {
         AggregatedHttpResponse res = client().get("/similar?movieId=999").aggregate().join();
         assertThat(res.status()).isEqualTo(HttpStatus.NOT_FOUND);
+        assertThat(res.headers().get(HttpHeaderNames.CACHE_CONTROL)).isEqualTo("no-store");
+    }
+
+    @Test
+    void similar_badRequestIsNotCacheable() {
+        // Non-numeric movieId -> BadRequestException -> 400. CloudFront's default Error Caching
+        // Minimum TTL (10s) would otherwise pin this at the edge.
+        AggregatedHttpResponse res = client().get("/similar?movieId=abc").aggregate().join();
+        assertThat(res.status()).isEqualTo(HttpStatus.BAD_REQUEST);
+        assertThat(res.headers().get(HttpHeaderNames.CACHE_CONTROL)).isEqualTo("no-store");
+    }
+
+    @Test
+    void similar_internalErrorIsNotCacheable() {
+        AggregatedHttpResponse res = client().get("/similar?movieId=500").aggregate().join();
+        assertThat(res.status()).isEqualTo(HttpStatus.INTERNAL_SERVER_ERROR);
         assertThat(res.headers().get(HttpHeaderNames.CACHE_CONTROL)).isEqualTo("no-store");
     }
 }

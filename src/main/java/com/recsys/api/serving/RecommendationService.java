@@ -147,10 +147,12 @@ public final class RecommendationService {
                     return writeCacheableJson(HttpStatus.OK,
                             new SimilarMoviesResult(movieId, scored), CACHE_CONTROL, req);
                 } catch (BadRequestException e) {
-                    return writeError(HttpStatus.BAD_REQUEST, e.getMessage());
+                    // Errors are never cacheable: no-store, else CloudFront's default Error
+                    // Caching Minimum TTL (10s) would pin a 400 at the edge.
+                    return writeNoStoreError(HttpStatus.BAD_REQUEST, e.getMessage());
                 } catch (Exception e) {
                     log.error("Unexpected error in RecommendationService.Similar", e);
-                    return writeError(HttpStatus.INTERNAL_SERVER_ERROR, "internal server error");
+                    return writeNoStoreError(HttpStatus.INTERNAL_SERVER_ERROR, "internal server error");
                 }
             }, ctx.blockingTaskExecutor()));
         }

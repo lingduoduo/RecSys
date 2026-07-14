@@ -43,10 +43,12 @@ public final class CatalogService {
                             java.util.Map.of("error", "movie not found", "id", movieId));
                     return writeCacheableJson(HttpStatus.OK, movie, CACHE_CONTROL, req);
                 } catch (BadRequestException e) {
-                    return writeError(HttpStatus.BAD_REQUEST, e.getMessage());
+                    // Errors are never cacheable: no-store, else CloudFront's default Error
+                    // Caching Minimum TTL (10s) would pin a 400 at the edge.
+                    return writeNoStoreError(HttpStatus.BAD_REQUEST, e.getMessage());
                 } catch (Exception e) {
                     log.error("Unexpected error in CatalogService.Movies", e);
-                    return writeError(HttpStatus.INTERNAL_SERVER_ERROR, "internal server error");
+                    return writeNoStoreError(HttpStatus.INTERNAL_SERVER_ERROR, "internal server error");
                 }
             }, ctx.blockingTaskExecutor()));
         }
