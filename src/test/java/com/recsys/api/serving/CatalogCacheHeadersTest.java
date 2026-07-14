@@ -49,7 +49,7 @@ class CatalogCacheHeadersTest {
         AggregatedHttpResponse res = client().get("/item?id=1").aggregate().join();
         assertThat(res.status()).isEqualTo(HttpStatus.OK);
         assertThat(res.headers().get(HttpHeaderNames.CACHE_CONTROL))
-                .isEqualTo("public, s-maxage=3600, stale-while-revalidate=86400");
+                .isEqualTo("public, s-maxage=3600, stale-while-revalidate=86400, stale-if-error=86400");
         assertThat(res.headers().get(HttpHeaderNames.ETAG)).isNotBlank();
     }
 

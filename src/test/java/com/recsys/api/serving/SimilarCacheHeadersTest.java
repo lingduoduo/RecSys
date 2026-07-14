@@ -54,7 +54,7 @@ class SimilarCacheHeadersTest {
         AggregatedHttpResponse res = client().get("/similar?movieId=1&k=5").aggregate().join();
         assertThat(res.status()).isEqualTo(HttpStatus.OK);
         assertThat(res.headers().get(HttpHeaderNames.CACHE_CONTROL))
-                .isEqualTo("public, s-maxage=300, stale-while-revalidate=3600");
+                .isEqualTo("public, s-maxage=300, stale-while-revalidate=3600, stale-if-error=3600");
         assertThat(res.headers().get(HttpHeaderNames.ETAG)).isNotBlank();
     }
 

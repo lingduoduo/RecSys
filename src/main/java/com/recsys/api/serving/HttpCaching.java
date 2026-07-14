@@ -18,9 +18,21 @@ public final class HttpCaching {
 
     private HttpCaching() {}
 
-    public static String publicCache(long sMaxAgeSeconds, long staleWhileRevalidateSeconds) {
+    /**
+     * Builds a {@code Cache-Control} value for a shared, non-personalized response.
+     *
+     * <p>{@code staleSeconds} is a single window applied to two distinct directives:
+     * {@code stale-while-revalidate}, which lets the edge serve the cached object while it
+     * refreshes it in the background once {@code sMaxAgeSeconds} has elapsed, and
+     * {@code stale-if-error}, which lets the edge keep serving the cached object when the
+     * origin is unreachable or returns a 5xx. Both share the same window so the origin
+     * outage tolerance matches the background-refresh tolerance; callers that want the
+     * two decoupled should introduce a third parameter instead of overloading this one.
+     */
+    public static String publicCache(long sMaxAgeSeconds, long staleSeconds) {
         return "public, s-maxage=" + sMaxAgeSeconds
-                + ", stale-while-revalidate=" + staleWhileRevalidateSeconds;
+                + ", stale-while-revalidate=" + staleSeconds
+                + ", stale-if-error=" + staleSeconds;
     }
 
     /** Strong ETag: a quoted 32-hex-character SHA-256 prefix of the serialized body. */

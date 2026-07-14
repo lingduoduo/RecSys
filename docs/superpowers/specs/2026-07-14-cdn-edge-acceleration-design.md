@@ -172,11 +172,11 @@ independently of it.
 Small, and independent of any CDN vendor.
 
 - `CatalogService` `/item`: add
-  `Cache-Control: public, s-maxage=3600, stale-while-revalidate=86400` and a
-  strong `ETag` over the serialized response body.
+  `Cache-Control: public, s-maxage=3600, stale-while-revalidate=86400, stale-if-error=86400`
+  and a strong `ETag` over the serialized response body.
 - `RecommendationService` `/similar`: add
-  `Cache-Control: public, s-maxage=300, stale-while-revalidate=3600` and a strong
-  `ETag`.
+  `Cache-Control: public, s-maxage=300, stale-while-revalidate=3600, stale-if-error=3600`
+  and a strong `ETag`.
 - Both: honour `If-None-Match` and return `304 Not Modified` on match. This is
   what delivers the bandwidth-optimization goal — revalidations become ~200-byte
   304s rather than full payloads, and CloudFront revalidates instead of refetching.
@@ -190,11 +190,17 @@ Small, and independent of any CDN vendor.
 
 Three layered mechanisms.
 
-1. **`stale-while-revalidate`** carries both hit ratio and availability: the edge
-   serves the stale object immediately and refreshes in the background, so a slow
-   or down origin does not become user-visible latency. This mirrors the idiom
-   already used internally by `LogicalExpiryEmbeddingCache` on port 7010 — the
-   edge applies the repo's existing serve-stale pattern one layer further out.
+1. **`stale-while-revalidate` and `stale-if-error`** split hit ratio from
+   availability, and both are needed. `stale-while-revalidate` covers the
+   background-refresh case: once the object passes `s-maxage`, the edge serves
+   the stale copy immediately while it revalidates against a *healthy* origin in
+   the background. It says nothing about an unhealthy origin. `stale-if-error` is
+   the directive that actually does that: it lets the edge keep serving the
+   cached object when the origin is unreachable or returns a 5xx, for the same
+   window. Both are emitted with the same value by `HttpCaching.publicCache` so
+   the two windows never drift apart. This mirrors the idiom already used
+   internally by `LogicalExpiryEmbeddingCache` on port 7010 — the edge applies
+   the repo's existing serve-stale pattern one layer further out.
 2. **`ETag` / `304`** bounds how stale an object can be, cheaply.
 3. **Explicit invalidation** via `scripts/invalidate-cdn.sh` for the
    correctness-critical case. `POST /setembedding` mutates the vectors behind
@@ -207,8 +213,17 @@ bulk reload, one wildcard invalidation.
 
 ## Availability
 
-`stale-while-revalidate` means a total origin outage still serves cached `/item`
-for up to 24 h and `/similar` for up to 1 h.
+`stale-if-error` means a total origin outage still serves cached `/item` for up
+to 24 h and `/similar` for up to 1 h.
+
+CloudFront bounds served-stale duration to the *lesser* of the directive value
+and the cache policy's `MaxTTL` (`scripts/create-cdn-distribution.sh`:
+`recsys-item` MaxTTL 86400, `recsys-similar` MaxTTL 3600). Today those MaxTTLs
+exactly equal the `stale-if-error` windows above, so nothing is truncated — but
+this is a coupling to watch: if either MaxTTL is ever lowered independently of
+`HttpCaching.publicCache`'s `staleSeconds` argument, the effective outage
+tolerance silently shrinks to the new, lower MaxTTL without any code or test
+signaling it.
 
 This is a real but **narrow** benefit. `/api/recommend` — the primary route — still
 hard-fails during an origin outage. The CDN is not an availability blanket for
