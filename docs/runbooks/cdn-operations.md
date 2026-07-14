@@ -138,19 +138,31 @@ the Secret value against the distribution's `CustomHeaders`.
 
 ### If "no distribution found" appears unexpectedly
 
-`create-cdn-distribution.sh` and `invalidate-cdn.sh` both look up the distribution by
-`Comment=='recsys-edge'` with `aws cloudfront list-distributions ... 2>/dev/null || true` — they
-swallow the AWS CLI's stderr and treat *any* failure (including an auth failure) the same as "the
-distribution doesn't exist yet." An expired SSO session or missing/misconfigured credentials
-therefore surfaces as:
+`invalidate-cdn.sh` looks up the distribution by `Comment=='recsys-edge'` with
+`aws cloudfront list-distributions ... 2>/dev/null || true` — it swallows the AWS CLI's stderr and
+treats *any* lookup failure (including an auth failure) the same as "the distribution doesn't
+exist yet." An expired SSO session or missing/misconfigured credentials therefore surfaces as:
 
 ```
 ERROR: no distribution found with Comment='recsys-edge'.
 Run ./scripts/create-cdn-distribution.sh first.
 ```
 
-which reads like an infrastructure gap and points the operator toward *creating* a distribution
-that already exists. If you see this message and you're confident the distribution was already
-created, do not re-run the create script — run `aws sts get-caller-identity` first. If that
-fails or returns unexpectedly, the real problem is authentication (refresh SSO / credentials),
-not missing infrastructure.
+which reads like an infrastructure gap when the real problem is authentication. If you see this
+message and you're confident the distribution was already created, do not re-run the create
+script — run `aws sts get-caller-identity` first. If that fails or returns unexpectedly, refresh
+SSO / credentials.
+
+`create-cdn-distribution.sh` does the same swallowed-stderr lookup (both for the distribution and
+for each cache policy) but does **not** print the message above. On a lookup failure it falls
+into its "not found" branch and takes the *create* path instead: it echoes "Creating distribution"
+and attempts `aws cloudfront create-distribution` (similarly, a swallowed cache-policy lookup
+falls into `aws cloudfront create-cache-policy`). So an expired SSO session here does not surface
+as "no distribution found" — it surfaces later, as whatever error the first *unsuppressed* AWS
+call throws at the create-cache-policy or create-distribution step. Separately, the script
+hardcodes `CallerReference: "recsys-edge-1"`, so if the distribution actually already exists (the
+lookup just couldn't confirm it), the attempted create is rejected by AWS with
+`DistributionAlreadyExists` instead of silently provisioning a duplicate — a loud failure, but one
+that names the wrong problem when the underlying cause was an auth error the lookup masked. Same
+remediation applies: run `aws sts get-caller-identity` first whenever either script behaves
+unexpectedly.
