@@ -42,6 +42,8 @@ class LocalCdnCacheTest {
     static final AtomicInteger originHits = new AtomicInteger();
     /** Every x-origin-secret value the stub received. */
     static final List<String> receivedSecrets = new CopyOnWriteArrayList<>();
+    /** Origin hits on /api/catalog/similar specifically — separate from the /item counter above. */
+    static final AtomicInteger similarOriginHits = new AtomicInteger();
 
     static Server origin;
     static GenericContainer<?> nginx;
@@ -69,6 +71,29 @@ class LocalCdnCacheTest {
                     return HttpResponse.of(ResponseHeaders.builder(HttpStatus.OK)
                             .contentType(MediaType.JSON_UTF_8)
                             .set(HttpHeaderNames.CACHE_CONTROL, HttpCaching.publicCache(3600, 86400))
+                            .set(HttpHeaderNames.ETAG, tag)
+                            .build(), HttpData.wrap(body));
+                })
+                // Mirrors the /api/catalog/item handler's shape, but keyed on movieId+k so the
+                // more complex two-parameter cache key ($uri|$arg_movieId|$arg_k) is exercised.
+                .service("/api/catalog/similar", (ctx, req) -> {
+                    similarOriginHits.incrementAndGet();
+                    String secret = req.headers().get(HttpHeaderNames.of("x-origin-secret"));
+                    receivedSecrets.add(secret == null ? "<absent>" : secret);
+                    String movieId = ctx.queryParam("movieId");
+                    String k = ctx.queryParam("k");
+                    byte[] body = ("{\"movieId\":" + movieId + ",\"k\":" + k + ",\"neighbors\":[]}")
+                            .getBytes();
+                    String tag = HttpCaching.etagFor(body);
+                    if (HttpCaching.matches(req.headers().get(HttpHeaderNames.IF_NONE_MATCH), tag)) {
+                        return HttpResponse.of(ResponseHeaders.builder(HttpStatus.NOT_MODIFIED)
+                                .set(HttpHeaderNames.CACHE_CONTROL, HttpCaching.publicCache(300, 3600))
+                                .set(HttpHeaderNames.ETAG, tag)
+                                .build());
+                    }
+                    return HttpResponse.of(ResponseHeaders.builder(HttpStatus.OK)
+                            .contentType(MediaType.JSON_UTF_8)
+                            .set(HttpHeaderNames.CACHE_CONTROL, HttpCaching.publicCache(300, 3600))
                             .set(HttpHeaderNames.ETAG, tag)
                             .build(), HttpData.wrap(body));
                 })
@@ -196,5 +221,33 @@ class LocalCdnCacheTest {
 
         assertThat(receivedSecrets).isNotEmpty();
         assertThat(receivedSecrets).allMatch(SECRET::equals);
+    }
+
+    // Uses movieId=55, disjoint from the /item tests' ids (1, 7, 3, 42) above — same
+    // order-independence rationale, even though /item and /similar are different locations
+    // with different $uri-prefixed cache keys and so could not collide regardless.
+    @Test
+    void similarCacheKeyIncludesK_missThenHit() {
+        int before = similarOriginHits.get();
+
+        AggregatedHttpResponse first =
+                cdn().get("/api/catalog/similar?movieId=55&k=5").aggregate().join();
+        assertThat(first.status()).isEqualTo(HttpStatus.OK);
+        assertThat(cacheStatus(first)).isEqualTo("MISS");
+
+        AggregatedHttpResponse second =
+                cdn().get("/api/catalog/similar?movieId=55&k=5").aggregate().join();
+        assertThat(second.status()).isEqualTo(HttpStatus.OK);
+        assertThat(cacheStatus(second)).isEqualTo("HIT");
+        assertThat(similarOriginHits.get()).isEqualTo(before + 1);
+
+        // k IS part of the cache key ("$uri|$arg_movieId|$arg_k"), so a differing k must be a
+        // separate cache entry — a fresh MISS that reaches the origin again, not a HIT reusing
+        // the k=5 entry.
+        AggregatedHttpResponse differentK =
+                cdn().get("/api/catalog/similar?movieId=55&k=6").aggregate().join();
+        assertThat(differentK.status()).isEqualTo(HttpStatus.OK);
+        assertThat(cacheStatus(differentK)).isEqualTo("MISS");
+        assertThat(similarOriginHits.get()).isEqualTo(before + 2);
     }
 }

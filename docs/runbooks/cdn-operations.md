@@ -40,7 +40,14 @@ termination, WAF, and backbone acceleration, not caching.
 
 Order matters. Reversing steps 5 and 6 locks all traffic out of the origin.
 
-1. Deploy the app (cache headers, ETag/304, origin-secret validation **disabled**). Safe no-op.
+1. Deploy the app (cache headers, ETag/304, origin-secret validation **disabled**). Not a pure
+   no-op: this deploy also carries the `k8s/base` configmap value that flips
+   `GATEWAY_PUBLIC_PATHS` from `/health` alone to `/health,/api/catalog/item,/api/catalog/similar`
+   — a live authorization change (those two routes stop requiring auth), immaterial only because
+   gateway auth is currently fail-open (no `GATEWAY_API_KEYS` / Cognito configured), not because
+   the change itself does nothing. Once either is configured, this step's public-path flip
+   becomes real and should be sequenced deliberately, not treated as invisible. Everything else
+   in this step (headers, ETag, origin-secret validation) is genuinely inert until later steps.
 2. Create the ACM cert (**us-east-1** — CloudFront ignores certs anywhere else), the
    `CLOUDFRONT`-scope WebACL, and the distribution:
    ```bash
@@ -70,15 +77,30 @@ Order matters. Reversing steps 5 and 6 locks all traffic out of the origin.
    ```
    Expected: `X-Cache: Hit from cloudfront` on the repeated catalog GET;
    `X-Cache: Miss from cloudfront` on the POST.
-4. Create the Secret so the gateway enforces the origin check:
+4. Create the Secret so the gateway enforces the origin check. **`GATEWAY_ORIGIN_SECRET` lives in
+   `k8s/base`, so it applies to the us-west-2 standby too** — CloudFront's origin is the
+   `origin.*` Route53 failover record, which can resolve to either region's ALB, and it sends the
+   same header value regardless of which one answers. Create it in **both** contexts, matching
+   the two-context deploy pattern in `docs/runbooks/dr-regional-failover.md`:
    ```bash
-   kubectl -n recsys create secret generic recsys-gateway-origin-secret \
+   kubectl --context <us-east-1-ctx> -n recsys create secret generic recsys-gateway-origin-secret \
      --from-literal=secret='<the ORIGIN_SECRET from step 2>'
-   kubectl -n recsys rollout restart deployment/recsys-api-gateway
-   kubectl -n recsys rollout status deployment/recsys-api-gateway
+   kubectl --context <us-east-1-ctx> -n recsys rollout restart deployment/recsys-api-gateway
+   kubectl --context <us-east-1-ctx> -n recsys rollout status deployment/recsys-api-gateway
+
+   kubectl --context <us-west-2-ctx> -n recsys create secret generic recsys-gateway-origin-secret \
+     --from-literal=secret='<the same ORIGIN_SECRET>'
+   kubectl --context <us-west-2-ctx> -n recsys rollout restart deployment/recsys-api-gateway
+   kubectl --context <us-west-2-ctx> -n recsys rollout status deployment/recsys-api-gateway
    ```
-   Verify probes still pass — `/health` and `/metrics` are exempt from the secret check. If the
-   pods go NotReady here, that exemption is broken; roll back the Secret immediately.
+   Verify probes still pass in **both** contexts — `/health` and `/metrics` are exempt from the
+   secret check. If the pods go NotReady here, that exemption is broken; roll back the Secret
+   immediately.
+
+   Skipping the us-west-2 half is not a no-op: `GatewayOriginSecret.fromEnvironment` returns
+   `disabled()` when the env var is absent, so the standby gateway silently fails open — a
+   failover would then serve traffic with the origin lockdown quietly not enforced at all. See
+   `docs/runbooks/dr-regional-failover.md` for the standby-state implication.
 
    That exemption is deliberate, not incidental: the ALB health check, all three kubelet probes,
    and the Prometheus scrape all reach the pod directly, bypassing CloudFront entirely, and none
@@ -94,11 +116,24 @@ Order matters. Reversing steps 5 and 6 locks all traffic out of the origin.
 5. Point `app.*` at the distribution (Route53 alias A record). The failover records move to
    `origin.*` and keep working unchanged.
 6. **Only now** narrow the ALB security group to the CloudFront prefix list, and retire the
-   REGIONAL WebACL:
-   ```bash
-   aws ec2 authorize-security-group-ingress --group-id <alb-sg> --ip-permissions \
-     'IpProtocol=tcp,FromPort=80,ToPort=80,PrefixListIds=[{PrefixListId=<pl-id>}]'
-   ```
+   REGIONAL WebACL. **The port MUST match the origin protocol the distribution was created
+   with** (`ORIGIN_PROTOCOL_POLICY` in step 2) — opening the wrong port here blackholes all edge
+   traffic, at the exact step this runbook already flags as the lock-yourself-out step:
+   - `ORIGIN_PROTOCOL_POLICY=https-only` (the script's default) → open **443**:
+     ```bash
+     aws ec2 authorize-security-group-ingress --group-id <alb-sg> --ip-permissions \
+       'IpProtocol=tcp,FromPort=443,ToPort=443,PrefixListIds=[{PrefixListId=<pl-id>}]'
+     ```
+   - `ORIGIN_PROTOCOL_POLICY=http-only` → open **80**:
+     ```bash
+     aws ec2 authorize-security-group-ingress --group-id <alb-sg> --ip-permissions \
+       'IpProtocol=tcp,FromPort=80,ToPort=80,PrefixListIds=[{PrefixListId=<pl-id>}]'
+     ```
+   An operator who provisions the ALB `:443` listener (as the default now implies) and then
+   opens port 80 out of habit — or leaves an old port-80 rule as the only one — blackholes 100%
+   of traffic: CloudFront connects to the origin on the port `ORIGIN_PROTOCOL_POLICY` selects,
+   not the one this runbook happened to open.
+
    Find the prefix list id with:
    ```bash
    aws ec2 describe-managed-prefix-lists --region <region> \
@@ -107,7 +142,10 @@ Order matters. Reversing steps 5 and 6 locks all traffic out of the origin.
    ```
    Then remove the old 0.0.0.0/0 rule.
 
-Steps 1-4 are invisible to users.
+Steps 1-4 are invisible to users **when gateway auth is unconfigured**, which is the case today.
+If `GATEWAY_API_KEYS` or Cognito is ever configured, step 1's `GATEWAY_PUBLIC_PATHS` flip (see
+above) stops being invisible — it opens `/api/catalog/item` and `/api/catalog/similar` to
+anonymous access from that deploy onward.
 
 ## Cleartext exposure: only when http-only is an explicit opt-out
 
@@ -137,24 +175,55 @@ cleartext exposure does not apply; use `http-only` only as a deliberate, tempora
 `GATEWAY_ORIGIN_SECRET` accepts a comma-separated **set** of secrets, so rotation has no 403
 window. Both the old and the new secret are accepted while the distribution catches up.
 
+> **Rotate in BOTH regions.** `GATEWAY_ORIGIN_SECRET` lives in `k8s/base` and is deployed to both
+> the us-east-1 primary and the us-west-2 standby (rollout step 4 above). CloudFront's origin
+> resolves to whichever region `origin.*` currently points at, and sends it the same header
+> value either way. Rotating in us-east-1 only leaves the standby holding the old secret; if a
+> failover lands after step 2 below completes in us-east-1, the distribution sends `new-secret`
+> to a us-west-2 gateway that only accepts `old-secret` — 100% 403 in DR, during an outage. Run
+> every step below in **both** contexts before moving to the next step.
+
+> **`ORIGIN_PROTOCOL_POLICY` MUST be passed explicitly on every re-run, including rotation.**
+> `aws cloudfront update-distribution` REPLACES the entire distribution config (see the note at
+> the top of this doc), and `scripts/create-cdn-distribution.sh` defaults
+> `ORIGIN_PROTOCOL_POLICY` to `https-only` (`scripts/create-cdn-distribution.sh:35`) if the
+> variable is not set. If the distribution was created with `http-only` (because the ALB has no
+> `:443` listener yet — still the case today), omitting `ORIGIN_PROTOCOL_POLICY` on a later
+> rotation silently flips the origin back to `https-only`, and CloudFront starts sending traffic
+> to a port nothing listens on: 502 on 100% of traffic. Always pass the same
+> `ORIGIN_PROTOCOL_POLICY` the distribution currently uses — check with `aws cloudfront
+> get-distribution-config` if you're not sure which one that is.
+
 ```bash
-# 1. Accept both. Pods now take either value.
-kubectl -n recsys create secret generic recsys-gateway-origin-secret \
-  --from-literal=secret='old-secret,new-secret' --dry-run=client -o yaml | kubectl apply -f -
-kubectl -n recsys rollout status deployment/recsys-api-gateway
+# 1. Accept both, in BOTH regions. Pods now take either value.
+kubectl --context <us-east-1-ctx> -n recsys create secret generic recsys-gateway-origin-secret \
+  --from-literal=secret='old-secret,new-secret' --dry-run=client -o yaml | kubectl --context <us-east-1-ctx> apply -f -
+kubectl --context <us-east-1-ctx> -n recsys rollout status deployment/recsys-api-gateway
+
+kubectl --context <us-west-2-ctx> -n recsys create secret generic recsys-gateway-origin-secret \
+  --from-literal=secret='old-secret,new-secret' --dry-run=client -o yaml | kubectl --context <us-west-2-ctx> apply -f -
+kubectl --context <us-west-2-ctx> -n recsys rollout status deployment/recsys-api-gateway
 
 # 2. Flip the distribution to the new secret (CloudFront propagation takes minutes).
-ORIGIN_SECRET='new-secret' ... ./scripts/create-cdn-distribution.sh
+#    ORIGIN_PROTOCOL_POLICY is REQUIRED here — must match what the distribution was created
+#    with (http-only until the ALB has a :443 listener; https-only after). Leaving it unset
+#    lets the script's https-only default silently replace whatever policy is live today.
+ORIGIN_SECRET='new-secret' ORIGIN_PROTOCOL_POLICY='http-only' ... ./scripts/create-cdn-distribution.sh
 
-# 3. Once propagated, retire the old one.
-kubectl -n recsys create secret generic recsys-gateway-origin-secret \
-  --from-literal=secret='new-secret' --dry-run=client -o yaml | kubectl apply -f -
-kubectl -n recsys rollout status deployment/recsys-api-gateway
+# 3. Once propagated, retire the old one, in BOTH regions.
+kubectl --context <us-east-1-ctx> -n recsys create secret generic recsys-gateway-origin-secret \
+  --from-literal=secret='new-secret' --dry-run=client -o yaml | kubectl --context <us-east-1-ctx> apply -f -
+kubectl --context <us-east-1-ctx> -n recsys rollout status deployment/recsys-api-gateway
+
+kubectl --context <us-west-2-ctx> -n recsys create secret generic recsys-gateway-origin-secret \
+  --from-literal=secret='new-secret' --dry-run=client -o yaml | kubectl --context <us-west-2-ctx> apply -f -
+kubectl --context <us-west-2-ctx> -n recsys rollout status deployment/recsys-api-gateway
 ```
 
-Do not skip step 1. Going straight to step 2 reintroduces the window this ordering exists to
-avoid: the distribution sends a secret no pod accepts, and 100% of non-exempt traffic 403s
-until step 3 completes.
+Do not skip step 1, in either region. Going straight to step 2 reintroduces the window this
+ordering exists to avoid: the distribution sends a secret no pod accepts, and 100% of non-exempt
+traffic 403s until step 3 completes — and skipping a region entirely leaves that region's pods
+never accepting the new secret at all.
 
 **Watch the rejections.** `gateway_origin_secret_rejected_total` is exposed on the gateway's
 `/metrics`. It should stay flat throughout a correct rotation. A rise means the distribution and

@@ -3,10 +3,13 @@ package com.recsys.application.gateway;
 import com.recsys.ratelimit.GatewayRateLimiter;
 import com.recsys.resilience.RouteCircuitBreaker;
 
+import com.linecorp.armeria.common.HttpData;
+import com.linecorp.armeria.common.HttpHeaderNames;
 import com.linecorp.armeria.common.HttpRequest;
 import com.linecorp.armeria.common.HttpResponse;
 import com.linecorp.armeria.common.HttpStatus;
 import com.linecorp.armeria.common.MediaType;
+import com.linecorp.armeria.common.ResponseHeaders;
 import com.linecorp.armeria.server.HttpService;
 import com.linecorp.armeria.server.ServiceRequestContext;
 
@@ -62,6 +65,13 @@ public final class GatewayProxyService implements HttpService {
 
     public static HttpResponse gatewayError(HttpStatus status, String message) {
         String escaped = message == null ? "" : message.replace("\\", "\\\\").replace("\"", "\\\"");
-        return HttpResponse.of(status, MediaType.JSON_UTF_8, "{\"error\":\"" + escaped + "\"}");
+        // no-store: without it, CloudFront's default Error Caching Minimum TTL (10s) would pin
+        // this response at the edge per cache key/POP — e.g. a 403 from GatewayOriginSecret on
+        // /api/catalog/item* would still look broken for 10s after a secret rotation completes.
+        ResponseHeaders headers = ResponseHeaders.builder(status)
+                .contentType(MediaType.JSON_UTF_8)
+                .set(HttpHeaderNames.CACHE_CONTROL, "no-store")
+                .build();
+        return HttpResponse.of(headers, HttpData.ofUtf8("{\"error\":\"" + escaped + "\"}"));
     }
 }

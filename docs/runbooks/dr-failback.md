@@ -25,8 +25,12 @@ kubectl --context <us-east-1-ctx> -n recsys rollout status deploy
 - Re-enable the Route53 PRIMARY record's health check so it points back to
   us-east-1. Because it is the PRIMARY failover record, Route53 returns to it once
   healthy.
-- Verify: `dig +short api.recsys.example.com` resolves to the us-east-1 ALB and
-  `/health` is green.
+- Verify: once the CDN rollout (`docs/runbooks/cdn-operations.md`) is complete, the failover
+  record lives on `origin.recsys.example.com`, not the public hostname — check
+  `dig +short origin.recsys.example.com` resolves to the us-east-1 ALB, and confirm
+  `https://app.recsys.example.com/health` (the CloudFront alias) is green. Pre-rollout, check
+  `dig +short api.recsys.example.com` resolves to the us-east-1 ALB directly and `/health` is
+  green there. See `docs/runbooks/dr-regional-failover.md` for the full topology.
 
 ## 4. Return us-west-2 to warm standby
 

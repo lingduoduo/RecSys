@@ -84,6 +84,23 @@ Read this before drawing any conclusion from the local environment.
 - **One nginx, not 400+ POPs.** No POP-to-POP behaviour, no Origin Shield tiering.
 - **nginx and CloudFront are not bit-identical.** The claim is that the three `Cache-Control`
   directives we emit behave the same. Nothing broader.
+- **`$arg_` lookups are case-insensitive in nginx; the production cache keys are not.** nginx's
+  `$arg_movieId` (and `$arg_id`) matches the query-string argument name case-insensitively and
+  returns only the *first* match, while CloudFront's query-string whitelist and Armeria's
+  `ctx.queryParam` are both case-sensitive. So locally, `?MOVIEID=1&movieId=2` keys the local
+  cache on `1` (whichever case nginx happens to pick up first) while the real origin reads
+  `movieId=2` — silently caching movie 2's neighbours under the key for movie 1. This is a
+  local-only artifact: CloudFront's whitelist simply drops `MOVIEID` since it isn't `movieId`,
+  so the ambiguity nginx exhibits here cannot happen in production.
+- **The local locations are exact matches; CloudFront's are prefix globs.** `location =
+  /api/catalog/item` and `location = /api/catalog/similar` in
+  `docker/cdn/default.conf.template` match only that literal path, whereas the CloudFront path
+  patterns are `/api/catalog/item*` / `/api/catalog/similar*` — a prefix glob that also matches,
+  e.g., `/api/catalog/item/5`. The local environment therefore **under-caches** relative to
+  production: a sub-path request falls through to the local default (uncached) block instead of
+  the cached location. Nothing personalized is reachable at those sub-paths, so this is a
+  false-conclusion risk for anyone using the local env to reason about hit ratio — not a
+  security hole.
 
 This is a semantics harness, not a CloudFront emulator.
 

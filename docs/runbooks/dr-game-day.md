@@ -16,10 +16,14 @@ with stakeholders notified.
 2. **Inject failure**: make the primary ALB health check fail (e.g. temporarily
    block the health-check path at the primary, or scale the primary gateway to 0
    in a non-prod mirror). Do NOT delete data.
-3. **Observe DNS failover**: poll `dig +short api.recsys.example.com` until it
-   resolves to the us-west-2 ALB. Record elapsed time = **read RTO**.
-4. **Verify reads**: `curl -fsS https://api.recsys.example.com/health` and a real
-   recommendation request succeed.
+3. **Observe DNS failover**: once the CDN rollout (`docs/runbooks/cdn-operations.md`) is
+   complete, the failover record is `origin.recsys.example.com`, not the public hostname — poll
+   `dig +short origin.recsys.example.com` until it resolves to the us-west-2 ALB. Pre-rollout,
+   poll `dig +short api.recsys.example.com` instead. Record elapsed time = **read RTO**. See
+   `docs/runbooks/dr-regional-failover.md` for the full topology.
+4. **Verify reads**: post-rollout, `curl -fsS https://app.recsys.example.com/health` (the
+   CloudFront alias) and a real recommendation request succeed. Pre-rollout, use
+   `https://api.recsys.example.com/health` directly.
 5. **Promote data tier**: run `dr-data-tier-promotion.md`. Record elapsed time =
    **write RTO**.
 6. **Verify writes**: a feedback request persists in us-west-2.

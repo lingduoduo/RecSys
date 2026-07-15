@@ -196,6 +196,9 @@ public final class MicroserviceGatewayServer {
         if (authenticator.isEnabled()) {
             log.info("Gateway API-key authentication enabled");
         }
+        if (originSecret.isEnabled()) {
+            log.info("Gateway origin-secret enforcement enabled");
+        }
         if (llmTokenRateLimiter.isEnabled()) {
             log.info("LLM token rate limiting enabled");
         }

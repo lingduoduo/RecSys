@@ -80,11 +80,17 @@ Viewer ──HTTPS (ACM, us-east-1)──▶ CloudFront POP
                                      │ AWS backbone, keep-alive
                                      │ + X-Origin-Secret custom header
                                      ▼
-                       ALB :80   SG allows ONLY
-                                 com.amazonaws.global.cloudfront.origin-facing
+                  ALB :80 or :443*  SG allows ONLY
+                                    com.amazonaws.global.cloudfront.origin-facing
                                      ▼
                             gateway :8010 ──▶ 6010 / 7010 / 8080
 ```
+
+\* The port depends on `ORIGIN_PROTOCOL_POLICY` (`scripts/create-cdn-distribution.sh`). The
+script now **defaults to `https-only` (:443)**; `:80` (`http-only`) remains available as an
+explicit, warned-about opt-out until the ALB has a `:443` listener and a regional ACM
+certificate. The SG rule in `docs/runbooks/cdn-operations.md` rollout step 6 MUST open whichever
+port matches — opening the wrong one blackholes all edge traffic. See "Origin changes" below.
 
 ### Origin and failover
 
@@ -183,8 +189,14 @@ Small, and independent of any CDN vendor.
 - Both: honour `If-None-Match` and return `304 Not Modified` on match. This is
   what delivers the bandwidth-optimization goal — revalidations become ~200-byte
   304s rather than full payloads, and CloudFront revalidates instead of refetching.
-- Add explicit `Cache-Control: no-store` to `/api/v1/token`, `/getuser` / `/user`,
-  and the auth routes, so that even a misconfigured edge cannot retain them.
+- Add explicit `Cache-Control: no-store` to `/api/v1/token`
+  (`RecommendationController.getSubmitToken`) and `/getuser` / `/user`
+  (`CatalogService.Users`), so that even a misconfigured edge cannot retain them.
+  **Not done: the `/api/v1/auth/login` and `/api/v1/auth/logout` routes**
+  (`LoginController`) — they set no `Cache-Control` header at all. This is harmless today (both
+  are POST-only, and POST is never cached by either CloudFront's default behavior or this repo's
+  local nginx stand-in), but the header is nonetheless absent, not present; correct this doc's
+  earlier claim that it was added there.
 - Gateway: validate a secret origin header when `GATEWAY_ORIGIN_SECRET` is set;
   reject mismatches with 403. **Defaults to disabled when the env var is unset**,
   so `scripts/run-microservices-local.sh` and local dev are unaffected. `/health`
@@ -293,7 +305,14 @@ to IaC is a reasonable follow-up project, deliberately out of scope here.
 Order matters; steps 5 and 6 are reversed at the risk of locking yourself out.
 
 1. Ship origin code — cache headers, ETag/304, origin-secret validation
-   **disabled**. A safe no-op.
+   **disabled**. Not a pure no-op: this deploy also carries the `k8s/base` configmap change that
+   flips `GATEWAY_PUBLIC_PATHS` from `/health` alone to `/health,/api/catalog/item,/api/catalog/similar`
+   — a live authorization change, since those two routes stop requiring auth from this point on.
+   It is immaterial *today* only because gateway auth itself is fail-open whenever neither
+   `GATEWAY_API_KEYS` nor Cognito is configured (`GatewayAuthenticator.isEnabled` returns false
+   and every path is anonymous-allowed already) — it becomes a real, live authorization change
+   the moment either is configured. Everything else in this step (headers, ETag, origin-secret
+   validation) genuinely is inert until later steps.
 2. Create the ACM certificate (us-east-1), the `CLOUDFRONT`-scope WebACL, and the
    distribution with origin `origin.*`.
 3. Validate against the raw `dXXXXXXXXXXXXX.cloudfront.net` domain. Real traffic is
@@ -304,8 +323,10 @@ Order matters; steps 5 and 6 are reversed at the risk of locking yourself out.
 6. **Only now** narrow the ALB security group to the CloudFront origin-facing
    prefix list, and retire the `REGIONAL` WebACL.
 
-Steps 1-4 are invisible to users. Rollback at any point is a DNS revert plus a
-security-group revert.
+Steps 1-4 are invisible to users **while gateway auth is unconfigured**, which is the case
+today. Step 1's `GATEWAY_PUBLIC_PATHS` flip stops being invisible the moment `GATEWAY_API_KEYS`
+or Cognito is configured — see "Auth and the public-path trap" above. Rollback at any point is a
+DNS revert plus a security-group revert.
 
 ### Interaction with the existing WAF design
 
