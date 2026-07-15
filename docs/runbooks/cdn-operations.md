@@ -109,23 +109,28 @@ Order matters. Reversing steps 5 and 6 locks all traffic out of the origin.
 
 Steps 1-4 are invisible to users.
 
-## Accepted limitation: the origin secret travels in cleartext
+## Cleartext exposure: only when http-only is an explicit opt-out
 
-The origin is `http-only` (`OriginProtocolPolicy: "http-only"` in
-`scripts/create-cdn-distribution.sh`) — there is no regional TLS certificate on the ALB. That
-means the `x-origin-secret` header CloudFront injects on the POP-to-origin leg travels in
-cleartext over that hop. It is observable to anything positioned on that path and, if observed,
-replayable — the header check in `GatewayOriginSecret` is a constant-value comparison, not a
-nonce or timestamped signature, so a captured value keeps working until rotated. This partially
-weakens the origin-lockdown control the header is supposed to provide.
+By default (`ORIGIN_PROTOCOL_POLICY=https-only`, see the "Origin protocol" note in step 2 above),
+`HTTPSPort: 443` and `OriginSslProtocols: ["TLSv1.2"]` in `scripts/create-cdn-distribution.sh`'s
+`CustomOriginConfig` are live, not inert: the `x-origin-secret` header CloudFront injects on the
+POP-to-origin leg is encrypted over that hop. That default requires the ALB to have a `:443`
+listener and a regional ACM certificate, which the ALB does not have today (it listens on `:80`
+only — `k8s/eks/waf-api-gateway-ingress.yaml`), so that listener must exist before the default
+actually takes effect end to end.
 
-This was a conscious tradeoff, not an oversight: the alternative is a second, regional ACM
-certificate (plus its own renewal lifecycle) on the ALB, per region, and that ongoing operational
-cost wasn't judged worth it for this system. Revisit if/when ACM-on-ALB happens for another
-reason. `scripts/create-cdn-distribution.sh` already sets `HTTPSPort: 443` and
-`OriginSslProtocols: ["TLSv1.2"]` in the `CustomOriginConfig` — both are inert while
-`OriginProtocolPolicy` is `http-only`, but they're left in place as the hook: switching to
-`https-only` later needs no new fields, just that one policy flip plus the ALB listener and cert.
+The cleartext exposure only applies when an operator explicitly opts out with
+`ORIGIN_PROTOCOL_POLICY=http-only` (the script warns loudly when this is set). Under that opt-out,
+the `x-origin-secret` header travels in cleartext over the POP-to-origin hop: observable to
+anything positioned on that path and, if observed, replayable — the header check in
+`GatewayOriginSecret` is a constant-value comparison, not a nonce or timestamped signature, so a
+captured value keeps working until rotated. This partially weakens the origin-lockdown control the
+header is supposed to provide.
+
+This is no longer an unconditional accepted limitation — it is a consequence of an explicit
+opt-out for the case where the ALB `:443` listener and regional ACM certificate aren't in place
+yet. Once that infrastructure exists and the default `https-only` policy is in effect, the
+cleartext exposure does not apply; use `http-only` only as a deliberate, temporary fallback.
 
 ## Rotating the origin secret
 

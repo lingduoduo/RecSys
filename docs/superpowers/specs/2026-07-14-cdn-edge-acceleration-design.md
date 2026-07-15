@@ -203,6 +203,18 @@ for another reason — `scripts/create-cdn-distribution.sh` already sets
 config; both are inert under `http-only` today and exist as the hook for
 switching later. Details in `docs/runbooks/cdn-operations.md`.
 
+> **Superseded (2026-07-14).** `scripts/create-cdn-distribution.sh` now defaults
+> `ORIGIN_PROTOCOL_POLICY` to `https-only`, under which `HTTPSPort: 443` and
+> `OriginSslProtocols: ["TLSv1.2"]` above are live rather than inert, and the
+> origin secret is encrypted on the POP-to-origin hop. `http-only` remains
+> available but is now an explicit, warned-about opt-out — the cleartext
+> exposure described above applies only when an operator chooses it, not
+> unconditionally. The remaining prerequisite for the default to take effect is
+> infrastructure, not code: an ALB `:443` listener plus a regional ACM
+> certificate, which do not exist yet. See
+> `docs/superpowers/specs/2026-07-14-local-cdn-and-origin-secret-hardening-design.md`
+> and `docs/runbooks/cdn-operations.md`.
+
 ## Freshness
 
 Three layered mechanisms.
@@ -338,5 +350,5 @@ curl checks in `docs/runbooks/cdn-operations.md` at rollout step 3, which assert
 | Cache serves stale `/similar` after an embedding reload | Operator invalidation step in the reload runbook; 300 s TTL bounds exposure |
 | Someone opts a personalized route into a cache behavior | Default-deny; opt-in requires an explicit new behavior |
 | Another AWS account's CloudFront reaches the origin via the shared prefix list | Secret origin header validated at the gateway |
-| Origin is `http-only`, so `x-origin-secret` crosses the POP-to-origin hop in cleartext and is replayable if observed | **Accepted.** Avoids a second regional ACM cert/renewal lifecycle; revisit if ACM-on-ALB happens for another reason. The `HTTPSPort`/`OriginSslProtocols` fields already in `scripts/create-cdn-distribution.sh` are the hook for switching later |
+| If an operator opts into `ORIGIN_PROTOCOL_POLICY=http-only`, `x-origin-secret` crosses the POP-to-origin hop in cleartext and is replayable if observed | **Superseded default.** `ORIGIN_PROTOCOL_POLICY` now defaults to `https-only`, under which `HTTPSPort`/`OriginSslProtocols` are live and the secret is encrypted on that hop; `http-only` still works but warns loudly. Remaining prerequisite for the default: an ALB `:443` listener + regional ACM cert (not yet provisioned). See `docs/superpowers/specs/2026-07-14-local-cdn-and-origin-secret-hardening-design.md` and `docs/runbooks/cdn-operations.md` |
 | `/health` and `/metrics` must be exempt from the origin-secret check (probes/scrapes reach the pod directly, with no secret), so they stay reachable by any AWS account's CloudFront distribution once the SG opens to the shared prefix list; `/health` discloses per-route circuit-breaker state, upstream reachability, and registry topology | Not a new exposure — the ALB is already internet-facing today. If tighter isolation is wanted later: stop routing `/health`/`/metrics` through the distribution, or move them to a separate management port |
