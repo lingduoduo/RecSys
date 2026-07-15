@@ -148,6 +148,22 @@ public abstract class BaseApiService extends AbstractHttpService {
         }
     }
 
+    /** Parses an optional bounded integer and rejects, rather than clamps, invalid values. */
+    protected static Integer optionalBoundedIntParam(ServiceRequestContext ctx, String name,
+                                                     Integer defaultValue, int min, int max) {
+        String value = ctx.queryParam(name);
+        if (value == null || value.isBlank()) return defaultValue;
+        try {
+            int parsed = Integer.parseInt(value.trim());
+            if (parsed < min || parsed > max) {
+                throw new BadRequestException(name + " must be between " + min + " and " + max);
+            }
+            return parsed;
+        } catch (NumberFormatException e) {
+            throw new BadRequestException("invalid numeric parameter format");
+        }
+    }
+
     protected static long optionalLongParam(ServiceRequestContext ctx, String name, long defaultValue) {
         String value = ctx.queryParam(name);
         if (value == null || value.isBlank()) return defaultValue;

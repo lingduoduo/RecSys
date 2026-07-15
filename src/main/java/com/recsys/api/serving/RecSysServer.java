@@ -53,6 +53,7 @@ public class RecSysServer {
     private static final String ROUTE_HEALTH = "/health";
     private static final String ROUTE_PREDICT = "/v1/models/recmodel:predict";
     private static final String ROUTE_V2_RECOMMEND = "/v2/recommend";
+    private static final String ROUTE_MOVIE_CATALOG = "/v1/catalog/movies";
     // REST-style aliases used when requests arrive via the API gateway
     // (gateway strips /api/users, /api/movies, etc., leaving these suffixes).
     private static final String ROUTE_USER_ALIAS = "/user";
@@ -66,6 +67,7 @@ public class RecSysServer {
     public void run() throws Exception {
         int port = readIntEnv("PORT", DEFAULT_PORT);
         RedisExecutor jedisPool = LettuceClientFactory.routingFromEnv();
+        CatalogComponent catalogComponent = null;
         final com.recsys.infrastructure.registry.ServiceRegistrar registrar =
                 com.recsys.infrastructure.registry.ServiceRegistrar.fromEnvironment(
                         new com.recsys.infrastructure.registry.ServiceRegistryStore(
@@ -74,6 +76,7 @@ public class RecSysServer {
             registrar.start();
         }
         try {
+            catalogComponent = CatalogComponent.fromEnvironment();
             DataManager dataManager = DataManager.getInstance();
             PairPredictionService pairPredictionService = new PairPredictionService();
             RedisEmbeddingStore embStore     = new RedisEmbeddingStore(jedisPool, "i2vEmb");
@@ -166,6 +169,8 @@ public class RecSysServer {
                                      .build(),
                              new PredictionService(pairPredictionService));
 
+            registerCatalogRoute(sb, catalogComponent);
+
             if (corsOrigin != null && !corsOrigin.isBlank()) {
                 sb.decorator(CorsService.builder(corsOrigin)
                         .allowAllRequestHeaders(true)
@@ -178,6 +183,7 @@ public class RecSysServer {
             GracefulServers.applyShutdownWindow(sb);
 
             Server server = sb.build();
+            CatalogComponent ownedCatalogComponent = catalogComponent;
             Runtime.getRuntime().addShutdownHook(new Thread(() -> {
                 loadShedder.markShuttingDown();   // readiness -> 503 so LBs drain this pod first
                 server.stop().join();
@@ -186,11 +192,15 @@ public class RecSysServer {
                     registrar.close();
                 }
                 jedisPool.close();
+                ownedCatalogComponent.close();
             }, "recsys-shutdown"));
             log.info("Starting RecSys serving API on port {}", port);
             server.start().join();
             server.blockUntilShutdown();
         } catch (Exception e) {
+            if (catalogComponent != null) {
+                catalogComponent.close();
+            }
             jedisPool.close();
             throw e;
         }
@@ -217,5 +227,9 @@ public class RecSysServer {
         } catch (NumberFormatException e) {
             throw new IllegalStateException("env var " + name + " is not a valid integer: " + value);
         }
+    }
+
+    static void registerCatalogRoute(ServerBuilder builder, CatalogComponent component) {
+        builder.service(ROUTE_MOVIE_CATALOG, component.service());
     }
 }
