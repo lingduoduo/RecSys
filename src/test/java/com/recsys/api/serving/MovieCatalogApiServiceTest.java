@@ -8,6 +8,7 @@ import com.linecorp.armeria.testing.junit5.server.ServerExtension;
 import com.recsys.application.catalog.MovieCatalogService;
 import com.recsys.domain.catalog.CatalogMovie;
 import com.recsys.domain.catalog.CatalogPage;
+import com.recsys.infrastructure.persistence.MySqlPoolUnavailableException;
 import org.junit.jupiter.api.Test;
 import org.junit.jupiter.api.BeforeEach;
 import org.junit.jupiter.api.extension.RegisterExtension;
@@ -74,6 +75,23 @@ class MovieCatalogApiServiceTest {
         assertFailure(new SQLTimeoutException("slow sql"), HttpStatus.GATEWAY_TIMEOUT);
     }
 
+    @Test void mapsWrappedTimeoutToGatewayTimeout() throws Exception {
+        assertFailure(new SQLException("outer", new SQLTimeoutException("slow sql")), HttpStatus.GATEWAY_TIMEOUT);
+    }
+
+    @Test void mapsGenericConnectionSqlStateToServiceUnavailable() throws Exception {
+        assertFailure(new SQLException("connection lost", "08006"), HttpStatus.SERVICE_UNAVAILABLE);
+    }
+
+    @Test void mapsTypedPoolFailureToServiceUnavailable() throws Exception {
+        assertRuntimeFailure(new MySqlPoolUnavailableException(new IllegalStateException("pool init")),
+                HttpStatus.SERVICE_UNAVAILABLE);
+    }
+
+    @Test void mapsUnexpectedRuntimeToInternalServerError() throws Exception {
+        assertRuntimeFailure(new IllegalStateException("bug"), HttpStatus.INTERNAL_SERVER_ERROR);
+    }
+
     @Test void mapsUnexpectedSqlFailureToInternalServerError() throws Exception {
         assertFailure(new SQLException("SELECT password FROM secret"), HttpStatus.INTERNAL_SERVER_ERROR);
     }
@@ -83,6 +101,13 @@ class MovieCatalogApiServiceTest {
         AggregatedHttpResponse response = get("/catalog");
         assertThat(response.status()).isEqualTo(expected);
         assertThat(response.headers().get(HttpHeaderNames.CACHE_CONTROL)).isEqualTo("no-store");
+        assertThat(response.contentUtf8()).doesNotContain(failure.getMessage());
+    }
+
+    private static void assertRuntimeFailure(RuntimeException failure, HttpStatus expected) throws Exception {
+        when(catalog.list(any(), any(), any())).thenThrow(failure);
+        AggregatedHttpResponse response = get("/catalog");
+        assertThat(response.status()).isEqualTo(expected);
         assertThat(response.contentUtf8()).doesNotContain(failure.getMessage());
     }
 

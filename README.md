@@ -1013,7 +1013,7 @@ mvn test -DexcludedGroups=load -Dgroups=docker -Dtest=MovieCatalogMySqlIntegrati
 `MYSQL_QUERY_TIMEOUT_SECONDS` is the per-statement JDBC deadline (1–30 seconds).
 `MYSQL_READ_MAX_ATTEMPTS` permits one or two total attempts, and
 `MYSQL_READ_RETRY_BACKOFF_MS` sets the 0–1000 ms pause before the single retry. Only transient
-connection failures are retried; timeouts and non-transient failures are returned immediately.
+connection failures are retried; timeouts and non-transient failures are propagated without retry.
 
 The generic `MillionScalePaginationSql` helpers below remain available for other bounded SQL read
 paths. The catalog endpoint uses its dedicated repository and the migrated indexes above.
@@ -1418,8 +1418,8 @@ The online server (7010) adds its own `ONLINE_MAX_CONCURRENT_REQUESTS` / `ONLINE
 | `CATALOG_DRAIN_UTILIZATION` | `0.90` | Utilization where the service reports drain |
 | `RECALL_BULKHEAD_QUEUE_CAPACITY` | `4 × recall pool` | Bounded recall work queue (also on 7010) |
 | `MYSQL_ENABLED` | `false` | Enable the MySQL-backed `/v1/catalog/movies` browse route |
-| `MYSQL_URL` | `jdbc:mysql://localhost:3306/recsys?...` | MySQL JDBC URL; credentials should use separate secret-backed variables |
-| `MYSQL_USER` | `recsys` | MySQL username |
+| `MYSQL_URL` | local default while disabled | MySQL JDBC URL; required and non-blank when enabled; credentials should use separate secret-backed variables |
+| `MYSQL_USER` | `recsys` while disabled | MySQL username; required and non-blank when enabled |
 | `MYSQL_PASSWORD` | _(required when enabled)_ | MySQL password; source from a secret manager in production |
 | `MYSQL_QUERY_TIMEOUT_SECONDS` | `2` | JDBC catalog query deadline; valid range 1–30 seconds |
 | `MYSQL_READ_MAX_ATTEMPTS` | `2` | Total transient-connection read attempts; valid range 1–2 |

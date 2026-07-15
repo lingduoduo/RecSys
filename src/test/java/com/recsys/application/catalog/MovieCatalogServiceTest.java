@@ -108,6 +108,28 @@ class MovieCatalogServiceTest {
                 .isInstanceOf(MovieCatalogService.InvalidCatalogRequestException.class);
     }
 
+    @Test
+    void acceptsGenreOfExactlySixtyFourUnicodeCodePoints() throws Exception {
+        MovieCatalogRepository repository = mock(MovieCatalogRepository.class);
+        String genre = "🎬".repeat(64);
+        when(repository.fetch(genre, null, 2)).thenReturn(List.of());
+
+        new MovieCatalogService(repository, new CatalogCursorCodec(KEY)).list(genre, 1, null);
+
+        verify(repository).fetch(genre, null, 2);
+    }
+
+    @Test
+    void rejectsGenreOverSixtyFourUnicodeCodePointsBeforeCursorDecodeOrQuery() {
+        MovieCatalogRepository repository = mock(MovieCatalogRepository.class);
+        MovieCatalogService service = new MovieCatalogService(repository, new CatalogCursorCodec(KEY));
+
+        assertThatThrownBy(() -> service.list("🎬".repeat(65), 1, "invalid-cursor"))
+                .isInstanceOf(MovieCatalogService.InvalidCatalogRequestException.class)
+                .hasMessageContaining("genre");
+        org.mockito.Mockito.verifyNoInteractions(repository);
+    }
+
     private static CatalogMovie movie(long id, String score) {
         return new CatalogMovie(id, "Movie " + id, 2026, "Drama", new BigDecimal(score), Instant.EPOCH);
     }

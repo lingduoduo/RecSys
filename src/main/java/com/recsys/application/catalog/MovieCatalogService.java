@@ -22,6 +22,9 @@ public class MovieCatalogService {
 
     public CatalogPage list(String genre, Integer requestedLimit, String cursor) throws SQLException {
         String normalizedGenre = normalizeGenre(genre);
+        if (normalizedGenre != null && normalizedGenre.codePointCount(0, normalizedGenre.length()) > 64) {
+            throw new InvalidCatalogRequestException("genre must contain at most 64 Unicode code points");
+        }
         int limit = requestedLimit == null ? DEFAULT_LIMIT : requestedLimit;
         if (limit < 1 || limit > MAX_LIMIT) {
             throw new InvalidCatalogRequestException("limit must be between 1 and 100");

@@ -7,11 +7,10 @@ import com.linecorp.armeria.server.ServiceRequestContext;
 import com.recsys.application.catalog.MovieCatalogService;
 import com.recsys.domain.catalog.CatalogMovie;
 import com.recsys.domain.catalog.CatalogPage;
+import com.recsys.infrastructure.persistence.MySqlExceptionClassifier;
+import com.recsys.infrastructure.persistence.MySqlPoolUnavailableException;
 
-import java.sql.SQLNonTransientConnectionException;
 import java.sql.SQLException;
-import java.sql.SQLTimeoutException;
-import java.sql.SQLTransientConnectionException;
 import java.util.concurrent.CompletableFuture;
 import java.util.LinkedHashMap;
 import java.util.List;
@@ -42,18 +41,22 @@ public final class MovieCatalogApiService extends BaseApiService {
         String genre = ctx.queryParam("genre");
         String cursor = ctx.queryParam("cursor");
         return HttpResponse.from(CompletableFuture.supplyAsync(() -> {
+            long started = System.nanoTime();
             try {
                 return writeNoStoreJson(HttpStatus.OK, responsePayload(catalog.list(genre, limit, cursor)));
             } catch (MovieCatalogService.InvalidCatalogRequestException failure) {
                 return writeNoStoreError(HttpStatus.BAD_REQUEST, "invalid request");
-            } catch (SQLTimeoutException failure) {
-                log.warn("Movie catalog query timed out");
-                return writeNoStoreError(HttpStatus.GATEWAY_TIMEOUT, "movie catalog timed out");
-            } catch (SQLTransientConnectionException | SQLNonTransientConnectionException failure) {
-                log.warn("Movie catalog database unavailable: {}", failure.getClass().getSimpleName());
-                return writeNoStoreError(HttpStatus.SERVICE_UNAVAILABLE, "movie catalog unavailable");
             } catch (SQLException | RuntimeException failure) {
-                log.error("Unexpected movie catalog failure", failure);
+                String sqlState = MySqlExceptionClassifier.firstSqlState(failure);
+                log.warn("Movie catalog failed class={} sqlState={} elapsedMs={}",
+                        failure.getClass().getSimpleName(), sqlState, (System.nanoTime() - started) / 1_000_000L);
+                if (failure instanceof SQLException sql && MySqlExceptionClassifier.isTimeout(sql)) {
+                    return writeNoStoreError(HttpStatus.GATEWAY_TIMEOUT, "movie catalog timed out");
+                }
+                if ((failure instanceof SQLException sql && MySqlExceptionClassifier.isConnectionUnavailable(sql))
+                        || failure instanceof MySqlPoolUnavailableException) {
+                    return writeNoStoreError(HttpStatus.SERVICE_UNAVAILABLE, "movie catalog unavailable");
+                }
                 return writeNoStoreError(HttpStatus.INTERNAL_SERVER_ERROR, "movie catalog request failed");
             }
         }, ctx.blockingTaskExecutor()));

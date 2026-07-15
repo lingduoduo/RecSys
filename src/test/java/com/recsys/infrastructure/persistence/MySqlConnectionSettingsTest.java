@@ -93,9 +93,22 @@ class MySqlConnectionSettingsTest {
     void fromEnv_rejectsMissingSigningKeyWhenEnabled() {
         assertThatThrownBy(() -> MySqlConnectionSettings.fromEnv(Map.of(
                 "MYSQL_ENABLED", "true",
+                "MYSQL_URL", "jdbc:mysql://db/catalog", "MYSQL_USER", "app",
                 "MYSQL_PASSWORD", "placeholder-password")))
                 .isInstanceOf(IllegalArgumentException.class)
                 .hasMessageContaining("MYSQL_CURSOR_SIGNING_KEY");
+    }
+
+    @Test
+    void fromEnv_requiresExplicitNonBlankUrlAndUserWhenEnabled() {
+        Map<String, String> base = Map.of(
+                "MYSQL_ENABLED", "true", "MYSQL_PASSWORD", "password",
+                "MYSQL_CURSOR_SIGNING_KEY", "0123456789abcdef0123456789abcdef");
+        assertThatThrownBy(() -> MySqlConnectionSettings.fromEnv(base))
+                .hasMessageContaining("MYSQL_URL").hasMessageNotContaining("password");
+        assertThatThrownBy(() -> MySqlConnectionSettings.fromEnv(new java.util.HashMap<>(base) {{
+            put("MYSQL_URL", "jdbc:mysql://db/catalog"); put("MYSQL_USER", "   ");
+        }})).hasMessageContaining("MYSQL_USER").hasMessageNotContaining("password");
     }
 
     @Test
@@ -104,6 +117,7 @@ class MySqlConnectionSettingsTest {
 
         assertThatThrownBy(() -> MySqlConnectionSettings.fromEnv(Map.of(
                 "MYSQL_ENABLED", "true",
+                "MYSQL_URL", "jdbc:mysql://db/catalog", "MYSQL_USER", "app",
                 "MYSQL_CURSOR_SIGNING_KEY", signingKey)))
                 .isInstanceOf(IllegalArgumentException.class)
                 .hasMessageContaining("MYSQL_PASSWORD")
@@ -116,6 +130,7 @@ class MySqlConnectionSettingsTest {
 
         assertThatThrownBy(() -> MySqlConnectionSettings.fromEnv(Map.of(
                 "MYSQL_ENABLED", "true",
+                "MYSQL_URL", "jdbc:mysql://db/catalog", "MYSQL_USER", "app",
                 "MYSQL_PASSWORD", "",
                 "MYSQL_CURSOR_SIGNING_KEY", signingKey)))
                 .isInstanceOf(IllegalArgumentException.class)
@@ -127,6 +142,7 @@ class MySqlConnectionSettingsTest {
     void fromEnv_preservesWhitespacePasswordWhenEnabled() {
         MySqlConnectionSettings settings = MySqlConnectionSettings.fromEnv(Map.of(
                 "MYSQL_ENABLED", "true",
+                "MYSQL_URL", "jdbc:mysql://db/catalog", "MYSQL_USER", "app",
                 "MYSQL_PASSWORD", "   ",
                 "MYSQL_CURSOR_SIGNING_KEY", "0123456789abcdef0123456789abcdef"));
 
@@ -137,6 +153,7 @@ class MySqlConnectionSettingsTest {
     void fromEnv_rejectsSigningKeyShorterThan32Utf8BytesWhenEnabled() {
         assertThatThrownBy(() -> MySqlConnectionSettings.fromEnv(Map.of(
                 "MYSQL_ENABLED", "true",
+                "MYSQL_URL", "jdbc:mysql://db/catalog", "MYSQL_USER", "app",
                 "MYSQL_PASSWORD", "placeholder-password",
                 "MYSQL_CURSOR_SIGNING_KEY", "1234567890123456789012345678901"
         )))

@@ -10,7 +10,6 @@ import org.testcontainers.containers.MySQLContainer;
 import org.testcontainers.junit.jupiter.Container;
 import org.testcontainers.junit.jupiter.Testcontainers;
 
-import java.lang.reflect.Field;
 import java.math.BigDecimal;
 import java.sql.Connection;
 import java.sql.DriverManager;
@@ -46,8 +45,8 @@ class MovieCatalogMySqlIntegrationTest {
             assertTraversal(service, "Drama", 2, List.of(8L, 6L, 4L, 2L));
         }
 
-        assertExplainUsesRepositoryIndex("UNFILTERED_SQL", "idx_movies_popularity_id", null);
-        assertExplainUsesRepositoryIndex("FILTERED_SQL", "idx_movies_genre_popularity_id", "Drama");
+        assertExplainUsesRepositoryIndex("idx_movies_popularity_id", null);
+        assertExplainUsesRepositoryIndex("idx_movies_genre_popularity_id", "Drama");
     }
 
     private static MySqlConnectionSettings settings() {
@@ -100,18 +99,13 @@ class MovieCatalogMySqlIntegrationTest {
     }
 
     private static void assertExplainUsesRepositoryIndex(
-            String sqlField, String expectedKey, String genre) throws Exception {
-        String repositorySql = repositorySql(sqlField);
+            String expectedKey, String genre) throws Exception {
+        var plan = MovieCatalogRepository.plan(genre,
+                new CatalogCursorCodec.Position(genre, new BigDecimal("1000000.000000"), Long.MAX_VALUE), 5);
         try (Connection connection = DriverManager.getConnection(
                 MYSQL.getJdbcUrl(), MYSQL.getUsername(), MYSQL.getPassword());
-             PreparedStatement statement = connection.prepareStatement("EXPLAIN " + repositorySql)) {
-            int parameter = 1;
-            if (genre != null) {
-                statement.setString(parameter++, genre);
-            }
-            statement.setBigDecimal(parameter++, new BigDecimal("1000000.000000"));
-            statement.setLong(parameter++, Long.MAX_VALUE);
-            statement.setInt(parameter, 5);
+             PreparedStatement statement = connection.prepareStatement("EXPLAIN " + plan.sql())) {
+            for (int i = 0; i < plan.bindValues().size(); i++) statement.setObject(i + 1, plan.bindValues().get(i));
             try (ResultSet result = statement.executeQuery()) {
                 assertThat(result.next()).isTrue();
                 assertThat(result.getString("key")).isEqualTo(expectedKey);
@@ -120,9 +114,4 @@ class MovieCatalogMySqlIntegrationTest {
         }
     }
 
-    private static String repositorySql(String fieldName) throws Exception {
-        Field field = MovieCatalogRepository.class.getDeclaredField(fieldName);
-        field.setAccessible(true);
-        return (String) field.get(null);
-    }
 }

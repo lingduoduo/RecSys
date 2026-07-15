@@ -32,11 +32,7 @@ public class MovieCatalogRepository {
         if (fetchLimit <= 0) {
             throw new IllegalArgumentException("fetchLimit must be positive");
         }
-        BigDecimal score = after == null ? BEFORE_FIRST_SCORE : after.popularityScore();
-        long movieId = after == null ? Long.MAX_VALUE : after.movieId();
-        SqlPlan plan = genre == null
-                ? new SqlPlan(UNFILTERED_SQL, List.of(score, movieId, fetchLimit))
-                : new SqlPlan(FILTERED_SQL, List.of(genre, score, movieId, fetchLimit));
+        SqlPlan plan = plan(genre, after, fetchLimit);
         List<CatalogMovie> rows = client.query(plan, rs -> new CatalogMovie(
                 rs.getLong("id"),
                 rs.getString("title"),
@@ -46,5 +42,13 @@ public class MovieCatalogRepository {
                 rs.getTimestamp("updated_at").toInstant()
         ));
         return rows.size() <= fetchLimit ? rows : List.copyOf(rows.subList(0, fetchLimit));
+    }
+
+    static SqlPlan plan(String genre, Position after, int fetchLimit) {
+        BigDecimal score = after == null ? BEFORE_FIRST_SCORE : after.popularityScore();
+        long movieId = after == null ? Long.MAX_VALUE : after.movieId();
+        return genre == null
+                ? new SqlPlan(UNFILTERED_SQL, List.of(score, movieId, fetchLimit))
+                : new SqlPlan(FILTERED_SQL, List.of(genre, score, movieId, fetchLimit));
     }
 }

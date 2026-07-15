@@ -2,6 +2,7 @@ package com.recsys.infrastructure.persistence;
 
 import java.sql.SQLException;
 import java.sql.SQLTimeoutException;
+import java.sql.SQLNonTransientConnectionException;
 import java.sql.SQLTransientConnectionException;
 import java.util.ArrayDeque;
 import java.util.Collections;
@@ -24,6 +25,29 @@ public final class MySqlExceptionClassifier {
 
     public static boolean isTimeout(SQLException exception) {
         return any(exception, failure -> failure instanceof SQLTimeoutException);
+    }
+
+    public static boolean isConnectionUnavailable(SQLException exception) {
+        return any(exception, failure -> failure instanceof SQLTransientConnectionException
+                || failure instanceof SQLNonTransientConnectionException
+                || hasSqlStateClass(failure, "08"));
+    }
+
+    public static String firstSqlState(Throwable root) {
+        if (root == null) return null;
+        ArrayDeque<Throwable> pending = new ArrayDeque<>();
+        Set<Throwable> visited = Collections.newSetFromMap(new IdentityHashMap<>());
+        pending.add(root);
+        while (!pending.isEmpty()) {
+            Throwable current = pending.removeFirst();
+            if (!visited.add(current)) continue;
+            if (current instanceof SQLException sql) {
+                if (sql.getSQLState() != null) return sql.getSQLState();
+                if (sql.getNextException() != null) pending.addLast(sql.getNextException());
+            }
+            if (current.getCause() != null) pending.addLast(current.getCause());
+        }
+        return null;
     }
 
     private static boolean hasSqlStateClass(SQLException exception, String stateClass) {

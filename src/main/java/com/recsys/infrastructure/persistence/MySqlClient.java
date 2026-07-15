@@ -14,6 +14,8 @@ import java.util.Collections;
 import java.util.List;
 import java.util.Objects;
 import java.util.function.Function;
+import org.slf4j.Logger;
+import org.slf4j.LoggerFactory;
 
 /**
  * Tiny JDBC helper for optional MySQL access.
@@ -23,6 +25,7 @@ import java.util.function.Function;
  * small, and env-tunable; {@link #close()} shuts it down.
  */
 public class MySqlClient implements AutoCloseable {
+    private static final Logger log = LoggerFactory.getLogger(MySqlClient.class);
 
     private final MySqlConnectionSettings settings;
     private final ConnectionProvider connectionProvider;
@@ -60,7 +63,11 @@ public class MySqlClient implements AutoCloseable {
         if (!settings.enabled()) {
             throw new IllegalStateException("MySQL is disabled; set MYSQL_ENABLED=true before opening connections");
         }
-        return dataSource().getConnection();
+        try {
+            return dataSource().getConnection();
+        } catch (RuntimeException failure) {
+            throw new MySqlPoolUnavailableException(failure);
+        }
     }
 
     // Lazily build the pool on first use so a disabled/unused client never opens a connection.
@@ -251,6 +258,7 @@ public class MySqlClient implements AutoCloseable {
     }
 
     private <T> T withReadRetry(ConnectionRead<T> read) throws SQLException {
+        long started = System.nanoTime();
         for (int attempt = 1; ; attempt++) {
             try (Connection connection = openConnection()) {
                 return read.execute(connection);
@@ -259,16 +267,27 @@ public class MySqlClient implements AutoCloseable {
             } catch (SQLException failure) {
                 if (attempt >= settings.maxReadAttempts()
                         || !MySqlExceptionClassifier.isRetryableRead(failure)) {
+                    log.warn("MySQL read failed class={} sqlState={} attempt={} elapsedMs={}",
+                            failure.getClass().getSimpleName(), MySqlExceptionClassifier.firstSqlState(failure),
+                            attempt, elapsedMs(started));
                     throw failure;
                 }
+                log.warn("Retrying MySQL read class={} sqlState={} attempt={} elapsedMs={}",
+                        failure.getClass().getSimpleName(), MySqlExceptionClassifier.firstSqlState(failure),
+                        attempt, elapsedMs(started));
                 try {
                     sleeper.sleep(settings.retryBackoffMillis());
                 } catch (InterruptedException interrupted) {
                     Thread.currentThread().interrupt();
+                    failure.addSuppressed(interrupted);
                     throw failure;
                 }
             }
         }
+    }
+
+    private static long elapsedMs(long started) {
+        return (System.nanoTime() - started) / 1_000_000L;
     }
 
     private static void bind(PreparedStatement statement, List<Object> bindValues) throws SQLException {

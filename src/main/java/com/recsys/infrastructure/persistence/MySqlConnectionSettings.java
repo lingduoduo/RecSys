@@ -56,8 +56,15 @@ public record MySqlConnectionSettings(
 
     static MySqlConnectionSettings fromEnv(Map<String, String> env) {
         Objects.requireNonNull(env, "env");
+        boolean enabled = Boolean.parseBoolean(env.getOrDefault("MYSQL_ENABLED", "false"));
+        if (enabled && (env.get("MYSQL_URL") == null || env.get("MYSQL_URL").isBlank())) {
+            throw new IllegalArgumentException("MYSQL_URL is required when MySQL is enabled");
+        }
+        if (enabled && (env.get("MYSQL_USER") == null || env.get("MYSQL_USER").isBlank())) {
+            throw new IllegalArgumentException("MYSQL_USER is required when MySQL is enabled");
+        }
         return new MySqlConnectionSettings(
-                Boolean.parseBoolean(env.getOrDefault("MYSQL_ENABLED", "false")),
+                enabled,
                 env.getOrDefault("MYSQL_URL", DEFAULT_URL),
                 env.getOrDefault("MYSQL_USER", "recsys"),
                 env.getOrDefault("MYSQL_PASSWORD", ""),

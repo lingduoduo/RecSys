@@ -281,15 +281,17 @@ class MySqlClientTest {
         SQLException failure = new SQLException("lost", "08006");
         when(m.statement().executeQuery()).thenThrow(failure);
         AtomicInteger opens = new AtomicInteger();
+        InterruptedException interrupted = new InterruptedException("stop");
         MySqlClient client = new MySqlClient(MySqlConnectionSettings.disabled(),
                 () -> { opens.incrementAndGet(); return m.connection(); },
-                millis -> { throw new InterruptedException("stop"); });
+                millis -> { throw interrupted; });
 
         try {
             assertThatThrownBy(() -> client.query(
                     new MillionScalePaginationSql.SqlPlan("SELECT 1", List.of()), rs -> rs.getInt(1)))
                     .isSameAs(failure);
             assertThat(Thread.currentThread().isInterrupted()).isTrue();
+            assertThat(failure.getSuppressed()).containsExactly(interrupted);
             assertThat(opens).hasValue(1);
         } finally {
             Thread.interrupted();
