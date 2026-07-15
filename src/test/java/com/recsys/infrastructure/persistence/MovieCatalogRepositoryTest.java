@@ -9,15 +9,34 @@ import java.math.BigDecimal;
 import java.sql.ResultSet;
 import java.sql.Timestamp;
 import java.time.Instant;
+import java.util.ArrayList;
 import java.util.List;
 
 import static org.assertj.core.api.Assertions.assertThat;
+import static org.assertj.core.api.Assertions.assertThatThrownBy;
 import static org.mockito.ArgumentMatchers.any;
 import static org.mockito.Mockito.mock;
 import static org.mockito.Mockito.verify;
 import static org.mockito.Mockito.when;
 
 class MovieCatalogRepositoryTest {
+
+    @Test
+    void boundsAndCopiesRowsWhenClientReturnsMoreThanFetchLimit() throws Exception {
+        MySqlClient client = mock(MySqlClient.class);
+        var first = movie(3L, "9.000000");
+        var second = movie(2L, "8.000000");
+        var excess = movie(1L, "7.000000");
+        var clientRows = new ArrayList<>(List.of(first, second, excess));
+        when(client.query(any(SqlPlan.class), any(MySqlClient.RowMapper.class))).thenReturn(clientRows);
+
+        List<com.recsys.domain.catalog.CatalogMovie> fetched =
+                new MovieCatalogRepository(client).fetch(null, null, 2);
+
+        assertThat(fetched).containsExactly(first, second);
+        assertThatThrownBy(() -> fetched.add(excess)).isInstanceOf(UnsupportedOperationException.class);
+        assertThat(clientRows).containsExactly(first, second, excess);
+    }
 
     @Test
     void filteredFirstPageUsesFixedGenreIndexAndBindsGenreAndFetchLimit() throws Exception {
@@ -91,5 +110,10 @@ class MovieCatalogRepositoryTest {
         ArgumentCaptor<SqlPlan> captor = ArgumentCaptor.forClass(SqlPlan.class);
         verify(client).query(captor.capture(), any(MySqlClient.RowMapper.class));
         return captor.getValue();
+    }
+
+    private static com.recsys.domain.catalog.CatalogMovie movie(long id, String score) {
+        return new com.recsys.domain.catalog.CatalogMovie(id, "Movie " + id, 2026, "Drama",
+                new BigDecimal(score), Instant.parse("2026-07-15T12:00:00Z"));
     }
 }

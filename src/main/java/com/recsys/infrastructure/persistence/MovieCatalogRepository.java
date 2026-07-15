@@ -37,7 +37,7 @@ public class MovieCatalogRepository {
         SqlPlan plan = genre == null
                 ? new SqlPlan(UNFILTERED_SQL, List.of(score, movieId, fetchLimit))
                 : new SqlPlan(FILTERED_SQL, List.of(genre, score, movieId, fetchLimit));
-        return client.query(plan, rs -> new CatalogMovie(
+        List<CatalogMovie> rows = client.query(plan, rs -> new CatalogMovie(
                 rs.getLong("id"),
                 rs.getString("title"),
                 rs.getObject("year", Integer.class),
@@ -45,5 +45,6 @@ public class MovieCatalogRepository {
                 rs.getBigDecimal("popularity_score"),
                 rs.getTimestamp("updated_at").toInstant()
         ));
+        return rows.size() <= fetchLimit ? rows : List.copyOf(rows.subList(0, fetchLimit));
     }
 }
