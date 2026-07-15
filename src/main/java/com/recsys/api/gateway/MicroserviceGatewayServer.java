@@ -120,13 +120,6 @@ public final class MicroserviceGatewayServer {
 
         ServerBuilder sb = Server.builder().http(port);
 
-        // Origin lockdown: when CloudFront fronts this gateway, reject anything that did not come
-        // through our distribution. No-op when GATEWAY_ORIGIN_SECRET is unset (local dev).
-        GatewayOriginSecret originSecret = GatewayOriginSecret.fromEnvironment(System::getenv);
-        if (originSecret.isEnabled()) {
-            sb.decorator(GatewayOriginSecret.newDecorator(originSecret));
-        }
-
         // Prometheus metrics endpoint (always present, matching the other services). Registry meters
         // are registered only when the registry consumer is active.
         PrometheusMeterRegistry meterRegistry = PrometheusMeterRegistries.defaultRegistry();
@@ -139,6 +132,14 @@ public final class MicroserviceGatewayServer {
                     .toList();
             GatewayRegistryMetrics.register(meterRegistry, registryProvider, registrySvcNames,
                     System::currentTimeMillis);
+        }
+
+        // Origin lockdown: when CloudFront fronts this gateway, reject anything that did not come
+        // through our distribution. No-op when GATEWAY_ORIGIN_SECRET is unset (local dev).
+        // Registered after meterRegistry so rejections are counted and scrapeable at /metrics.
+        GatewayOriginSecret originSecret = GatewayOriginSecret.fromEnvironment(System::getenv);
+        if (originSecret.isEnabled()) {
+            sb.decorator(GatewayOriginSecret.newDecorator(originSecret, meterRegistry));
         }
 
         // Health endpoint — exposes per-route circuit state and upstream reachability.

@@ -5,12 +5,17 @@ import com.linecorp.armeria.common.HttpStatus;
 import com.linecorp.armeria.common.RequestHeaders;
 import com.linecorp.armeria.server.HttpService;
 import com.recsys.config.EnvVars;
+import io.micrometer.core.instrument.Counter;
+import io.micrometer.core.instrument.MeterRegistry;
 import io.netty.util.AsciiString;
+import org.slf4j.Logger;
+import org.slf4j.LoggerFactory;
 
 import java.nio.charset.StandardCharsets;
 import java.security.MessageDigest;
 import java.util.Arrays;
 import java.util.Set;
+import java.util.concurrent.atomic.AtomicBoolean;
 import java.util.function.Function;
 import java.util.stream.Collectors;
 
@@ -25,6 +30,8 @@ import java.util.stream.Collectors;
  * suite are unaffected. See docs/superpowers/specs/2026-07-14-cdn-edge-acceleration-design.md.
  */
 public final class GatewayOriginSecret {
+
+    private static final Logger LOG = LoggerFactory.getLogger(GatewayOriginSecret.class);
 
     public static final String HEADER = "x-origin-secret";
 
@@ -107,11 +114,40 @@ public final class GatewayOriginSecret {
                 path.equals(exempt) || path.startsWith(exempt + "/"));
     }
 
-    /** Server-wide decorator: rejects any non-exempt request lacking the secret with 403. */
+    /**
+     * Server-wide decorator: rejects any non-exempt request lacking a valid secret with 403.
+     *
+     * <p>Side effects live here rather than in {@link #isAllowed}, which stays a pure predicate.
+     *
+     * @param registry may be null, in which case no counter is registered.
+     */
     public static Function<? super HttpService, ? extends HttpService> newDecorator(
-            GatewayOriginSecret secret) {
+            GatewayOriginSecret secret, MeterRegistry registry) {
+
+        Counter rejected = registry == null ? null
+                : Counter.builder("gateway_origin_secret_rejected_total")
+                        .description("Requests rejected for a missing or invalid CloudFront origin secret")
+                        .register(registry);
+
+        // Logged once, not per request: under a scan or a botched rotation this fires on every
+        // request, and a per-request log would flood. The counter is the real signal; this is
+        // the breadcrumb that explains it.
+        AtomicBoolean warned = new AtomicBoolean();
+
         return delegate -> (ctx, req) -> {
             if (!secret.isAllowed(req.headers(), ctx.path())) {
+                if (rejected != null) {
+                    rejected.increment();
+                }
+                if (warned.compareAndSet(false, true)) {
+                    LOG.warn("Rejected a request with a missing or invalid {} header (first "
+                                    + "occurrence, path={}). If this coincides with a secret "
+                                    + "rotation, the distribution and GATEWAY_ORIGIN_SECRET "
+                                    + "disagree — see docs/runbooks/cdn-operations.md. Further "
+                                    + "rejections are counted in gateway_origin_secret_rejected_total "
+                                    + "and not logged.",
+                            HEADER, ctx.path());
+                }
                 return GatewayProxyService.gatewayError(
                         HttpStatus.FORBIDDEN, "direct origin access is not permitted");
             }
