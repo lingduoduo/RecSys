@@ -119,6 +119,22 @@ class GatewayAuthenticatorTest {
     }
 
     @Test
+    void check_catalogMoviesRequiresConfiguredApiKey() {
+        GatewayAuthenticator auth = GatewayAuthenticator.forTesting(
+                Set.of("key-1"),
+                Set.of("/health", "/api/catalog/item", "/api/catalog/similar"),
+                null);
+        String path = "/api/catalog/v1/catalog/movies";
+
+        RequestHeaders anonymous = RequestHeaders.of(HttpMethod.GET, path);
+        assertTrue(auth.check(anonymous, path).rejected());
+
+        RequestHeaders authenticated = RequestHeaders.of(
+                HttpMethod.GET, path, HttpHeaderNames.of("x-api-key"), "key-1");
+        assertFalse(auth.check(authenticated, path).rejected());
+    }
+
+    @Test
     void check_prefixPublicPath_dangerouslyExposesUserRoute() {
         // Documents the trap: a bare-prefix GATEWAY_PUBLIC_PATHS value (instead of exact paths)
         // matches via the "startsWith(publicPath + \"/\")" boundary rule in isPublic(), so
