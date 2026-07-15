@@ -5,11 +5,14 @@ import com.linecorp.armeria.common.HttpStatus;
 import com.linecorp.armeria.common.RequestHeaders;
 import com.linecorp.armeria.server.HttpService;
 import com.recsys.config.EnvVars;
+import io.netty.util.AsciiString;
 
 import java.nio.charset.StandardCharsets;
 import java.security.MessageDigest;
+import java.util.Arrays;
 import java.util.Set;
 import java.util.function.Function;
+import java.util.stream.Collectors;
 
 /**
  * Validates the secret header CloudFront injects on every origin request.
@@ -33,12 +36,20 @@ public final class GatewayOriginSecret {
      */
     private static final Set<String> EXEMPT_PATHS = Set.of("/health", "/metrics");
 
-    private static final GatewayOriginSecret DISABLED = new GatewayOriginSecret(null);
+    /** Hoisted off the hot path — every gateway request would otherwise re-resolve it. */
+    private static final AsciiString HEADER_NAME = HttpHeaderNames.of(HEADER);
 
-    private final String expected;
+    private static final GatewayOriginSecret DISABLED = new GatewayOriginSecret(Set.of());
 
-    private GatewayOriginSecret(String expected) {
-        this.expected = expected;
+    /**
+     * All currently-accepted secrets. More than one is the rotation window: add the new secret
+     * alongside the old, roll the pods, flip the distribution, then drop the old one — see
+     * docs/runbooks/cdn-operations.md.
+     */
+    private final Set<String> secrets;
+
+    private GatewayOriginSecret(Set<String> secrets) {
+        this.secrets = Set.copyOf(secrets);
     }
 
     public static GatewayOriginSecret disabled() {
@@ -46,28 +57,49 @@ public final class GatewayOriginSecret {
     }
 
     public static GatewayOriginSecret fromEnvironment(EnvVars.EnvReader env) {
-        String value = env.get("GATEWAY_ORIGIN_SECRET");
-        if (value == null || value.isBlank()) {
-            return DISABLED;
-        }
-        return new GatewayOriginSecret(value.trim());
+        Set<String> parsed = parseCsv(env.get("GATEWAY_ORIGIN_SECRET"));
+        return parsed.isEmpty() ? DISABLED : new GatewayOriginSecret(parsed);
     }
 
     public boolean isEnabled() {
-        return expected != null;
+        return !secrets.isEmpty();
     }
 
     public boolean isAllowed(RequestHeaders headers, String path) {
         if (!isEnabled() || isExempt(path)) {
             return true;
         }
-        String provided = headers.get(HttpHeaderNames.of(HEADER));
+        String provided = headers.get(HEADER_NAME);
         if (provided == null || provided.isBlank()) {
             return false;
         }
+        String trimmed = provided.trim();
+
+        // Deliberately does NOT break on the first match: an early exit would make the loop
+        // count depend on which secret matched, leaking set size and match position through
+        // timing and undoing the point of the constant-time compare. Mirrors
+        // GatewayAuthenticator.check.
+        boolean matched = false;
+        for (String secret : secrets) {
+            matched |= constantTimeEquals(secret, trimmed);
+        }
+        return matched;
+    }
+
+    private static boolean constantTimeEquals(String expected, String provided) {
         return MessageDigest.isEqual(
                 expected.getBytes(StandardCharsets.UTF_8),
-                provided.trim().getBytes(StandardCharsets.UTF_8));
+                provided.getBytes(StandardCharsets.UTF_8));
+    }
+
+    private static Set<String> parseCsv(String raw) {
+        if (raw == null || raw.isBlank()) {
+            return Set.of();
+        }
+        return Arrays.stream(raw.split(","))
+                .map(String::trim)
+                .filter(value -> !value.isBlank())
+                .collect(Collectors.toUnmodifiableSet());
     }
 
     private static boolean isExempt(String path) {

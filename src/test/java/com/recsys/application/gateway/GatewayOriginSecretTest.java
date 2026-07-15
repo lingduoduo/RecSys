@@ -74,4 +74,40 @@ class GatewayOriginSecretTest {
         // /healthcheck must NOT inherit /health's exemption.
         assertThat(secret.isAllowed(headers("/healthcheck", null), "/healthcheck")).isFalse();
     }
+
+    @Test
+    void acceptsEitherSecretDuringRotation() {
+        GatewayOriginSecret secret = withSecret("old-secret,new-secret");
+        assertThat(secret.isEnabled()).isTrue();
+        assertThat(secret.isAllowed(headers("/api/recommend", "old-secret"), "/api/recommend")).isTrue();
+        assertThat(secret.isAllowed(headers("/api/recommend", "new-secret"), "/api/recommend")).isTrue();
+    }
+
+    @Test
+    void rejectsASecretNotInTheSet() {
+        GatewayOriginSecret secret = withSecret("old-secret,new-secret");
+        assertThat(secret.isAllowed(headers("/api/recommend", "other"), "/api/recommend")).isFalse();
+    }
+
+    @Test
+    void trimsWhitespaceAroundCsvEntries() {
+        GatewayOriginSecret secret = withSecret("  old-secret , new-secret  ");
+        assertThat(secret.isAllowed(headers("/api/recommend", "old-secret"), "/api/recommend")).isTrue();
+        assertThat(secret.isAllowed(headers("/api/recommend", "new-secret"), "/api/recommend")).isTrue();
+    }
+
+    @Test
+    void ignoresEmptyCsvEntries() {
+        GatewayOriginSecret secret = withSecret("old-secret,,new-secret,");
+        assertThat(secret.isEnabled()).isTrue();
+        assertThat(secret.isAllowed(headers("/api/recommend", "old-secret"), "/api/recommend")).isTrue();
+        // An empty entry must never become a match-anything secret.
+        assertThat(secret.isAllowed(headers("/api/recommend", ""), "/api/recommend")).isFalse();
+    }
+
+    @Test
+    void commaOnlyValueIsTreatedAsDisabled() {
+        GatewayOriginSecret secret = withSecret(",,,");
+        assertThat(secret.isEnabled()).isFalse();
+    }
 }
