@@ -29,6 +29,27 @@ if [[ "$ACM_CERT_ARN" != arn:aws:acm:us-east-1:* ]]; then
   exit 1
 fi
 
+# Origin protocol. https-only is the default because http-only sends x-origin-secret across
+# the public CloudFront->ALB hop in cleartext, where it is observable and replayable — by
+# exactly the attacker the header exists to stop.
+ORIGIN_PROTOCOL_POLICY="${ORIGIN_PROTOCOL_POLICY:-https-only}"
+
+case "$ORIGIN_PROTOCOL_POLICY" in
+  https-only)
+    ;;
+  http-only)
+    echo "WARNING: ORIGIN_PROTOCOL_POLICY=http-only." >&2
+    echo "         x-origin-secret will cross the CloudFront->ALB hop in CLEARTEXT and is" >&2
+    echo "         replayable by anyone who observes it. This weakens the origin lockdown." >&2
+    echo "         Prefer https-only (requires an ALB :443 listener + a REGIONAL ACM cert)." >&2
+    ;;
+  *)
+    echo "ERROR: ORIGIN_PROTOCOL_POLICY must be 'https-only' or 'http-only'." >&2
+    echo "       Got: ${ORIGIN_PROTOCOL_POLICY}" >&2
+    exit 1
+    ;;
+esac
+
 config_file="$(mktemp)"
 trap 'rm -f "$config_file"' EXIT
 
@@ -72,6 +93,7 @@ jq -n \
   --arg cert "$ACM_CERT_ARN" --arg acl "$WEB_ACL_ARN" --arg secret "$ORIGIN_SECRET" \
   --arg item_policy "$item_policy" --arg similar_policy "$similar_policy" \
   --arg caching_disabled "$CACHING_DISABLED" --arg all_viewer "$ALL_VIEWER_EXCEPT_HOST" \
+  --arg origin_protocol "$ORIGIN_PROTOCOL_POLICY" \
   --arg ref "recsys-edge-1" '
 {
   CallerReference: $ref, Comment: $comment, Enabled: true, HttpVersion: "http2and3",
@@ -79,7 +101,7 @@ jq -n \
   Origins: {Quantity: 1, Items: [{
     Id: "alb-origin", DomainName: $origin,
     CustomOriginConfig: {
-      HTTPPort: 80, HTTPSPort: 443, OriginProtocolPolicy: "http-only",
+      HTTPPort: 80, HTTPSPort: 443, OriginProtocolPolicy: $origin_protocol,
       OriginSslProtocols: {Quantity: 1, Items: ["TLSv1.2"]},
       OriginReadTimeout: 30, OriginKeepaliveTimeout: 5
     },
