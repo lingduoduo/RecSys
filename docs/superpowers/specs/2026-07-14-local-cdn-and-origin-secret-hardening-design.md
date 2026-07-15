@@ -190,7 +190,11 @@ in a container against it via `Testcontainers.exposeHostPorts(...)` /
 4. `POST /api/recommend` → `X-Cache: BYPASS` — default-deny holds.
 5. `If-None-Match` with the stub's ETag → `304`.
 6. The stub origin records `x-origin-secret` on every forwarded request.
-7. With two secrets configured, both are accepted — rotation proven with no AWS.
+
+Rotation itself is **not** asserted here. Proving it through nginx would mean restarting the
+container with a different secret for a property that is entirely origin-side; it belongs in
+`GatewayOriginSecretTest` (see the table below), which covers it directly and cheaply. This
+note exists so the claim is not overstated.
 
 ### 2.4 Divergences from CloudFront
 
@@ -214,7 +218,7 @@ CloudFront emulator, and must not be mistaken for one.
 |---|---|---|
 | `GatewayOriginSecretTest` (extended) | none | multi-secret accept; single-value unchanged; unset still disabled; no early-break |
 | `GatewayOriginSecretMetricsTest` | none | counter increments on reject, not on allow or exempt |
-| `LocalCdnCacheTest` | `docker` | the seven assertions in 2.3 |
+| `LocalCdnCacheTest` | `docker` | the six assertions in 2.3 |
 
 The existing suite is 954 tests and must stay green.
 
