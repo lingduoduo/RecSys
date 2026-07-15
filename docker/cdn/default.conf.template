@@ -1,0 +1,74 @@
+# Local stand-in for the CloudFront distribution.
+# Each block mirrors a behavior from
+# docs/superpowers/specs/2026-07-14-cdn-edge-acceleration-design.md.
+#
+# Rendered by the nginx image's envsubst at container start. Only ${CDN_*} variables are
+# substituted (NGINX_ENVSUBST_FILTER=CDN_) — without that filter envsubst would also eat
+# nginx's own $uri, $arg_id and $upstream_cache_status.
+#
+# This file lands in /etc/nginx/conf.d/, which the stock nginx.conf includes inside http{},
+# so proxy_cache_path is in a legal context here.
+
+proxy_cache_path /var/cache/nginx levels=1:2 keys_zone=cdn:10m max_size=100m inactive=24h use_temp_path=off;
+
+upstream origin_upstream {
+    server ${CDN_ORIGIN_HOST}:${CDN_ORIGIN_PORT};
+    keepalive 16;
+}
+
+server {
+    listen 8090;
+
+    # --- Mirrors: DefaultCacheBehavior = CachingDisabled -------------------------------
+    # Default-deny. A cache is attached but every request bypasses it, so $upstream_cache_status
+    # reports BYPASS rather than being empty. POST /api/recommend and /api/catalog/user land here.
+    location / {
+        proxy_pass http://origin_upstream;
+        proxy_http_version 1.1;
+        proxy_set_header Connection "";
+        proxy_set_header x-origin-secret ${CDN_ORIGIN_SECRET};
+        proxy_cache cdn;
+        proxy_cache_bypass 1;
+        proxy_no_cache 1;
+        add_header X-Cache $upstream_cache_status always;
+    }
+
+    # --- Mirrors: CacheBehavior /api/catalog/item*, cache key whitelists `id` ----------
+    location = /api/catalog/item {
+        proxy_pass http://origin_upstream;
+        proxy_http_version 1.1;
+        proxy_set_header Connection "";
+        proxy_set_header x-origin-secret ${CDN_ORIGIN_SECRET};
+
+        proxy_cache cdn;
+        # ONLY `id` is in the key. nginx's default key is the whole $request_uri, which would
+        # let ?id=1&cachebuster=N fragment the cache arbitrarily and act as an origin-DoS
+        # amplifier — the exact thing CloudFront's query-string whitelist prevents.
+        proxy_cache_key "$uri|$arg_id";
+
+        # NOTE: there is deliberately NO proxy_cache_valid here. Cache lifetime comes only from
+        # the origin's Cache-Control: s-maxage. If a proxy_cache_valid were added, objects would
+        # be cached even if nginx ignored s-maxage, and LocalCdnCacheTest would silently stop
+        # proving anything.
+        proxy_cache_background_update on;
+        proxy_cache_use_stale updating error timeout http_500 http_502 http_503 http_504;
+        proxy_cache_revalidate on;
+        add_header X-Cache $upstream_cache_status always;
+    }
+
+    # --- Mirrors: CacheBehavior /api/catalog/similar*, key whitelists `movieId` + `k` --
+    location = /api/catalog/similar {
+        proxy_pass http://origin_upstream;
+        proxy_http_version 1.1;
+        proxy_set_header Connection "";
+        proxy_set_header x-origin-secret ${CDN_ORIGIN_SECRET};
+
+        proxy_cache cdn;
+        proxy_cache_key "$uri|$arg_movieId|$arg_k";
+        # No proxy_cache_valid — see the note above.
+        proxy_cache_background_update on;
+        proxy_cache_use_stale updating error timeout http_500 http_502 http_503 http_504;
+        proxy_cache_revalidate on;
+        add_header X-Cache $upstream_cache_status always;
+    }
+}

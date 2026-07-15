@@ -1,0 +1,26 @@
+# Local CloudFront stand-in in front of the gateway.
+#
+#   sh scripts/run-microservices-local.sh          # gateway on :8010
+#   docker compose -f docker-compose.cdn.yml up    # nginx on :8090
+#   curl -i localhost:8090/api/catalog/item?id=1   # X-Cache: MISS, then HIT
+#
+# Demonstrates CACHING SEMANTICS ONLY. No WAF, no Shield, no edge TLS, no geographic
+# distribution — see docs/runbooks/cdn-local.md for the full list of divergences.
+services:
+  cdn:
+    image: nginx:1.27-alpine
+    container_name: recsys-cdn
+    ports:
+      - "8090:8090"
+    environment:
+      # Only CDN_* are substituted; nginx's own $uri/$arg_id/$upstream_cache_status survive.
+      NGINX_ENVSUBST_FILTER: "CDN_"
+      CDN_ORIGIN_HOST: "${CDN_ORIGIN_HOST:-host.docker.internal}"
+      CDN_ORIGIN_PORT: "${CDN_ORIGIN_PORT:-8010}"
+      # Must match GATEWAY_ORIGIN_SECRET on the gateway, or every request 403s.
+      CDN_ORIGIN_SECRET: "${CDN_ORIGIN_SECRET:-local-dev-secret}"
+    volumes:
+      - ./docker/cdn/default.conf.template:/etc/nginx/templates/default.conf.template:ro
+    extra_hosts:
+      # Makes host.docker.internal resolve on Linux too, not just Docker Desktop.
+      - "host.docker.internal:host-gateway"
