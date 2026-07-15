@@ -14,6 +14,7 @@ import com.recsys.exception.ServiceOverloadedException;
 import com.recsys.application.recommendation.RecommendationService;
 import com.recsys.application.auth.SubmitTokenService;
 import jakarta.validation.Valid;
+import org.springframework.http.CacheControl;
 import org.springframework.http.HttpHeaders;
 import org.springframework.http.MediaType;
 import org.springframework.http.ResponseEntity;
@@ -51,8 +52,13 @@ public class RecommendationController {
             value = "/token",
             produces = MediaType.APPLICATION_JSON_VALUE
     )
-    public SubmitTokenResponse getSubmitToken() {
-        return new SubmitTokenResponse(submitTokenService.createToken(), submitTokenService.ttlSeconds());
+    public ResponseEntity<SubmitTokenResponse> getSubmitToken() {
+        // Single-use CSRF token: a shared cache handing the same token to two clients would
+        // break single-use semantics. Never cache, at any layer.
+        return ResponseEntity.ok()
+                .cacheControl(CacheControl.noStore())
+                .body(new SubmitTokenResponse(submitTokenService.createToken(),
+                        submitTokenService.ttlSeconds()));
     }
 
     @PostMapping(

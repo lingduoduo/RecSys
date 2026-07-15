@@ -4,6 +4,7 @@ import com.recsys.application.gateway.GatewayRequestForwarder;
 import com.recsys.application.gateway.LlmProxyService;
 import com.recsys.application.gateway.GatewayHealthService;
 import com.recsys.application.gateway.GatewayAuthenticator;
+import com.recsys.application.gateway.GatewayOriginSecret;
 import com.recsys.application.gateway.MicroserviceRoute;
 import com.recsys.application.gateway.RecommendationGatewayService;
 import com.recsys.config.EnvVars;
@@ -133,6 +134,14 @@ public final class MicroserviceGatewayServer {
                     System::currentTimeMillis);
         }
 
+        // Origin lockdown: when CloudFront fronts this gateway, reject anything that did not come
+        // through our distribution. No-op when GATEWAY_ORIGIN_SECRET is unset (local dev).
+        // Registered after meterRegistry so rejections are counted and scrapeable at /metrics.
+        GatewayOriginSecret originSecret = GatewayOriginSecret.fromEnvironment(System::getenv);
+        if (originSecret.isEnabled()) {
+            sb.decorator(GatewayOriginSecret.newDecorator(originSecret, meterRegistry));
+        }
+
         // Health endpoint — exposes per-route circuit state and upstream reachability.
         sb.service("/health", new GatewayHealthService(allRoutes, timeout, circuitBreakers, port, registryProvider));
 
@@ -186,6 +195,9 @@ public final class MicroserviceGatewayServer {
         }
         if (authenticator.isEnabled()) {
             log.info("Gateway API-key authentication enabled");
+        }
+        if (originSecret.isEnabled()) {
+            log.info("Gateway origin-secret enforcement enabled");
         }
         if (llmTokenRateLimiter.isEnabled()) {
             log.info("LLM token rate limiting enabled");

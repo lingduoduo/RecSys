@@ -29,7 +29,14 @@ data:
   GATEWAY_TIMEOUT_MS: "3000"
   # Optional API-key auth. Keep unset by default; inject via Secret in production:
   # GATEWAY_API_KEYS: "replace-with-secret"
-  GATEWAY_PUBLIC_PATHS: "/health"
+  # Anonymous-readable paths. The two catalog reads are edge-cached by CloudFront and MUST NOT
+  # vary on Authorization — a JWT-keyed cache fragments per user and the hit ratio collapses.
+  # Movie metadata and item-to-item similarity are treated as non-sensitive.
+  # DANGER: these MUST be the exact paths, never the "/api/catalog" prefix. Public-path matching
+  # is prefix-with-boundary (GatewayAuthenticator.java:114-117), so "/api/catalog" would also
+  # expose "/api/catalog/user?userId=1", which returns user data.
+  # See docs/superpowers/specs/2026-07-14-cdn-edge-acceleration-design.md.
+  GATEWAY_PUBLIC_PATHS: "/health,/api/catalog/item,/api/catalog/similar"
   SPRING_APPLICATION_NAME: "recsys-model-serving"
   RECSYS_RECOMMENDATION_CACHE_ENABLED: "true"
   RECSYS_RECOMMENDATION_CACHE_TTL_SECONDS: "300"

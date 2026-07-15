@@ -96,6 +96,40 @@ class GatewayAuthenticatorTest {
         assertThrows(IllegalStateException.class, () -> GatewayAuthenticator.fromEnvironment(env::get));
     }
 
+    @Test
+    void check_exactPublicPaths_allowCatalogReadsButRejectUserRouteAndBarePrefix() {
+        // Production value (k8s/base/configmap.yaml): exact catalog read paths only.
+        GatewayAuthenticator auth = GatewayAuthenticator.forTesting(
+                Set.of("key-1"),
+                Set.of("/health", "/api/catalog/item", "/api/catalog/similar"),
+                null);
+
+        RequestHeaders anonymous = RequestHeaders.of(HttpMethod.GET, "/api/catalog/item");
+        assertFalse(auth.check(anonymous, "/api/catalog/item").rejected());
+        RequestHeaders anonymousSimilar = RequestHeaders.of(HttpMethod.GET, "/api/catalog/similar");
+        assertFalse(auth.check(anonymousSimilar, "/api/catalog/similar").rejected());
+
+        // The whole point: the PII route must still require auth — it is not in the public set.
+        RequestHeaders userRoute = RequestHeaders.of(HttpMethod.GET, "/api/catalog/user");
+        assertTrue(auth.check(userRoute, "/api/catalog/user").rejected());
+
+        // The bare prefix itself (with nothing configured to expose it) is also rejected.
+        RequestHeaders bareCatalog = RequestHeaders.of(HttpMethod.GET, "/api/catalog");
+        assertTrue(auth.check(bareCatalog, "/api/catalog").rejected());
+    }
+
+    @Test
+    void check_prefixPublicPath_dangerouslyExposesUserRoute() {
+        // Documents the trap: a bare-prefix GATEWAY_PUBLIC_PATHS value (instead of exact paths)
+        // matches via the "startsWith(publicPath + \"/\")" boundary rule in isPublic(), so
+        // /api/catalog/user — the PII route — becomes anonymously accessible too.
+        GatewayAuthenticator auth = GatewayAuthenticator.forTesting(
+                Set.of("key-1"), Set.of("/api/catalog"), null);
+
+        RequestHeaders userRoute = RequestHeaders.of(HttpMethod.GET, "/api/catalog/user");
+        assertFalse(auth.check(userRoute, "/api/catalog/user").rejected());
+    }
+
     private GatewayAuthenticator authenticator(KeyPair keyPair) {
         CognitoConfig config = new CognitoConfig(
                 "https://cognito-idp.us-east-1.amazonaws.com/us-east-1_demo",

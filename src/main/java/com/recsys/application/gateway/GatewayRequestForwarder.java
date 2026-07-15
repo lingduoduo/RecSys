@@ -36,7 +36,8 @@ public final class GatewayRequestForwarder implements java.io.Closeable {
             "transfer-encoding", "upgrade");
 
     // Credentials the gateway consumes at its auth boundary — never forwarded upstream.
-    private static final Set<String> GATEWAY_CONSUMED_CREDENTIALS = Set.of("authorization", "x-api-key");
+    private static final Set<String> GATEWAY_CONSUMED_CREDENTIALS =
+            Set.of("authorization", "x-api-key", GatewayOriginSecret.HEADER);
 
     private final UpstreamEndpointGroups staticUpstreams;     // non-null when registry disabled
     private final RegistryBackedUpstreams registryUpstreams;  // non-null when registry enabled

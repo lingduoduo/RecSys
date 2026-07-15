@@ -11,6 +11,13 @@ WebACL — provision it out-of-band and reference it by ARN.
 
 ## 1. Create a regional WebACL
 
+> **Superseded for the edge WebACL (2026-07-14).** The REGIONAL requirement below applied while
+> the ALB was the front door. Once CloudFront fronts the gateway, the edge WebACL MUST be
+> `CLOUDFRONT` scope, and this REGIONAL WebACL is retired at rollout step 6. See
+> `docs/superpowers/specs/2026-07-14-cdn-edge-acceleration-design.md` and
+> `docs/runbooks/cdn-operations.md`. Until that rollout completes, the REGIONAL WebACL below
+> remains the live configuration.
+
 The WebACL scope MUST be `REGIONAL` (ALB), not `CLOUDFRONT`, and MUST be in the
 same region as the cluster/ALB.
 

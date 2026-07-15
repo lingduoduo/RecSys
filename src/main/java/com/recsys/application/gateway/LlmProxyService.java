@@ -65,7 +65,8 @@ public final class LlmProxyService implements HttpService {
             "transfer-encoding", "upgrade");
 
     // Credentials the gateway consumes at its auth boundary — never forwarded upstream.
-    private static final Set<String> GATEWAY_CONSUMED_CREDENTIALS = Set.of("authorization", "x-api-key");
+    private static final Set<String> GATEWAY_CONSUMED_CREDENTIALS =
+            Set.of("authorization", "x-api-key", GatewayOriginSecret.HEADER);
 
     private final MicroserviceRoute route;
     private final WebClient webClient;
