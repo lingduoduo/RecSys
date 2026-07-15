@@ -28,6 +28,13 @@ server {
         proxy_set_header Connection "";
         proxy_set_header x-origin-secret ${CDN_ORIGIN_SECRET};
         proxy_cache cdn;
+        # proxy_cache_methods defaults to GET/HEAD only, so without this, POST requests never
+        # enter the cache module at all: $upstream_cache_status stays an empty string, and
+        # nginx's add_header silently omits any header whose value is empty — X-Cache would be
+        # missing entirely on POST instead of reporting BYPASS. Widening it here only makes the
+        # cache module *evaluate* POST requests for reporting purposes; proxy_cache_bypass and
+        # proxy_no_cache below are unconditional, so POST responses are still never stored.
+        proxy_cache_methods GET HEAD POST;
         proxy_cache_bypass 1;
         proxy_no_cache 1;
         add_header X-Cache $upstream_cache_status always;
