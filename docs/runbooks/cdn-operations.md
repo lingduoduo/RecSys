@@ -52,6 +52,15 @@ Order matters. Reversing steps 5 and 6 locks all traffic out of the origin.
    ./scripts/create-cdn-distribution.sh
    ```
    Save the `ORIGIN_SECRET` value — step 4 needs it.
+
+   **Origin protocol.** `ORIGIN_PROTOCOL_POLICY` defaults to `https-only`, which requires the ALB
+   to have a `:443` listener and a **regional** ACM certificate (separate from the us-east-1 cert
+   CloudFront uses for viewers). The ALB today listens on `:80` only
+   (`k8s/eks/waf-api-gateway-ingress.yaml`), so that listener must exist before this default works.
+
+   `ORIGIN_PROTOCOL_POLICY=http-only` still works and warns. It is a real weakening: the origin
+   secret then crosses the public CloudFront→ALB hop in cleartext, where it is observable and
+   replayable by exactly the attacker the header exists to stop. Prefer fixing the listener.
 3. Validate against the raw distribution domain. Real traffic is still on the old path:
    ```bash
    D=dXXXXXXXXXXXXX.cloudfront.net
@@ -120,53 +129,32 @@ reason. `scripts/create-cdn-distribution.sh` already sets `HTTPSPort: 443` and
 
 ## Rotating the origin secret
 
-Rotating `GATEWAY_ORIGIN_SECRET` means two separate, unsynchronized writes to two separate
-systems: the k8s Secret (`recsys-gateway-origin-secret`, consumed by the gateway pods) and the
-CloudFront distribution's `CustomHeaders` (set by re-running `create-cdn-distribution.sh` with a
-new `ORIGIN_SECRET`). There is no shared transaction between them.
+`GATEWAY_ORIGIN_SECRET` accepts a comma-separated **set** of secrets, so rotation has no 403
+window. Both the old and the new secret are accepted while the distribution catches up.
 
-**Read `GatewayOriginSecret.java` before assuming otherwise: it validates against exactly one
-expected value.** It does not accept a set of currently-valid secrets, so there is no way to add
-the new secret alongside the old one, let requests drain, and then remove the old one. A
-zero-downtime rotation is **not possible with the code as it exists today.** Whatever order you
-pick, there is a window where the value CloudFront is sending does not match the value the gateway
-expects, and every non-exempt request (i.e. everything except `/health` and `/metrics`) 403s for
-the duration of that window.
+```bash
+# 1. Accept both. Pods now take either value.
+kubectl -n recsys create secret generic recsys-gateway-origin-secret \
+  --from-literal=secret='old-secret,new-secret' --dry-run=client -o yaml | kubectl apply -f -
+kubectl -n recsys rollout status deployment/recsys-api-gateway
 
-**Minimize, don't eliminate, the window — update the distribution first, then the pods
-immediately after:**
+# 2. Flip the distribution to the new secret (CloudFront propagation takes minutes).
+ORIGIN_SECRET='new-secret' ... ./scripts/create-cdn-distribution.sh
 
-1. Re-run `create-cdn-distribution.sh` with the new `ORIGIN_SECRET`. `update-distribution`
-   propagates to CloudFront's edge locations over several minutes, not instantly and not all at
-   once — some POPs pick up the new config within seconds, others take longer.
-2. **Immediately** (do not wait for the distribution to reach `Deployed`) update the k8s Secret
-   and restart the gateway pods:
-   ```bash
-   kubectl -n recsys create secret generic recsys-gateway-origin-secret \
-     --from-literal=secret='<new ORIGIN_SECRET>' --dry-run=client -o yaml | kubectl apply -f -
-   kubectl -n recsys rollout restart deployment/recsys-api-gateway
-   kubectl -n recsys rollout status deployment/recsys-api-gateway
-   ```
-   The rollout restart finishes in well under a minute; CloudFront's propagation does not.
+# 3. Once propagated, retire the old one.
+kubectl -n recsys create secret generic recsys-gateway-origin-secret \
+  --from-literal=secret='new-secret' --dry-run=client -o yaml | kubectl apply -f -
+kubectl -n recsys rollout status deployment/recsys-api-gateway
+```
 
-This ordering — not the reverse — bounds the exposure: pods flip to the new expected value almost
-immediately, so only the shrinking sliver of edge POPs that haven't yet propagated the new
-`CustomHeaders` value produce 403s, and that sliver shrinks to zero as propagation finishes. Doing
-it the other way (pods first) means *every* POP is still sending the old secret to a gateway that
-now expects the new one — 100% of non-exempt traffic 403s the instant the rollout completes, for
-the same propagation duration, before it decays back down.
+Do not skip step 1. Going straight to step 2 reintroduces the window this ordering exists to
+avoid: the distribution sends a secret no pod accepts, and 100% of non-exempt traffic 403s
+until step 3 completes.
 
-Either way, a **brief 403 window is unavoidable today.** The only way to remove it entirely is to
-change `GatewayOriginSecret` to validate against a small accepted set (old + new) instead of a
-single value, so the distribution and the pods can be updated in either order with a safe overlap
-period before the old value is retired. That is a real follow-up, not something implemented here.
-
-**The reject path is silent.** `GatewayOriginSecret.isAllowed` returns `false` and the decorator
-answers with a bare 403 — no log line, no metric, no counter. If a rotation goes wrong, there is
-currently no origin-side signal to confirm it: the only observable symptom is a 4xx rate spike on
-the CloudFront side (e.g. the `4xxErrorRate` CloudWatch metric), with nothing on the gateway to
-confirm the cause is a secret mismatch versus something else. Keep this in mind while rotating —
-watch CloudFront's error rate, not the gateway's logs.
+**Watch the rejections.** `gateway_origin_secret_rejected_total` is exposed on the gateway's
+`/metrics`. It should stay flat throughout a correct rotation. A rise means the distribution and
+the pods disagree — the most likely cause is step 1 being skipped or not yet rolled out. The
+first rejection also emits one WARN log (only the first, to avoid flooding).
 
 ## Freshness after a bulk embedding reload
 

@@ -56,10 +56,11 @@ Key env vars: `REDIS_HOST`, `REDIS_PORT`, `PORT`/`ONLINE_DEMO_PORT`/`GATEWAY_POR
 `CATALOG_MAX_CONCURRENT_REQUESTS`/`CATALOG_DRAIN_UTILIZATION` (RecSys 6010 admission control),
 `RECALL_BULKHEAD_QUEUE_CAPACITY` (bounded recall queue on 6010/7010). Overload-protection layers
 are documented in `docs/runbooks/overload-protection.md`.
-`GATEWAY_ORIGIN_SECRET` (default unset = disabled; when set, the gateway rejects any request that
-does not carry a matching `x-origin-secret` header with 403, so only our CloudFront distribution
-can reach the origin — `/health` and `/metrics` are exempt so ALB/kubelet probes and Prometheus
-scrapes still work). `GATEWAY_PUBLIC_PATHS` now defaults to
+`GATEWAY_ORIGIN_SECRET` (default unset = disabled; accepts a comma-separated SET of secrets so
+rotation has no 403 window — the gateway rejects any request without a matching
+`x-origin-secret` header with 403 and counts it in `gateway_origin_secret_rejected_total`.
+`/health` and `/metrics` are exempt so ALB/kubelet probes and Prometheus scrapes still work).
+`GATEWAY_PUBLIC_PATHS` now defaults to
 `/health,/api/catalog/item,/api/catalog/similar` in k8s: the two catalog reads are edge-cached and
 must not vary on `Authorization`. It MUST list exact paths — `/api/catalog` would also expose
 `/api/catalog/user`. CDN operations are documented in `docs/runbooks/cdn-operations.md`.
@@ -81,6 +82,9 @@ The system demonstrates two recommendation paths:
 `GET /api/catalog/item` and `GET /api/catalog/similar` are cached; everything else, including the
 POST-only `/api/recommend`, is CachingDisabled by default. Created out-of-band via
 `scripts/create-cdn-distribution.sh`; see `docs/superpowers/specs/2026-07-14-cdn-edge-acceleration-design.md`.
+A local nginx stand-in (`docker-compose.cdn.yml`, port 8090) mirrors the distribution's cache
+behaviors for development — see `docs/runbooks/cdn-local.md`. It demonstrates caching semantics
+only: no WAF, Shield, edge TLS, or geographic distribution.
 
 ## Package Map
 
