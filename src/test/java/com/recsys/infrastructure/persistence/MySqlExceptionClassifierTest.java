@@ -27,6 +27,18 @@ class MySqlExceptionClassifierTest {
     }
 
     @Test
+    void authorizationAndSyntaxFailuresWinOverConnectionFailuresAnywhereInTheChain() {
+        for (String nonRetryableState : new String[] {"28000", "42000"}) {
+            SQLException root = new SQLException("lost", "08006");
+            SQLException nonRetryable = new SQLException("invalid request", nonRetryableState);
+            nonRetryable.initCause(new SQLException("nested connection failure", "08001"));
+            root.setNextException(nonRetryable);
+
+            assertThat(MySqlExceptionClassifier.isRetryableRead(root)).isFalse();
+        }
+    }
+
+    @Test
     void rejectsTimeoutSyntaxAuthorizationAndMappingFailures() {
         assertThat(MySqlExceptionClassifier.isRetryableRead(new SQLTimeoutException("deadline"))).isFalse();
         assertThat(MySqlExceptionClassifier.isRetryableRead(new SQLException("syntax", "42000"))).isFalse();

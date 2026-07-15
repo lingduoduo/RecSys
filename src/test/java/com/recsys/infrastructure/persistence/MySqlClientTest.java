@@ -8,6 +8,7 @@ import java.sql.PreparedStatement;
 import java.sql.ResultSet;
 import java.sql.SQLException;
 import java.sql.SQLTimeoutException;
+import java.sql.SQLTransientConnectionException;
 import java.util.List;
 import java.util.concurrent.atomic.AtomicInteger;
 
@@ -232,6 +233,27 @@ class MySqlClientTest {
                     new MillionScalePaginationSql.SqlPlan("SELECT 1", List.of()), rs -> rs.getInt(1)))
                     .isSameAs(failure);
             assertThat(opens).hasValue(1);
+        }
+    }
+
+    @Test
+    void owningQuery_doesNotRetryMapperConnectionFailures() throws Exception {
+        for (SQLException failure : List.of(
+                new SQLException("mapper connection state", "08006"),
+                new SQLTransientConnectionException("mapper transient connection failure"))) {
+            var m = mockQuery();
+            when(m.resultSet().next()).thenReturn(true);
+            AtomicInteger opens = new AtomicInteger();
+            MySqlClient client = new MySqlClient(MySqlConnectionSettings.disabled(),
+                    () -> { opens.incrementAndGet(); return m.connection(); }, millis -> {});
+
+            assertThatThrownBy(() -> client.query(
+                    new MillionScalePaginationSql.SqlPlan("SELECT 1", List.of()), rs -> { throw failure; }))
+                    .isSameAs(failure);
+            assertThat(opens).hasValue(1);
+            verify(m.resultSet()).close();
+            verify(m.statement()).close();
+            verify(m.connection()).close();
         }
     }
 

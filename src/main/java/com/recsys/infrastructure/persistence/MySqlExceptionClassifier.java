@@ -14,7 +14,8 @@ public final class MySqlExceptionClassifier {
     private MySqlExceptionClassifier() {}
 
     public static boolean isRetryableRead(SQLException exception) {
-        if (isTimeout(exception)) {
+        if (isTimeout(exception) || any(exception, failure ->
+                hasSqlStateClass(failure, "28") || hasSqlStateClass(failure, "42"))) {
             return false;
         }
         return any(exception, failure -> failure instanceof SQLTransientConnectionException

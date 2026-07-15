@@ -135,7 +135,8 @@ public class MySqlClient implements AutoCloseable {
     public <T> List<T> query(MillionScalePaginationSql.SqlPlan plan, RowMapper<T> mapper, int queryTimeoutSeconds) throws SQLException {
         Objects.requireNonNull(plan, "plan");
         Objects.requireNonNull(mapper, "mapper");
-        return withReadRetry(connection -> query(connection, plan, mapper, effectiveTimeout(queryTimeoutSeconds)));
+        return withReadRetry(connection -> query(connection, plan,
+                nonRetryableMapper(mapper), effectiveTimeout(queryTimeoutSeconds)));
     }
 
     /**
@@ -231,7 +232,18 @@ public class MySqlClient implements AutoCloseable {
             int queryTimeoutSeconds
     ) throws SQLException {
         return withReadRetry(connection -> queryPage(
-                connection, plan, pageSize, cursorExtractor, mapper, effectiveTimeout(queryTimeoutSeconds)));
+                connection, plan, pageSize, cursorExtractor, nonRetryableMapper(mapper),
+                effectiveTimeout(queryTimeoutSeconds)));
+    }
+
+    private static <T> RowMapper<T> nonRetryableMapper(RowMapper<T> mapper) {
+        return resultSet -> {
+            try {
+                return mapper.map(resultSet);
+            } catch (SQLException failure) {
+                throw new RowMappingException(failure);
+            }
+        };
     }
 
     private int effectiveTimeout(int requestedSeconds) {
@@ -242,6 +254,8 @@ public class MySqlClient implements AutoCloseable {
         for (int attempt = 1; ; attempt++) {
             try (Connection connection = openConnection()) {
                 return read.execute(connection);
+            } catch (RowMappingException failure) {
+                throw failure.original();
             } catch (SQLException failure) {
                 if (attempt >= settings.maxReadAttempts()
                         || !MySqlExceptionClassifier.isRetryableRead(failure)) {
@@ -294,5 +308,18 @@ public class MySqlClient implements AutoCloseable {
     @FunctionalInterface
     private interface ConnectionRead<T> {
         T execute(Connection connection) throws SQLException;
+    }
+
+    private static final class RowMappingException extends SQLException {
+        private final SQLException original;
+
+        private RowMappingException(SQLException original) {
+            super(original.getMessage(), original.getSQLState(), original.getErrorCode(), original);
+            this.original = original;
+        }
+
+        private SQLException original() {
+            return original;
+        }
     }
 }
