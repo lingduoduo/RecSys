@@ -74,6 +74,8 @@ class LocalCdnCacheTest {
                 })
                 .service("/api/recommend", (ctx, req) -> {
                     originHits.incrementAndGet();
+                    String secret = req.headers().get(HttpHeaderNames.of("x-origin-secret"));
+                    receivedSecrets.add(secret == null ? "<absent>" : secret);
                     return HttpResponse.of(ResponseHeaders.builder(HttpStatus.OK)
                             .contentType(MediaType.JSON_UTF_8)
                             .set(HttpHeaderNames.CACHE_CONTROL, "no-store")
@@ -164,12 +166,33 @@ class LocalCdnCacheTest {
                 HttpHeaderNames.IF_NONE_MATCH, etag)).aggregate().join();
 
         assertThat(res.status()).isEqualTo(HttpStatus.NOT_MODIFIED);
+        // Observed (not guessed): nginx served this 304 from its own cached copy — it found a
+        // fresh cached response, matched the client's If-None-Match against the cached ETag
+        // itself, and answered without a round trip to the origin. That is a cache HIT, not a
+        // proxy-through to the origin, so $upstream_cache_status is HIT here (not MISS/BYPASS).
+        assertThat(cacheStatus(res)).isEqualTo("HIT");
     }
 
+    // NOTE on test isolation: each test above uses a disjoint `id` (1, 7, 3, 42) against the
+    // shared nginx cache so MISS/HIT assertions in one test cannot be perturbed by another test
+    // priming or busting the same cache entry. Nothing enforces this today — a future test that
+    // reuses one of these ids would produce a confusing, order-dependent failure.
     @Test
     void originSecretIsInjectedOnEveryForwardedRequest() {
         receivedSecrets.clear();
         cdn().get("/api/catalog/item?id=42").aggregate().join();
+
+        assertThat(receivedSecrets).isNotEmpty();
+        assertThat(receivedSecrets).allMatch(SECRET::equals);
+
+        // The cached-location assertion above cannot prove the header is injected from the
+        // shared upstream{} block config rather than something specific to that location, since
+        // location = /api/catalog/item and location = /api/catalog/similar both set it
+        // explicitly. Drive a request through the DEFAULT (location /) block too — POST
+        // /api/recommend never matches the two named locations — and check the secret arrives
+        // there as well.
+        receivedSecrets.clear();
+        cdn().post("/api/recommend", "{}").aggregate().join();
 
         assertThat(receivedSecrets).isNotEmpty();
         assertThat(receivedSecrets).allMatch(SECRET::equals);

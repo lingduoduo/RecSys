@@ -11,6 +11,16 @@
 
 proxy_cache_path /var/cache/nginx levels=1:2 keys_zone=cdn:10m max_size=100m inactive=24h use_temp_path=off;
 
+# $upstream_cache_status is empty when the cache module never ran (e.g. POST, which is not a
+# cacheable method). nginx omits a header whose value is empty, so X-Cache would vanish rather
+# than report BYPASS. Map the empty case to BYPASS so the default-deny block stays observable
+# WITHOUT having to widen proxy_cache_methods — which would make POST cacheable-by-method and
+# leave it protected only by directives instead of structurally.
+map $upstream_cache_status $cdn_cache_status {
+    ''      BYPASS;
+    default $upstream_cache_status;
+}
+
 upstream origin_upstream {
     server ${CDN_ORIGIN_HOST}:${CDN_ORIGIN_PORT};
     keepalive 16;
@@ -28,16 +38,9 @@ server {
         proxy_set_header Connection "";
         proxy_set_header x-origin-secret ${CDN_ORIGIN_SECRET};
         proxy_cache cdn;
-        # proxy_cache_methods defaults to GET/HEAD only, so without this, POST requests never
-        # enter the cache module at all: $upstream_cache_status stays an empty string, and
-        # nginx's add_header silently omits any header whose value is empty — X-Cache would be
-        # missing entirely on POST instead of reporting BYPASS. Widening it here only makes the
-        # cache module *evaluate* POST requests for reporting purposes; proxy_cache_bypass and
-        # proxy_no_cache below are unconditional, so POST responses are still never stored.
-        proxy_cache_methods GET HEAD POST;
         proxy_cache_bypass 1;
         proxy_no_cache 1;
-        add_header X-Cache $upstream_cache_status always;
+        add_header X-Cache $cdn_cache_status always;
     }
 
     # --- Mirrors: CacheBehavior /api/catalog/item*, cache key whitelists `id` ----------
