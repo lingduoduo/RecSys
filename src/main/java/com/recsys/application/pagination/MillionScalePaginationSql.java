@@ -101,9 +101,25 @@ public final class MillionScalePaginationSql {
         }
     }
 
+    /**
+     * A SQL statement paired with its positional bind values.
+     *
+     * <p>These plans contain internal, fixed SQL templates, so every {@code ?} character is
+     * treated as a placeholder. SQL containing a quoted literal or comment with a question mark
+     * is outside this utility's contract; this is intentionally not a general-purpose SQL parser.
+     */
     public record SqlPlan(String sql, List<Object> bindValues) {
         public SqlPlan {
+            Objects.requireNonNull(sql, "sql");
             bindValues = List.copyOf(bindValues);
+            long expected = sql.chars().filter(character -> character == '?').count();
+            int actual = bindValues.size();
+            if (expected != actual) {
+                throw new IllegalArgumentException(
+                        "SQL placeholder count mismatch: expected " + expected
+                                + " bind values but actual " + actual
+                );
+            }
         }
     }
 

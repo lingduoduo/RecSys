@@ -1,7 +1,9 @@
 package com.recsys.infrastructure.persistence;
 
+import java.nio.charset.StandardCharsets;
 import java.util.Map;
 import java.util.Objects;
+import java.util.regex.Pattern;
 
 /**
  * Minimal MySQL settings holder.
@@ -13,20 +15,39 @@ public record MySqlConnectionSettings(
         boolean enabled,
         String url,
         String username,
-        String password
+        String password,
+        int queryTimeoutSeconds,
+        int maxReadAttempts,
+        long retryBackoffMillis,
+        String cursorSigningKey
 ) {
     private static final String DEFAULT_URL =
             "jdbc:mysql://localhost:3306/recsys?useSSL=false&serverTimezone=UTC"
                     + "&connectTimeout=1000&socketTimeout=2000";
+    private static final Pattern URL_CREDENTIAL_PROPERTY = Pattern.compile(
+            "(?i)([?&;](?:user|password)=)[^&;]*");
+    private static final Pattern URL_USER_INFO = Pattern.compile(
+            "(?i)(jdbc:mysql://)[^/?;]*@(?=[^/?;]+)");
 
     public MySqlConnectionSettings {
         url = normalizeUrl(url);
         username = username == null || username.isBlank() ? "recsys" : username.trim();
         password = password == null ? "" : password;
+        cursorSigningKey = cursorSigningKey == null ? "" : cursorSigningKey;
+        validateRange("MYSQL_QUERY_TIMEOUT_SECONDS", queryTimeoutSeconds, 1, 30);
+        validateRange("MYSQL_READ_MAX_ATTEMPTS", maxReadAttempts, 1, 2);
+        validateRange("MYSQL_READ_RETRY_BACKOFF_MS", retryBackoffMillis, 0, 1000);
+        if (enabled && password.isEmpty()) {
+            throw new IllegalArgumentException("MYSQL_PASSWORD is required when MySQL is enabled");
+        }
+        if (enabled && cursorSigningKey.getBytes(StandardCharsets.UTF_8).length < 32) {
+            throw new IllegalArgumentException(
+                    "MYSQL_CURSOR_SIGNING_KEY must contain at least 32 UTF-8 bytes when MySQL is enabled");
+        }
     }
 
     public static MySqlConnectionSettings disabled() {
-        return new MySqlConnectionSettings(false, DEFAULT_URL, "recsys", "");
+        return new MySqlConnectionSettings(false, DEFAULT_URL, "recsys", "", 2, 2, 50, "");
     }
 
     public static MySqlConnectionSettings fromEnv() {
@@ -35,19 +56,40 @@ public record MySqlConnectionSettings(
 
     static MySqlConnectionSettings fromEnv(Map<String, String> env) {
         Objects.requireNonNull(env, "env");
+        boolean enabled = Boolean.parseBoolean(env.getOrDefault("MYSQL_ENABLED", "false"));
+        if (enabled && (env.get("MYSQL_URL") == null || env.get("MYSQL_URL").isBlank())) {
+            throw new IllegalArgumentException("MYSQL_URL is required when MySQL is enabled");
+        }
+        if (enabled && (env.get("MYSQL_USER") == null || env.get("MYSQL_USER").isBlank())) {
+            throw new IllegalArgumentException("MYSQL_USER is required when MySQL is enabled");
+        }
         return new MySqlConnectionSettings(
-                Boolean.parseBoolean(env.getOrDefault("MYSQL_ENABLED", "false")),
+                enabled,
                 env.getOrDefault("MYSQL_URL", DEFAULT_URL),
                 env.getOrDefault("MYSQL_USER", "recsys"),
-                env.getOrDefault("MYSQL_PASSWORD", "")
+                env.getOrDefault("MYSQL_PASSWORD", ""),
+                parseInt(env, "MYSQL_QUERY_TIMEOUT_SECONDS", 2),
+                parseInt(env, "MYSQL_READ_MAX_ATTEMPTS", 2),
+                parseLong(env, "MYSQL_READ_RETRY_BACKOFF_MS", 50),
+                env.getOrDefault("MYSQL_CURSOR_SIGNING_KEY", "")
         );
     }
 
     public String safeDescription() {
         return "MySqlConnectionSettings{enabled=" + enabled
-                + ", url='" + url + '\''
+                + ", url='" + redactUrlCredentials(url) + '\''
                 + ", username='" + username + '\''
-                + ", password='***'}";
+                + ", password='***', cursorSigningKey='***'}";
+    }
+
+    @Override
+    public String toString() {
+        return safeDescription();
+    }
+
+    private static String redactUrlCredentials(String url) {
+        String withoutUserInfo = URL_USER_INFO.matcher(url).replaceFirst("$1***@");
+        return URL_CREDENTIAL_PROPERTY.matcher(withoutUserInfo).replaceAll("$1***");
     }
 
     private static String normalizeUrl(String url) {
@@ -59,5 +101,28 @@ public record MySqlConnectionSettings(
             throw new IllegalArgumentException("MYSQL_URL must start with jdbc:mysql://");
         }
         return trimmed;
+    }
+
+    private static int parseInt(Map<String, String> env, String name, int defaultValue) {
+        try {
+            return Integer.parseInt(env.getOrDefault(name, Integer.toString(defaultValue)));
+        } catch (NumberFormatException e) {
+            throw new IllegalArgumentException(name + " must be an integer", e);
+        }
+    }
+
+    private static long parseLong(Map<String, String> env, String name, long defaultValue) {
+        try {
+            return Long.parseLong(env.getOrDefault(name, Long.toString(defaultValue)));
+        } catch (NumberFormatException e) {
+            throw new IllegalArgumentException(name + " must be an integer", e);
+        }
+    }
+
+    private static void validateRange(String name, long value, long minimum, long maximum) {
+        if (value < minimum || value > maximum) {
+            throw new IllegalArgumentException(
+                    name + " must be between " + minimum + " and " + maximum + " inclusive");
+        }
     }
 }

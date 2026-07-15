@@ -951,32 +951,72 @@ curl -X POST "http://localhost:8010/api/model/api/v1/recommend" \
 
 ### SQL Backend Patterns
 
-Enable MySQL only for services or jobs that actually need relational reads:
+The production catalog browse endpoint is `GET /v1/catalog/movies` on port 6010, or
+`GET /api/catalog/v1/catalog/movies` through the gateway. MySQL is opt-in; when it is disabled the
+route remains registered and returns `503`. Enabling it requires a cursor signing key containing at
+least 32 UTF-8 bytes. Supply that value from a secret manager—do not commit it or put it in a JDBC
+URL:
 
 ```bash
 export MYSQL_ENABLED=true
 export MYSQL_URL="jdbc:mysql://localhost:3306/recsys?useSSL=false&serverTimezone=UTC"
 export MYSQL_USER="recsys"
-export MYSQL_PASSWORD=""
+export MYSQL_PASSWORD="<from-secret-manager>"
 export MYSQL_POOL_MAX_SIZE=5
 export MYSQL_POOL_MIN_IDLE=1
+export MYSQL_QUERY_TIMEOUT_SECONDS=2
+export MYSQL_READ_MAX_ATTEMPTS=2
+export MYSQL_READ_RETRY_BACKOFF_MS=50
+export MYSQL_CURSOR_SIGNING_KEY="<32-or-more-random-bytes-from-secret-manager>"
 ```
 
-Recommended table/index shape for a SQL-backed catalog list:
+At 6010 startup, Flyway applies the classpath migrations in `db/migration` before the read-only
+connection pool and catalog service are created. A migration or configuration failure fails startup;
+it does not serve against an unknown schema. `V1__create_movies_catalog.sql` creates `movies` and
+both seek indexes: `(genre, popularity_score DESC, id DESC)` for filtered reads and
+`(popularity_score DESC, id DESC)` for unfiltered reads.
 
-```sql
-CREATE TABLE movies (
-  id BIGINT PRIMARY KEY,
-  title VARCHAR(255) NOT NULL,
-  year INT,
-  popularity_score DECIMAL(12,6) NOT NULL,
-  updated_at DATETIME NOT NULL,
-  genre VARCHAR(64)
-);
+The endpoint accepts optional `genre`, `limit` (default 20, range 1–100), and `cursor` query
+parameters. Results are ordered by `(popularity_score DESC, id DESC)`. Each opaque cursor is an
+HMAC-signed keyset position for the last returned row and is bound to the normalized genre filter.
+Keep the same genre while paging: a changed filter, tampered/malformed cursor, blank cursor, or bad
+limit returns `400`. The service fetches `limit + 1`, so `hasMore` and `nextCursor` are exact for the
+current query; the final page has `hasMore: false` and `nextCursor: null`. Cursors are not offsets and
+must be treated as opaque.
 
-CREATE INDEX idx_movies_popularity_id
-  ON movies (genre, popularity_score DESC, id DESC, title, year);
+```bash
+# Direct first page
+curl "http://localhost:6010/v1/catalog/movies?genre=Drama&limit=20"
+
+# Gateway page (authenticated when gateway auth is enabled)
+curl -H "X-API-Key: <api-key>" \
+  "http://localhost:8010/api/catalog/v1/catalog/movies?genre=Drama&limit=20"
+
+# Next page: URL-encode the exact nextCursor returned above and keep genre unchanged
+curl --get "http://localhost:6010/v1/catalog/movies" \
+  --data-urlencode "genre=Drama" --data-urlencode "limit=20" \
+  --data-urlencode "cursor=<nextCursor>"
 ```
+
+The gateway catalog-movies path is protected whenever gateway authentication is enabled. The
+default public paths do not include it. Avoid setting `GATEWAY_PUBLIC_PATHS=/api/catalog`: public
+entries are path prefixes, so that value exposes every catalog sub-route; list only the exact public
+paths intended for anonymous access.
+
+Run the Docker-backed MySQL migration/index-plan integration check when a Docker daemon is
+available (Docker tests are excluded from the normal suite):
+
+```bash
+mvn test -DexcludedGroups=load -Dgroups=docker -Dtest=MovieCatalogMySqlIntegrationTest
+```
+
+`MYSQL_QUERY_TIMEOUT_SECONDS` is the per-statement JDBC deadline (1–30 seconds).
+`MYSQL_READ_MAX_ATTEMPTS` permits one or two total attempts, and
+`MYSQL_READ_RETRY_BACKOFF_MS` sets the 0–1000 ms pause before the single retry. Only transient
+connection failures are retried; timeouts and non-transient failures are propagated without retry.
+
+The generic `MillionScalePaginationSql` helpers below remain available for other bounded SQL read
+paths. The catalog endpoint uses its dedicated repository and the migrated indexes above.
 
 Use `MillionScalePaginationSql` to generate safe SQL templates with bind parameters:
 
@@ -1377,6 +1417,14 @@ The online server (7010) adds its own `ONLINE_MAX_CONCURRENT_REQUESTS` / `ONLINE
 | `CATALOG_MAX_CONCURRENT_REQUESTS` | `64` | Admission-control in-flight cap ([Overload Protection](#overload-protection)) |
 | `CATALOG_DRAIN_UTILIZATION` | `0.90` | Utilization where the service reports drain |
 | `RECALL_BULKHEAD_QUEUE_CAPACITY` | `4 × recall pool` | Bounded recall work queue (also on 7010) |
+| `MYSQL_ENABLED` | `false` | Enable the MySQL-backed `/v1/catalog/movies` browse route |
+| `MYSQL_URL` | local default while disabled | MySQL JDBC URL; required and non-blank when enabled; credentials should use separate secret-backed variables |
+| `MYSQL_USER` | `recsys` while disabled | MySQL username; required and non-blank when enabled |
+| `MYSQL_PASSWORD` | _(required when enabled)_ | MySQL password; source from a secret manager in production |
+| `MYSQL_QUERY_TIMEOUT_SECONDS` | `2` | JDBC catalog query deadline; valid range 1–30 seconds |
+| `MYSQL_READ_MAX_ATTEMPTS` | `2` | Total transient-connection read attempts; valid range 1–2 |
+| `MYSQL_READ_RETRY_BACKOFF_MS` | `50` | Backoff before the one allowed retry; valid range 0–1000 ms |
+| `MYSQL_CURSOR_SIGNING_KEY` | _(required when enabled)_ | Secret HMAC key for catalog cursors; at least 32 UTF-8 bytes, with no built-in production default |
 
 ### Online Prediction Server (port 7010)
 

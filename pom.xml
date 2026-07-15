@@ -16,6 +16,7 @@
     <onnxruntime.version>1.18.0</onnxruntime.version>
     <armeria.version>1.28.4</armeria.version>
     <aws.sdk.version>2.25.70</aws.sdk.version>
+    <flyway.version>10.20.1</flyway.version>
     <!-- Default: skip @Tag("load") and @Tag("docker") tests.
          Override: mvn test -DexcludedGroups="" -Dgroups=load
          Run docker tests: mvn test -DexcludedGroups=load -->
@@ -166,6 +167,16 @@
       <version>8.4.0</version>
       <scope>runtime</scope>
     </dependency>
+    <dependency>
+      <groupId>org.flywaydb</groupId>
+      <artifactId>flyway-core</artifactId>
+      <version>${flyway.version}</version>
+    </dependency>
+    <dependency>
+      <groupId>org.flywaydb</groupId>
+      <artifactId>flyway-mysql</artifactId>
+      <version>${flyway.version}</version>
+    </dependency>
 
     <!-- Testcontainers for Redis integration tests. -->
     <dependency>
@@ -176,6 +187,11 @@
     <dependency>
       <groupId>org.testcontainers</groupId>
       <artifactId>junit-jupiter</artifactId>
+      <scope>test</scope>
+    </dependency>
+    <dependency>
+      <groupId>org.testcontainers</groupId>
+      <artifactId>mysql</artifactId>
       <scope>test</scope>
     </dependency>
 

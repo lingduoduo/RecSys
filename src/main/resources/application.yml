@@ -55,6 +55,11 @@ recsys:
     url: ${MYSQL_URL:jdbc:mysql://localhost:3306/recsys?useSSL=false&serverTimezone=UTC&connectTimeout=1000&socketTimeout=2000}
     username: ${MYSQL_USER:recsys}
     password: ${MYSQL_PASSWORD:}
+    query-timeout-seconds: ${MYSQL_QUERY_TIMEOUT_SECONDS:2}
+    read-max-attempts: ${MYSQL_READ_MAX_ATTEMPTS:2}
+    read-retry-backoff-ms: ${MYSQL_READ_RETRY_BACKOFF_MS:50}
+    # Required when MySQL catalog serving is enabled; inject through secret management.
+    cursor-signing-key: ${MYSQL_CURSOR_SIGNING_KEY:}
   health:
     # Rolling window for latency/failure-rate metrics used by the readiness probe
     window-seconds: 60

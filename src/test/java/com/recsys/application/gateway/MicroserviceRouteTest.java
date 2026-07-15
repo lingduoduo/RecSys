@@ -64,6 +64,21 @@ class MicroserviceRouteTest {
     }
 
     @Test
+    void rewritesCatalogMoviesPathAndPreservesPagingQuery() {
+        MicroserviceRoute route = new MicroserviceRoute(
+                "catalog", "/api/catalog", "CATALOG_SERVICE_URL",
+                URI.create("http://catalog:6010"), "/health");
+
+        URI rewritten = route.rewrite(
+                "/api/catalog/v1/catalog/movies",
+                "genre=Science%20Fiction&limit=25&cursor=next-page");
+
+        assertEquals(
+                "http://catalog:6010/v1/catalog/movies?genre=Science%20Fiction&limit=25&cursor=next-page",
+                rewritten.toString());
+    }
+
+    @Test
     void healthUri_combinesBaseUriAndHealthPath() {
         MicroserviceRoute route = new MicroserviceRoute(
                 "model", "/api/model", "MODEL_SERVICE_URL",
