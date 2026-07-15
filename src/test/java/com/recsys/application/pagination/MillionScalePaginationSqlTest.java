@@ -58,6 +58,41 @@ class MillionScalePaginationSqlTest {
     }
 
     @Test
+    void sqlPlan_rejectsTooFewBindValues() {
+        assertThatThrownBy(() -> new MillionScalePaginationSql.SqlPlan(
+                "SELECT id FROM movie_events WHERE user_id = ? AND event_type = ?",
+                List.of(7L)
+        )).isInstanceOf(IllegalArgumentException.class)
+                .hasMessageContaining("expected 2")
+                .hasMessageContaining("actual 1");
+    }
+
+    @Test
+    void sqlPlan_rejectsTooManyBindValues() {
+        assertThatThrownBy(() -> new MillionScalePaginationSql.SqlPlan(
+                "SELECT id FROM movie_events WHERE user_id = ?",
+                List.of(7L, "click")
+        )).isInstanceOf(IllegalArgumentException.class)
+                .hasMessageContaining("expected 1")
+                .hasMessageContaining("actual 2");
+    }
+
+    @Test
+    void cursorPage_generatedPlansHaveMatchingPlaceholderAndBindCounts() {
+        assertThat(MillionScalePaginationSql.cursorPage(
+                movieTable, List.of("user_id = ?"), List.of(7L), null, 25
+        ).bindValues()).containsExactly(7L, 25);
+
+        assertThat(MillionScalePaginationSql.cursorPage(
+                movieTable,
+                List.of("user_id = ?"),
+                List.of(7L),
+                new MillionScalePaginationSql.SeekCursor("2026-05-18 10:00:00", 42L),
+                25
+        ).bindValues()).containsExactly(7L, "2026-05-18 10:00:00", "2026-05-18 10:00:00", 42L, 25);
+    }
+
+    @Test
     void delayedJoinPage_offsetsOnlyInsideCoveringIndexSubquery() {
         var plan = MillionScalePaginationSql.delayedJoinPage(
                 movieTable,
