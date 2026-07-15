@@ -50,6 +50,46 @@ class MySqlConnectionSettingsTest {
     }
 
     @Test
+    void descriptions_doNotExposePasswordOrCursorSigningKey() {
+        MySqlConnectionSettings settings = new MySqlConnectionSettings(
+                true,
+                "jdbc:mysql://db.internal:3306/catalog",
+                "app",
+                "record-password",
+                2,
+                2,
+                50,
+                "record-signing-key-0123456789abcdef");
+
+        assertThat(settings.toString())
+                .doesNotContain("record-password")
+                .doesNotContain("record-signing-key-0123456789abcdef");
+        assertThat(settings.safeDescription())
+                .doesNotContain("record-password")
+                .doesNotContain("record-signing-key-0123456789abcdef");
+    }
+
+    @Test
+    void safeDescription_redactsJdbcUrlCredentialsButPreservesLocation() {
+        MySqlConnectionSettings settings = new MySqlConnectionSettings(
+                false,
+                "jdbc:mysql://db.internal:3306/catalog?user=url-user&password=url-password&useSSL=true",
+                "app",
+                "record-password",
+                2,
+                2,
+                50,
+                "");
+
+        assertThat(settings.safeDescription())
+                .contains("jdbc:mysql://db.internal:3306/catalog")
+                .contains("useSSL=true")
+                .doesNotContain("url-user")
+                .doesNotContain("url-password")
+                .doesNotContain("record-password");
+    }
+
+    @Test
     void fromEnv_rejectsMissingSigningKeyWhenEnabled() {
         assertThatThrownBy(() -> MySqlConnectionSettings.fromEnv(Map.of("MYSQL_ENABLED", "true")))
                 .isInstanceOf(IllegalArgumentException.class)

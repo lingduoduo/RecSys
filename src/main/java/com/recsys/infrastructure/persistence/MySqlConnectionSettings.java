@@ -3,6 +3,7 @@ package com.recsys.infrastructure.persistence;
 import java.nio.charset.StandardCharsets;
 import java.util.Map;
 import java.util.Objects;
+import java.util.regex.Pattern;
 
 /**
  * Minimal MySQL settings holder.
@@ -23,6 +24,10 @@ public record MySqlConnectionSettings(
     private static final String DEFAULT_URL =
             "jdbc:mysql://localhost:3306/recsys?useSSL=false&serverTimezone=UTC"
                     + "&connectTimeout=1000&socketTimeout=2000";
+    private static final Pattern URL_CREDENTIAL_PROPERTY = Pattern.compile(
+            "(?i)([?&;](?:user|password)=)[^&;]*");
+    private static final Pattern URL_USER_INFO = Pattern.compile(
+            "(?i)(jdbc:mysql://)[^/?;]*@(?=[^/?;]+)");
 
     public MySqlConnectionSettings {
         url = normalizeUrl(url);
@@ -62,9 +67,19 @@ public record MySqlConnectionSettings(
 
     public String safeDescription() {
         return "MySqlConnectionSettings{enabled=" + enabled
-                + ", url='" + url + '\''
+                + ", url='" + redactUrlCredentials(url) + '\''
                 + ", username='" + username + '\''
-                + ", password='***'}";
+                + ", password='***', cursorSigningKey='***'}";
+    }
+
+    @Override
+    public String toString() {
+        return safeDescription();
+    }
+
+    private static String redactUrlCredentials(String url) {
+        String withoutUserInfo = URL_USER_INFO.matcher(url).replaceFirst("$1***@");
+        return URL_CREDENTIAL_PROPERTY.matcher(withoutUserInfo).replaceAll("$1***");
     }
 
     private static String normalizeUrl(String url) {
