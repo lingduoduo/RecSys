@@ -1420,7 +1420,7 @@ The online server (7010) adds its own `ONLINE_MAX_CONCURRENT_REQUESTS` / `ONLINE
 | `MYSQL_ENABLED` | `false` | Enable the MySQL-backed `/v1/catalog/movies` browse route |
 | `MYSQL_URL` | `jdbc:mysql://localhost:3306/recsys?...` | MySQL JDBC URL; credentials should use separate secret-backed variables |
 | `MYSQL_USER` | `recsys` | MySQL username |
-| `MYSQL_PASSWORD` | _(empty)_ | MySQL password; source from a secret manager in production |
+| `MYSQL_PASSWORD` | _(required when enabled)_ | MySQL password; source from a secret manager in production |
 | `MYSQL_QUERY_TIMEOUT_SECONDS` | `2` | JDBC catalog query deadline; valid range 1–30 seconds |
 | `MYSQL_READ_MAX_ATTEMPTS` | `2` | Total transient-connection read attempts; valid range 1–2 |
 | `MYSQL_READ_RETRY_BACKOFF_MS` | `50` | Backoff before the one allowed retry; valid range 0–1000 ms |

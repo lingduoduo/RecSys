@@ -91,15 +91,53 @@ class MySqlConnectionSettingsTest {
 
     @Test
     void fromEnv_rejectsMissingSigningKeyWhenEnabled() {
-        assertThatThrownBy(() -> MySqlConnectionSettings.fromEnv(Map.of("MYSQL_ENABLED", "true")))
+        assertThatThrownBy(() -> MySqlConnectionSettings.fromEnv(Map.of(
+                "MYSQL_ENABLED", "true",
+                "MYSQL_PASSWORD", "placeholder-password")))
                 .isInstanceOf(IllegalArgumentException.class)
                 .hasMessageContaining("MYSQL_CURSOR_SIGNING_KEY");
+    }
+
+    @Test
+    void fromEnv_rejectsMissingPasswordWhenEnabledWithoutLeakingOtherSecrets() {
+        String signingKey = "signing-key-that-must-not-leak-123";
+
+        assertThatThrownBy(() -> MySqlConnectionSettings.fromEnv(Map.of(
+                "MYSQL_ENABLED", "true",
+                "MYSQL_CURSOR_SIGNING_KEY", signingKey)))
+                .isInstanceOf(IllegalArgumentException.class)
+                .hasMessageContaining("MYSQL_PASSWORD")
+                .hasMessageNotContaining(signingKey);
+    }
+
+    @Test
+    void fromEnv_rejectsEmptyPasswordWhenEnabledWithoutLeakingOtherSecrets() {
+        String signingKey = "signing-key-that-must-not-leak-123";
+
+        assertThatThrownBy(() -> MySqlConnectionSettings.fromEnv(Map.of(
+                "MYSQL_ENABLED", "true",
+                "MYSQL_PASSWORD", "",
+                "MYSQL_CURSOR_SIGNING_KEY", signingKey)))
+                .isInstanceOf(IllegalArgumentException.class)
+                .hasMessageContaining("MYSQL_PASSWORD")
+                .hasMessageNotContaining(signingKey);
+    }
+
+    @Test
+    void fromEnv_preservesWhitespacePasswordWhenEnabled() {
+        MySqlConnectionSettings settings = MySqlConnectionSettings.fromEnv(Map.of(
+                "MYSQL_ENABLED", "true",
+                "MYSQL_PASSWORD", "   ",
+                "MYSQL_CURSOR_SIGNING_KEY", "0123456789abcdef0123456789abcdef"));
+
+        assertThat(settings.password()).isEqualTo("   ");
     }
 
     @Test
     void fromEnv_rejectsSigningKeyShorterThan32Utf8BytesWhenEnabled() {
         assertThatThrownBy(() -> MySqlConnectionSettings.fromEnv(Map.of(
                 "MYSQL_ENABLED", "true",
+                "MYSQL_PASSWORD", "placeholder-password",
                 "MYSQL_CURSOR_SIGNING_KEY", "1234567890123456789012345678901"
         )))
                 .isInstanceOf(IllegalArgumentException.class)

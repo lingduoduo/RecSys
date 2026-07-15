@@ -37,6 +37,9 @@ public record MySqlConnectionSettings(
         validateRange("MYSQL_QUERY_TIMEOUT_SECONDS", queryTimeoutSeconds, 1, 30);
         validateRange("MYSQL_READ_MAX_ATTEMPTS", maxReadAttempts, 1, 2);
         validateRange("MYSQL_READ_RETRY_BACKOFF_MS", retryBackoffMillis, 0, 1000);
+        if (enabled && password.isEmpty()) {
+            throw new IllegalArgumentException("MYSQL_PASSWORD is required when MySQL is enabled");
+        }
         if (enabled && cursorSigningKey.getBytes(StandardCharsets.UTF_8).length < 32) {
             throw new IllegalArgumentException(
                     "MYSQL_CURSOR_SIGNING_KEY must contain at least 32 UTF-8 bytes when MySQL is enabled");
