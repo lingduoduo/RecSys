@@ -6,14 +6,16 @@ import org.junit.jupiter.api.Test;
 import java.sql.Connection;
 import java.sql.PreparedStatement;
 import java.sql.ResultSet;
+import java.sql.SQLException;
+import java.sql.SQLTimeoutException;
 import java.util.List;
+import java.util.concurrent.atomic.AtomicInteger;
 
 import static org.assertj.core.api.Assertions.assertThat;
 import static org.assertj.core.api.Assertions.assertThatThrownBy;
 import static org.mockito.ArgumentMatchers.anyString;
 import static org.mockito.Mockito.inOrder;
 import static org.mockito.Mockito.mock;
-import static org.mockito.Mockito.never;
 import static org.mockito.Mockito.verify;
 import static org.mockito.Mockito.when;
 
@@ -92,12 +94,12 @@ class MySqlClientTest {
     }
 
     @Test
-    void query_doesNotSetTimeoutWhenZero() throws Exception {
+    void query_usesConfiguredTimeoutWhenCallerDoesNotSupplyOne() throws Exception {
         var m = mockQuery();
         new MySqlClient(MySqlConnectionSettings.disabled())
                 .query(m.connection(), new MillionScalePaginationSql.SqlPlan("SELECT 1", List.of()),
-                        rs -> rs.getInt(1), 0);
-        verify(m.statement(), never()).setQueryTimeout(0);
+                        rs -> rs.getInt(1));
+        verify(m.statement()).setQueryTimeout(2);
     }
 
     @Test
@@ -194,5 +196,81 @@ class MySqlClientTest {
                 .query(m.connection(), plan, rs -> rs.getInt(1), 3);
 
         verify(m.statement()).setQueryTimeout(3);
+    }
+
+    @Test
+    void owningQuery_reacquiresConnectionAndSucceedsOnSecondAttempt() throws Exception {
+        var first = mockQuery();
+        var second = mockQuery();
+        when(first.statement().executeQuery()).thenThrow(new SQLException("lost", "08006"));
+        AtomicInteger opens = new AtomicInteger();
+        MySqlClient client = new MySqlClient(MySqlConnectionSettings.disabled(),
+                () -> opens.getAndIncrement() == 0 ? first.connection() : second.connection(), millis -> {});
+
+        List<Integer> result = client.query(
+                new MillionScalePaginationSql.SqlPlan("SELECT 1", List.of()), rs -> rs.getInt(1));
+
+        assertThat(result).isEmpty();
+        assertThat(opens).hasValue(2);
+        verify(first.connection()).close();
+        verify(second.connection()).close();
+        verify(first.statement()).setQueryTimeout(2);
+        verify(second.statement()).setQueryTimeout(2);
+    }
+
+    @Test
+    void owningQuery_doesNotRetryTimeoutOrSyntaxFailure() throws Exception {
+        for (SQLException failure : List.of(
+                new SQLTimeoutException("deadline"), new SQLException("syntax", "42000"))) {
+            var m = mockQuery();
+            when(m.statement().executeQuery()).thenThrow(failure);
+            AtomicInteger opens = new AtomicInteger();
+            MySqlClient client = new MySqlClient(MySqlConnectionSettings.disabled(),
+                    () -> { opens.incrementAndGet(); return m.connection(); }, millis -> {});
+
+            assertThatThrownBy(() -> client.query(
+                    new MillionScalePaginationSql.SqlPlan("SELECT 1", List.of()), rs -> rs.getInt(1)))
+                    .isSameAs(failure);
+            assertThat(opens).hasValue(1);
+        }
+    }
+
+    @Test
+    void owningQuery_propagatesFailureAfterConfiguredMaximumAttempts() throws Exception {
+        var first = mockQuery();
+        var second = mockQuery();
+        SQLException firstFailure = new SQLException("lost-1", "08006");
+        SQLException finalFailure = new SQLException("lost-2", "08006");
+        when(first.statement().executeQuery()).thenThrow(firstFailure);
+        when(second.statement().executeQuery()).thenThrow(finalFailure);
+        AtomicInteger opens = new AtomicInteger();
+        MySqlClient client = new MySqlClient(MySqlConnectionSettings.disabled(),
+                () -> opens.getAndIncrement() == 0 ? first.connection() : second.connection(), millis -> {});
+
+        assertThatThrownBy(() -> client.query(
+                new MillionScalePaginationSql.SqlPlan("SELECT 1", List.of()), rs -> rs.getInt(1)))
+                .isSameAs(finalFailure);
+        assertThat(opens).hasValue(2);
+    }
+
+    @Test
+    void owningQuery_restoresInterruptAndStopsRetryingWhenBackoffIsInterrupted() throws Exception {
+        var m = mockQuery();
+        SQLException failure = new SQLException("lost", "08006");
+        when(m.statement().executeQuery()).thenThrow(failure);
+        AtomicInteger opens = new AtomicInteger();
+        MySqlClient client = new MySqlClient(MySqlConnectionSettings.disabled(),
+                () -> { opens.incrementAndGet(); return m.connection(); },
+                millis -> { throw new InterruptedException("stop"); });
+
+        try {
+            assertThatThrownBy(() -> client.query(
+                    new MillionScalePaginationSql.SqlPlan("SELECT 1", List.of()), rs -> rs.getInt(1)))
+                    .isSameAs(failure);
+            assertThat(Thread.currentThread().isInterrupted()).isTrue();
+            assertThat(opens).hasValue(1);
+        } finally {
+            Thread.interrupted();
+        }
     }
 }

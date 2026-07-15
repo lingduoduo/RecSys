@@ -25,10 +25,20 @@ import java.util.function.Function;
 public class MySqlClient implements AutoCloseable {
 
     private final MySqlConnectionSettings settings;
+    private final ConnectionProvider connectionProvider;
+    private final Sleeper sleeper;
     private volatile HikariDataSource dataSource;
 
     public MySqlClient(MySqlConnectionSettings settings) {
         this.settings = settings == null ? MySqlConnectionSettings.disabled() : settings;
+        this.connectionProvider = null;
+        this.sleeper = Thread::sleep;
+    }
+
+    MySqlClient(MySqlConnectionSettings settings, ConnectionProvider connectionProvider, Sleeper sleeper) {
+        this.settings = settings == null ? MySqlConnectionSettings.disabled() : settings;
+        this.connectionProvider = Objects.requireNonNull(connectionProvider, "connectionProvider");
+        this.sleeper = Objects.requireNonNull(sleeper, "sleeper");
     }
 
     public static MySqlClient fromEnv() {
@@ -44,6 +54,9 @@ public class MySqlClient implements AutoCloseable {
     }
 
     public Connection openConnection() throws SQLException {
+        if (connectionProvider != null) {
+            return connectionProvider.open();
+        }
         if (!settings.enabled()) {
             throw new IllegalStateException("MySQL is disabled; set MYSQL_ENABLED=true before opening connections");
         }
@@ -116,19 +129,17 @@ public class MySqlClient implements AutoCloseable {
     }
 
     public <T> List<T> query(MillionScalePaginationSql.SqlPlan plan, RowMapper<T> mapper) throws SQLException {
-        return query(plan, mapper, 0);
+        return query(plan, mapper, settings.queryTimeoutSeconds());
     }
 
     public <T> List<T> query(MillionScalePaginationSql.SqlPlan plan, RowMapper<T> mapper, int queryTimeoutSeconds) throws SQLException {
         Objects.requireNonNull(plan, "plan");
         Objects.requireNonNull(mapper, "mapper");
-        try (Connection connection = openConnection()) {
-            return query(connection, plan, mapper, queryTimeoutSeconds);
-        }
+        return withReadRetry(connection -> query(connection, plan, mapper, effectiveTimeout(queryTimeoutSeconds)));
     }
 
     /**
-     * @param queryTimeoutSeconds JDBC query timeout; 0 means no timeout (driver default)
+     * @param queryTimeoutSeconds JDBC query timeout; non-positive values use the configured deadline
      */
     public <T> List<T> query(
             Connection connection,
@@ -140,9 +151,7 @@ public class MySqlClient implements AutoCloseable {
         Objects.requireNonNull(plan, "plan");
         Objects.requireNonNull(mapper, "mapper");
         try (PreparedStatement statement = connection.prepareStatement(plan.sql())) {
-            if (queryTimeoutSeconds > 0) {
-                statement.setQueryTimeout(queryTimeoutSeconds);
-            }
+            statement.setQueryTimeout(effectiveTimeout(queryTimeoutSeconds));
             bind(statement, plan.bindValues());
             try (ResultSet rs = statement.executeQuery()) {
                 List<T> rows = new ArrayList<>();
@@ -159,7 +168,7 @@ public class MySqlClient implements AutoCloseable {
             MillionScalePaginationSql.SqlPlan plan,
             RowMapper<T> mapper
     ) throws SQLException {
-        return query(connection, plan, mapper, 0);
+        return query(connection, plan, mapper, settings.queryTimeoutSeconds());
     }
 
     public <T> PageResult<T> queryPage(
@@ -169,7 +178,7 @@ public class MySqlClient implements AutoCloseable {
             Function<T, MillionScalePaginationSql.SeekCursor> cursorExtractor,
             RowMapper<T> mapper
     ) throws SQLException {
-        return queryPage(connection, plan, pageSize, cursorExtractor, mapper, 0);
+        return queryPage(connection, plan, pageSize, cursorExtractor, mapper, settings.queryTimeoutSeconds());
     }
 
     /**
@@ -181,7 +190,7 @@ public class MySqlClient implements AutoCloseable {
      * @param pageSize            expected page size; used to detect whether more rows exist
      * @param cursorExtractor     extracts the stable (sortValue, id) position from a mapped row;
      *                            return {@code null} to suppress next-cursor generation for that row
-     * @param queryTimeoutSeconds JDBC query timeout; 0 means no timeout (driver default)
+     * @param queryTimeoutSeconds JDBC query timeout; non-positive values use the configured deadline
      */
     public <T> PageResult<T> queryPage(
             Connection connection,
@@ -211,9 +220,7 @@ public class MySqlClient implements AutoCloseable {
             Function<T, MillionScalePaginationSql.SeekCursor> cursorExtractor,
             RowMapper<T> mapper
     ) throws SQLException {
-        try (Connection connection = openConnection()) {
-            return queryPage(connection, plan, pageSize, cursorExtractor, mapper, 0);
-        }
+        return queryPage(plan, pageSize, cursorExtractor, mapper, settings.queryTimeoutSeconds());
     }
 
     public <T> PageResult<T> queryPage(
@@ -223,8 +230,30 @@ public class MySqlClient implements AutoCloseable {
             RowMapper<T> mapper,
             int queryTimeoutSeconds
     ) throws SQLException {
-        try (Connection connection = openConnection()) {
-            return queryPage(connection, plan, pageSize, cursorExtractor, mapper, queryTimeoutSeconds);
+        return withReadRetry(connection -> queryPage(
+                connection, plan, pageSize, cursorExtractor, mapper, effectiveTimeout(queryTimeoutSeconds)));
+    }
+
+    private int effectiveTimeout(int requestedSeconds) {
+        return requestedSeconds > 0 ? requestedSeconds : settings.queryTimeoutSeconds();
+    }
+
+    private <T> T withReadRetry(ConnectionRead<T> read) throws SQLException {
+        for (int attempt = 1; ; attempt++) {
+            try (Connection connection = openConnection()) {
+                return read.execute(connection);
+            } catch (SQLException failure) {
+                if (attempt >= settings.maxReadAttempts()
+                        || !MySqlExceptionClassifier.isRetryableRead(failure)) {
+                    throw failure;
+                }
+                try {
+                    sleeper.sleep(settings.retryBackoffMillis());
+                } catch (InterruptedException interrupted) {
+                    Thread.currentThread().interrupt();
+                    throw failure;
+                }
+            }
         }
     }
 
@@ -250,5 +279,20 @@ public class MySqlClient implements AutoCloseable {
     @FunctionalInterface
     public interface RowMapper<T> {
         T map(ResultSet resultSet) throws SQLException;
+    }
+
+    @FunctionalInterface
+    interface ConnectionProvider {
+        Connection open() throws SQLException;
+    }
+
+    @FunctionalInterface
+    interface Sleeper {
+        void sleep(long millis) throws InterruptedException;
+    }
+
+    @FunctionalInterface
+    private interface ConnectionRead<T> {
+        T execute(Connection connection) throws SQLException;
     }
 }
