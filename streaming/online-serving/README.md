@@ -96,7 +96,10 @@ Services:
 sh streaming/online-serving/scripts/produce_movie_events.sh
 ```
 
-That publishes the bundled event stream from `movie_events.ndjson` into Kafka topic `movie_events`.
+That publishes the bundled event stream from `movie_events.ndjson` into the 24-partition Kafka topic
+`movie_events_v2`. Each record is keyed by its normalized positive user ID so one user's events remain
+in partition order. `KAFKA_PARTITIONS` defaults to `24` and the script rejects any other value for this
+topic generation.
 In a real app, `LogCollector` is the counterpart to this replay script: product surfaces call it with
 click, view, like, or order logs, then its JSON output is written to Kafka.
 `OnlineJoiner` is the next step: it combines those behavior records with user, item, and request context
@@ -124,7 +127,7 @@ The Flink job is implemented in:
 
 It supports:
 
-- Kafka source via `--bootstrap.servers ... --topic movie_events`
+- Kafka source via `--bootstrap.servers ... --topic movie_events_v2`
 - local file replay via `--input-file streaming/online-serving/data/movie_events.ndjson`
 
 Build the Flink profile:
@@ -146,7 +149,7 @@ Run from Kafka:
 ```bash
 mvn -Pstreaming-flink exec:java \
   -Dexec.mainClass="com.recsys.streaming.flink.OnlineFeatureStreamingJob" \
-  -Dexec.args="--bootstrap.servers localhost:9092 --topic movie_events --redis.host localhost --redis.port 6379 --window-seconds 10 --window-label last_hour --top-k 10 --idempotency-ttl-seconds 86400"
+  -Dexec.args="--bootstrap.servers localhost:9092 --topic movie_events_v2 --redis.host localhost --redis.port 6379 --window-seconds 10 --window-label last_hour --top-k 10 --idempotency-ttl-seconds 86400"
 ```
 
 Flink consistency knobs:

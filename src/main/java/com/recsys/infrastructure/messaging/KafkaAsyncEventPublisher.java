@@ -62,6 +62,14 @@ public class KafkaAsyncEventPublisher extends AsyncEventPublisher {
         this.keyExtractor = keyExtractor;
     }
 
+    boolean hasKeyExtractor() {
+        return keyExtractor != null;
+    }
+
+    String topic() {
+        return topic;
+    }
+
     @Override
     public boolean publish(String event) {
         if (keyExtractor == null) return super.publish(event);
