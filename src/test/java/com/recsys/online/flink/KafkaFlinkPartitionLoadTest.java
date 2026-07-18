@@ -227,12 +227,14 @@ class KafkaFlinkPartitionLoadTest {
         env.setParallelism(PARTITIONS);
         env.setRestartStrategy(RestartStrategies.noRestart());
         env.enableCheckpointing(500L);
-        ParameterTool params = ParameterTool.fromMap(Map.of(
-                "bootstrap.servers", KAFKA.getBootstrapServers(), "topic", topic,
-                "bridge-mode", "true", "checkpoint-dir", "file:///tmp/recsys-flink-load-checkpoints",
-                "group.id", GROUP, "expected-topic-partitions", "24",
-                "source-parallelism", "24", "operator-parallelism", "24",
-                "max-parallelism", "128", "kafka.partition.discovery.interval.ms", "100"));
+        Map<String, String> values = new HashMap<>();
+        values.put("bootstrap.servers", KAFKA.getBootstrapServers()); values.put("topic", topic);
+        values.put("bridge-mode", "true"); values.put("checkpoint-dir", "file:///tmp/recsys-flink-load-checkpoints");
+        values.put("allow-local-checkpoint-storage", "true"); values.put("group.id", GROUP);
+        values.put("expected-topic-partitions", "24"); values.put("source-parallelism", "24");
+        values.put("operator-parallelism", "24"); values.put("max-parallelism", "128");
+        values.put("kafka.partition.discovery.interval.ms", "100");
+        ParameterTool params = ParameterTool.fromMap(values);
         OnlineFeatureStreamingJob.JobConfiguration jobConfiguration =
                 OnlineFeatureStreamingJob.validateConfiguration(params);
         OnlineFeatureStreamingJob.PartitionGraph production = OnlineFeatureStreamingJob.buildPartitionGraph(

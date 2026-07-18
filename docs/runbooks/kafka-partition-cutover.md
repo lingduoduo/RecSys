@@ -16,6 +16,7 @@ export OLD_JOB_JAR=/immutable/releases/recsys-before-partition-optimization.jar
 export BRIDGE_JOB_JAR=/immutable/releases/recsys-kafka-v2.jar
 export NEW_V2_JOB_JAR=/immutable/releases/recsys-kafka-v2.jar
 export OLD_JOB_GRAPH_JSON=/immutable/change-evidence/old-job-graph.json
+export BRIDGE_JOB_GRAPH_JSON=/immutable/change-evidence/bridge-job-graph.json
 ```
 
 `OLD_JOB_JAR` is the exact pre-partition-optimization artifact currently deployed. Its Kafka source must have no stable UID, or its exact observed old UID must be recorded from the deployed graph; it must not be `kafka-movie-events-v2`. `NEW_V2_JOB_JAR` is this feature artifact and its Kafka source UID is exactly `kafka-movie-events-v2`. Record both artifacts' immutable repository coordinates and SHA-256 checksums in the change ticket:
@@ -40,7 +41,7 @@ The description must show `PartitionCount: 24` and partitions 0 through 23. Stop
 
 ## 2. Rebuild future-compatible state with a shadow bridge
 
-Never restore the legacy job's generated operator IDs directly. First prove legacy-topic retention covers the full state horizon (at least the dedup TTL and every retained feature horizon), then launch this artifact from earliest in explicit bridge mode:
+Never restore the legacy job's generated operator IDs directly. First prove legacy-topic retention covers the maximum configured dedup/history/embedding/session TTL plus window lateness and watermark safety. Bridge mode is state-only: it must not write Redis or any production external sink. Launch this artifact from earliest in explicit bridge mode:
 
 ```bash
 flink run -c com.recsys.online.flink.OnlineFeatureStreamingJob "$BRIDGE_JOB_JAR" \
@@ -51,7 +52,9 @@ flink run -c com.recsys.online.flink.OnlineFeatureStreamingJob "$BRIDGE_JOB_JAR"
   --max-parallelism 128 --checkpoint-dir <durable-checkpoint-uri>
 ```
 
-The bridge source UID is `kafka-movie-events-bridge-v1`; its downstream UIDs and state schemas exactly match v2. Wait for zero bridge lag and reconcile Redis history, embeddings, sessions, metrics, dedup behavior, and closed Top-K windows with the active job. Abort on insufficient retention, failed checkpoints, nonzero lag, or reconciliation differences.
+The bridge source UID is `kafka-movie-events-bridge-v1`; its downstream UIDs and state schemas exactly match v2, while production sink UIDs terminate in no-op state-only sinks. Verify `$BRIDGE_JOB_GRAPH_JSON` contains the bridge source UID, every documented downstream UID, expected max parallelism, compatible state descriptors, and no Redis sink implementation. Reconcile rebuilt state only through controlled savepoint/state inspection or an approved isolated export—not production Redis writes. Abort on insufficient retention, failed checkpoints, nonzero lag, or reconciliation differences.
+
+`--allow-local-checkpoint-storage true` exists only for automated local/Docker tests. It is forbidden in staging and production. Production checkpoint URIs must use approved shared storage such as `s3`, `s3a`, `hdfs`, `gs`, `abfs`, `abfss`, `wasb`, or `wasbs`.
 
 ## 3. Fence producers and drain the old and bridge groups
 
@@ -106,7 +109,7 @@ Topic generations require artifact generations. A future `movie_events_v3` cutov
 
 Keeping producers fenced until the restored job is healthy prevents ambiguity. The Top-K path uses event time, tolerates five seconds of out-of-order data, and marks silent source partitions idle after 30 seconds so one empty partition cannot stall all watermarks.
 
-## 5. Switch producers and validate
+## 6. Switch producers and validate
 
 Before resuming producers, capture the activation/start offset for every v2 partition. Store and checksum the immutable file in the change evidence:
 
@@ -134,7 +137,7 @@ kafka-topics.sh --bootstrap-server "$BOOTSTRAP_SERVERS" \
 - Missing/invalid user-key rejection and publisher queue rejection metrics do not spike.
 - The opt-in load contract is 50,000 events/s, zero final consumer lag, completed checkpoints, and no failed checkpoints. This is a pre-cutover capacity guard, not a claim that every production environment sustains that rate without its own sizing test.
 
-## 6. Recover or roll back
+## 7. Recover or roll back
 
 ### Before the first accepted v2 event
 
@@ -164,7 +167,7 @@ Moving v2 back to the old topic requires a separately approved replay and reconc
 
 Do not attempt to shrink `movie_events_v2`; Kafka partition counts cannot be reduced. If the restore rejects state compatibility, keep producers fenced and restore the exact prior artifact rather than discarding non-restored state.
 
-## 7. Retire the old topic
+## 8. Retire the old topic
 
 Keep the old topic, original savepoint, v2 recovery savepoints, and replay data through the agreed recovery window and required data-retention/audit period. After change approval confirms the v2-to-old replay path is no longer required, verify no producer or consumer references `$OLD_TOPIC`, archive required offsets and manifests, and then delete it:
 

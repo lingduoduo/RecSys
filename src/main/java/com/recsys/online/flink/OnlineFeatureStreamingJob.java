@@ -43,6 +43,7 @@ import io.lettuce.core.codec.StringCodec;
 
 import java.io.IOException;
 import java.time.Duration;
+import java.net.URI;
 import java.util.ArrayDeque;
 import java.util.ArrayList;
 import java.util.Comparator;
@@ -51,6 +52,7 @@ import java.util.HashMap;
 import java.util.List;
 import java.util.Map;
 import java.util.Properties;
+import java.util.Set;
 import java.util.stream.Collectors;
 
 public final class OnlineFeatureStreamingJob {
@@ -109,52 +111,48 @@ public final class OnlineFeatureStreamingJob {
                                 .withTimestampAssigner((event, timestamp) -> event.eventTimeMillis)
                                 .withIdleness(Duration.ofMillis(watermarkIdleTimeoutMs)));
 
-        events
+        boolean bridgeMode = params.getBoolean("bridge-mode", false);
+        DataStream<UserRecentMoviesUpdate> recentUpdates = events
                 .filter(MovieEvent::updatesRecentHistory)
                 .keyBy(event -> event.userId)
                 .process(new RecentMoviesFunction(recentMovieLimit, userHistoryTtlSeconds))
                 .name("recent-movies")
                 .uid("recent-movies-v1")
                 .setParallelism(jobConfiguration.operatorParallelism())
-                .setMaxParallelism(jobConfiguration.maxParallelism())
-                .addSink(new RedisRecentMoviesSink(redisHost, redisPort))
-                .name("redis-user-history-sink").uid("redis-user-history-sink-v1")
-                .setParallelism(jobConfiguration.operatorParallelism())
                 .setMaxParallelism(jobConfiguration.maxParallelism());
+        attachSink(recentUpdates, new RedisRecentMoviesSink(redisHost, redisPort), bridgeMode,
+                "redis-user-history-sink", "redis-user-history-sink-v1", jobConfiguration);
 
-        events
+        DataStream<StringFeatureUpdate> embeddingUpdates = events
                 .filter(MovieEvent::updatesRecentHistory)
                 .keyBy(event -> event.userId)
                 .process(new UserEmbeddingFunction(userEmbeddingDimensions, userEmbeddingTtlSeconds))
                 .name("user-embedding-feature")
                 .uid("user-embedding-feature-v1").setParallelism(jobConfiguration.operatorParallelism())
-                .setMaxParallelism(jobConfiguration.maxParallelism())
-                .addSink(new RedisStringFeatureSink(redisHost, redisPort))
-                .name("redis-user-embedding-sink").uid("redis-user-embedding-sink-v1")
-                .setParallelism(jobConfiguration.operatorParallelism()).setMaxParallelism(jobConfiguration.maxParallelism());
+                .setMaxParallelism(jobConfiguration.maxParallelism());
+        attachSink(embeddingUpdates, new RedisStringFeatureSink(redisHost, redisPort), bridgeMode,
+                "redis-user-embedding-sink", "redis-user-embedding-sink-v1", jobConfiguration);
 
-        events
+        DataStream<StringFeatureUpdate> sessionUpdates = events
                 .filter(MovieEvent::hasSessionIdentity)
                 .keyBy(event -> event.userId + "|" + event.sessionId())
                 .process(new SessionFeatureFunction(sessionTtlSeconds))
                 .name("session-feature")
                 .uid("session-feature-v1").setParallelism(jobConfiguration.operatorParallelism())
-                .setMaxParallelism(jobConfiguration.maxParallelism())
-                .addSink(new RedisStringFeatureSink(redisHost, redisPort))
-                .name("redis-session-feature-sink").uid("redis-session-feature-sink-v1")
-                .setParallelism(jobConfiguration.operatorParallelism()).setMaxParallelism(jobConfiguration.maxParallelism());
+                .setMaxParallelism(jobConfiguration.maxParallelism());
+        attachSink(sessionUpdates, new RedisStringFeatureSink(redisHost, redisPort), bridgeMode,
+                "redis-session-feature-sink", "redis-session-feature-sink-v1", jobConfiguration);
 
-        events
+        DataStream<MovieMetricUpdate> metricUpdates = events
                 .filter(event -> metricKind(event) != null)
                 .keyBy(event -> event.movieId + "|" + metricKind(event))
                 .window(TumblingProcessingTimeWindows.of(Time.seconds(windowSeconds)))
                 .aggregate(new CountAggregate(), new MovieMetricWindowFunction(windowLabel, metricTtlSeconds))
                 .name("movie-metrics")
                 .uid("movie-metrics-v1").setParallelism(jobConfiguration.operatorParallelism())
-                .setMaxParallelism(jobConfiguration.maxParallelism())
-                .addSink(new RedisMovieMetricSink(redisHost, redisPort))
-                .name("redis-movie-metric-sink").uid("redis-movie-metric-sink-v1")
-                .setParallelism(jobConfiguration.operatorParallelism()).setMaxParallelism(jobConfiguration.maxParallelism());
+                .setMaxParallelism(jobConfiguration.maxParallelism());
+        attachSink(metricUpdates, new RedisMovieMetricSink(redisHost, redisPort), bridgeMode,
+                "redis-movie-metric-sink", "redis-movie-metric-sink-v1", jobConfiguration);
 
         DataStream<PartialTopK> partials = events
                 .filter(event -> event.engagementWeight() > 0L)
@@ -173,15 +171,10 @@ public final class OnlineFeatureStreamingJob {
                 .setParallelism(Math.min(finalTopKParallelism, jobConfiguration.operatorParallelism()))
                 .setMaxParallelism(jobConfiguration.maxParallelism());
 
-        topKSnapshots
-                .addSink(new RedisTopKSink(redisHost, redisPort))
-                .name("redis-topk-sink").uid("redis-topk-sink-v1")
-                .setParallelism(jobConfiguration.operatorParallelism()).setMaxParallelism(jobConfiguration.maxParallelism());
-
-        topKSnapshots
-                .addSink(new RedisTrendFeatureSink(redisHost, redisPort))
-                .name("redis-trend-feature-sink").uid("redis-trend-feature-sink-v1")
-                .setParallelism(jobConfiguration.operatorParallelism()).setMaxParallelism(jobConfiguration.maxParallelism());
+        attachSink(topKSnapshots, new RedisTopKSink(redisHost, redisPort), bridgeMode,
+                "redis-topk-sink", "redis-topk-sink-v1", jobConfiguration);
+        attachSink(topKSnapshots, new RedisTrendFeatureSink(redisHost, redisPort), bridgeMode,
+                "redis-trend-feature-sink", "redis-trend-feature-sink-v1", jobConfiguration);
 
         env.execute("recsys-online-feature-streaming");
     }
@@ -212,6 +205,9 @@ public final class OnlineFeatureStreamingJob {
         if (kafka && StringUtils.isNullOrWhitespaceOnly(checkpointDir)) {
             throw new IllegalArgumentException("Kafka normal and bridge modes require a durable checkpoint-dir URI");
         }
+        if (kafka && !params.getBoolean("allow-local-checkpoint-storage", false)) {
+            validateDurableCheckpointUri(checkpointDir);
+        }
         JobConfiguration configuration = new JobConfiguration(
                 params.getInt("expected-topic-partitions", 24),
                 params.getInt("source-parallelism", 24),
@@ -230,6 +226,31 @@ public final class OnlineFeatureStreamingJob {
                     "max-parallelism cannot be below source-parallelism or operator-parallelism");
         }
         return configuration;
+    }
+
+    private static final Set<String> DURABLE_CHECKPOINT_SCHEMES =
+            Set.of("s3", "s3a", "hdfs", "gs", "abfs", "abfss", "wasb", "wasbs");
+
+    static void validateDurableCheckpointUri(String checkpointDir) {
+        try {
+            URI uri = URI.create(checkpointDir.trim());
+            if (uri.getScheme() == null || !DURABLE_CHECKPOINT_SCHEMES.contains(uri.getScheme().toLowerCase())) {
+                throw new IllegalArgumentException("checkpoint-dir must use shared durable storage; local/file/tmp paths require the explicit local-test override");
+            }
+        } catch (RuntimeException e) {
+            if (e instanceof IllegalArgumentException && e.getMessage().contains("shared durable")) throw e;
+            throw new IllegalArgumentException("checkpoint-dir must be a valid shared durable URI", e);
+        }
+    }
+
+    static <T> void attachSink(DataStream<T> stream, RichSinkFunction<T> productionSink,
+                                       boolean bridgeMode, String name, String uid,
+                                       JobConfiguration configuration) {
+        RichSinkFunction<T> sink = bridgeMode ? new NoOpStateSink<>() : productionSink;
+        stream.addSink(sink)
+                .name(bridgeMode ? "bridge-noop-" + name : name).uid(uid)
+                .setParallelism(configuration.operatorParallelism())
+                .setMaxParallelism(configuration.maxParallelism());
     }
 
     record JobConfiguration(int expectedTopicPartitions, int sourceParallelism,
@@ -373,6 +394,15 @@ public final class OnlineFeatureStreamingJob {
         return Math.floorMod(Integer.hashCode(movieId), bucketCount);
     }
 
+    static StateTtlConfig stateTtl(long ttlSeconds) {
+        return StateTtlConfig.newBuilder(
+                        org.apache.flink.api.common.time.Time.seconds(Math.max(1L, ttlSeconds)))
+                .setUpdateType(StateTtlConfig.UpdateType.OnCreateAndWrite)
+                .setStateVisibility(StateTtlConfig.StateVisibility.NeverReturnExpired)
+                .cleanupInRocksdbCompactFilter(1_000L)
+                .build();
+    }
+
     static long validateAllowedLatenessMs(long allowedLatenessMs) {
         if (allowedLatenessMs < 0L) {
             throw new IllegalArgumentException("top-k-allowed-lateness-ms must be non-negative");
@@ -399,8 +429,9 @@ public final class OnlineFeatureStreamingJob {
 
         @Override
         public void open(Configuration parameters) {
-            recentMoviesState = getRuntimeContext().getListState(
-                    new ListStateDescriptor<>("recent-movie-ids", Types.INT));
+            ListStateDescriptor<Integer> descriptor = new ListStateDescriptor<>("recent-movie-ids", Types.INT);
+            descriptor.enableTimeToLive(stateTtl(ttlSeconds));
+            recentMoviesState = getRuntimeContext().getListState(descriptor);
         }
 
         @Override
@@ -445,8 +476,10 @@ public final class OnlineFeatureStreamingJob {
 
         @Override
         public void open(Configuration parameters) {
-            state = getRuntimeContext().getState(
-                    new ValueStateDescriptor<>("user-embedding-feature", UserEmbeddingState.class));
+            ValueStateDescriptor<UserEmbeddingState> descriptor =
+                    new ValueStateDescriptor<>("user-embedding-feature", UserEmbeddingState.class);
+            descriptor.enableTimeToLive(stateTtl(ttlSeconds));
+            state = getRuntimeContext().getState(descriptor);
         }
 
         @Override
@@ -526,8 +559,10 @@ public final class OnlineFeatureStreamingJob {
 
         @Override
         public void open(Configuration parameters) {
-            state = getRuntimeContext().getState(
-                    new ValueStateDescriptor<>("session-feature", SessionFeatureState.class));
+            ValueStateDescriptor<SessionFeatureState> descriptor =
+                    new ValueStateDescriptor<>("session-feature", SessionFeatureState.class);
+            descriptor.enableTimeToLive(stateTtl(ttlSeconds));
+            state = getRuntimeContext().getState(descriptor);
         }
 
         @Override
@@ -573,12 +608,7 @@ public final class OnlineFeatureStreamingJob {
         public void open(Configuration parameters) {
             MapStateDescriptor<String, Long> descriptor =
                     new MapStateDescriptor<>("event-id-expiry", Types.STRING, Types.LONG);
-            descriptor.enableTimeToLive(StateTtlConfig.newBuilder(
-                            org.apache.flink.api.common.time.Time.seconds(Math.max(1L, ttlSeconds)))
-                    .setUpdateType(StateTtlConfig.UpdateType.OnCreateAndWrite)
-                    .setStateVisibility(StateTtlConfig.StateVisibility.NeverReturnExpired)
-                    .cleanupInRocksdbCompactFilter(1_000L)
-                    .build());
+            descriptor.enableTimeToLive(stateTtl(ttlSeconds));
             eventExpiry = getRuntimeContext().getMapState(descriptor);
         }
 
@@ -897,6 +927,11 @@ public final class OnlineFeatureStreamingJob {
                     args.toArray(new String[0])
             );
         }
+    }
+
+    /** State-only bridge terminal: preserves sink UIDs without any external side effect. */
+    static final class NoOpStateSink<T> extends RichSinkFunction<T> {
+        @Override public void invoke(T value, Context context) { }
     }
 
     static final class RedisStringFeatureSink extends AbstractRedisSink<StringFeatureUpdate> {

@@ -11,8 +11,10 @@ import org.junit.jupiter.api.Test;
 import org.apache.flink.api.java.utils.ParameterTool;
 import org.apache.flink.api.common.functions.RuntimeContext;
 import org.apache.flink.api.common.state.MapState;
+import org.apache.flink.api.common.state.StateTtlConfig;
 import org.apache.flink.streaming.api.windowing.windows.TimeWindow;
 import org.apache.flink.streaming.api.TimerService;
+import org.apache.flink.streaming.api.environment.StreamExecutionEnvironment;
 import org.apache.flink.streaming.api.operators.KeyedProcessOperator;
 import org.apache.flink.streaming.util.KeyedOneInputStreamOperatorTestHarness;
 import org.apache.flink.streaming.api.watermark.Watermark;
@@ -47,6 +49,16 @@ class OnlineFeatureStreamingJobTest {
         assertThat(OnlineFeatureStreamingJob.movieBucket(-42, 7)).isEqualTo(0);
         assertThat(OnlineFeatureStreamingJob.movieBucket(Integer.MIN_VALUE, 7)).isEqualTo(5);
         assertThat(OnlineFeatureStreamingJob.movieBucket(-1, 7)).isEqualTo(6);
+    }
+
+    @Test
+    void retainedStateTtlUsesWriteRefreshAndNeverReturnsExpiredValues() {
+        var ttl = OnlineFeatureStreamingJob.stateTtl(1_800L);
+        assertThat(ttl.isEnabled()).isTrue();
+        assertThat(ttl.getTtl().toMilliseconds()).isEqualTo(1_800_000L);
+        assertThat(ttl.getUpdateType()).isEqualTo(StateTtlConfig.UpdateType.OnCreateAndWrite);
+        assertThat(ttl.getStateVisibility()).isEqualTo(StateTtlConfig.StateVisibility.NeverReturnExpired);
+        assertThat(ttl.getCleanupStrategies().inRocksdbCompactFilter()).isTrue();
     }
 
     @Test
@@ -272,6 +284,45 @@ class OnlineFeatureStreamingJobTest {
                 new String[]{"--bootstrap.servers", "broker:9092", "--checkpoint-dir", "s3://cp",
                         "--bridge-mode", "true", "--topic", "recsys_events"})))
                 .isEqualTo(new OnlineFeatureStreamingJob.JobConfiguration(24, 24, 24, 128));
+    }
+
+    @Test
+    void rejectsLocalCheckpointStorageUnlessExplicitlyAllowedForTests() {
+        for (String location : List.of("relative/checkpoints", "file:///tmp/checkpoints", "/tmp/checkpoints")) {
+            assertThatThrownBy(() -> OnlineFeatureStreamingJob.validateConfiguration(ParameterTool.fromArgs(
+                    new String[]{"--bootstrap.servers", "broker:9092", "--checkpoint-dir", location})))
+                    .as(location).hasMessageContaining("shared durable");
+        }
+        assertThat(OnlineFeatureStreamingJob.validateConfiguration(ParameterTool.fromArgs(new String[]{
+                "--bootstrap.servers", "broker:9092", "--checkpoint-dir", "file:///tmp/checkpoints",
+                "--allow-local-checkpoint-storage", "true"})))
+                .isEqualTo(new OnlineFeatureStreamingJob.JobConfiguration(24, 24, 24, 128));
+    }
+
+    @Test
+    void bridgeTerminalUsesNoOpButPreservesProductionSinkUid() {
+        StreamExecutionEnvironment env = StreamExecutionEnvironment.getExecutionEnvironment();
+        var input = env.fromElements(new OnlineFeatureStreamingJob.StringFeatureUpdate(
+                "key", "state", 1L, 60, "event"));
+        var configuration = new OnlineFeatureStreamingJob.JobConfiguration(24, 1, 1, 128);
+        OnlineFeatureStreamingJob.attachSink(input,
+                new OnlineFeatureStreamingJob.RedisStringFeatureSink("localhost", 6379), true,
+                "redis-test-sink", "redis-test-sink-v1", configuration);
+
+        var nodes = env.getStreamGraph().getStreamNodes().stream().toList();
+        assertThat(nodes).anyMatch(node -> node.getOperatorName().contains("bridge-noop-redis-test-sink"));
+        assertThat(nodes).noneMatch(node -> node.getOperatorName().matches(".*Sink: redis-test-sink.*"));
+        assertThat(nodes.stream().filter(node -> node.getOperatorName().contains("sink")).toList())
+                .allMatch(node -> !node.getOperatorFactory().getClass().getName().contains("Redis"));
+
+        StreamExecutionEnvironment normalEnv = StreamExecutionEnvironment.getExecutionEnvironment();
+        var normalInput = normalEnv.fromElements(new OnlineFeatureStreamingJob.StringFeatureUpdate(
+                "key", "state", 1L, 60, "event"));
+        OnlineFeatureStreamingJob.attachSink(normalInput,
+                new OnlineFeatureStreamingJob.RedisStringFeatureSink("localhost", 6379), false,
+                "redis-test-sink", "redis-test-sink-v1", configuration);
+        assertThat(normalEnv.getStreamGraph().getStreamNodes()).anyMatch(
+                node -> node.getOperatorName().contains("redis-test-sink"));
     }
 
     @Test

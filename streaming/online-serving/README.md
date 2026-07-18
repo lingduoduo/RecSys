@@ -150,7 +150,7 @@ Run from Kafka:
 ```bash
 mvn -Pstreaming-flink exec:java \
   -Dexec.mainClass="com.recsys.online.flink.OnlineFeatureStreamingJob" \
-  -Dexec.args="--bootstrap.servers localhost:9092 --topic movie_events_v2 --group.id online-features-v2 --checkpoint-dir file:///durable/flink/checkpoints --expected-topic-partitions 24 --source-parallelism 24 --operator-parallelism 24 --max-parallelism 128 --top-k-bucket-count 24 --final-top-k-parallelism 1 --top-k-allowed-lateness-ms 5000 --watermark-idle-timeout-ms 30000 --redis.host localhost --redis.port 6379 --window-seconds 10 --window-label last_hour --top-k 10 --idempotency-ttl-seconds 86400"
+  -Dexec.args="--bootstrap.servers localhost:9092 --topic movie_events_v2 --group.id online-features-v2 --checkpoint-dir s3://recsys-flink/checkpoints --expected-topic-partitions 24 --source-parallelism 24 --operator-parallelism 24 --max-parallelism 128 --top-k-bucket-count 24 --final-top-k-parallelism 1 --top-k-allowed-lateness-ms 5000 --watermark-idle-timeout-ms 30000 --redis.host localhost --redis.port 6379 --window-seconds 10 --window-label last_hour --top-k 10 --idempotency-ttl-seconds 86400"
 ```
 
 Flink consistency knobs:
@@ -158,7 +158,8 @@ Flink consistency knobs:
 | Argument | Default | Purpose |
 |---|---:|---|
 | `--idempotency-ttl-seconds` | `86400` | How long Flink state remembers processed `eventId` values for duplicate suppression |
-| `--checkpoint-dir` | none | Durable checkpoint URI; mandatory for normal Kafka and bridge execution |
+| `--checkpoint-dir` | none | Approved shared durable URI; mandatory for normal Kafka and bridge execution |
+| `--allow-local-checkpoint-storage` | `false` | Local/Docker test override; forbidden in production |
 | `--bridge-mode` | `false` | Legacy replay mode with a distinct source UID/group; requires an explicit legacy topic |
 | `--expected-topic-partitions` | `24` | Startup fence: broker topic must have exactly 24 partitions |
 | `--source-parallelism` | `24` | Kafka source parallelism; cannot exceed the expected partition count |
@@ -176,7 +177,7 @@ Flink consistency knobs:
 
 This path intentionally does not use a distributed transaction spanning MQ, Flink state, and Redis. Kafka absorbs retries and bursts; Flink checkpointing plus event-id deduplication handles duplicate delivery; Redis receives compact feature snapshots that converge to the newest `updatedAtMillis` value.
 
-Kafka execution fails fast without durable checkpoint storage; only local file replay may omit it. Bridge replay starts from earliest with source UID `kafka-movie-events-bridge-v1` and the exact future-compatible downstream contracts. Graph UIDs are migration contracts. This v2 artifact's normal Kafka source UID is exactly `kafka-movie-events-v2`; stable downstream UIDs include `event-idempotency-v1`, `recent-movies-v1`, `user-embedding-feature-v1`, `session-feature-v1`, `movie-metrics-v1`, `topk-partial-v1`, and `topk-final-v1`, plus the Redis sink UIDs. `-n` may omit only the unmatched bridge source state; it does not discard matched downstream state. Direct restore of legacy generated operator IDs is forbidden. A future v3 topic requires a new artifact with source UID `kafka-movie-events-v3`, not a `--topic` change on the v2 artifact. The event-time Top-K watermark allows five seconds of out-of-order events and uses 30-second partition idleness by default.
+Kafka execution fails fast without approved shared durable checkpoint storage; only local file replay may omit it. Bridge replay is state-only: it attaches no Redis or other production side-effect sink, starts from earliest with source UID `kafka-movie-events-bridge-v1`, and retains the exact future-compatible downstream contracts. Graph UIDs are migration contracts. This v2 artifact's normal Kafka source UID is exactly `kafka-movie-events-v2`; stable downstream UIDs include `event-idempotency-v1`, `recent-movies-v1`, `user-embedding-feature-v1`, `session-feature-v1`, `movie-metrics-v1`, `topk-partial-v1`, and `topk-final-v1`, plus the sink UIDs. `-n` may omit only the unmatched bridge source state; it does not discard matched downstream state. Direct restore of legacy generated operator IDs is forbidden. A future v3 topic requires a new artifact with source UID `kafka-movie-events-v3`, not a `--topic` change on the v2 artifact. The event-time Top-K watermark allows five seconds of out-of-order events and uses 30-second partition idleness by default.
 
 The opt-in Kafka/Flink load guard targets **50,000 events/s**, requires completed checkpoints with none failed and zero final consumer lag, and requires ordinary-user partition skew (declared hot users excluded) to stay at or below **twice the median** active-partition volume. Run it only with Docker available. Focused non-Docker coverage is `mvn -Pstreaming-flink test -Dtest=KafkaTopicPartitionValidatorTest,OnlineFeatureStreamingJobTest,MovieEventTest`; deduplication cases live in `OnlineFeatureStreamingJobTest` rather than a separate test class. For a production migration, follow the [Kafka partition cutover runbook](../../docs/runbooks/kafka-partition-cutover.md), including generation-specific source state, producer fencing, savepoint restore with `--allowNonRestoredState`, phase-dependent recovery, and delayed old-topic retirement.
 

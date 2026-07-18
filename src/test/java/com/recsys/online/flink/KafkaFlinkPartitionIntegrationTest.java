@@ -143,7 +143,8 @@ class KafkaFlinkPartitionIntegrationTest {
         createTopic(topic, PARTITIONS - 1);
         ParameterTool params = ParameterTool.fromMap(Map.of(
                 "bootstrap.servers", KAFKA.getBootstrapServers(), "topic", topic,
-                "bridge-mode", "true", "checkpoint-dir", "file:///tmp/recsys-flink-it-checkpoints"));
+                "bridge-mode", "true", "checkpoint-dir", "file:///tmp/recsys-flink-it-checkpoints",
+                "allow-local-checkpoint-storage", "true"));
         OnlineFeatureStreamingJob.JobConfiguration configuration =
                 new OnlineFeatureStreamingJob.JobConfiguration(PARTITIONS, PARTITIONS, 4, 128);
         assertThatThrownBy(() -> OnlineFeatureStreamingJob.validateKafkaTopic(params, configuration))
@@ -154,12 +155,14 @@ class KafkaFlinkPartitionIntegrationTest {
         StreamExecutionEnvironment env = StreamExecutionEnvironment.createLocalEnvironment(PARTITIONS);
         env.setRestartStrategy(RestartStrategies.noRestart());
         env.enableCheckpointing(500L);
-        ParameterTool params = ParameterTool.fromMap(Map.of(
-                "bootstrap.servers", KAFKA.getBootstrapServers(), "topic", topic,
-                "bridge-mode", "true", "checkpoint-dir", "file:///tmp/recsys-flink-it-checkpoints",
-                "group.id", "partition-contract", "expected-topic-partitions", "24",
-                "source-parallelism", "24", "operator-parallelism", Integer.toString(operatorParallelism),
-                "max-parallelism", "128", "kafka.partition.discovery.interval.ms", "100"));
+        Map<String, String> values = new java.util.HashMap<>();
+        values.put("bootstrap.servers", KAFKA.getBootstrapServers()); values.put("topic", topic);
+        values.put("bridge-mode", "true"); values.put("checkpoint-dir", "file:///tmp/recsys-flink-it-checkpoints");
+        values.put("allow-local-checkpoint-storage", "true"); values.put("group.id", "partition-contract");
+        values.put("expected-topic-partitions", "24"); values.put("source-parallelism", "24");
+        values.put("operator-parallelism", Integer.toString(operatorParallelism)); values.put("max-parallelism", "128");
+        values.put("kafka.partition.discovery.interval.ms", "100");
+        ParameterTool params = ParameterTool.fromMap(values);
         OnlineFeatureStreamingJob.JobConfiguration configuration =
                 OnlineFeatureStreamingJob.validateConfiguration(params);
         OnlineFeatureStreamingJob.PartitionGraph graph = OnlineFeatureStreamingJob.buildPartitionGraph(

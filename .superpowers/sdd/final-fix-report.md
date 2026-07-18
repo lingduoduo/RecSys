@@ -25,3 +25,12 @@ Status: DONE_WITH_CONCERNS
 
 - Run the Docker-tagged Kafka/Flink integration and load gates in CI with Docker and durable checkpoint storage.
 - Run savepoint bridge-to-v2 restore/rescale coverage in a Flink environment; local compilation covers the graph contracts, not a real restore.
+
+## Follow-up safety review
+
+- Bridge mode now replaces every production Redis terminal with a no-op terminal under the same sink UID; stateful processing operators, state descriptors, max parallelism, and restore identities remain unchanged.
+- Recent-history `ListState`, user-embedding `ValueState`, and session `ValueState` now use the same per-entry/write-refresh TTL policy as dedup state, including `NeverReturnExpired` and RocksDB compaction cleanup.
+- Kafka modes accept shared durable checkpoint schemes only. Relative paths, `/tmp`, and `file:` are rejected unless `--allow-local-checkpoint-storage true` is explicitly supplied for local/Docker tests.
+- Focused bridge/config/TTL graph test: 26 tests, 0 failures, 0 errors, 3 Docker skips, BUILD SUCCESS.
+- Streaming `test-compile` and default package build both completed with BUILD SUCCESS after the follow-up.
+- A sandboxed full-suite attempt failed when Armeria test servers were denied permission to bind local ports. The approved outside-sandbox retry progressed with passing tests, but the execution capture ended before Maven's final summary; the full suite is therefore not claimed complete.
