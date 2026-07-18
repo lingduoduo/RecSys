@@ -1,15 +1,29 @@
 package com.recsys.online.flink;
 
+import org.apache.flink.api.common.JobID;
+import org.apache.flink.api.common.restartstrategy.RestartStrategies;
+import org.apache.flink.api.java.utils.ParameterTool;
+import org.apache.flink.configuration.Configuration;
+import org.apache.flink.runtime.checkpoint.CheckpointStatsSnapshot;
+import org.apache.flink.runtime.executiongraph.AccessExecutionGraph;
+import org.apache.flink.runtime.executiongraph.AccessExecutionJobVertex;
+import org.apache.flink.runtime.executiongraph.AccessExecutionVertex;
+import org.apache.flink.runtime.executiongraph.IOMetrics;
+import org.apache.flink.runtime.jobgraph.JobGraph;
+import org.apache.flink.runtime.minicluster.MiniCluster;
+import org.apache.flink.runtime.minicluster.MiniClusterConfiguration;
+import org.apache.flink.streaming.api.environment.StreamExecutionEnvironment;
+import org.apache.flink.streaming.api.functions.sink.RichSinkFunction;
 import org.apache.kafka.clients.admin.Admin;
+import org.apache.kafka.clients.admin.ListOffsetsResult;
 import org.apache.kafka.clients.admin.NewTopic;
-import org.apache.kafka.clients.consumer.ConsumerConfig;
-import org.apache.kafka.clients.consumer.KafkaConsumer;
+import org.apache.kafka.clients.admin.OffsetSpec;
 import org.apache.kafka.clients.producer.KafkaProducer;
 import org.apache.kafka.clients.producer.ProducerConfig;
 import org.apache.kafka.clients.producer.ProducerRecord;
 import org.apache.kafka.common.TopicPartition;
-import org.apache.kafka.common.serialization.StringDeserializer;
 import org.apache.kafka.common.serialization.StringSerializer;
+import org.junit.jupiter.api.AfterEach;
 import org.junit.jupiter.api.Tag;
 import org.junit.jupiter.api.Test;
 import org.testcontainers.containers.KafkaContainer;
@@ -24,156 +38,253 @@ import java.util.HashMap;
 import java.util.List;
 import java.util.Map;
 import java.util.Properties;
-import java.util.SplittableRandom;
 import java.util.UUID;
 import java.util.concurrent.CompletableFuture;
+import java.util.concurrent.ConcurrentHashMap;
 import java.util.concurrent.TimeUnit;
 import java.util.concurrent.atomic.AtomicLong;
+import java.util.function.BooleanSupplier;
 
 import static org.assertj.core.api.Assertions.assertThat;
 
-/** Opt-in capacity gate. Run only on the documented benchmark host. */
+/** Opt-in capacity gate. Its figures are valid only for the host on which it runs. */
 @Tag("load")
 @Tag("docker")
 @Testcontainers(disabledWithoutDocker = true)
 class KafkaFlinkPartitionLoadTest {
     static final int PARTITIONS = 24;
     static final int TARGET_EVENTS_PER_SECOND = 50_000;
+    static final int EVENTS_PER_INTERVAL = 55_000;
     static final int STEADY_STATE_SECONDS = 5;
-    static final int EVENT_COUNT = TARGET_EVENTS_PER_SECOND * STEADY_STATE_SECONDS;
     static final int HOT_USER = 1;
+    private static final String GROUP = "partition-load";
 
     @Container
     static final KafkaContainer KAFKA = new KafkaContainer(
             DockerImageName.parse("confluentinc/cp-kafka:7.6.1"));
 
-    @Test
-    void sustainsFiftyThousandAcknowledgedEventsPerSecondAndRecoversLag() throws Exception {
-        String topic = "load-" + UUID.randomUUID();
-        try (Admin admin = Admin.create(Map.of("bootstrap.servers", KAFKA.getBootstrapServers()))) {
-            admin.createTopics(List.of(new NewTopic(topic, PARTITIONS, (short) 1))).all().get(20, TimeUnit.SECONDS);
+    private MiniCluster cluster;
+    private JobID jobId;
+
+    @AfterEach
+    void stopCluster() throws Exception {
+        if (cluster != null && jobId != null) {
+            try { cluster.cancelJob(jobId).get(30, TimeUnit.SECONDS); } catch (Exception ignored) { }
         }
+        if (cluster != null) cluster.closeAsync().get(30, TimeUnit.SECONDS);
+        LoadSink.clear();
+    }
 
-        Properties producerProperties = new Properties();
-        producerProperties.put(ProducerConfig.BOOTSTRAP_SERVERS_CONFIG, KAFKA.getBootstrapServers());
-        producerProperties.put(ProducerConfig.KEY_SERIALIZER_CLASS_CONFIG, StringSerializer.class);
-        producerProperties.put(ProducerConfig.VALUE_SERIALIZER_CLASS_CONFIG, StringSerializer.class);
-        producerProperties.put(ProducerConfig.ACKS_CONFIG, "all");
-        producerProperties.put(ProducerConfig.LINGER_MS_CONFIG, "5");
-        producerProperties.put(ProducerConfig.BATCH_SIZE_CONFIG, Integer.toString(128 * 1024));
-        producerProperties.put(ProducerConfig.COMPRESSION_TYPE_CONFIG, "lz4");
+    @Test
+    void sustainsTargetThroughTheProductionGraphAndRecoversLag() throws Exception {
+        String topic = "load-" + UUID.randomUUID();
+        createTopic(topic);
+        startGraph(topic);
 
+        long[] perPartition = new long[PARTITIONS];
+        long[] hotPerPartition = new long[PARTITIONS];
+        List<Long> acknowledgedRates = new ArrayList<>();
+        List<Long> observedLag = new ArrayList<>();
         AtomicLong acknowledged = new AtomicLong();
-        long[] acknowledgedPerPartition = new long[PARTITIONS];
-        CompletableFuture<Void> failed = new CompletableFuture<>();
-        SplittableRandom distribution = new SplittableRandom(0x5eedL);
-        long started = System.nanoTime();
-        try (KafkaProducer<String, String> producer = new KafkaProducer<>(producerProperties)) {
-            for (int sequence = 0; sequence < EVENT_COUNT; sequence++) {
-                int user = zipfLikeUser(distribution, sequence);
-                String value = eventJson(sequence, user);
-                producer.send(new ProducerRecord<>(topic, Integer.toString(user), value), (metadata, error) -> {
-                    if (error != null) failed.completeExceptionally(error);
+        CompletableFuture<Void> sendFailure = new CompletableFuture<>();
+        long baseEventTime = System.currentTimeMillis();
+
+        try (Admin admin = admin(); KafkaProducer<String, String> producer = producer()) {
+            for (int second = 0; second < STEADY_STATE_SECONDS; second++) {
+                long before = acknowledged.get();
+                long intervalStart = System.nanoTime();
+                int firstSequence = second * EVENTS_PER_INTERVAL;
+                for (int offset = 0; offset < EVENTS_PER_INTERVAL; offset++) {
+                    int sequence = firstSequence + offset;
+                    int user = sequence % 5 == 0 ? HOT_USER : 2 + sequence % 99_999;
+                    producer.send(new ProducerRecord<>(topic, Integer.toString(user),
+                            eventJson(sequence, user, baseEventTime + second)), (metadata, error) -> {
+                        if (error != null) sendFailure.completeExceptionally(error);
+                        else {
+                            acknowledged.incrementAndGet();
+                            synchronized (perPartition) {
+                                perPartition[metadata.partition()]++;
+                                if (user == HOT_USER) hotPerPartition[metadata.partition()]++;
+                            }
+                        }
+                    });
+                }
+                producer.flush();
+                long remainingNanos = TimeUnit.SECONDS.toNanos(1L)
+                        - (System.nanoTime() - intervalStart);
+                if (remainingNanos > 0L) TimeUnit.NANOSECONDS.sleep(remainingNanos);
+                long elapsed = System.nanoTime() - intervalStart;
+                long intervalAcks = acknowledged.get() - before;
+                acknowledgedRates.add((long) (intervalAcks * 1_000_000_000d / elapsed));
+                observedLag.add(consumerLag(admin, topic));
+            }
+
+            // Advance every source partition's watermark so the real two-stage Top-K emits.
+            for (int user = 200_000; user < 201_000; user++) {
+                int sequence = STEADY_STATE_SECONDS * EVENTS_PER_INTERVAL + user;
+                producer.send(new ProducerRecord<>(topic, Integer.toString(user),
+                        eventJson(sequence, user, baseEventTime + 10_000L)), (metadata, error) -> {
+                    if (error != null) sendFailure.completeExceptionally(error);
                     else {
                         acknowledged.incrementAndGet();
-                        synchronized (acknowledgedPerPartition) { acknowledgedPerPartition[metadata.partition()]++; }
+                        synchronized (perPartition) { perPartition[metadata.partition()]++; }
                     }
                 });
             }
             producer.flush();
+
+            assertThat(sendFailure.isCompletedExceptionally()).isFalse();
+            assertThat(acknowledgedRates).as("acknowledged rate for every one-second workload interval")
+                    .allMatch(rate -> rate >= TARGET_EVENTS_PER_SECOND);
+            await(Duration.ofSeconds(90), () -> LoadSink.processed() == acknowledged.get());
+            await(Duration.ofSeconds(30), () -> {
+                try { return consumerLag(admin, topic) == 0L; } catch (Exception e) { return false; }
+            });
+            observedLag.add(consumerLag(admin, topic));
         }
-        long elapsedNanos = System.nanoTime() - started;
-        assertThat(failed.isCompletedExceptionally()).isFalse();
-        double acknowledgedRate = acknowledged.get() * 1_000_000_000d / elapsedNanos;
-        assertThat(acknowledged).hasValue(EVENT_COUNT);
-        assertThat(acknowledgedRate)
-                .as("acknowledged send rate over the fixed %ss steady-state workload", STEADY_STATE_SECONDS)
-                .isGreaterThanOrEqualTo(TARGET_EVENTS_PER_SECOND);
 
-        long activePartitions = Arrays.stream(acknowledgedPerPartition).filter(count -> count > 0).count();
-        assertThat(activePartitions).isGreaterThanOrEqualTo(12);
-        assertThat(Arrays.stream(acknowledgedPerPartition).sum()).isEqualTo(EVENT_COUNT);
+        assertThat(LoadSink.processed()).as("records emitted by production dedup stage")
+                .isEqualTo(acknowledged.get());
+        assertThat(LoadSink.orderViolations()).as("same-user order violations").isZero();
+        assertThat(LoadSink.snapshots()).as("real final Top-K output").isPositive();
+        assertThat(observedLag).as("Kafka consumer lag sampled during production and after recovery")
+                .isNotEmpty().endsWith(0L);
+        assertPartitionPolicy(perPartition, hotPerPartition);
 
-        ConsumptionMeasurement measurement = consumeToEnd(topic);
-        assertThat(measurement.processed).isEqualTo(EVENT_COUNT);
-        assertThat(measurement.remainingLag).isZero();
-        assertThat(measurement.partitionsWithTraffic).isGreaterThanOrEqualTo(12);
+        AccessExecutionGraph graph = cluster.getExecutionGraph(jobId).get(30, TimeUnit.SECONDS);
+        CheckpointStatsSnapshot checkpoints = graph.getCheckpointStatsSnapshot();
+        assertThat(checkpoints).isNotNull();
+        assertThat(checkpoints.getCounts().getNumberOfCompletedCheckpoints())
+                .as("completed checkpoints reported by the live execution graph").isPositive();
 
-        // The deterministic measurement model uses the same 24-way movie bucketing as
-        // topk-partial. A checkpoint is completed after every 50k processed records;
-        // queue depth is sampled at every record to expose a hot Top-K subtask.
-        ProcessingMeasurement processing = modelTopKAndCheckpoints(measurement.events);
-        assertThat(processing.completedCheckpoints).isGreaterThanOrEqualTo(STEADY_STATE_SECONDS);
-        assertThat(processing.maxTopKSubtaskBacklog).isLessThan(TARGET_EVENTS_PER_SECOND);
-        assertThat(processing.processed).isEqualTo(EVENT_COUNT);
-        assertThat(processing.hotUserEvents).isGreaterThan(EVENT_COUNT / 10L)
-                .isLessThan(EVENT_COUNT / 3L);
+        AccessExecutionJobVertex finalTopK = graph.getAllVertices().values().stream()
+                .filter(vertex -> vertex.getName().contains("topk-final"))
+                .findFirst().orElseThrow();
+        for (AccessExecutionVertex subtask : finalTopK.getTaskVertices()) {
+            IOMetrics metrics = subtask.getCurrentExecutionAttempt().getIOMetrics();
+            assertThat(metrics).as("live I/O metrics for %s", subtask.getTaskNameWithSubtaskIndex()).isNotNull();
+            double observedMillis = metrics.getAccumulateBackPressuredTime()
+                    + metrics.getAccumulateBusyTime() + metrics.getAccumulateIdleTime();
+            assertThat((double) metrics.getAccumulateBackPressuredTime())
+                    .as("final Top-K subtask must not be continuously backpressured")
+                    .isLessThan(observedMillis);
+        }
     }
 
-    static int zipfLikeUser(SplittableRandom random, int sequence) {
-        if (sequence % 5 == 0) return HOT_USER; // declared 20% hot-user fixture
-        double u = Math.max(1.0e-12, random.nextDouble());
-        return 2 + Math.min(9_998, (int) (Math.pow(u, -1.0 / 1.15) - 1));
+    private void startGraph(String topic) throws Exception {
+        Configuration miniConfiguration = new Configuration();
+        cluster = new MiniCluster(new MiniClusterConfiguration.Builder()
+                .setConfiguration(miniConfiguration).setNumTaskManagers(1)
+                .setNumSlotsPerTaskManager(PARTITIONS).build());
+        cluster.start();
+
+        StreamExecutionEnvironment env = StreamExecutionEnvironment.getExecutionEnvironment();
+        env.setParallelism(PARTITIONS);
+        env.setRestartStrategy(RestartStrategies.noRestart());
+        env.enableCheckpointing(500L);
+        ParameterTool params = ParameterTool.fromMap(Map.of(
+                "bootstrap.servers", KAFKA.getBootstrapServers(), "topic", topic,
+                "group.id", GROUP, "expected-topic-partitions", "24",
+                "source-parallelism", "24", "operator-parallelism", "24",
+                "max-parallelism", "128", "kafka.partition.discovery.interval.ms", "100"));
+        OnlineFeatureStreamingJob.JobConfiguration jobConfiguration =
+                OnlineFeatureStreamingJob.validateConfiguration(params);
+        OnlineFeatureStreamingJob.PartitionGraph production = OnlineFeatureStreamingJob.buildPartitionGraph(
+                OnlineFeatureStreamingJob.buildEventStream(env, params, jobConfiguration), jobConfiguration,
+                10, PARTITIONS, 1_000L, 100L, 200L);
+        production.events().addSink(new LoadSink<>(false)).name("load-events");
+        production.snapshots().addSink(new LoadSink<>(true)).name("load-snapshots");
+        JobGraph jobGraph = env.getStreamGraph().getJobGraph();
+        jobId = jobGraph.getJobID();
+        cluster.submitJob(jobGraph).get(30, TimeUnit.SECONDS);
+        await(Duration.ofSeconds(30), () -> {
+            try { return cluster.getJobStatus(jobId).get(5, TimeUnit.SECONDS).isGloballyTerminalState() == false; }
+            catch (Exception e) { return false; }
+        });
     }
 
-    private static ConsumptionMeasurement consumeToEnd(String topic) {
+    private static void assertPartitionPolicy(long[] counts, long[] hotCounts) {
+        long[] ordinary = new long[PARTITIONS];
+        for (int i = 0; i < PARTITIONS; i++) ordinary[i] = counts[i] - hotCounts[i];
+        long[] active = Arrays.stream(ordinary).filter(value -> value > 0).sorted().toArray();
+        assertThat(active).hasSizeGreaterThanOrEqualTo(12);
+        long median = active[active.length / 2];
+        assertThat(Arrays.stream(active).max().orElseThrow())
+                .as("ordinary-user partition skew; declared hot fixture excluded")
+                .isLessThanOrEqualTo(2L * median);
+        assertThat(Arrays.stream(hotCounts).sum()).isGreaterThan(0L);
+    }
+
+    private static long consumerLag(Admin admin, String topic) throws Exception {
+        Map<TopicPartition, OffsetSpec> requests = new HashMap<>();
+        for (int partition = 0; partition < PARTITIONS; partition++)
+            requests.put(new TopicPartition(topic, partition), OffsetSpec.latest());
+        Map<TopicPartition, ListOffsetsResult.ListOffsetsResultInfo> ends =
+                admin.listOffsets(requests).all().get(10, TimeUnit.SECONDS);
+        Map<TopicPartition, org.apache.kafka.clients.consumer.OffsetAndMetadata> committed =
+                admin.listConsumerGroupOffsets(GROUP).partitionsToOffsetAndMetadata()
+                        .get(10, TimeUnit.SECONDS);
+        return ends.entrySet().stream().mapToLong(entry -> entry.getValue().offset()
+                - (committed.containsKey(entry.getKey()) ? committed.get(entry.getKey()).offset() : 0L)).sum();
+    }
+
+    private static void createTopic(String topic) throws Exception {
+        try (Admin admin = admin()) {
+            admin.createTopics(List.of(new NewTopic(topic, PARTITIONS, (short) 1)))
+                    .all().get(20, TimeUnit.SECONDS);
+        }
+    }
+
+    private static Admin admin() { return Admin.create(Map.of("bootstrap.servers", KAFKA.getBootstrapServers())); }
+
+    private static KafkaProducer<String, String> producer() {
         Properties properties = new Properties();
-        properties.put(ConsumerConfig.BOOTSTRAP_SERVERS_CONFIG, KAFKA.getBootstrapServers());
-        properties.put(ConsumerConfig.GROUP_ID_CONFIG, "load-consumer-" + UUID.randomUUID());
-        properties.put(ConsumerConfig.KEY_DESERIALIZER_CLASS_CONFIG, StringDeserializer.class);
-        properties.put(ConsumerConfig.VALUE_DESERIALIZER_CLASS_CONFIG, StringDeserializer.class);
-        properties.put(ConsumerConfig.AUTO_OFFSET_RESET_CONFIG, "earliest");
-        properties.put(ConsumerConfig.MAX_POLL_RECORDS_CONFIG, "5000");
-        List<String> events = new ArrayList<>(EVENT_COUNT);
-        Map<Integer, Long> perPartition = new HashMap<>();
-        long lag;
-        try (KafkaConsumer<String, String> consumer = new KafkaConsumer<>(properties)) {
-            List<TopicPartition> assignments = new ArrayList<>();
-            for (int p = 0; p < PARTITIONS; p++) assignments.add(new TopicPartition(topic, p));
-            consumer.assign(assignments);
-            consumer.seekToBeginning(assignments);
-            Map<TopicPartition, Long> ends = consumer.endOffsets(assignments);
-            long deadline = System.nanoTime() + Duration.ofSeconds(60).toNanos();
-            while (events.size() < EVENT_COUNT && System.nanoTime() < deadline) {
-                consumer.poll(Duration.ofMillis(100)).forEach(record -> {
-                    events.add(record.value());
-                    perPartition.merge(record.partition(), 1L, Long::sum);
-                });
-            }
-            lag = assignments.stream().mapToLong(tp -> ends.get(tp) - consumer.position(tp)).sum();
-        }
-        return new ConsumptionMeasurement(events.size(), lag, perPartition.size(), events);
+        properties.put(ProducerConfig.BOOTSTRAP_SERVERS_CONFIG, KAFKA.getBootstrapServers());
+        properties.put(ProducerConfig.KEY_SERIALIZER_CLASS_CONFIG, StringSerializer.class);
+        properties.put(ProducerConfig.VALUE_SERIALIZER_CLASS_CONFIG, StringSerializer.class);
+        properties.put(ProducerConfig.ACKS_CONFIG, "all");
+        properties.put(ProducerConfig.LINGER_MS_CONFIG, "2");
+        properties.put(ProducerConfig.BATCH_SIZE_CONFIG, Integer.toString(256 * 1024));
+        properties.put(ProducerConfig.COMPRESSION_TYPE_CONFIG, "lz4");
+        return new KafkaProducer<>(properties);
     }
 
-    private static ProcessingMeasurement modelTopKAndCheckpoints(List<String> events) {
-        long[] queued = new long[PARTITIONS];
-        long maxBacklog = 0;
-        long checkpoints = 0;
-        long hot = 0;
-        for (int i = 0; i < events.size(); i++) {
-            String json = events.get(i);
-            int userStart = json.indexOf("\"userId\":") + 9;
-            int userEnd = json.indexOf(',', userStart);
-            int user = Integer.parseInt(json.substring(userStart, userEnd));
-            if (user == HOT_USER) hot++;
-            int movie = i % 10_000 + 1;
-            int bucket = OnlineFeatureStreamingJob.movieBucket(movie, PARTITIONS);
-            queued[bucket]++;
-            maxBacklog = Math.max(maxBacklog, queued[bucket]);
-            queued[bucket]--; // deterministic one-record processing quantum
-            if ((i + 1) % TARGET_EVENTS_PER_SECOND == 0) checkpoints++;
-        }
-        return new ProcessingMeasurement(events.size(), checkpoints, maxBacklog, hot);
-    }
-
-    private static String eventJson(int sequence, int user) {
+    private static String eventJson(int sequence, int user, long timestamp) {
         return "{\"eventId\":\"load-" + sequence + "\",\"userId\":" + user
                 + ",\"movieId\":" + (sequence % 10_000 + 1)
-                + ",\"eventType\":\"click\",\"eventTimeMillis\":" + sequence + "}";
+                + ",\"eventType\":\"click\",\"eventTimeMillis\":" + timestamp + "}";
     }
 
-    private record ConsumptionMeasurement(long processed, long remainingLag,
-                                          int partitionsWithTraffic, List<String> events) {}
-    private record ProcessingMeasurement(long processed, long completedCheckpoints,
-                                         long maxTopKSubtaskBacklog, long hotUserEvents) {}
+    private static void await(Duration timeout, BooleanSupplier condition) throws Exception {
+        long deadline = System.nanoTime() + timeout.toNanos();
+        while (!condition.getAsBoolean() && System.nanoTime() < deadline) Thread.sleep(100L);
+        assertThat(condition.getAsBoolean()).isTrue();
+    }
+
+    static final class LoadSink<T> extends RichSinkFunction<T> {
+        private static final AtomicLong PROCESSED = new AtomicLong();
+        private static final AtomicLong ORDER_VIOLATIONS = new AtomicLong();
+        private static final AtomicLong SNAPSHOTS = new AtomicLong();
+        private static final Map<Integer, Long> LAST_EVENT_TIME = new ConcurrentHashMap<>();
+        private final boolean snapshot;
+
+        LoadSink(boolean snapshot) { this.snapshot = snapshot; }
+
+        @Override public void invoke(T value, Context context) {
+            if (snapshot) { SNAPSHOTS.incrementAndGet(); return; }
+            MovieEvent event = (MovieEvent) value;
+            LAST_EVENT_TIME.compute(event.userId, (user, previous) -> {
+                if (previous != null && event.eventTimeMillis < previous) ORDER_VIOLATIONS.incrementAndGet();
+                return event.eventTimeMillis;
+            });
+            PROCESSED.incrementAndGet();
+        }
+
+        static long processed() { return PROCESSED.get(); }
+        static long orderViolations() { return ORDER_VIOLATIONS.get(); }
+        static long snapshots() { return SNAPSHOTS.get(); }
+        static void clear() {
+            PROCESSED.set(0L); ORDER_VIOLATIONS.set(0L); SNAPSHOTS.set(0L); LAST_EVENT_TIME.clear();
+        }
+    }
 }
