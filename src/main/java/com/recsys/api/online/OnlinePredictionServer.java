@@ -8,6 +8,8 @@ import com.recsys.application.consistency.ConsistencyWaiter;
 import com.recsys.application.consistency.RedisLineageReader;
 import com.recsys.application.outbox.DurableEventPublisher;
 import com.recsys.metrics.OnlineServingMetricsService;
+import com.recsys.metrics.ConsistencyMetrics;
+import com.recsys.infrastructure.redis.RedisReplicaLagProbe;
 
 import com.linecorp.armeria.server.Route;
 import com.linecorp.armeria.server.Server;
@@ -61,6 +63,8 @@ import com.recsys.application.retrieval.multichannel.RecallConfig;
 import java.util.List;
 import java.util.Map;
 import java.util.concurrent.ExecutorService;
+import java.time.Clock;
+import java.time.Duration;
 
 public final class OnlinePredictionServer {
     private static final int DEFAULT_PORT = 7010;
@@ -78,6 +82,7 @@ public final class OnlinePredictionServer {
         LearnerFlushScheduler learnerFlushScheduler = null;
         ExecutorService recallExecutor = null;
         ShardTopologyProvider topologyProvider = null;
+        RedisReplicaLagProbe replicaLagProbe = null;
 
         try {
             jedisPool = LettuceClientFactory.routingFromEnv();
@@ -132,6 +137,12 @@ public final class OnlinePredictionServer {
                     new LearnerFlushScheduler(onlineLearner, jedisPool, "bias:item", 30L);
             learnerFlushScheduler.start();
             PrometheusMeterRegistry registry = PrometheusMeterRegistries.defaultRegistry();
+            ConsistencyMetrics consistencyMetrics = new ConsistencyMetrics(registry);
+            asyncEventPublisher.bindConsistencyMetrics(consistencyMetrics);
+            replicaLagProbe = new RedisReplicaLagProbe(jedisPool, Clock.systemUTC());
+            replicaLagProbe.start(Duration.ofSeconds(readIntEnv("REDIS_REPLICA_LAG_PROBE_SECONDS", 10)),
+                    result -> consistencyMetrics.updateReplicaLag(
+                            new ConsistencyMetrics.ReplicaLag(result.available(), result.lagSeconds())));
             OnlineServingMetricsService metricsService = new OnlineServingMetricsService();
             OnlineLoadShedder loadShedder = new OnlineLoadShedder();
             OnlineCapacityService capacityService = new OnlineCapacityService();
@@ -156,7 +167,8 @@ public final class OnlinePredictionServer {
             OnlineServices.Prediction predictionService = durableConfig.enabled()
                     ? new OnlineServices.Prediction(recommendationService, metricsService, loadShedder,
                             redisRateLimiter, true, consistencyTokenCodec,
-                            new ConsistencyWaiter(new RedisLineageReader(jedisPool)))
+                            new ConsistencyWaiter(new RedisLineageReader(jedisPool), consistencyMetrics),
+                            consistencyMetrics)
                     : new OnlineServices.Prediction(recommendationService, metricsService,
                             loadShedder, redisRateLimiter, true);
             ServerBuilder sb = Server.builder();
@@ -200,10 +212,12 @@ public final class OnlinePredictionServer {
             RedisExecutor activeJedisPool = jedisPool;
             com.recsys.infrastructure.registry.ServiceRegistrar activeRegistrar = registrar;
             ExecutorService activeRecallExecutor = recallExecutor;
+            RedisReplicaLagProbe activeReplicaLagProbe = replicaLagProbe;
             Runtime.getRuntime().addShutdownHook(new Thread(() -> {
                 loadShedder.markShuttingDown();   // flip readiness to 503 + shed new load before draining
                 server.stop().join();
                 activeAsyncEventPublisher.close();
+                activeReplicaLagProbe.close();
                 if (activeTransactionalMySql != null) activeTransactionalMySql.close();
                 activeLearnerFlushScheduler.close();
                 GracefulExecutors.shutdownGracefully(activeRecallExecutor);
@@ -222,6 +236,7 @@ public final class OnlinePredictionServer {
             if (learnerFlushScheduler != null) learnerFlushScheduler.close();
             if (recallExecutor != null) GracefulExecutors.shutdownGracefully(recallExecutor);
             if (topologyProvider != null) topologyProvider.stop();
+            if (replicaLagProbe != null) replicaLagProbe.close();
             if (registrar != null) registrar.close();
             if (jedisPool != null) jedisPool.close();
             throw e;

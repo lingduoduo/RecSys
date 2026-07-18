@@ -17,6 +17,7 @@ import com.recsys.domain.user.User;
 import com.recsys.infrastructure.messaging.AsyncEventPublisher;
 import com.recsys.infrastructure.outbox.OutboxConflictException;
 import com.recsys.metrics.OnlineServingMetricsService;
+import com.recsys.metrics.ConsistencyMetrics;
 import com.recsys.loadshed.OnlineLoadShedder;
 import com.recsys.ratelimit.RedisRateLimiter;
 
@@ -66,6 +67,7 @@ public final class OnlineServices {
         protected final boolean admissionHandledExternally;
         private final ConsistencyTokenCodec consistencyTokenCodec;
         private final ConsistencyWaiter consistencyWaiter;
+        private final ConsistencyMetrics consistencyMetrics;
 
         protected Guarded(OnlineRecommendationService recommendationService,
                           OnlineServingMetricsService metricsService,
@@ -79,6 +81,7 @@ public final class OnlineServices {
             this.admissionHandledExternally = admissionHandledExternally;
             this.consistencyTokenCodec = null;
             this.consistencyWaiter = null;
+            this.consistencyMetrics = null;
         }
 
         protected Guarded(OnlineRecommendationService recommendationService,
@@ -88,6 +91,15 @@ public final class OnlineServices {
                           boolean admissionHandledExternally,
                           ConsistencyTokenCodec consistencyTokenCodec,
                           ConsistencyWaiter consistencyWaiter) {
+            this(recommendationService, metricsService, loadShedder, redisRateLimiter,
+                    admissionHandledExternally, consistencyTokenCodec, consistencyWaiter, null);
+        }
+
+        protected Guarded(OnlineRecommendationService recommendationService,
+                          OnlineServingMetricsService metricsService, OnlineLoadShedder loadShedder,
+                          RedisRateLimiter redisRateLimiter, boolean admissionHandledExternally,
+                          ConsistencyTokenCodec consistencyTokenCodec, ConsistencyWaiter consistencyWaiter,
+                          ConsistencyMetrics consistencyMetrics) {
             this.recommendationService = recommendationService;
             this.metricsService = metricsService;
             this.loadShedder = loadShedder;
@@ -95,6 +107,7 @@ public final class OnlineServices {
             this.admissionHandledExternally = admissionHandledExternally;
             this.consistencyTokenCodec = Objects.requireNonNull(consistencyTokenCodec, "consistencyTokenCodec");
             this.consistencyWaiter = Objects.requireNonNull(consistencyWaiter, "consistencyWaiter");
+            this.consistencyMetrics = consistencyMetrics;
         }
 
         @Override
@@ -128,6 +141,7 @@ public final class OnlineServices {
                         if (consistencyTokenCodec == null) throw new InvalidConsistencyTokenException();
                         ConsistencyToken token = consistencyTokenCodec.decodeAndVerify(encodedToken);
                         if (token.userId() != userId) throw new ConsistencySubjectMismatchException();
+                        if (consistencyMetrics != null) consistencyMetrics.recordTokenValidation(ConsistencyMetrics.TokenOutcome.VALID);
                         ConsistencyWaiter.WaitResult waitResult;
                         try {
                             waitResult = consistencyWaiter.await(token.eventId(), userId, Duration.ofSeconds(2));
@@ -147,11 +161,17 @@ public final class OnlineServices {
                     afterSuccess(userId, result);
                     return response;
                 } catch (ExpiredConsistencyTokenException e) {
+                    if (consistencyMetrics != null) consistencyMetrics.recordTokenValidation(ConsistencyMetrics.TokenOutcome.EXPIRED);
                     metricsService.recordFailure(elapsedMs(startedAtMs));
                     return writeError(HttpStatus.CONFLICT, "consistency token expired");
                 } catch (ConsistencySubjectMismatchException e) {
+                    if (consistencyMetrics != null) consistencyMetrics.recordTokenValidation(ConsistencyMetrics.TokenOutcome.SUBJECT_MISMATCH);
                     metricsService.recordFailure(elapsedMs(startedAtMs));
                     return writeError(HttpStatus.FORBIDDEN, "consistency token subject mismatch");
+                } catch (InvalidConsistencyTokenException e) {
+                    if (consistencyMetrics != null) consistencyMetrics.recordTokenValidation(ConsistencyMetrics.TokenOutcome.INVALID);
+                    metricsService.recordFailure(elapsedMs(startedAtMs));
+                    return writeError(HttpStatus.BAD_REQUEST, e.getMessage());
                 } catch (BadRequestException | IllegalArgumentException e) {
                     metricsService.recordFailure(elapsedMs(startedAtMs));
                     return writeError(HttpStatus.BAD_REQUEST, e.getMessage());
@@ -234,6 +254,15 @@ public final class OnlineServices {
                           ConsistencyWaiter consistencyWaiter) {
             super(recommendationService, metricsService, loadShedder, redisRateLimiter,
                     admissionHandledExternally, tokenCodec, consistencyWaiter);
+        }
+
+        public Prediction(OnlineRecommendationService recommendationService,
+                          OnlineServingMetricsService metricsService, OnlineLoadShedder loadShedder,
+                          RedisRateLimiter redisRateLimiter, boolean admissionHandledExternally,
+                          ConsistencyTokenCodec tokenCodec, ConsistencyWaiter consistencyWaiter,
+                          ConsistencyMetrics consistencyMetrics) {
+            super(recommendationService, metricsService, loadShedder, redisRateLimiter,
+                    admissionHandledExternally, tokenCodec, consistencyWaiter, consistencyMetrics);
         }
 
         public Prediction(OnlineRecommendationService recommendationService,

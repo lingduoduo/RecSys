@@ -1,0 +1,89 @@
+package com.recsys.metrics;
+
+import io.micrometer.core.instrument.Counter;
+import io.micrometer.core.instrument.Gauge;
+import io.micrometer.core.instrument.MeterRegistry;
+import io.micrometer.core.instrument.Timer;
+
+import java.time.Duration;
+import java.util.EnumMap;
+import java.util.Locale;
+import java.util.Objects;
+import java.util.concurrent.atomic.AtomicLong;
+
+/** Bounded-cardinality metrics for durable delivery and read-your-writes consistency. */
+public final class ConsistencyMetrics {
+    public enum Destination { KAFKA_ONLINE, SAGA_SNS }
+    public enum EventType { ONLINE_INTERACTION, SAGA_TRANSITION, OTHER }
+    public enum TokenOutcome { VALID, INVALID, EXPIRED, SUBJECT_MISMATCH }
+    public enum WaitOutcome { APPLIED, TIMEOUT, UNAVAILABLE }
+    public enum ReconciliationOutcome { SCANNED, MISSING, REPUBLISHED, REPAIRED, FAILED }
+    public record ReplicaLag(boolean available, double lagSeconds) {}
+
+    private final EnumMap<Destination, Timer> deliveryLag = new EnumMap<>(Destination.class);
+    private final EnumMap<Destination, Counter> deliveryFailures = new EnumMap<>(Destination.class);
+    private final EnumMap<EventType, Counter> asyncDrops = new EnumMap<>(EventType.class);
+    private final EnumMap<TokenOutcome, Counter> tokenValidations = new EnumMap<>(TokenOutcome.class);
+    private final EnumMap<WaitOutcome, Counter> waitOutcomes = new EnumMap<>(WaitOutcome.class);
+    private final EnumMap<ReconciliationOutcome, Counter> reconciliation = new EnumMap<>(ReconciliationOutcome.class);
+    private final Timer waitDuration;
+    private final AtomicLong pending = new AtomicLong();
+    private final AtomicLong replicaAvailable = new AtomicLong();
+    private final AtomicLong replicaLagBits = new AtomicLong(Double.doubleToRawLongBits(Double.NaN));
+    private final AtomicLong featureMin = new AtomicLong();
+    private final AtomicLong featureMax = new AtomicLong();
+    private final AtomicLong featureAgeBits = new AtomicLong();
+
+    public ConsistencyMetrics(MeterRegistry registry) {
+        Objects.requireNonNull(registry, "registry");
+        for (Destination value : Destination.values()) {
+            String tag = tag(value);
+            deliveryLag.put(value, Timer.builder("outbox_delivery_lag_seconds").tag("destination", tag).register(registry));
+            deliveryFailures.put(value, Counter.builder("outbox_delivery_failures_total").tag("destination", tag).register(registry));
+        }
+        for (EventType value : EventType.values())
+            asyncDrops.put(value, Counter.builder("async_events_dropped_total").tag("event_type", tag(value)).register(registry));
+        for (TokenOutcome value : TokenOutcome.values())
+            tokenValidations.put(value, Counter.builder("consistency_token_validation_total").tag("outcome", tag(value)).register(registry));
+        for (WaitOutcome value : WaitOutcome.values())
+            waitOutcomes.put(value, Counter.builder("consistency_wait_total").tag("outcome", tag(value)).register(registry));
+        for (ReconciliationOutcome value : ReconciliationOutcome.values())
+            reconciliation.put(value, Counter.builder("reconciliation_events_total").tag("outcome", tag(value)).register(registry));
+        waitDuration = Timer.builder("consistency_wait_duration_seconds").register(registry);
+        Gauge.builder("outbox_pending_events", pending, AtomicLong::get).register(registry);
+        Gauge.builder("redis_replica_lag_available", replicaAvailable, AtomicLong::get).register(registry);
+        Gauge.builder("redis_replica_lag_seconds", replicaLagBits,
+                bits -> Double.longBitsToDouble(bits.get())).register(registry);
+        Gauge.builder("redis_feature_version_min", featureMin, AtomicLong::get).register(registry);
+        Gauge.builder("redis_feature_version_max", featureMax, AtomicLong::get).register(registry);
+        Gauge.builder("redis_feature_version_age_seconds", featureAgeBits,
+                bits -> Double.longBitsToDouble(bits.get())).register(registry);
+    }
+
+    public void recordDelivered(Destination destination, Duration lag) {
+        deliveryLag.get(Objects.requireNonNull(destination)).record(nonnegative(lag));
+    }
+    public void recordDeliveryFailure(Destination destination) { deliveryFailures.get(Objects.requireNonNull(destination)).increment(); }
+    public void recordAsyncDrop(EventType eventType) { asyncDrops.get(Objects.requireNonNull(eventType)).increment(); }
+    public void recordTokenValidation(TokenOutcome outcome) { tokenValidations.get(Objects.requireNonNull(outcome)).increment(); }
+    public void recordWait(WaitOutcome outcome, Duration duration) {
+        waitOutcomes.get(Objects.requireNonNull(outcome)).increment();
+        waitDuration.record(nonnegative(duration));
+    }
+    public void recordReconciliation(ReconciliationOutcome outcome) { reconciliation.get(Objects.requireNonNull(outcome)).increment(); }
+    public void updatePendingEvents(long count) { pending.set(Math.max(0, count)); }
+    public void updateReplicaLag(ReplicaLag result) {
+        Objects.requireNonNull(result);
+        replicaAvailable.set(result.available() ? 1 : 0);
+        double lag = result.available() ? Math.max(0, result.lagSeconds()) : Double.NaN;
+        replicaLagBits.set(Double.doubleToRawLongBits(lag));
+    }
+    public void updateFeatureVersions(long minimum, long maximum, Duration age) {
+        featureMin.set(minimum); featureMax.set(maximum);
+        featureAgeBits.set(Double.doubleToRawLongBits(nonnegative(age).toNanos() / 1_000_000_000d));
+    }
+    private static Duration nonnegative(Duration value) {
+        Objects.requireNonNull(value); return value.isNegative() ? Duration.ZERO : value;
+    }
+    private static String tag(Enum<?> value) { return value.name().toLowerCase(Locale.ROOT); }
+}

@@ -9,6 +9,7 @@ import java.util.Objects;
 import java.util.concurrent.ArrayBlockingQueue;
 import java.util.concurrent.TimeUnit;
 import java.util.concurrent.atomic.AtomicLong;
+import com.recsys.metrics.ConsistencyMetrics;
 
 /**
  * Async, bounded event publisher for the online serving → MQ path.
@@ -40,17 +41,23 @@ public class AsyncEventPublisher implements AutoCloseable {
     private final AtomicLong droppedCount  = new AtomicLong();
     private final AtomicLong drainedCount  = new AtomicLong();
     private final AtomicLong deliveryFailureCount = new AtomicLong();
+    private volatile ConsistencyMetrics consistencyMetrics;
 
     public AsyncEventPublisher() {
         this(
                 readIntEnv("ASYNC_EVENT_QUEUE_CAPACITY", DEFAULT_QUEUE_CAPACITY),
-                readIntEnv("ASYNC_EVENT_BATCH_SIZE",     DEFAULT_BATCH_SIZE)
+                readIntEnv("ASYNC_EVENT_BATCH_SIZE",     DEFAULT_BATCH_SIZE), null
         );
     }
 
     AsyncEventPublisher(int queueCapacity, int batchSize) {
+        this(queueCapacity, batchSize, null);
+    }
+
+    public AsyncEventPublisher(int queueCapacity, int batchSize, ConsistencyMetrics consistencyMetrics) {
         this.queue      = new ArrayBlockingQueue<>(Math.max(1, queueCapacity));
         this.batchSize  = Math.max(1, batchSize);
+        this.consistencyMetrics = consistencyMetrics;
         this.drainThread = new Thread(this::drainLoop, "async-event-publisher");
         this.drainThread.setDaemon(true);
         this.drainThread.start();
@@ -82,11 +89,22 @@ public class AsyncEventPublisher implements AutoCloseable {
                 deliveryFailureCount.get());
     }
 
+    public void bindConsistencyMetrics(ConsistencyMetrics metrics) {
+        this.consistencyMetrics = Objects.requireNonNull(metrics, "metrics");
+    }
+
     /** Flush remaining events and stop the drain thread. */
     @Override
     public void close() {
         running = false;
         drainThread.interrupt();
+        if (Thread.currentThread() != drainThread) {
+            try {
+                drainThread.join(TimeUnit.SECONDS.toMillis(2));
+            } catch (InterruptedException interrupted) {
+                Thread.currentThread().interrupt();
+            }
+        }
         List<EventEnvelope> remaining = new ArrayList<>();
         queue.drainTo(remaining);
         if (!remaining.isEmpty()) {
@@ -126,6 +144,7 @@ public class AsyncEventPublisher implements AutoCloseable {
 
     protected boolean recordRejectedEvent() {
         long dropped = droppedCount.incrementAndGet();
+        if (consistencyMetrics != null) consistencyMetrics.recordAsyncDrop(ConsistencyMetrics.EventType.ONLINE_INTERACTION);
         log.warn("AsyncEventPublisher event rejected (total dropped: {})", dropped);
         return false;
     }

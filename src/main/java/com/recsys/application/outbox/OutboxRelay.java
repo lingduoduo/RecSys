@@ -8,6 +8,7 @@ import java.util.concurrent.*;
 import java.util.concurrent.atomic.AtomicBoolean;
 import java.util.concurrent.atomic.AtomicInteger;
 import java.util.function.Consumer;
+import com.recsys.metrics.ConsistencyMetrics;
 
 public final class OutboxRelay implements AutoCloseable {
     private final OutboxRepository repository;
@@ -23,6 +24,8 @@ public final class OutboxRelay implements AutoCloseable {
     private final ExecutorService terminalExecutor;
     private final ScheduledExecutorService deadlineExecutor;
     private final Consumer<Throwable> failureObserver;
+    private final ConsistencyMetrics metrics;
+    private final AtomicInteger pendingDeliveries = new AtomicInteger();
     private final AtomicBoolean closed = new AtomicBoolean();
     private static final AtomicInteger THREAD_SEQUENCE = new AtomicInteger();
 
@@ -32,7 +35,15 @@ public final class OutboxRelay implements AutoCloseable {
                        int batchSize, Duration leaseDuration, Duration cycleDeadline,
                        int maxConcurrentSends) {
         this(repository, adapters, retryPolicy, worker, clock, batchSize, leaseDuration, cycleDeadline,
-                maxConcurrentSends, failure -> failure.printStackTrace(System.err));
+                maxConcurrentSends, failure -> failure.printStackTrace(System.err), null);
+    }
+
+    public OutboxRelay(OutboxRepository repository, Map<OutboxDestination, OutboxDeliveryAdapter> adapters,
+                       OutboxRetryPolicy retryPolicy, String worker, Clock clock, int batchSize,
+                       Duration leaseDuration, Duration cycleDeadline, int maxConcurrentSends,
+                       ConsistencyMetrics metrics) {
+        this(repository, adapters, retryPolicy, worker, clock, batchSize, leaseDuration, cycleDeadline,
+                maxConcurrentSends, failure -> failure.printStackTrace(System.err), Objects.requireNonNull(metrics));
     }
 
     OutboxRelay(OutboxRepository repository,
@@ -40,6 +51,14 @@ public final class OutboxRelay implements AutoCloseable {
                 OutboxRetryPolicy retryPolicy, String worker, Clock clock,
                 int batchSize, Duration leaseDuration, Duration cycleDeadline,
                 int maxConcurrentSends, Consumer<Throwable> failureObserver) {
+        this(repository, adapters, retryPolicy, worker, clock, batchSize, leaseDuration, cycleDeadline,
+                maxConcurrentSends, failureObserver, null);
+    }
+
+    OutboxRelay(OutboxRepository repository, Map<OutboxDestination, OutboxDeliveryAdapter> adapters,
+                OutboxRetryPolicy retryPolicy, String worker, Clock clock, int batchSize,
+                Duration leaseDuration, Duration cycleDeadline, int maxConcurrentSends,
+                Consumer<Throwable> failureObserver, ConsistencyMetrics metrics) {
         this.repository = Objects.requireNonNull(repository, "repository");
         this.adapters = Map.copyOf(Objects.requireNonNull(adapters, "adapters"));
         this.retryPolicy = Objects.requireNonNull(retryPolicy, "retryPolicy");
@@ -57,6 +76,7 @@ public final class OutboxRelay implements AutoCloseable {
                         + " must equal relay cycleDeadline " + this.cycleDeadline);
         }));
         this.failureObserver = Objects.requireNonNull(failureObserver, "failureObserver");
+        this.metrics = metrics;
         this.terminalExecutor = new ThreadPoolExecutor(
                 Math.min(maxConcurrentSends, 4), Math.min(maxConcurrentSends, 4),
                 0L, TimeUnit.MILLISECONDS, new ArrayBlockingQueue<>(maxConcurrentSends),
@@ -79,6 +99,7 @@ public final class OutboxRelay implements AutoCloseable {
         Instant claimedAt = clock.instant();
         List<OutboxEvent> claimed = repository.claimBatch(worker, claimedAt,
                 Math.min(batchSize, available), leaseDuration);
+        if (metrics != null) metrics.updatePendingEvents(pendingDeliveries.addAndGet(claimed.size()));
         for (OutboxEvent event : claimed) {
             if (!sendCapacity.tryAcquire()) throw new IllegalStateException("relay send capacity invariant violated");
             dispatch(event);
@@ -121,16 +142,20 @@ public final class OutboxRelay implements AutoCloseable {
                         DeliveryReceipt requiredReceipt = Objects.requireNonNull(receipt, "adapter completed with null receipt");
                         requireTransition(repository.markDelivered(event.eventId(), event.version(), event.leaseOwner(),
                                 requiredReceipt.acknowledgedAt()), event, "markDelivered");
+                        if (metrics != null) metrics.recordDelivered(destination(event.destination()),
+                                Duration.between(event.createdAt(), requiredReceipt.acknowledgedAt()));
                     } else {
                         handleFailure(event, unwrap(failure));
                     }
                 } catch (Throwable terminalFailure) {
                     report(terminalFailure);
                 } finally {
+                    if (metrics != null) metrics.updatePendingEvents(pendingDeliveries.decrementAndGet());
                     sendCapacity.release();
                 }
             });
         } catch (RejectedExecutionException rejected) {
+            if (metrics != null) metrics.updatePendingEvents(pendingDeliveries.decrementAndGet());
             sendCapacity.release();
             report(rejected);
         }
@@ -142,6 +167,7 @@ public final class OutboxRelay implements AutoCloseable {
     }
 
     private void handleFailure(OutboxEvent event, Throwable failure) {
+        if (metrics != null) metrics.recordDeliveryFailure(destination(event.destination()));
         String message = failure.getClass().getSimpleName() + ": " + Objects.toString(failure.getMessage(), "");
         if (retryPolicy.isDead(event.attemptCount())) {
             requireTransition(repository.markDead(event.eventId(), event.version(), event.leaseOwner(), message),
@@ -151,6 +177,11 @@ public final class OutboxRelay implements AutoCloseable {
             requireTransition(repository.reschedule(event.eventId(), event.version(), event.leaseOwner(),
                     retryPolicy.nextAttempt(event.attemptCount(), failedAt), message), event, "reschedule");
         }
+    }
+
+    private static ConsistencyMetrics.Destination destination(OutboxDestination value) {
+        return value == OutboxDestination.KAFKA_ONLINE ? ConsistencyMetrics.Destination.KAFKA_ONLINE
+                : ConsistencyMetrics.Destination.SAGA_SNS;
     }
 
     private static void requireTransition(boolean updated, OutboxEvent event, String operation) {
