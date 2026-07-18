@@ -26,9 +26,6 @@ import static org.assertj.core.api.Assertions.assertThat;
 @Testcontainers
 class MovieCatalogMySqlIntegrationTest {
     private static final String SIGNING_KEY = "test-only-catalog-cursor-signing-key-32-bytes";
-    private static final Set<String> CONTRACT_INDEXES = Set.of(
-            "idx_movies_genre_popularity_id",
-            "idx_movies_popularity_id");
 
     @Container
     private static final MySQLContainer<?> MYSQL = new MySQLContainer<>("mysql:8.4")
@@ -111,9 +108,7 @@ class MovieCatalogMySqlIntegrationTest {
             for (int i = 0; i < plan.bindValues().size(); i++) statement.setObject(i + 1, plan.bindValues().get(i));
             try (ResultSet result = statement.executeQuery()) {
                 assertThat(result.next()).isTrue();
-                String chosenKey = result.getString("key");
-                assertThat(chosenKey).isIn(CONTRACT_INDEXES);
-                assertThat(chosenKey).isEqualTo(expectedKey);
+                assertThat(result.getString("key")).isEqualTo(expectedKey);
                 assertThat(result.next()).isFalse();
             }
         }
