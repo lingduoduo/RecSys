@@ -11,6 +11,10 @@ import org.junit.jupiter.api.Test;
 import org.apache.flink.api.java.utils.ParameterTool;
 import org.apache.flink.api.common.functions.RuntimeContext;
 import org.apache.flink.api.common.state.MapState;
+import org.apache.flink.api.common.state.ListState;
+import org.apache.flink.api.common.state.ValueState;
+import org.apache.flink.api.common.accumulators.LongCounter;
+import org.apache.flink.streaming.api.windowing.windows.TimeWindow;
 import org.apache.flink.streaming.api.TimerService;
 import org.apache.flink.util.Collector;
 import org.testcontainers.containers.GenericContainer;
@@ -21,15 +25,197 @@ import java.util.ArrayList;
 import java.util.LinkedHashMap;
 import java.util.List;
 import java.util.Map;
+import java.util.Random;
 
 import static org.assertj.core.api.Assertions.assertThat;
 import static org.assertj.core.api.Assertions.assertThatThrownBy;
 import static org.mockito.ArgumentMatchers.any;
 import static org.mockito.Mockito.mock;
 import static org.mockito.Mockito.when;
+import static org.mockito.Mockito.verify;
+import static org.mockito.Mockito.times;
 import static org.junit.jupiter.api.Assumptions.assumeTrue;
 
 class OnlineFeatureStreamingJobTest {
+
+    @Test
+    void assignsMovieBucketsStablyIncludingNegativeIds() {
+        assertThat(OnlineFeatureStreamingJob.movieBucket(42, 7)).isEqualTo(0);
+        assertThat(OnlineFeatureStreamingJob.movieBucket(-42, 7)).isEqualTo(0);
+        assertThat(OnlineFeatureStreamingJob.movieBucket(Integer.MIN_VALUE, 7)).isEqualTo(5);
+        assertThat(OnlineFeatureStreamingJob.movieBucket(-1, 7)).isEqualTo(6);
+    }
+
+    @Test
+    void rejectsInvalidMovieBucketCounts() {
+        assertThatThrownBy(() -> OnlineFeatureStreamingJob.movieBucket(1, 0))
+                .isInstanceOf(IllegalArgumentException.class)
+                .hasMessageContaining("bucketCount");
+        assertThatThrownBy(() -> OnlineFeatureStreamingJob.movieBucket(1, -1))
+                .isInstanceOf(IllegalArgumentException.class)
+                .hasMessageContaining("bucketCount");
+    }
+
+    @Test
+    void partialTopKIsBoundedAndUsesStableTieOrdering() throws Exception {
+        var function = new OnlineFeatureStreamingJob.PartialTopKWindowFunction(2);
+        List<OnlineFeatureStreamingJob.PartialTopK> output = new ArrayList<>();
+        function.apply(3, new TimeWindow(0, 10), List.of(
+                weightedEvent(3, 2), weightedEvent(1, 2), weightedEvent(2, 1)), collector(output));
+
+        assertThat(output).hasSize(1);
+        assertThat(output.get(0).windowEnd).isEqualTo(10);
+        assertThat(output.get(0).bucket).isEqualTo(3);
+        assertThat(output.get(0).movies).extracting(movie -> movie.movieId)
+                .containsExactly(1, 3);
+    }
+
+    @Test
+    void finalTopKMergesDuplicateMoviesAndOrdersTiesByMovieId() {
+        var partials = List.of(
+                partial(100, 0, scored(8, 3), scored(4, 2)),
+                partial(100, 1, scored(8, 4), scored(2, 7), scored(3, 7)));
+
+        List<OnlineFeatureStreamingJob.ScoredMovie> result =
+                OnlineFeatureStreamingJob.FinalTopKWindowFunction.mergeTopK(partials, 3);
+
+        assertThat(result).extracting(movie -> movie.movieId).containsExactly(2, 3, 8);
+        assertThat(result).extracting(movie -> movie.score).containsExactly(7L, 7L, 7L);
+    }
+
+    @Test
+    void finalTopKEmitsOnceAndCountsLatePartials() throws Exception {
+        List<OnlineFeatureStreamingJob.PartialTopK> partialBacking = new ArrayList<>();
+        @SuppressWarnings("unchecked")
+        ListState<OnlineFeatureStreamingJob.PartialTopK> partialState = mock(ListState.class);
+        when(partialState.get()).thenAnswer(ignored -> List.copyOf(partialBacking));
+        org.mockito.Mockito.doAnswer(invocation -> partialBacking.add(invocation.getArgument(0)))
+                .when(partialState).add(any());
+        org.mockito.Mockito.doAnswer(ignored -> { partialBacking.clear(); return null; })
+                .when(partialState).clear();
+
+        @SuppressWarnings("unchecked")
+        ValueState<Long> timerState = mock(ValueState.class);
+        Long[] timerValue = {null};
+        when(timerState.value()).thenAnswer(ignored -> timerValue[0]);
+        org.mockito.Mockito.doAnswer(invocation -> { timerValue[0] = invocation.getArgument(0); return null; })
+                .when(timerState).update(any());
+        org.mockito.Mockito.doAnswer(ignored -> { timerValue[0] = null; return null; })
+                .when(timerState).clear();
+
+        @SuppressWarnings("unchecked")
+        ValueState<Boolean> emittedState = mock(ValueState.class);
+        Boolean[] emittedValue = {null};
+        when(emittedState.value()).thenAnswer(ignored -> emittedValue[0]);
+        org.mockito.Mockito.doAnswer(invocation -> { emittedValue[0] = invocation.getArgument(0); return null; })
+                .when(emittedState).update(any());
+
+        LongCounter lateCounter = new LongCounter();
+        RuntimeContext runtimeContext = mock(RuntimeContext.class);
+        org.mockito.Mockito.doReturn(partialState).when(runtimeContext).getListState(any());
+        when(runtimeContext.getState(any())).thenAnswer(invocation ->
+                invocation.getArgument(0).toString().contains("timer") ? timerState : emittedState);
+        when(runtimeContext.getLongCounter("topk-late-partials")).thenReturn(lateCounter);
+
+        var function = new OnlineFeatureStreamingJob.FinalTopKWindowFunction(2, "hour", 60, 4);
+        function.setRuntimeContext(runtimeContext);
+        function.open(new Configuration());
+        TimerService timerService = mock(TimerService.class);
+        @SuppressWarnings("unchecked")
+        OnlineFeatureStreamingJob.FinalTopKWindowFunction.Context context = mock(
+                OnlineFeatureStreamingJob.FinalTopKWindowFunction.Context.class);
+        when(context.timerService()).thenReturn(timerService);
+        List<OnlineFeatureStreamingJob.TopKSnapshot> output = new ArrayList<>();
+
+        function.processElement(partial(100, 0, scored(1, 3)), context, collector(output));
+        function.processElement(partial(100, 1, scored(2, 4)), context, collector(output));
+        verify(timerService, times(1)).registerProcessingTimeTimer(101L);
+
+        @SuppressWarnings("unchecked")
+        OnlineFeatureStreamingJob.FinalTopKWindowFunction.OnTimerContext timerContext = mock(
+                OnlineFeatureStreamingJob.FinalTopKWindowFunction.OnTimerContext.class);
+        when(timerContext.getCurrentKey()).thenReturn(100L);
+        function.onTimer(101L, timerContext, collector(output));
+        function.processElement(partial(100, 2, scored(3, 9)), context, collector(output));
+        function.onTimer(101L, timerContext, collector(output));
+
+        assertThat(output).hasSize(1);
+        assertThat(output.get(0).movies).extracting(movie -> movie.movieId).containsExactly(2, 1);
+        assertThat(lateCounter.getLocalValue()).isEqualTo(1L);
+    }
+
+    @Test
+    void twoStageTopKMatchesSingleStageOracleForDeterministicEvents() throws Exception {
+        int bucketCount = 17;
+        int topK = 20;
+        Random random = new Random(8675309L);
+        List<MovieEvent> events = new ArrayList<>();
+        int[] weights = {1, 2, 3, 4, 8};
+        for (int i = 0; i < 1_000; i++) {
+            events.add(weightedEvent(random.nextInt(301) - 150,
+                    weights[random.nextInt(weights.length)]));
+        }
+
+        List<OnlineFeatureStreamingJob.PartialTopK> partials = new ArrayList<>();
+        for (int bucket = 0; bucket < bucketCount; bucket++) {
+            List<MovieEvent> bucketEvents = new ArrayList<>();
+            for (MovieEvent event : events) {
+                if (OnlineFeatureStreamingJob.movieBucket(event.movieId, bucketCount) == bucket) {
+                    bucketEvents.add(event);
+                }
+            }
+            if (!bucketEvents.isEmpty()) {
+                new OnlineFeatureStreamingJob.PartialTopKWindowFunction(topK)
+                        .apply(bucket, new TimeWindow(0, 100), bucketEvents, collector(partials));
+            }
+        }
+
+        List<OnlineFeatureStreamingJob.ScoredMovie> actual =
+                OnlineFeatureStreamingJob.FinalTopKWindowFunction.mergeTopK(partials, topK);
+        Map<Integer, Long> oracleScores = new java.util.HashMap<>();
+        events.forEach(event -> oracleScores.merge(event.movieId, event.engagementWeight(), Long::sum));
+        List<Map.Entry<Integer, Long>> oracle = oracleScores.entrySet().stream()
+                .sorted(Map.Entry.<Integer, Long>comparingByValue(java.util.Comparator.reverseOrder())
+                        .thenComparing(Map.Entry::getKey))
+                .limit(topK).toList();
+
+        assertThat(actual).extracting(movie -> movie.movieId)
+                .containsExactlyElementsOf(oracle.stream().map(Map.Entry::getKey).toList());
+        assertThat(actual).extracting(movie -> movie.score)
+                .containsExactlyElementsOf(oracle.stream().map(Map.Entry::getValue).toList());
+    }
+
+    private static OnlineFeatureStreamingJob.PartialTopK partial(
+            long windowEnd, int bucket, OnlineFeatureStreamingJob.ScoredMovie... movies) {
+        return new OnlineFeatureStreamingJob.PartialTopK(windowEnd, bucket, List.of(movies));
+    }
+
+    private static OnlineFeatureStreamingJob.ScoredMovie scored(int movieId, long score) {
+        return new OnlineFeatureStreamingJob.ScoredMovie(movieId, score);
+    }
+
+    private static MovieEvent weightedEvent(int movieId, int weight) {
+        MovieEvent event = new MovieEvent();
+        event.movieId = movieId;
+        event.eventType = switch (weight) {
+            case 8 -> "order";
+            case 4 -> "rating";
+            case 3 -> "like";
+            case 2 -> "click";
+            case 1 -> "view";
+            default -> throw new IllegalArgumentException("unsupported test weight");
+        };
+        event.rating = weight == 4 ? 4 : null;
+        event.watchMs = weight == 1 ? 30_000L : 0L;
+        return event;
+    }
+
+    private static <T> Collector<T> collector(List<T> output) {
+        return new Collector<>() {
+            @Override public void collect(T record) { output.add(record); }
+            @Override public void close() {}
+        };
+    }
 
     @Test
     void acceptsDefaultParallelismConfiguration() {
