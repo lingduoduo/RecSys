@@ -7,6 +7,7 @@ import org.apache.flink.api.common.eventtime.WatermarkStrategy;
 import org.slf4j.Logger;
 import org.slf4j.LoggerFactory;
 import org.apache.flink.api.common.functions.AggregateFunction;
+import org.apache.flink.api.common.functions.RichFilterFunction;
 import org.apache.flink.api.common.accumulators.LongCounter;
 import org.apache.flink.api.common.serialization.SimpleStringSchema;
 import org.apache.flink.api.common.state.ListState;
@@ -98,7 +99,10 @@ public final class OnlineFeatureStreamingJob {
         String bootstrapServers = params.get("bootstrap.servers");
         validateKafkaTopic(params, jobConfiguration);
 
+        boolean bridgeMode = params.getBoolean("bridge-mode", false);
+        long bridgeReplayCutoffMs = params.getLong("bridge-replay-cutoff-ms", -1L);
         DataStream<MovieEvent> events = buildEventStream(env, params, jobConfiguration)
+                .filter(new BridgeReplayCutoffFilter(bridgeMode, bridgeReplayCutoffMs))
                 .filter(OnlineFeatureStreamingJob::requiresEventIdentity)
                 .keyBy(event -> event.userId)
                 .process(new DeduplicateEventsFunction(idempotencyTtlSeconds))
@@ -111,7 +115,6 @@ public final class OnlineFeatureStreamingJob {
                                 .withTimestampAssigner((event, timestamp) -> event.eventTimeMillis)
                                 .withIdleness(Duration.ofMillis(watermarkIdleTimeoutMs)));
 
-        boolean bridgeMode = params.getBoolean("bridge-mode", false);
         DataStream<UserRecentMoviesUpdate> recentUpdates = events
                 .filter(MovieEvent::updatesRecentHistory)
                 .keyBy(event -> event.userId)
@@ -199,6 +202,9 @@ public final class OnlineFeatureStreamingJob {
         if (bridge && (StringUtils.isNullOrWhitespaceOnly(params.get("topic")) || "movie_events_v2".equals(topic))) {
             throw new IllegalArgumentException("bridge-mode requires an explicit legacy --topic");
         }
+        if (bridge && params.getLong("bridge-replay-cutoff-ms", -1L) <= 0L) {
+            throw new IllegalArgumentException("bridge-mode requires a positive bridge-replay-cutoff-ms");
+        }
         if (kafka && !bridge && !"movie_events_v2".equals(topic)) {
             throw new IllegalArgumentException("this artifact only supports topic movie_events_v2; use bridge-mode for legacy replay");
         }
@@ -274,12 +280,16 @@ public final class OnlineFeatureStreamingJob {
         String topic = params.get("topic", "movie_events_v2");
 
         if (!StringUtils.isNullOrWhitespaceOnly(bootstrapServers)) {
+            boolean bridgeMode = params.getBoolean("bridge-mode", false);
+            OffsetsInitializer startingOffsets = bridgeMode
+                    ? OffsetsInitializer.timestamp(params.getLong("bridge-replay-cutoff-ms"))
+                    : OffsetsInitializer.earliest();
             KafkaSource<String> source = KafkaSource.<String>builder()
                     .setBootstrapServers(bootstrapServers)
                     .setTopics(topic)
                     .setGroupId(params.get("group.id", params.getBoolean("bridge-mode", false)
                             ? "online-features-bridge-v1" : "online-features-v2"))
-                    .setStartingOffsets(OffsetsInitializer.earliest())
+                    .setStartingOffsets(startingOffsets)
                     .setValueOnlyDeserializer(new SimpleStringSchema())
                     .setProperties(kafkaProperties(params))
                     .build();
@@ -359,6 +369,41 @@ public final class OnlineFeatureStreamingJob {
         } catch (IOException e) {
             LOG.warn("Skipping malformed movie event JSON: {}", json, e);
             return null;
+        }
+    }
+
+    static boolean acceptsBridgeReplayEvent(MovieEvent event, boolean bridgeMode, long cutoffMs) {
+        if (!bridgeMode) return true;
+        if (event.eventTimeMillis <= 0L) {
+            LOG.warn("Dropping bridge event without a classifiable event timestamp: eventId={}", event.eventId);
+            return false;
+        }
+        if (event.eventTimeMillis < cutoffMs) {
+            LOG.warn("Dropping bridge event older than replay cutoff: eventId={} eventTimeMillis={} cutoffMs={}",
+                    event.eventId, event.eventTimeMillis, cutoffMs);
+            return false;
+        }
+        return true;
+    }
+
+    static final class BridgeReplayCutoffFilter extends RichFilterFunction<MovieEvent> {
+        private final boolean bridgeMode;
+        private final long cutoffMs;
+        private transient LongCounter rejected;
+
+        BridgeReplayCutoffFilter(boolean bridgeMode, long cutoffMs) {
+            this.bridgeMode = bridgeMode;
+            this.cutoffMs = cutoffMs;
+        }
+
+        @Override public void open(Configuration parameters) {
+            rejected = getRuntimeContext().getLongCounter("bridge-replay-rejected-event-time");
+        }
+
+        @Override public boolean filter(MovieEvent event) {
+            boolean accepted = acceptsBridgeReplayEvent(event, bridgeMode, cutoffMs);
+            if (!accepted && rejected != null) rejected.add(1L);
+            return accepted;
         }
     }
 

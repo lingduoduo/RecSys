@@ -34,3 +34,10 @@ Status: DONE_WITH_CONCERNS
 - Focused bridge/config/TTL graph test: 26 tests, 0 failures, 0 errors, 3 Docker skips, BUILD SUCCESS.
 - Streaming `test-compile` and default package build both completed with BUILD SUCCESS after the follow-up.
 - A sandboxed full-suite attempt failed when Armeria test servers were denied permission to bind local ports. The approved outside-sandbox retry progressed with passing tests, but the execution capture ended before Maven's final summary; the full suite is therefore not claimed complete.
+
+## Replay cutoff follow-up
+
+- Bridge mode requires a positive `bridge-replay-cutoff-ms`; Kafka partition discovery starts from timestamp-derived offsets while a parsed-event filter rejects and counts missing/zero or older event timestamps. The exact cutoff boundary is accepted and normal v2 remains unaffected.
+- The runbook defines cutoff arithmetic, signed per-partition `[timestampStartOffset,fencedEndOffset)` manifests, gap checks, dormant-expired-key reconciliation, and authoritative savepoint metadata plus isolated restore dry-run compatibility checks.
+- Cutoff boundary test: 1 test, 0 failures/errors, BUILD SUCCESS. Package build: BUILD SUCCESS.
+- The broader focused class rerun reached 26 passing tests before the pre-existing Mockito inline-agent self-attachment test errored in this environment; no product assertion failed. Docker remains unavailable.

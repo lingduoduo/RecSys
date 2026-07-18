@@ -17,6 +17,8 @@ export BRIDGE_JOB_JAR=/immutable/releases/recsys-kafka-v2.jar
 export NEW_V2_JOB_JAR=/immutable/releases/recsys-kafka-v2.jar
 export OLD_JOB_GRAPH_JSON=/immutable/change-evidence/old-job-graph.json
 export BRIDGE_JOB_GRAPH_JSON=/immutable/change-evidence/bridge-job-graph.json
+export CUTOVER_REFERENCE_MS=<approved-reference-epoch-ms>
+export BRIDGE_REPLAY_CUTOFF_MS=<reference-minus-max-ttl-window-lateness-watermark-safety>
 ```
 
 `OLD_JOB_JAR` is the exact pre-partition-optimization artifact currently deployed. Its Kafka source must have no stable UID, or its exact observed old UID must be recorded from the deployed graph; it must not be `kafka-movie-events-v2`. `NEW_V2_JOB_JAR` is this feature artifact and its Kafka source UID is exactly `kafka-movie-events-v2`. Record both artifacts' immutable repository coordinates and SHA-256 checksums in the change ticket:
@@ -43,9 +45,12 @@ The description must show `PartitionCount: 24` and partitions 0 through 23. Stop
 
 Never restore the legacy job's generated operator IDs directly. First prove legacy-topic retention covers the maximum configured dedup/history/embedding/session TTL plus window lateness and watermark safety. Bridge mode is state-only: it must not write Redis or any production external sink. Launch this artifact from earliest in explicit bridge mode:
 
+Derive `BRIDGE_REPLAY_CUTOFF_MS` as `CUTOVER_REFERENCE_MS - max(configured state TTLs) - window/lateness/watermark safety`. Record every input and the arithmetic. Kafka resolves a start offset per partition from this timestamp; a second parsed-event guard rejects older event times. Missing or zero event timestamps are unclassifiable and must be rejected, never guessed.
+
 ```bash
 flink run -c com.recsys.online.flink.OnlineFeatureStreamingJob "$BRIDGE_JOB_JAR" \
   --bridge-mode true --bootstrap.servers "$BOOTSTRAP_SERVERS" \
+  --bridge-replay-cutoff-ms "$BRIDGE_REPLAY_CUTOFF_MS" \
   --topic "$OLD_TOPIC" --group.id online-features-bridge-v1 \
   --expected-topic-partitions <legacy-partition-count> \
   --source-parallelism <legacy-partition-count> --operator-parallelism 24 \
@@ -53,6 +58,8 @@ flink run -c com.recsys.online.flink.OnlineFeatureStreamingJob "$BRIDGE_JOB_JAR"
 ```
 
 The bridge source UID is `kafka-movie-events-bridge-v1`; its downstream UIDs and state schemas exactly match v2, while production sink UIDs terminate in no-op state-only sinks. Verify `$BRIDGE_JOB_GRAPH_JSON` contains the bridge source UID, every documented downstream UID, expected max parallelism, compatible state descriptors, and no Redis sink implementation. Reconcile rebuilt state only through controlled savepoint/state inspection or an approved isolated export—not production Redis writes. Abort on insufficient retention, failed checkpoints, nonzero lag, or reconciliation differences.
+
+Before bridge startup, capture every partition's timestamp-derived start offset in a signed/checksummed manifest. At the producer fence capture each exclusive end offset. Replay exactly `[timestampStartOffset,fencedEndOffset)` and verify contiguous offsets, counts, and checksums prove no gaps or duplicates. Reconciliation compares active keys and explicitly confirms dormant keys expired before the horizon are absent.
 
 `--allow-local-checkpoint-storage true` exists only for automated local/Docker tests. It is forbidden in staging and production. Production checkpoint URIs must use approved shared storage such as `s3`, `s3a`, `hdfs`, `gs`, `abfs`, `abfss`, `wasb`, or `wasbs`.
 
@@ -103,7 +110,7 @@ flink run -s <savepoint-uri> -n \
   --checkpoint-dir <durable-checkpoint-uri>
 ```
 
-`-n` (long form `--allowNonRestoredState`) is mandatory because bridge source state is unmatched: `kafka-movie-events-bridge-v1` becomes `kafka-movie-events-v2`. Abort unless the only non-restored state is the bridge source. All future-compatible downstream UIDs must match and restore. Direct restore from legacy generated IDs is forbidden. Because the v2 source is new and `$NEW_GROUP` has no committed offsets, its configured `OffsetsInitializer.earliest()` starts at the beginning of the fenced, initially empty v2 topic.
+`-n` (long form `--allowNonRestoredState`) is mandatory because bridge source state is unmatched: `kafka-movie-events-bridge-v1` becomes `kafka-movie-events-v2`. Abort unless the only non-restored state is the bridge source. Execution-graph UIDs/max parallelism are necessary but not serializer proof: inspect bridge savepoint metadata and complete an isolated bridge-to-v2 restore dry-run as the authoritative serializer/state-schema compatibility gate. Direct restore from legacy generated IDs is forbidden. Because the v2 source is new and `$NEW_GROUP` has no committed offsets, its configured `OffsetsInitializer.earliest()` starts at the beginning of the fenced, initially empty v2 topic.
 
 Topic generations require artifact generations. A future `movie_events_v3` cutover must ship a reviewed artifact whose source UID is `kafka-movie-events-v3`; changing only `--topic` while reusing `NEW_V2_JOB_JAR` is forbidden because it would reuse the v2 source identity.
 

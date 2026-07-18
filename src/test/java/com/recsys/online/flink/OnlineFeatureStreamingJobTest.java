@@ -277,13 +277,29 @@ class OnlineFeatureStreamingJobTest {
                 new String[]{"--bootstrap.servers", "broker:9092", "--checkpoint-dir", "s3://cp",
                         "--bridge-mode", "true"})))
                 .hasMessageContaining("legacy");
+        assertThatThrownBy(() -> OnlineFeatureStreamingJob.validateConfiguration(ParameterTool.fromArgs(
+                new String[]{"--bootstrap.servers", "broker:9092", "--checkpoint-dir", "s3://cp",
+                        "--bridge-mode", "true", "--topic", "recsys_events"})))
+                .hasMessageContaining("bridge-replay-cutoff-ms");
         assertThat(OnlineFeatureStreamingJob.validateConfiguration(ParameterTool.fromArgs(
                 new String[]{"--bootstrap.servers", "broker:9092", "--checkpoint-dir", "s3://cp"})))
                 .isEqualTo(new OnlineFeatureStreamingJob.JobConfiguration(24, 24, 24, 128));
         assertThat(OnlineFeatureStreamingJob.validateConfiguration(ParameterTool.fromArgs(
                 new String[]{"--bootstrap.servers", "broker:9092", "--checkpoint-dir", "s3://cp",
-                        "--bridge-mode", "true", "--topic", "recsys_events"})))
+                        "--bridge-mode", "true", "--topic", "recsys_events",
+                        "--bridge-replay-cutoff-ms", "1000"})))
                 .isEqualTo(new OnlineFeatureStreamingJob.JobConfiguration(24, 24, 24, 128));
+    }
+
+    @Test
+    void bridgeReplayCutoffRejectsOldOrUnclassifiableEventTimeAndAcceptsBoundary() {
+        MovieEvent missing = event(1, "missing", 1); missing.eventTimeMillis = 0L;
+        MovieEvent old = event(1, "old", 1); old.eventTimeMillis = 999L;
+        MovieEvent boundary = event(1, "boundary", 1); boundary.eventTimeMillis = 1_000L;
+        assertThat(OnlineFeatureStreamingJob.acceptsBridgeReplayEvent(missing, true, 1_000L)).isFalse();
+        assertThat(OnlineFeatureStreamingJob.acceptsBridgeReplayEvent(old, true, 1_000L)).isFalse();
+        assertThat(OnlineFeatureStreamingJob.acceptsBridgeReplayEvent(boundary, true, 1_000L)).isTrue();
+        assertThat(OnlineFeatureStreamingJob.acceptsBridgeReplayEvent(old, false, -1L)).isTrue();
     }
 
     @Test
