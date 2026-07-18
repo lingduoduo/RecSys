@@ -5,8 +5,11 @@ import com.recsys.domain.outbox.*;
 import java.time.*;
 import java.util.*;
 import java.util.concurrent.*;
+import java.util.concurrent.atomic.AtomicBoolean;
+import java.util.concurrent.atomic.AtomicInteger;
+import java.util.function.Consumer;
 
-public final class OutboxRelay {
+public final class OutboxRelay implements AutoCloseable {
     private final OutboxRepository repository;
     private final Map<OutboxDestination, OutboxDeliveryAdapter> adapters;
     private final OutboxRetryPolicy retryPolicy;
@@ -16,12 +19,26 @@ public final class OutboxRelay {
     private final Duration leaseDuration;
     private final Duration cycleDeadline;
     private final Semaphore sendCapacity;
+    private final int maxConcurrentSends;
+    private final ExecutorService terminalExecutor;
+    private final Consumer<Throwable> failureObserver;
+    private final AtomicBoolean closed = new AtomicBoolean();
+    private static final AtomicInteger THREAD_SEQUENCE = new AtomicInteger();
 
     public OutboxRelay(OutboxRepository repository,
                        Map<OutboxDestination, OutboxDeliveryAdapter> adapters,
                        OutboxRetryPolicy retryPolicy, String worker, Clock clock,
                        int batchSize, Duration leaseDuration, Duration cycleDeadline,
                        int maxConcurrentSends) {
+        this(repository, adapters, retryPolicy, worker, clock, batchSize, leaseDuration, cycleDeadline,
+                maxConcurrentSends, failure -> failure.printStackTrace(System.err));
+    }
+
+    OutboxRelay(OutboxRepository repository,
+                Map<OutboxDestination, OutboxDeliveryAdapter> adapters,
+                OutboxRetryPolicy retryPolicy, String worker, Clock clock,
+                int batchSize, Duration leaseDuration, Duration cycleDeadline,
+                int maxConcurrentSends, Consumer<Throwable> failureObserver) {
         this.repository = Objects.requireNonNull(repository, "repository");
         this.adapters = Map.copyOf(Objects.requireNonNull(adapters, "adapters"));
         this.retryPolicy = Objects.requireNonNull(retryPolicy, "retryPolicy");
@@ -30,11 +47,22 @@ public final class OutboxRelay {
         if (batchSize < 1 || maxConcurrentSends < 1) throw new IllegalArgumentException("limits must be positive");
         this.batchSize = batchSize;
         this.sendCapacity = new Semaphore(maxConcurrentSends);
+        this.maxConcurrentSends = maxConcurrentSends;
         this.leaseDuration = positive(leaseDuration, "leaseDuration");
         this.cycleDeadline = positive(cycleDeadline, "cycleDeadline");
+        this.failureObserver = Objects.requireNonNull(failureObserver, "failureObserver");
+        this.terminalExecutor = new ThreadPoolExecutor(
+                Math.min(maxConcurrentSends, 4), Math.min(maxConcurrentSends, 4),
+                0L, TimeUnit.MILLISECONDS, new ArrayBlockingQueue<>(maxConcurrentSends),
+                runnable -> {
+                    Thread thread = new Thread(runnable, "outbox-relay-" + THREAD_SEQUENCE.incrementAndGet());
+                    thread.setDaemon(true);
+                    return thread;
+                }, new ThreadPoolExecutor.AbortPolicy());
     }
 
     public synchronized int runOnce() {
+        if (closed.get()) return 0;
         int available = sendCapacity.availablePermits();
         if (available == 0) return 0;
         Instant claimedAt = clock.instant();
@@ -54,23 +82,39 @@ public final class OutboxRelay {
             if (adapter == null) throw new IllegalStateException("no adapter for " + event.destination());
             delivery = Objects.requireNonNull(adapter.deliver(event), "adapter returned null stage");
         } catch (Throwable failure) {
-            try { handleFailure(event, failure); }
-            finally { sendCapacity.release(); }
+            submitTerminal(event, null, failure);
             return;
         }
 
-        delivery.toCompletableFuture().thenApply(receipt -> receipt)
-                .orTimeout(cycleDeadline.toMillis(), TimeUnit.MILLISECONDS)
-                .whenComplete((receipt, failure) -> {
-                    try {
-                        if (failure == null) {
-                            repository.markDelivered(event.eventId(), event.version(), event.leaseOwner(),
-                                    receipt.acknowledgedAt());
-                        } else {
-                            handleFailure(event, unwrap(failure));
-                        }
-                    } finally { sendCapacity.release(); }
-                });
+        delivery.whenComplete((receipt, failure) -> submitTerminal(event, receipt, failure));
+    }
+
+    private void submitTerminal(OutboxEvent event, DeliveryReceipt receipt, Throwable failure) {
+        try {
+            terminalExecutor.execute(() -> {
+                try {
+                    if (failure == null) {
+                        DeliveryReceipt requiredReceipt = Objects.requireNonNull(receipt, "adapter completed with null receipt");
+                        repository.markDelivered(event.eventId(), event.version(), event.leaseOwner(),
+                                requiredReceipt.acknowledgedAt());
+                    } else {
+                        handleFailure(event, unwrap(failure));
+                    }
+                } catch (Throwable terminalFailure) {
+                    report(terminalFailure);
+                } finally {
+                    sendCapacity.release();
+                }
+            });
+        } catch (RejectedExecutionException rejected) {
+            sendCapacity.release();
+            report(rejected);
+        }
+    }
+
+    private void report(Throwable failure) {
+        try { failureObserver.accept(failure); }
+        catch (Throwable observerFailure) { observerFailure.printStackTrace(System.err); }
     }
 
     private void handleFailure(OutboxEvent event, Throwable failure) {
@@ -97,5 +141,23 @@ public final class OutboxRelay {
     private static String requireText(String value, String name) {
         if (value == null || value.isBlank()) throw new IllegalArgumentException(name + " must not be blank");
         return value;
+    }
+
+    /** Stops new claims, waits up to the cycle deadline for live sends and terminal I/O, then stops workers. */
+    @Override public void close() {
+        if (!closed.compareAndSet(false, true)) return;
+        long deadline = System.nanoTime() + cycleDeadline.toNanos();
+        while (sendCapacity.availablePermits() != maxConcurrentSends && System.nanoTime() < deadline) {
+            try { Thread.sleep(5); }
+            catch (InterruptedException interrupted) { Thread.currentThread().interrupt(); break; }
+        }
+        terminalExecutor.shutdown();
+        try {
+            long remaining = Math.max(0, deadline - System.nanoTime());
+            if (!terminalExecutor.awaitTermination(remaining, TimeUnit.NANOSECONDS)) terminalExecutor.shutdownNow();
+        } catch (InterruptedException interrupted) {
+            terminalExecutor.shutdownNow();
+            Thread.currentThread().interrupt();
+        }
     }
 }
