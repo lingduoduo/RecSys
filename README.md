@@ -1850,7 +1850,7 @@ sh streaming/online-serving/scripts/produce_movie_events.sh
 # Flink job writes to Redis → online serving sees live history and trending
 ```
 
-The production partition contract is `movie_events_v2` with **24 partitions**, source/operator parallelism `24`, and stable max parallelism `128`. The keyed source and stateful operators retain stable UIDs, including `topk-partial-v1` and `topk-final-v1`; Top-K uses event time with five seconds of out-of-orderness and 30-second partition idleness. The opt-in Docker load guard exercises **50,000 events/s**, zero final lag, checkpoint health, and ordinary-user skew no greater than **twice the median** active partition. See the [Kafka partition cutover runbook](docs/runbooks/kafka-partition-cutover.md) for the fence, drain, savepoint, restore, validation, rollback, and retirement sequence.
+The production partition contract is `movie_events_v2` with **24 partitions**, source/operator parallelism `24`, and stable max parallelism `128`. Downstream stateful operators retain stable UIDs, including `topk-partial-v1` and `topk-final-v1`; the generation-specific `kafka-movie-events-v2` source UID prevents old Kafka split state from binding to v2. Top-K uses event time with five seconds of out-of-orderness and 30-second partition idleness. The opt-in Docker load guard exercises **50,000 events/s**, zero final lag, checkpoint health, and ordinary-user skew no greater than **twice the median** active partition. See the [Kafka partition cutover runbook](docs/runbooks/kafka-partition-cutover.md) for restore with `--allowNonRestoredState`, the post-activation fix-forward boundary, explicit v2-to-old replay, and retirement sequence.
 
 | Component | Responsibility |
 |---|---|
