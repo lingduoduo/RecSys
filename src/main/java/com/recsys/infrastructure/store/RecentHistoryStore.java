@@ -7,6 +7,6 @@ public interface RecentHistoryStore {
 
     /** Primary/no-cache read used only after a consistency token is observed as applied. */
     default List<Integer> getRecentMovieIdsPrimary(int userId, int limit) {
-        return getRecentMovieIds(userId, limit);
+        throw new UnsupportedOperationException("Primary recent-history reads are not supported");
     }
 }

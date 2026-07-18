@@ -8,6 +8,7 @@ import com.recsys.application.consistency.ConsistencyWaiter;
 import com.recsys.application.consistency.ExpiredConsistencyTokenException;
 import com.recsys.application.consistency.InvalidConsistencyTokenException;
 import com.recsys.application.outbox.DurableEventPublisher;
+import com.recsys.application.retrieval.multichannel.MultiChannelRecallService;
 import com.recsys.domain.item.Movie;
 import com.recsys.domain.online.OnlineRecommendationRequest;
 import com.recsys.domain.online.OnlineRecommendationResult;
@@ -127,8 +128,15 @@ public final class OnlineServices {
                         if (consistencyTokenCodec == null) throw new InvalidConsistencyTokenException();
                         ConsistencyToken token = consistencyTokenCodec.decodeAndVerify(encodedToken);
                         if (token.userId() != userId) throw new ConsistencySubjectMismatchException();
-                        if (consistencyWaiter.await(token.eventId(), userId, Duration.ofSeconds(2))
-                                == ConsistencyWaiter.WaitResult.PENDING) {
+                        ConsistencyWaiter.WaitResult waitResult;
+                        try {
+                            waitResult = consistencyWaiter.await(token.eventId(), userId, Duration.ofSeconds(2));
+                        } catch (RuntimeException primaryReadFailure) {
+                            log.warn("Primary consistency lookup unavailable", primaryReadFailure);
+                            return writeErrorWithRetryAfter(HttpStatus.SERVICE_UNAVAILABLE,
+                                    "consistency lookup unavailable", 1);
+                        }
+                        if (waitResult == ConsistencyWaiter.WaitResult.PENDING) {
                             return writeErrorWithRetryAfter(HttpStatus.ACCEPTED,
                                     "event materialization pending", 1);
                         }
@@ -150,6 +158,11 @@ public final class OnlineServices {
                 } catch (OnlineRecommendationService.UnknownUserException e) {
                     metricsService.recordFailure(elapsedMs(startedAtMs));
                     return writeError(HttpStatus.NOT_FOUND, e.getMessage());
+                } catch (OnlineRecommendationService.PrimaryReadUnavailableException e) {
+                    metricsService.recordFailure(elapsedMs(startedAtMs));
+                    log.warn("Primary recommendation unavailable", e);
+                    return writeErrorWithRetryAfter(HttpStatus.SERVICE_UNAVAILABLE,
+                            "primary recommendation unavailable", 1);
                 } catch (OutboxConflictException e) {
                     metricsService.recordFailure(elapsedMs(startedAtMs));
                     return writeError(HttpStatus.CONFLICT, "event ID already accepted with different content");
@@ -157,6 +170,11 @@ public final class OnlineServices {
                     metricsService.recordFailure(elapsedMs(startedAtMs));
                     log.error("Unable to durably accept online event", e);
                     return writeError(HttpStatus.SERVICE_UNAVAILABLE, "event acceptance unavailable");
+                } catch (MultiChannelRecallService.PrimaryRecallUnavailableException e) {
+                    metricsService.recordFailure(elapsedMs(startedAtMs));
+                    log.warn("Primary recommendation unavailable", e);
+                    return writeErrorWithRetryAfter(HttpStatus.SERVICE_UNAVAILABLE,
+                            "primary recommendation unavailable", 1);
                 } catch (Exception e) {
                     metricsService.recordFailure(elapsedMs(startedAtMs));
                     log.error("Unexpected error in {}", getClass().getSimpleName(), e);

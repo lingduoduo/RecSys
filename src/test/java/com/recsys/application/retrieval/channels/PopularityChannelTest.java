@@ -11,12 +11,25 @@ import java.util.List;
 import java.util.Set;
 
 import static org.assertj.core.api.Assertions.assertThat;
+import static org.assertj.core.api.Assertions.assertThatThrownBy;
 import static org.assertj.core.api.Assertions.within;
 import static org.mockito.ArgumentMatchers.anyInt;
 import static org.mockito.Mockito.mock;
 import static org.mockito.Mockito.when;
 
 class PopularityChannelTest {
+
+    @Test
+    void primaryRecallNeverFallsBackToDataManagerWhenRedisFails() {
+        DataManager dm = mock(DataManager.class);
+        GlobalPopularityStore popStore = mock(GlobalPopularityStore.class);
+        when(popStore.getTopIdsPrimary(anyInt())).thenThrow(new IllegalStateException("redis down"));
+
+        assertThatThrownBy(() -> new Channels.Popularity(dm, popStore).recallPrimary(
+                new RecommendationQuery("1", 5, Set.of(), null), 5))
+                .isInstanceOf(IllegalStateException.class).hasMessage("redis down");
+        org.mockito.Mockito.verifyNoInteractions(dm);
+    }
 
     @Test
     void recall_combinesTopRatedAndLatest() {

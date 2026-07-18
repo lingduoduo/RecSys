@@ -29,11 +29,11 @@ public interface RedisExecutor extends Closeable {
 
     /** Runs a read against the writable primary, bypassing replica routing. */
     default <T> T executePrimaryRead(Function<RedisCommands<String, String>, T> fn) {
-        return executeRead(fn);
+        return execute(fn);
     }
 
     default <T> T executePrimaryRead(Function<RedisCommands<String, String>, T> fn, Duration timeout) {
-        return executePrimaryRead(fn);
+        throw new UnsupportedOperationException("Timed primary Redis reads are not supported");
     }
 
     /**

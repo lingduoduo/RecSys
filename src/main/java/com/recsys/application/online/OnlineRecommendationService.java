@@ -52,7 +52,17 @@ public final class OnlineRecommendationService {
     }
 
     public OnlineRecommendationResult recommendPrimary(OnlineRecommendationRequest request) {
-        return recommend(request, true);
+        try {
+            return recommend(request, true);
+        } catch (UnknownUserException e) {
+            throw e;
+        } catch (RuntimeException e) {
+            throw new PrimaryReadUnavailableException("Primary recommendation read failed", e);
+        }
+    }
+
+    public static final class PrimaryReadUnavailableException extends RuntimeException {
+        public PrimaryReadUnavailableException(String message, Throwable cause) { super(message, cause); }
     }
 
     private OnlineRecommendationResult recommend(OnlineRecommendationRequest request, boolean primaryFeatureRead) {

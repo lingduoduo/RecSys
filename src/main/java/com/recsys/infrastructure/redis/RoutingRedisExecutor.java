@@ -39,7 +39,7 @@ public final class RoutingRedisExecutor implements RedisExecutor {
 
     @Override
     public <T> T executePrimaryRead(Function<RedisCommands<String, String>, T> fn) {
-        return router.writable().executeRead(fn);
+        return router.writable().execute(fn);
     }
 
     @Override

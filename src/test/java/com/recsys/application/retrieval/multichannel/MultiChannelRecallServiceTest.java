@@ -20,6 +20,7 @@ import java.util.concurrent.ForkJoinPool;
 import java.util.concurrent.atomic.AtomicInteger;
 
 import static org.assertj.core.api.Assertions.assertThat;
+import static org.assertj.core.api.Assertions.assertThatThrownBy;
 import static org.junit.jupiter.api.Assertions.assertEquals;
 import static org.mockito.Mockito.mock;
 import static org.mockito.Mockito.when;
@@ -27,6 +28,38 @@ import static org.mockito.Mockito.verify;
 import static org.mockito.Mockito.never;
 
 class MultiChannelRecallServiceTest {
+
+    @Test
+    void primaryRecallFailsClosedWhenRequiredChannelThrows() {
+        RecallChannel broken = new RecallChannel() {
+            public String name() { return "broken"; }
+            public List<MovieCandidate> recall(RecommendationQuery q, int limit) { return List.of(); }
+            public List<MovieCandidate> recallPrimary(RecommendationQuery q, int limit) {
+                throw new IllegalStateException("redis down");
+            }
+        };
+        MultiChannelRecallService service = new MultiChannelRecallService(List.of(broken));
+        assertThatThrownBy(() -> service.recallPrimary(
+                new RecommendationQuery("1", 5, Set.of(), null), 5))
+                .isInstanceOf(MultiChannelRecallService.PrimaryRecallUnavailableException.class)
+                .hasRootCauseMessage("redis down");
+    }
+
+    @Test
+    void primaryRecallFailsClosedWhenRequiredChannelIsHealthSkipped() {
+        RecallChannel broken = new RecallChannel() {
+            public String name() { return "broken"; }
+            public List<MovieCandidate> recall(RecommendationQuery q, int limit) { throw new IllegalStateException(); }
+        };
+        ChannelHealthMonitor health = new ChannelHealthMonitor(1, 60_000, 60_000);
+        health.recordFailure("broken");
+        MultiChannelRecallService service = new MultiChannelRecallService(
+                List.of(broken), health, ForkJoinPool.commonPool(), 200, FaultInjector.NOOP);
+        assertThatThrownBy(() -> service.recallPrimary(
+                new RecommendationQuery("1", 5, Set.of(), null), 5))
+                .isInstanceOf(MultiChannelRecallService.PrimaryRecallUnavailableException.class)
+                .hasMessageContaining("unavailable");
+    }
 
     @Test
     void primaryRecallBypassesCachedUserEmbeddingAndUsesPrimaryChannelMethods() {

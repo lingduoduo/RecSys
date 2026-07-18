@@ -90,6 +90,11 @@ public final class Channels {
                     .map(m -> new MovieCandidate(String.valueOf(m.id()), SCORE, name(), Map.of()))
                     .toList();
         }
+
+        @Override
+        public List<MovieCandidate> recallPrimary(RecommendationQuery query, int limit) {
+            return recall(query, limit);
+        }
     }
 
     /** Global popularity, preferring the Redis store and falling back to DataManager. */
@@ -134,8 +139,13 @@ public final class Channels {
                         return RecallScoring.rankScored(ids, name());
                     }
                 } catch (RuntimeException e) {
-                    // Redis unavailable — fall through to DataManager fallback
+                    if (primary) throw e;
+                    // Redis unavailable — tokenless reads may use the DataManager fallback
                 }
+                if (primary) return List.of();
+            }
+            if (primary) {
+                throw new IllegalStateException("Primary popularity store is not configured");
             }
             // DataManager fallback
             Map<Integer, Movie> deduped = new LinkedHashMap<>();
@@ -280,6 +290,11 @@ public final class Channels {
                     .sorted(RecallScoring.BY_SCORE_DESC)
                     .limit(limit)
                     .toList();
+        }
+
+        @Override
+        public List<MovieCandidate> recallPrimary(RecommendationQuery query, int limit) {
+            return recall(query, limit);
         }
 
         private List<Neighbor> mostSimilarUsers(int userId, Map<Integer, Double> currentRatings) {

@@ -18,7 +18,9 @@ public interface EmbeddingStore {
     /** Returns the embedding for {@code id}, or {@code null} if not found. */
     float[] getEmbedding(int id);
 
-    default float[] getEmbeddingPrimary(int id) { return getEmbedding(id); }
+    default float[] getEmbeddingPrimary(int id) {
+        throw new UnsupportedOperationException("Primary embedding reads are not supported");
+    }
 
     /** Bulk get; absent IDs are silently omitted from the returned map. */
     Map<Integer, float[]> getEmbeddings(Collection<Integer> ids);

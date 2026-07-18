@@ -120,6 +120,10 @@ public class MultiChannelRecallService {
         List<CompletableFuture<ChannelResult>> futures = new ArrayList<>(channels.size());
         for (RecallChannel channel : channels) {
             if (!healthMonitor.isAvailable(channel.name())) {
+                if (primary) {
+                    throw new PrimaryRecallUnavailableException(
+                            "Required primary channel is unavailable: " + channel.name());
+                }
                 log.debug("Channel '{}' is in backoff — skipping", channel.name());
                 continue;
             }
@@ -134,9 +138,13 @@ public class MultiChannelRecallService {
                                     ? channel.recallPrimary(query, limit)
                                     : channel.recall(query, limit), null);
                         }, executor)
-                        .orTimeout(channelTimeoutMs, TimeUnit.MILLISECONDS)
-                        .exceptionally(ex -> new ChannelResult(name, List.of(), ex));
+                        .orTimeout(channelTimeoutMs, TimeUnit.MILLISECONDS);
+                if (!primary) {
+                    future = future.exceptionally(ex -> new ChannelResult(name, List.of(), ex));
+                }
             } catch (RejectedExecutionException rex) {
+                if (primary) throw new PrimaryRecallUnavailableException(
+                        "Required primary channel was rejected: " + name, rex);
                 log.warn("Channel '{}' rejected by recall bulkhead (queue full)", name);
                 future = CompletableFuture.completedFuture(new ChannelResult(name, List.of(), rex));
             }
@@ -144,7 +152,11 @@ public class MultiChannelRecallService {
         }
 
         if (!futures.isEmpty()) {
-            CompletableFuture.allOf(futures.toArray(new CompletableFuture[0])).join();
+            try {
+                CompletableFuture.allOf(futures.toArray(new CompletableFuture[0])).join();
+            } catch (java.util.concurrent.CompletionException e) {
+                throw new PrimaryRecallUnavailableException("Required primary recall channel failed", e.getCause());
+            }
         }
 
         Map<String, List<MovieCandidate>> channelResults = new LinkedHashMap<>();
@@ -168,6 +180,11 @@ public class MultiChannelRecallService {
             return legacyMerge(channelResults, query, limit);
         }
         return quotaMerge(channelResults, quota, query, limit);
+    }
+
+    public static final class PrimaryRecallUnavailableException extends RuntimeException {
+        public PrimaryRecallUnavailableException(String message) { super(message); }
+        public PrimaryRecallUnavailableException(String message, Throwable cause) { super(message, cause); }
     }
 
     private List<MovieCandidate> legacyMerge(Map<String, List<MovieCandidate>> channelResults,

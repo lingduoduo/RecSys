@@ -88,12 +88,33 @@ class OnlineServicesTest {
         verify(recommendations, never()).recommendPrimary(any());
     }
 
+    @Test void failedPrimaryTokenReadReturnsRetryableServiceUnavailable() {
+        when(waiter.await(EVENT_ID, 42, Duration.ofSeconds(2)))
+                .thenThrow(new IllegalStateException("redis down"));
+        AggregatedHttpResponse response = getRecommendation(42, validToken());
+        assertThat(response.status()).isEqualTo(HttpStatus.SERVICE_UNAVAILABLE);
+        assertThat(response.headers().get("Retry-After")).isEqualTo("1");
+        verifyNoInteractions(recommendations);
+    }
+
     @Test void appliedConsistencyForcesPrimaryNoCacheRecommendation() {
         when(waiter.await(EVENT_ID, 42, Duration.ofSeconds(2)))
                 .thenReturn(ConsistencyWaiter.WaitResult.APPLIED);
         AggregatedHttpResponse response = getRecommendation(42, validToken());
         assertThat(response.status()).isEqualTo(HttpStatus.OK);
         verify(recommendations).recommendPrimary(any());
+        verify(recommendations, never()).recommend(any());
+    }
+
+    @Test void failedPrimaryRecommendationReturnsRetryableServiceUnavailable() {
+        when(waiter.await(EVENT_ID, 42, Duration.ofSeconds(2)))
+                .thenReturn(ConsistencyWaiter.WaitResult.APPLIED);
+        when(recommendations.recommendPrimary(any())).thenThrow(
+                new OnlineRecommendationService.PrimaryReadUnavailableException(
+                        "primary read failed", new IllegalStateException("redis down")));
+        AggregatedHttpResponse response = getRecommendation(42, validToken());
+        assertThat(response.status()).isEqualTo(HttpStatus.SERVICE_UNAVAILABLE);
+        assertThat(response.headers().get("Retry-After")).isEqualTo("1");
         verify(recommendations, never()).recommend(any());
     }
 
