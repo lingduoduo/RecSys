@@ -28,6 +28,28 @@ class SagaOrchestratorTest {
     private final Clock clock = Clock.fixed(Instant.parse("2026-05-25T12:00:00Z"), ZoneOffset.UTC);
 
     @Test
+    void durableStoreDoesNotAlsoPublishTransitionDirectly() {
+        AtomicInteger durableEvents = new AtomicInteger();
+        AtomicInteger directEvents = new AtomicInteger();
+        SagaStateStore store = new InMemorySagaStateStore() {
+            @Override public void saveWithEvent(SagaInstance saga, SagaTransitionEvent event) {
+                saveConditionally(saga);
+                durableEvents.incrementAndGet();
+            }
+
+            @Override public boolean storesEventsDurably() { return true; }
+        };
+
+        new SagaOrchestrators.Standard(store, event -> directEvents.incrementAndGet(), clock).execute(
+                "durable-1", "request-1", "{}",
+                new SagaDefinition("single", List.of(SagaStep.local("step"))),
+                Map.of("step", (saga, step) -> { }), Map.of());
+
+        assertThat(durableEvents).hasValue(4);
+        assertThat(directEvents).hasValue(0);
+    }
+
+    @Test
     void execute_completesAllStepsAndPublishesTransitions() {
         InMemorySagaStateStore store = new InMemorySagaStateStore();
         List<SagaTransitionEvent> events = new ArrayList<>();

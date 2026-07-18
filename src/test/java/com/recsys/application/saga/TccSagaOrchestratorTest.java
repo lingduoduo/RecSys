@@ -28,6 +28,28 @@ class TccSagaOrchestratorTest {
     private final Clock clock = Clock.fixed(Instant.parse("2026-05-25T12:00:00Z"), ZoneOffset.UTC);
 
     @Test
+    void durableStoreDoesNotAlsoPublishTccTransitionsDirectly() {
+        AtomicInteger durableEvents = new AtomicInteger();
+        AtomicInteger directEvents = new AtomicInteger();
+        SagaStateStore store = new InMemorySagaStateStore() {
+            @Override public void saveWithEvent(SagaInstance saga, SagaTransitionEvent event) {
+                saveConditionally(saga);
+                durableEvents.incrementAndGet();
+            }
+
+            @Override public boolean storesEventsDurably() { return true; }
+        };
+
+        new SagaOrchestrators.Tcc(store, event -> directEvents.incrementAndGet(), clock).execute(
+                "durable-tcc-1", "request-1", "{}",
+                new SagaDefinition("single", List.of(SagaStep.local("step"))),
+                Map.of("step", participant(new ArrayList<>())));
+
+        assertThat(durableEvents).hasValue(6);
+        assertThat(directEvents).hasValue(0);
+    }
+
+    @Test
     void execute_triesThenConfirmsEveryParticipant() {
         InMemorySagaStateStore store = new InMemorySagaStateStore();
         List<String> calls = new ArrayList<>();

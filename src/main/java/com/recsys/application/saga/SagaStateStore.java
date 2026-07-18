@@ -1,5 +1,6 @@
 package com.recsys.application.saga;
 import com.recsys.domain.saga.SagaInstance;
+import com.recsys.domain.saga.SagaTransitionEvent;
 
 import java.util.Optional;
 
@@ -17,5 +18,15 @@ public interface SagaStateStore {
      */
     default void saveConditionally(SagaInstance saga) {
         save(saga);
+    }
+
+    /** Persist a transition and its event. Durable stores override this atomically. */
+    default void saveWithEvent(SagaInstance saga, SagaTransitionEvent event) {
+        saveConditionally(saga);
+    }
+
+    /** Whether {@link #saveWithEvent} durably records the event for asynchronous delivery. */
+    default boolean storesEventsDurably() {
+        return false;
     }
 }
