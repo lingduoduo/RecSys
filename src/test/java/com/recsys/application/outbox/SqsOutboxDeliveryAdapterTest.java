@@ -22,8 +22,9 @@ class SqsOutboxDeliveryAdapterTest {
         OutboxEvent event = OutboxEvent.pending(eventId, "saga", "order-7", "PaymentRequested",
                 OutboxDestination.SQS_SAGA, null, "{\"amount\":4}", Instant.EPOCH);
 
-        var receipt = new SqsOutboxDeliveryAdapter(sqs, "https://sqs/queue", java.time.Clock.systemUTC())
-                .deliver(event).toCompletableFuture();
+        DeliveryAttempt attempt = new SqsOutboxDeliveryAdapter(sqs, "https://sqs/queue", java.time.Clock.systemUTC())
+                .deliver(event);
+        var receipt = attempt.completion().toCompletableFuture();
         assertThat(receipt).isNotDone();
         var request = org.mockito.ArgumentCaptor.forClass(SendMessageRequest.class);
         verify(sqs).sendMessage(request.capture());
@@ -37,5 +38,17 @@ class SqsOutboxDeliveryAdapterTest {
 
         ack.complete(SendMessageResponse.builder().messageId("broker-id").build());
         assertThat(receipt).isCompleted();
+    }
+
+    @Test void cancellationSettlesTheNativeSqsFuture() {
+        SqsAsyncClient sqs = mock(SqsAsyncClient.class);
+        CompletableFuture<SendMessageResponse> nativeFuture = new CompletableFuture<>();
+        when(sqs.sendMessage(any(SendMessageRequest.class))).thenReturn(nativeFuture);
+        OutboxEvent event = OutboxEvent.pending(UUID.randomUUID(), "saga", "order-7", "PaymentRequested",
+                OutboxDestination.SQS_SAGA, null, "{}", Instant.EPOCH);
+
+        DeliveryAttempt attempt = new SqsOutboxDeliveryAdapter(sqs, "https://sqs/queue").deliver(event);
+        assertThat(attempt.cancel().toCompletableFuture()).isCompleted();
+        assertThat(nativeFuture).isCancelled();
     }
 }

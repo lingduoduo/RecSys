@@ -21,6 +21,7 @@ public final class OutboxRelay implements AutoCloseable {
     private final Semaphore sendCapacity;
     private final int maxConcurrentSends;
     private final ExecutorService terminalExecutor;
+    private final ScheduledExecutorService deadlineExecutor;
     private final Consumer<Throwable> failureObserver;
     private final AtomicBoolean closed = new AtomicBoolean();
     private static final AtomicInteger THREAD_SEQUENCE = new AtomicInteger();
@@ -59,6 +60,11 @@ public final class OutboxRelay implements AutoCloseable {
                     thread.setDaemon(true);
                     return thread;
                 }, new ThreadPoolExecutor.AbortPolicy());
+        this.deadlineExecutor = Executors.newSingleThreadScheduledExecutor(runnable -> {
+            Thread thread = new Thread(runnable, "outbox-relay-deadline");
+            thread.setDaemon(true);
+            return thread;
+        });
     }
 
     public synchronized int runOnce() {
@@ -77,16 +83,29 @@ public final class OutboxRelay implements AutoCloseable {
 
     private void dispatch(OutboxEvent event) {
         OutboxDeliveryAdapter adapter = adapters.get(event.destination());
-        CompletionStage<DeliveryReceipt> delivery;
+        DeliveryAttempt attempt;
         try {
             if (adapter == null) throw new IllegalStateException("no adapter for " + event.destination());
-            delivery = Objects.requireNonNull(adapter.deliver(event), "adapter returned null stage");
+            attempt = Objects.requireNonNull(adapter.deliver(event), "adapter returned null attempt");
         } catch (Throwable failure) {
             submitTerminal(event, null, failure);
             return;
         }
-
-        delivery.whenComplete((receipt, failure) -> submitTerminal(event, receipt, failure));
+        AtomicBoolean terminalSelected = new AtomicBoolean();
+        ScheduledFuture<?> deadline = deadlineExecutor.schedule(() -> attempt.cancel().whenComplete((ignored, cancellationFailure) -> {
+            if (cancellationFailure != null) {
+                report(unwrap(cancellationFailure));
+                return;
+            }
+            if (terminalSelected.compareAndSet(false, true))
+                submitTerminal(event, null, new TimeoutException("delivery attempt exceeded " + cycleDeadline));
+        }), cycleDeadline.toNanos(), TimeUnit.NANOSECONDS);
+        attempt.completion().whenComplete((receipt, failure) -> {
+            if (terminalSelected.compareAndSet(false, true)) {
+                deadline.cancel(false);
+                submitTerminal(event, receipt, failure);
+            }
+        });
     }
 
     private void submitTerminal(OutboxEvent event, DeliveryReceipt receipt, Throwable failure) {
@@ -95,8 +114,8 @@ public final class OutboxRelay implements AutoCloseable {
                 try {
                     if (failure == null) {
                         DeliveryReceipt requiredReceipt = Objects.requireNonNull(receipt, "adapter completed with null receipt");
-                        repository.markDelivered(event.eventId(), event.version(), event.leaseOwner(),
-                                requiredReceipt.acknowledgedAt());
+                        requireTransition(repository.markDelivered(event.eventId(), event.version(), event.leaseOwner(),
+                                requiredReceipt.acknowledgedAt()), event, "markDelivered");
                     } else {
                         handleFailure(event, unwrap(failure));
                     }
@@ -120,12 +139,19 @@ public final class OutboxRelay implements AutoCloseable {
     private void handleFailure(OutboxEvent event, Throwable failure) {
         String message = failure.getClass().getSimpleName() + ": " + Objects.toString(failure.getMessage(), "");
         if (retryPolicy.isDead(event.attemptCount())) {
-            repository.markDead(event.eventId(), event.version(), event.leaseOwner(), message);
+            requireTransition(repository.markDead(event.eventId(), event.version(), event.leaseOwner(), message),
+                    event, "markDead");
         } else {
             Instant failedAt = clock.instant();
-            repository.reschedule(event.eventId(), event.version(), event.leaseOwner(),
-                    retryPolicy.nextAttempt(event.attemptCount(), failedAt), message);
+            requireTransition(repository.reschedule(event.eventId(), event.version(), event.leaseOwner(),
+                    retryPolicy.nextAttempt(event.attemptCount(), failedAt), message), event, "reschedule");
         }
+    }
+
+    private static void requireTransition(boolean updated, OutboxEvent event, String operation) {
+        if (!updated) throw new IllegalStateException("outbox transition conflict during " + operation
+                + " for event " + event.eventId() + " version " + event.version()
+                + " owner " + event.leaseOwner());
     }
 
     private static Throwable unwrap(Throwable failure) {
@@ -151,6 +177,7 @@ public final class OutboxRelay implements AutoCloseable {
             try { Thread.sleep(5); }
             catch (InterruptedException interrupted) { Thread.currentThread().interrupt(); break; }
         }
+        deadlineExecutor.shutdownNow();
         terminalExecutor.shutdown();
         try {
             long remaining = Math.max(0, deadline - System.nanoTime());

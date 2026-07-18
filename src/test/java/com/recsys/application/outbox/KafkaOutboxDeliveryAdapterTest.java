@@ -26,7 +26,8 @@ class KafkaOutboxDeliveryAdapterTest {
         KafkaOutboxDeliveryAdapter adapter = new KafkaOutboxDeliveryAdapter(producer, "online-events", java.time.Clock.systemUTC());
         OutboxEvent event = event();
 
-        var receipt = adapter.deliver(event).toCompletableFuture();
+        DeliveryAttempt attempt = adapter.deliver(event);
+        var receipt = attempt.completion().toCompletableFuture();
         assertThat(receipt).isNotDone();
         assertThat(producer.history()).singleElement().satisfies(record -> {
             assertThat(record.key()).isEqualTo("user-42");
@@ -35,6 +36,18 @@ class KafkaOutboxDeliveryAdapterTest {
 
         producer.completeNext();
         assertThat(receipt).isCompletedWithValueMatching(r -> r.acknowledgedAt() != null);
+    }
+
+    @Test void cancellationConfirmationWaitsUntilNativeKafkaFutureSettles() {
+        MockProducer<String, String> producer = new MockProducer<>(false, new StringSerializer(), new StringSerializer());
+        DeliveryAttempt attempt = new KafkaOutboxDeliveryAdapter(producer, "online-events", java.time.Clock.systemUTC())
+                .deliver(event());
+
+        var cancellation = attempt.cancel().toCompletableFuture();
+        assertThat(cancellation).isNotDone();
+        producer.errorNext(new org.apache.kafka.common.errors.TimeoutException("delivery timeout"));
+        assertThat(cancellation).isCompleted();
+        assertThat(attempt.completion().toCompletableFuture()).isCompletedExceptionally();
     }
 
     private static OutboxEvent event() {

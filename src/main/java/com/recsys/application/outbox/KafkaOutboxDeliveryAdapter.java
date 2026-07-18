@@ -37,11 +37,12 @@ public final class KafkaOutboxDeliveryAdapter implements OutboxDeliveryAdapter, 
         return props;
     }
 
-    @Override public CompletionStage<DeliveryReceipt> deliver(OutboxEvent event) {
+    @Override public DeliveryAttempt deliver(OutboxEvent event) {
         Objects.requireNonNull(event, "event");
         CompletableFuture<DeliveryReceipt> result = new CompletableFuture<>();
+        Future<RecordMetadata> nativeFuture;
         try {
-            producer.send(new ProducerRecord<>(topic, event.partitionKey(), event.payload()), (metadata, error) -> {
+            nativeFuture = producer.send(new ProducerRecord<>(topic, event.partitionKey(), event.payload()), (metadata, error) -> {
                 if (error != null) result.completeExceptionally(error);
                 else {
                     long timestamp = metadata == null ? -1 : metadata.timestamp();
@@ -50,8 +51,21 @@ public final class KafkaOutboxDeliveryAdapter implements OutboxDeliveryAdapter, 
             });
         } catch (RuntimeException failure) {
             result.completeExceptionally(failure);
+            return new DeliveryAttempt(result, () -> CompletableFuture.completedFuture(null));
         }
-        return result;
+        Future<RecordMetadata> sendFuture = nativeFuture;
+        return new DeliveryAttempt(result, () -> {
+            CompletableFuture<Void> settled = new CompletableFuture<>();
+            if (sendFuture.cancel(false)) {
+                result.cancel(false);
+                settled.complete(null);
+            } else if (sendFuture.isDone()) {
+                settled.complete(null);
+            } else {
+                result.whenComplete((ignored, failure) -> settled.complete(null));
+            }
+            return settled;
+        });
     }
 
     @Override public void close() { producer.close(Duration.ofSeconds(5)); }

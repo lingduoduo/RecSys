@@ -18,7 +18,7 @@ class OutboxRelayTest {
     @Test void marksDeliveredOnlyAfterBrokerAcknowledgementUsingClaimOwner() throws Exception {
         FakeRepository repository = new FakeRepository(claimed(1));
         CompletableFuture<DeliveryReceipt> acknowledgement = new CompletableFuture<>();
-        OutboxRelay relay = relay(repository, event -> acknowledgement);
+        OutboxRelay relay = relay(repository, event -> attempt(acknowledgement));
 
         assertThat(relay.runOnce()).isEqualTo(1);
         assertThat(repository.status).isEqualTo(OutboxStatus.IN_FLIGHT);
@@ -33,7 +33,7 @@ class OutboxRelayTest {
 
     @Test void reschedulesFailureAndDeadLettersAtCeiling() throws Exception {
         FakeRepository retryRepository = new FakeRepository(claimed(1));
-        OutboxDeliveryAdapter failed = event -> CompletableFuture.failedFuture(new IOException("broker unavailable"));
+        OutboxDeliveryAdapter failed = event -> attempt(CompletableFuture.failedFuture(new IOException("broker unavailable")));
         relay(retryRepository, failed).runOnce();
         retryRepository.awaitTerminal();
         assertThat(retryRepository.status).isEqualTo(OutboxStatus.PENDING);
@@ -49,7 +49,7 @@ class OutboxRelayTest {
 
     @Test void dispatchesByDestinationAndBoundsClaimsToConcurrency() {
         FakeRepository repository = new FakeRepository(claimed(1));
-        OutboxDeliveryAdapter kafka = event -> CompletableFuture.completedFuture(new DeliveryReceipt(NOW));
+        OutboxDeliveryAdapter kafka = event -> attempt(CompletableFuture.completedFuture(new DeliveryReceipt(NOW)));
         OutboxRelay relay = new OutboxRelay(repository, Map.of(OutboxDestination.KAFKA_ONLINE, kafka), retryPolicy(),
                 "configured-worker", Clock.fixed(NOW, ZoneOffset.UTC), 10, Duration.ofSeconds(30),
                 Duration.ofSeconds(2), 2);
@@ -62,7 +62,7 @@ class OutboxRelayTest {
         FakeRepository repository = new FakeRepository(claimed(1));
         CompletableFuture<DeliveryReceipt> pending = new CompletableFuture<>();
         OutboxRelay relay = new OutboxRelay(repository,
-                Map.of(OutboxDestination.KAFKA_ONLINE, event -> pending), retryPolicy(),
+                Map.of(OutboxDestination.KAFKA_ONLINE, event -> attempt(pending)), retryPolicy(),
                 "configured-worker", Clock.fixed(NOW, ZoneOffset.UTC), 10, Duration.ofSeconds(30),
                 Duration.ofSeconds(2), 1);
 
@@ -71,12 +71,16 @@ class OutboxRelayTest {
         assertThat(repository.claimCalls).isEqualTo(1);
     }
 
-    @Test void lateAcknowledgementAfterCycleDeadlineDoesNotAllowOverlappingResend() throws Exception {
+    @Test void deadlineWaitsForConfirmedCancellationBeforeRetryAndCapacityRelease() throws Exception {
         FakeRepository repository = new FakeRepository(claimed(1));
         CompletableFuture<DeliveryReceipt> pending = new CompletableFuture<>();
+        CompletableFuture<Void> cancelled = new CompletableFuture<>();
         AtomicInteger sends = new AtomicInteger();
         try (OutboxRelay relay = new OutboxRelay(repository,
-                Map.of(OutboxDestination.KAFKA_ONLINE, event -> { sends.incrementAndGet(); return pending; }),
+                Map.of(OutboxDestination.KAFKA_ONLINE, event -> {
+                    sends.incrementAndGet();
+                    return new DeliveryAttempt(pending, () -> cancelled);
+                }),
                 retryPolicy(), "configured-worker", Clock.fixed(NOW, ZoneOffset.UTC), 10,
                 Duration.ofSeconds(30), Duration.ofMillis(20), 1)) {
             assertThat(relay.runOnce()).isEqualTo(1);
@@ -85,16 +89,54 @@ class OutboxRelayTest {
             assertThat(sends).hasValue(1);
             assertThat(repository.status).isEqualTo(OutboxStatus.IN_FLIGHT);
 
-            pending.complete(new DeliveryReceipt(NOW.plusSeconds(1)));
+            cancelled.complete(null);
             repository.awaitTerminal();
-            assertThat(repository.status).isEqualTo(OutboxStatus.DELIVERED);
+            assertThat(repository.status).isEqualTo(OutboxStatus.PENDING);
+        }
+    }
+
+    @Test void neverCompletingDeliveryIsBoundedByDeadlineCancellation() throws Exception {
+        FakeRepository repository = new FakeRepository(claimed(1));
+        CompletableFuture<DeliveryReceipt> never = new CompletableFuture<>();
+        AtomicInteger cancellations = new AtomicInteger();
+        try (OutboxRelay relay = new OutboxRelay(repository,
+                Map.of(OutboxDestination.KAFKA_ONLINE, event -> new DeliveryAttempt(never, () -> {
+                    cancellations.incrementAndGet();
+                    never.cancel(false);
+                    return CompletableFuture.completedFuture(null);
+                })), retryPolicy(), "configured-worker", Clock.fixed(NOW, ZoneOffset.UTC), 10,
+                Duration.ofSeconds(30), Duration.ofMillis(20), 1)) {
+            relay.runOnce();
+            repository.awaitTerminal();
+            assertThat(cancellations).hasValue(1);
+            assertThat(repository.status).isEqualTo(OutboxStatus.PENDING);
+            assertThat(relay.runOnce()).isEqualTo(1);
+        }
+    }
+
+    @Test void lateCallbackRacingCancellationTransitionsExactlyOnce() throws Exception {
+        FakeRepository repository = new FakeRepository(claimed(1));
+        CompletableFuture<DeliveryReceipt> completion = new CompletableFuture<>();
+        CompletableFuture<Void> cancellation = new CompletableFuture<>();
+        try (OutboxRelay relay = new OutboxRelay(repository,
+                Map.of(OutboxDestination.KAFKA_ONLINE,
+                        event -> new DeliveryAttempt(completion, () -> cancellation)),
+                retryPolicy(), "configured-worker", Clock.fixed(NOW, ZoneOffset.UTC), 10,
+                Duration.ofSeconds(30), Duration.ofMillis(20), 1)) {
+            relay.runOnce();
+            Thread.sleep(50);
+            cancellation.complete(null);
+            completion.complete(new DeliveryReceipt(NOW));
+            repository.awaitTerminal();
+            Thread.sleep(30);
+            assertThat(repository.terminalInvocations).isEqualTo(1);
         }
     }
 
     @Test void terminalRepositoryIoNeverRunsOnBrokerCallbackThread() throws Exception {
         FakeRepository repository = new FakeRepository(claimed(1));
         CompletableFuture<DeliveryReceipt> pending = new CompletableFuture<>();
-        try (OutboxRelay relay = relay(repository, event -> pending)) {
+        try (OutboxRelay relay = relay(repository, event -> attempt(pending))) {
             relay.runOnce();
             Thread broker = new Thread(() -> pending.complete(new DeliveryReceipt(NOW)), "kafka-callback");
             broker.start();
@@ -110,12 +152,34 @@ class OutboxRelayTest {
         AtomicReference<Throwable> observed = new AtomicReference<>();
         try (OutboxRelay relay = new OutboxRelay(repository,
                 Map.of(OutboxDestination.KAFKA_ONLINE, (OutboxDeliveryAdapter)
-                        event -> CompletableFuture.completedFuture(new DeliveryReceipt(NOW))),
+                        event -> attempt(CompletableFuture.completedFuture(new DeliveryReceipt(NOW)))),
                 retryPolicy(), "configured-worker", Clock.fixed(NOW, ZoneOffset.UTC), 10,
                 Duration.ofSeconds(30), Duration.ofSeconds(1), 1, observed::set)) {
             relay.runOnce();
             repository.awaitTerminal();
             assertThat(observed.get()).isSameAs(repository.terminalFailure);
+        }
+    }
+
+    @Test void rejectedTerminalTransitionIsObservedWithoutOverwritingNewerOwner() throws Exception {
+        FakeRepository repository = new FakeRepository(claimed(1));
+        repository.transitionAccepted = false;
+        AtomicReference<Throwable> observed = new AtomicReference<>();
+        CountDownLatch observation = new CountDownLatch(1);
+        try (OutboxRelay relay = new OutboxRelay(repository,
+                Map.of(OutboxDestination.KAFKA_ONLINE, event ->
+                        attempt(CompletableFuture.completedFuture(new DeliveryReceipt(NOW)))),
+                retryPolicy(), "configured-worker", Clock.fixed(NOW, ZoneOffset.UTC), 10,
+                Duration.ofSeconds(30), Duration.ofSeconds(1), 1, failure -> {
+                    observed.set(failure);
+                    observation.countDown();
+                })) {
+            relay.runOnce();
+            repository.awaitTerminal();
+            assertThat(observation.await(2, TimeUnit.SECONDS)).isTrue();
+            assertThat(repository.status).isEqualTo(OutboxStatus.IN_FLIGHT);
+            assertThat(observed.get()).isInstanceOf(IllegalStateException.class)
+                    .hasMessageContaining("transition conflict");
         }
     }
 
@@ -128,7 +192,7 @@ class OutboxRelayTest {
         try (OutboxRelay relay = new OutboxRelay(repository,
                 Map.of(OutboxDestination.KAFKA_ONLINE, (OutboxDeliveryAdapter) event -> {
                     if (deliveries.getAndIncrement() == 0) throw new IllegalStateException("sync send failure");
-                    return CompletableFuture.completedFuture(new DeliveryReceipt(NOW));
+                    return attempt(CompletableFuture.completedFuture(new DeliveryReceipt(NOW)));
                 }), retryPolicy(), "configured-worker", Clock.fixed(NOW, ZoneOffset.UTC), 10,
                 Duration.ofSeconds(30), Duration.ofSeconds(1), 2, ignored -> {})) {
             assertThat(relay.runOnce()).isEqualTo(2);
@@ -141,7 +205,7 @@ class OutboxRelayTest {
     @Test void closeStopsClaimsAndDrainsCompletedTerminalWork() throws Exception {
         FakeRepository repository = new FakeRepository(claimed(1));
         CompletableFuture<DeliveryReceipt> pending = new CompletableFuture<>();
-        OutboxRelay relay = relay(repository, event -> pending);
+        OutboxRelay relay = relay(repository, event -> attempt(pending));
         relay.runOnce();
         pending.complete(new DeliveryReceipt(NOW));
         relay.close();
@@ -157,6 +221,13 @@ class OutboxRelayTest {
 
     private static OutboxRetryPolicy retryPolicy() {
         return new OutboxRetryPolicy(Duration.ofSeconds(5), Duration.ofMinutes(1), 3, () -> .5);
+    }
+
+    private static DeliveryAttempt attempt(CompletableFuture<DeliveryReceipt> completion) {
+        return new DeliveryAttempt(completion, () -> {
+            completion.cancel(false);
+            return CompletableFuture.completedFuture(null);
+        });
     }
 
     private static OutboxEvent claimed(int attempts) {
@@ -180,6 +251,8 @@ class OutboxRelayTest {
         private RuntimeException terminalFailure;
         private boolean failFirstTerminal;
         private int terminalSuccesses;
+        private int terminalInvocations;
+        private boolean transitionAccepted = true;
 
         private FakeRepository(OutboxEvent event) { this(List.of(event)); }
         private FakeRepository(List<OutboxEvent> events) {
@@ -192,18 +265,19 @@ class OutboxRelayTest {
             return claimed;
         }
         @Override public boolean markDelivered(UUID id, long version, String owner, Instant at) {
-            try { beforeTerminal(); capture(version, owner); acknowledgedAt = at; status = OutboxStatus.DELIVERED; terminalSuccesses++; return true; }
+            try { beforeTerminal(); if (!transitionAccepted) return false; capture(version, owner); acknowledgedAt = at; status = OutboxStatus.DELIVERED; terminalSuccesses++; return true; }
             finally { terminals.countDown(); }
         }
         @Override public boolean reschedule(UUID id, long version, String owner, Instant next, String message) {
-            try { beforeTerminal(); capture(version, owner); error = message; status = OutboxStatus.PENDING; terminalSuccesses++; return true; }
+            try { beforeTerminal(); if (!transitionAccepted) return false; capture(version, owner); error = message; status = OutboxStatus.PENDING; terminalSuccesses++; return true; }
             finally { terminals.countDown(); }
         }
         @Override public boolean markDead(UUID id, long version, String owner, String message) {
-            try { beforeTerminal(); capture(version, owner); error = message; status = OutboxStatus.DEAD; terminalSuccesses++; return true; }
+            try { beforeTerminal(); if (!transitionAccepted) return false; capture(version, owner); error = message; status = OutboxStatus.DEAD; terminalSuccesses++; return true; }
             finally { terminals.countDown(); }
         }
         private synchronized void beforeTerminal() {
+            terminalInvocations++;
             terminalThread = Thread.currentThread().getName();
             if (failFirstTerminal) { failFirstTerminal = false; throw new IllegalStateException("first transition failed"); }
             if (terminalFailure != null) throw terminalFailure;

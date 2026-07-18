@@ -6,7 +6,7 @@ import software.amazon.awssdk.services.sqs.model.*;
 
 import java.time.*;
 import java.util.*;
-import java.util.concurrent.CompletionStage;
+import java.util.concurrent.CompletableFuture;
 
 public final class SqsOutboxDeliveryAdapter implements OutboxDeliveryAdapter, AutoCloseable {
     private final SqsAsyncClient client;
@@ -24,7 +24,7 @@ public final class SqsOutboxDeliveryAdapter implements OutboxDeliveryAdapter, Au
         this.clock = Objects.requireNonNull(clock, "clock");
     }
 
-    @Override public CompletionStage<DeliveryReceipt> deliver(OutboxEvent event) {
+    @Override public DeliveryAttempt deliver(OutboxEvent event) {
         Objects.requireNonNull(event, "event");
         Map<String, MessageAttributeValue> attributes = new LinkedHashMap<>();
         attributes.put("eventId", text(event.eventId().toString()));
@@ -32,7 +32,15 @@ public final class SqsOutboxDeliveryAdapter implements OutboxDeliveryAdapter, Au
         attributes.put("eventType", text(event.eventType()));
         SendMessageRequest request = SendMessageRequest.builder().queueUrl(queueUrl).messageBody(event.payload())
                 .messageAttributes(attributes).build();
-        return client.sendMessage(request).thenApply(ignored -> new DeliveryReceipt(clock.instant()));
+        CompletableFuture<SendMessageResponse> nativeFuture = client.sendMessage(request);
+        CompletableFuture<DeliveryReceipt> completion = nativeFuture
+                .thenApply(ignored -> new DeliveryReceipt(clock.instant()));
+        return new DeliveryAttempt(completion, () -> {
+            CompletableFuture<Void> settled = new CompletableFuture<>();
+            nativeFuture.whenComplete((ignored, failure) -> settled.complete(null));
+            nativeFuture.cancel(false);
+            return settled;
+        });
     }
 
     private static MessageAttributeValue text(String value) {
