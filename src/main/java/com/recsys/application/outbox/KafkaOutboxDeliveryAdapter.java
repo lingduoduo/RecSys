@@ -39,6 +39,7 @@ public final class KafkaOutboxDeliveryAdapter implements OutboxDeliveryAdapter, 
         props.put(ProducerConfig.LINGER_MS_CONFIG, 0);
         props.put(ProducerConfig.DELIVERY_TIMEOUT_MS_CONFIG, deadlineMillis);
         props.put(ProducerConfig.REQUEST_TIMEOUT_MS_CONFIG, deadlineMillis);
+        props.put(ProducerConfig.MAX_BLOCK_MS_CONFIG, (long) deadlineMillis);
         return props;
     }
 

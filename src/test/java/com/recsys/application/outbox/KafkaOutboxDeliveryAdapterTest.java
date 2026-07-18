@@ -22,6 +22,7 @@ class KafkaOutboxDeliveryAdapterTest {
                         ProducerConfig.REQUEST_TIMEOUT_MS_CONFIG)
                 .containsEntry(ProducerConfig.DELIVERY_TIMEOUT_MS_CONFIG, 1750)
                 .containsEntry(ProducerConfig.REQUEST_TIMEOUT_MS_CONFIG, 1750)
+                .containsEntry(ProducerConfig.MAX_BLOCK_MS_CONFIG, 1750L)
                 .containsEntry(ProducerConfig.LINGER_MS_CONFIG, 0);
     }
 

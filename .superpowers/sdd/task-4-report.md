@@ -75,3 +75,12 @@ Final verification:
 - Added explicit terminal-failure observation, per-event synchronous failure isolation, and `AutoCloseable` lifecycle behavior that stops claims and drains live sends/terminal work up to the configured deadline before forcing executor shutdown.
 - Added regressions for late acknowledgement/no overlapping resend, callback-thread isolation, terminal repository failure visibility, synchronous failure batch continuation, and shutdown draining.
 - Review verification: `mvn test -q -Dtest=OutboxRelayTest,KafkaOutboxDeliveryAdapterTest,SqsOutboxDeliveryAdapterTest,KafkaAsyncEventPublisherTest` — exit 0, 19 tests; `mvn package -q -DskipTests` — exit 0; `git diff --check` — exit 0.
+
+## Final Narrow Fix: Bound synchronous Kafka send blocking
+
+- Set Kafka `max.block.ms` exactly to the validated adapter/relay delivery deadline, bounding synchronous metadata and buffer-allocation waits inside `Producer.send` by the same explicit contract.
+- Added a producer-property regression assertion for a 1,750 ms deadline. Existing validation already rejects non-positive, fractional-millisecond, and above-`Integer.MAX_VALUE` deadlines.
+- RED: `mvn test -Dtest=KafkaOutboxDeliveryAdapterTest` failed 1/4 because `max.block.ms=1750L` was absent.
+- GREEN: `mvn test -Dtest=KafkaOutboxDeliveryAdapterTest` passed 4/4.
+- Focused verification: `mvn test -Dtest=KafkaOutboxDeliveryAdapterTest,OutboxRelayTest,KafkaAsyncEventPublisherTest` passed 24/24.
+- Package verification: `mvn package -DskipTests` exited 0.
