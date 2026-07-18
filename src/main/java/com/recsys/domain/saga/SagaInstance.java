@@ -138,6 +138,16 @@ public final class SagaInstance {
         this.version = version;
     }
 
+    /** Restore durable step progress without replaying domain transitions. */
+    public void restoreProgress(List<String> completed, List<String> compensated, List<String> tried,
+                                List<String> confirmed, List<String> cancelled) {
+        restore(completedSteps, completed, "completed");
+        restore(compensatedSteps, compensated, "compensated");
+        restore(triedSteps, tried, "tried");
+        restore(confirmedSteps, confirmed, "confirmed");
+        restore(cancelledSteps, cancelled, "cancelled");
+    }
+
     public void fail(String reason, Instant now) {
         this.failureReason = reason == null || reason.isBlank() ? "unknown" : reason;
         mark(SagaStatus.FAILED, currentStep, now);
@@ -163,5 +173,14 @@ public final class SagaInstance {
             throw new IllegalArgumentException(name + " is required");
         }
         return value;
+    }
+
+    private static void restore(List<String> target, List<String> source, String name) {
+        Objects.requireNonNull(source, name + " steps are required");
+        target.clear();
+        for (String step : source) {
+            String value = requireText(step, name + " step");
+            if (!target.contains(value)) target.add(value);
+        }
     }
 }

@@ -1,0 +1,6 @@
+ALTER TABLE saga_instance
+    ADD COLUMN completed_steps JSON NOT NULL DEFAULT (JSON_ARRAY()),
+    ADD COLUMN compensated_steps JSON NOT NULL DEFAULT (JSON_ARRAY()),
+    ADD COLUMN tried_steps JSON NOT NULL DEFAULT (JSON_ARRAY()),
+    ADD COLUMN confirmed_steps JSON NOT NULL DEFAULT (JSON_ARRAY()),
+    ADD COLUMN cancelled_steps JSON NOT NULL DEFAULT (JSON_ARRAY());

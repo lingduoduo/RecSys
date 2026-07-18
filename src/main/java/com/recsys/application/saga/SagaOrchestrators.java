@@ -87,7 +87,7 @@ public final class SagaOrchestrators {
 
         protected void persistTransition(SagaInstance saga, SagaEventType type, String stepName) {
             SagaTransitionEvent event = new SagaTransitionEvent(
-                    saga.sagaId() + ":" + type + ":" + (stepName == null ? "saga" : stepName),
+                    saga.sagaId() + ":transition:" + (saga.version() + 1),
                     saga.sagaId(),
                     saga.sagaType(),
                     saga.correlationId(),
@@ -136,7 +136,6 @@ public final class SagaOrchestrators {
                 return saga;
             }
 
-            List<SagaStep> completedInThisRun = new ArrayList<>();
             try {
                 for (SagaStep step : definition.steps()) {
                     if (saga.completedSteps().contains(step.name())) {
@@ -149,25 +148,24 @@ public final class SagaOrchestrators {
                     transition(saga, SagaStatus.STEP_STARTED, SagaEventType.STEP_STARTED, step.name());
                     runWithRetry(saga, step, action);
                     saga.markStepCompleted(step.name(), now());
-                    completedInThisRun.add(step);
                     persistTransition(saga, SagaEventType.STEP_COMPLETED, step.name());
                 }
                 transition(saga, SagaStatus.COMPLETED, SagaEventType.SAGA_COMPLETED, null);
                 return saga.copy();
             } catch (RuntimeException e) {
-                compensate(saga, completedInThisRun, definition.steps(), compensations, e);
+                compensate(saga, definition.steps(), compensations, e);
                 return saga.copy();
             }
         }
 
         private void compensate(SagaInstance saga,
-                                List<SagaStep> completedInThisRun,
                                 List<SagaStep> allSteps,
                                 Map<String, SagaStepAction> compensations,
                                 RuntimeException originalFailure) {
-            List<SagaStep> completed = completedInThisRun.isEmpty()
-                    ? allSteps.stream().filter(step -> saga.completedSteps().contains(step.name())).toList()
-                    : completedInThisRun;
+            List<SagaStep> completed = allSteps.stream()
+                    .filter(step -> saga.completedSteps().contains(step.name()))
+                    .filter(step -> !saga.compensatedSteps().contains(step.name()))
+                    .toList();
             // Best-effort: attempt every compensation regardless of individual failures so no
             // step is silently left uncompensated. Failures are accumulated and reported together.
             List<String> compensationErrors = new ArrayList<>();

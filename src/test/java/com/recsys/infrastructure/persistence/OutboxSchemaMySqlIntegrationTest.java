@@ -38,7 +38,8 @@ class OutboxSchemaMySqlIntegrationTest {
                     "idx_outbox_aggregate");
             assertThat(columnNames(connection, "saga_instance")).contains(
                     "saga_id", "saga_type", "correlation_id", "payload", "status",
-                    "current_step", "failure_reason", "version", "created_at", "updated_at");
+                    "current_step", "failure_reason", "completed_steps", "compensated_steps",
+                    "tried_steps", "confirmed_steps", "cancelled_steps", "version", "created_at", "updated_at");
         }
     }
 

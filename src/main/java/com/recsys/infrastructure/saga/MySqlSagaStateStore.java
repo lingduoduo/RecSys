@@ -20,6 +20,7 @@ import java.sql.SQLException;
 import java.sql.Timestamp;
 import java.util.Objects;
 import java.util.Optional;
+import java.util.List;
 import java.util.UUID;
 
 /** MySQL saga persistence with optimistic locking and transactional outbox enqueue. */
@@ -56,9 +57,16 @@ public final class MySqlSagaStateStore implements SagaStateStore {
         Objects.requireNonNull(event, "event");
         int expected = saga.version();
         mysql.inTransaction(connection -> {
+            OutboxEvent outboxEvent = OutboxEvent.pending(uuid(event.eventId()), "Saga", event.sagaId(),
+                    event.type().name(), OutboxDestination.SQS_SAGA, event.sagaId(), json(event), event.occurredAt());
+            if (findVersion(connection, saga.sagaId()).filter(version -> version == expected + 1).isPresent()) {
+                // The commit may have succeeded even if its acknowledgement was lost. Re-enqueue verifies
+                // immutable content and turns that exact transition replay into a no-op.
+                outbox.enqueue(connection, outboxEvent);
+                return null;
+            }
             saveConditionally(connection, saga, expected);
-            outbox.enqueue(connection, OutboxEvent.pending(uuid(event.eventId()), "Saga", event.sagaId(),
-                    event.type().name(), OutboxDestination.SQS_SAGA, event.sagaId(), json(event), event.occurredAt()));
+            outbox.enqueue(connection, outboxEvent);
             return null;
         });
         saga.setVersion(expected + 1);
@@ -71,7 +79,9 @@ public final class MySqlSagaStateStore implements SagaStateStore {
 
     private static void saveConditionally(Connection connection, SagaInstance saga, int expected) throws SQLException {
         Objects.requireNonNull(saga, "saga");
-        int affected = expected == 0 ? insert(connection, saga) : update(connection, saga, expected);
+        int affected = findVersion(connection, saga.sagaId()).isPresent()
+                ? update(connection, saga, expected)
+                : insert(connection, saga);
         if (affected != 1) {
             int actual = findVersion(connection, saga.sagaId()).orElse(0);
             throw new SagaConflictException(saga.sagaId(), expected, actual);
@@ -80,18 +90,20 @@ public final class MySqlSagaStateStore implements SagaStateStore {
 
     private static int insert(Connection connection, SagaInstance saga) throws SQLException {
         String sql = "INSERT IGNORE INTO saga_instance (saga_id, saga_type, correlation_id, payload, status, "
-                + "current_step, failure_reason, version, created_at, updated_at) VALUES (?, ?, ?, ?, ?, ?, ?, 1, ?, ?)";
+                + "current_step, failure_reason, completed_steps, compensated_steps, tried_steps, confirmed_steps, "
+                + "cancelled_steps, version, created_at, updated_at) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, 1, ?, ?)";
         try (PreparedStatement statement = connection.prepareStatement(sql)) {
             bindState(statement, saga, 1);
-            statement.setTimestamp(8, Timestamp.from(saga.createdAt()));
-            statement.setTimestamp(9, Timestamp.from(saga.updatedAt()));
+            statement.setTimestamp(13, Timestamp.from(saga.createdAt()));
+            statement.setTimestamp(14, Timestamp.from(saga.updatedAt()));
             return statement.executeUpdate();
         }
     }
 
     private static int update(Connection connection, SagaInstance saga, int expected) throws SQLException {
         String sql = "UPDATE saga_instance SET saga_type = ?, correlation_id = ?, payload = ?, status = ?, "
-                + "current_step = ?, failure_reason = ?, version = version + 1, updated_at = ? "
+                + "current_step = ?, failure_reason = ?, completed_steps = ?, compensated_steps = ?, tried_steps = ?, "
+                + "confirmed_steps = ?, cancelled_steps = ?, version = version + 1, updated_at = ? "
                 + "WHERE saga_id = ? AND version = ?";
         try (PreparedStatement statement = connection.prepareStatement(sql)) {
             statement.setString(1, saga.sagaType());
@@ -100,9 +112,10 @@ public final class MySqlSagaStateStore implements SagaStateStore {
             statement.setString(4, saga.status().name());
             statement.setString(5, saga.currentStep());
             statement.setString(6, saga.failureReason());
-            statement.setTimestamp(7, Timestamp.from(saga.updatedAt()));
-            statement.setString(8, saga.sagaId());
-            statement.setInt(9, expected);
+            bindProgress(statement, saga, 7);
+            statement.setTimestamp(12, Timestamp.from(saga.updatedAt()));
+            statement.setString(13, saga.sagaId());
+            statement.setInt(14, expected);
             return statement.executeUpdate();
         }
     }
@@ -115,6 +128,15 @@ public final class MySqlSagaStateStore implements SagaStateStore {
         statement.setString(offset + 4, saga.status().name());
         statement.setString(offset + 5, saga.currentStep());
         statement.setString(offset + 6, saga.failureReason());
+        bindProgress(statement, saga, offset + 7);
+    }
+
+    private static void bindProgress(PreparedStatement statement, SagaInstance saga, int offset) throws SQLException {
+        statement.setString(offset, json(saga.completedSteps()));
+        statement.setString(offset + 1, json(saga.compensatedSteps()));
+        statement.setString(offset + 2, json(saga.triedSteps()));
+        statement.setString(offset + 3, json(saga.confirmedSteps()));
+        statement.setString(offset + 4, json(saga.cancelledSteps()));
     }
 
     private static Optional<SagaInstance> find(Connection connection, String sagaId) throws SQLException {
@@ -128,6 +150,8 @@ public final class MySqlSagaStateStore implements SagaStateStore {
                 SagaStatus status = SagaStatus.valueOf(row.getString("status"));
                 if (status == SagaStatus.FAILED) saga.fail(row.getString("failure_reason"), row.getTimestamp("updated_at").toInstant());
                 else saga.mark(status, row.getString("current_step"), row.getTimestamp("updated_at").toInstant());
+                saga.restoreProgress(list(row, "completed_steps"), list(row, "compensated_steps"),
+                        list(row, "tried_steps"), list(row, "confirmed_steps"), list(row, "cancelled_steps"));
                 saga.setVersion(row.getInt("version"));
                 return Optional.of(saga);
             }
@@ -146,6 +170,16 @@ public final class MySqlSagaStateStore implements SagaStateStore {
     private static String json(SagaTransitionEvent event) {
         try { return JSON.writeValueAsString(event); }
         catch (JsonProcessingException failure) { throw new IllegalArgumentException("invalid saga event", failure); }
+    }
+
+    private static String json(List<String> steps) {
+        try { return JSON.writeValueAsString(steps); }
+        catch (JsonProcessingException failure) { throw new IllegalArgumentException("invalid saga progress", failure); }
+    }
+
+    private static List<String> list(ResultSet row, String column) throws SQLException {
+        try { return JSON.readValue(row.getString(column), JSON.getTypeFactory().constructCollectionType(List.class, String.class)); }
+        catch (JsonProcessingException failure) { throw new SQLException("invalid saga progress in " + column, failure); }
     }
 
     private static UUID uuid(String value) {

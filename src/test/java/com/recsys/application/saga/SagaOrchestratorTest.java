@@ -50,6 +50,43 @@ class SagaOrchestratorTest {
     }
 
     @Test
+    void retryingSameTransitionKeepsIdentityAndImmutableContentButLaterOccurrenceIsDistinct() {
+        List<SagaTransitionEvent> events = new ArrayList<>();
+        InMemorySagaStateStore store = new InMemorySagaStateStore() {
+            @Override public void saveWithEvent(SagaInstance saga, SagaTransitionEvent event) {
+                events.add(event);
+                if (events.size() != 2) saveConditionally(saga);
+                else throw new IllegalStateException("simulated rollback");
+            }
+            @Override public boolean storesEventsDurably() { return true; }
+        };
+        TransitionHarness harness = new TransitionHarness(store, clock);
+        SagaInstance saga = new SagaInstance("identity-1", "test", "request", "{}", clock.instant());
+
+        harness.persist(saga, SagaEventType.STEP_STARTED, "step");
+        assertThatThrownBy(() -> harness.persist(saga, SagaEventType.STEP_COMPLETED, "step"))
+                .isInstanceOf(IllegalStateException.class);
+        harness.persist(saga, SagaEventType.STEP_COMPLETED, "step");
+        harness.persist(saga, SagaEventType.STEP_STARTED, "step");
+
+        assertThat(events.get(1)).isEqualTo(events.get(2));
+        assertThat(events.get(0).eventId()).isNotEqualTo(events.get(3).eventId());
+        assertThat(List.of(events.get(0).eventId(), events.get(2).eventId(), events.get(3).eventId()))
+                .doesNotHaveDuplicates();
+    }
+
+    private static final class TransitionHarness extends SagaOrchestrators.Base {
+        private TransitionHarness(SagaStateStore store, Clock clock) {
+            super(store, SagaEventPublisher.NOOP, clock, "step");
+        }
+        private void persist(SagaInstance saga, SagaEventType type, String step) {
+            saga.mark(type == SagaEventType.STEP_STARTED ? SagaStatus.STEP_STARTED : SagaStatus.STEP_COMPLETED,
+                    step, now());
+            persistTransition(saga, type, step);
+        }
+    }
+
+    @Test
     void execute_completesAllStepsAndPublishesTransitions() {
         InMemorySagaStateStore store = new InMemorySagaStateStore();
         List<SagaTransitionEvent> events = new ArrayList<>();
