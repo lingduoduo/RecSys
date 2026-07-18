@@ -63,6 +63,32 @@ class OnlineFeatureStreamingJobTest {
     }
 
     @Test
+    void rejectsMaxParallelismBelowSourceParallelism() {
+        assertThatThrownBy(() -> OnlineFeatureStreamingJob.validateConfiguration(
+                ParameterTool.fromArgs(new String[]{
+                        "--expected-topic-partitions", "24",
+                        "--source-parallelism", "24",
+                        "--operator-parallelism", "8",
+                        "--max-parallelism", "16"})))
+                .isInstanceOf(IllegalArgumentException.class)
+                .hasMessageContaining("max-parallelism")
+                .hasMessageContaining("source-parallelism")
+                .hasMessageContaining("operator-parallelism");
+    }
+
+    @Test
+    void acceptsMaxParallelismEqualToSourceParallelism() {
+        ParameterTool params = ParameterTool.fromArgs(new String[]{
+                "--expected-topic-partitions", "24",
+                "--source-parallelism", "24",
+                "--operator-parallelism", "8",
+                "--max-parallelism", "24"});
+
+        assertThat(OnlineFeatureStreamingJob.validateConfiguration(params))
+                .isEqualTo(new OnlineFeatureStreamingJob.JobConfiguration(24, 24, 8, 24));
+    }
+
+    @Test
     void preservesSameUserOrderWhenEventIdsHashDiffer() throws Exception {
         String firstId = "event-A";
         String secondId = "event-B";

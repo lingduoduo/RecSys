@@ -194,8 +194,10 @@ public final class OnlineFeatureStreamingJob {
         if (configuration.sourceParallelism() > configuration.expectedTopicPartitions()) {
             throw new IllegalArgumentException("source-parallelism cannot exceed expected-topic-partitions");
         }
-        if (configuration.maxParallelism() < configuration.operatorParallelism()) {
-            throw new IllegalArgumentException("max-parallelism cannot be below operator-parallelism");
+        if (configuration.maxParallelism() < configuration.sourceParallelism()
+                || configuration.maxParallelism() < configuration.operatorParallelism()) {
+            throw new IllegalArgumentException(
+                    "max-parallelism cannot be below source-parallelism or operator-parallelism");
         }
         return configuration;
     }
