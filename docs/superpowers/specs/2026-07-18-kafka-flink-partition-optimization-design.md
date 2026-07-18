@@ -54,7 +54,7 @@ The Kafka source runs at configurable parallelism, capped at 24 for `movie_event
 - session features by `(userId, sessionId)`;
 - movie metrics by `(movieId, metricKind)`.
 
-Stateful operators receive stable UIDs so savepoints can map state across deployments and parallelism changes. Maximum parallelism is set deliberately and remains stable for the topic generation; ordinary parallelism may change within that bound through savepoint restore.
+Downstream stateful operators receive stable UIDs so savepoints can map state across deployments and parallelism changes. The Kafka source UID includes the topic generation and changes for every versioned topic. A topic cutover restores downstream keyed state with non-restored source state explicitly allowed; it must never bind old-topic Kafka split state to the new source. Maximum parallelism is set deliberately and remains stable for the topic generation; ordinary parallelism may change within that bound through savepoint restore.
 
 ### Two-stage Top-K
 
@@ -77,12 +77,12 @@ Moving from the current topic to `movie_events_v2` uses a fenced, drain-and-rest
 4. Allow the old consumer to drain to zero lag.
 5. Trigger and verify a Flink savepoint.
 6. Stop the old job only after the savepoint succeeds.
-7. Restore the new job from that savepoint using stable operator UIDs, targeting `movie_events_v2`.
+7. Restore the new job from that savepoint using stable downstream operator UIDs and the generation-specific `kafka-movie-events-v2` source UID, explicitly allowing the old Kafka source state to remain unrestored.
 8. Switch producers to `movie_events_v2` and resume writes.
 9. Verify per-partition ingestion, user ordering, output freshness, checkpoint health, and bounded lag.
 10. Retire the old topic only after the rollback window expires.
 
-The cutover aborts without switching producers if drain, savepoint, restore, topic validation, or healthy-checkpoint verification fails. Rollback stops the new producer flow, restores the old job and topic configuration, and resumes from the recorded boundary. The procedure does not dual-write because independent topics cannot provide a single atomic order for the same user.
+The cutover aborts without switching producers if drain, savepoint, restore, topic validation, or healthy-checkpoint verification fails. Before v2 producers activate, rollback may restore the old job and resume the old topic from the recorded boundary. After any v2 event is accepted, simple rollback to the pre-cutover savepoint is forbidden because it would lose or regress v2-era state. Post-activation recovery is fix-forward on v2 unless an explicit, verified v2-to-old replay and state-reconciliation procedure is executed. The procedure does not dual-write because independent topics cannot provide a single atomic order for the same user.
 
 ## Skew and Backpressure Policy
 
