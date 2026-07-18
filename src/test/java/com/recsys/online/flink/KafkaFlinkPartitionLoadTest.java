@@ -1,6 +1,7 @@
 package com.recsys.online.flink;
 
 import org.apache.flink.api.common.JobID;
+import org.apache.flink.api.common.JobStatus;
 import org.apache.flink.api.common.restartstrategy.RestartStrategies;
 import org.apache.flink.api.java.utils.ParameterTool;
 import org.apache.flink.configuration.Configuration;
@@ -85,6 +86,7 @@ class KafkaFlinkPartitionLoadTest {
         long[] hotPerPartition = new long[PARTITIONS];
         List<Long> acknowledgedRates = new ArrayList<>();
         List<Long> observedLag = new ArrayList<>();
+        List<Long> processedAtIntervalEnd = new ArrayList<>();
         AtomicLong acknowledged = new AtomicLong();
         CompletableFuture<Void> sendFailure = new CompletableFuture<>();
         long baseEventTime = System.currentTimeMillis();
@@ -98,7 +100,7 @@ class KafkaFlinkPartitionLoadTest {
                     int sequence = firstSequence + offset;
                     int user = sequence % 5 == 0 ? HOT_USER : 2 + sequence % 99_999;
                     producer.send(new ProducerRecord<>(topic, Integer.toString(user),
-                            eventJson(sequence, user, baseEventTime + second)), (metadata, error) -> {
+                            eventJson(sequence, user, baseEventTime + sequence)), (metadata, error) -> {
                         if (error != null) sendFailure.completeExceptionally(error);
                         else {
                             acknowledged.incrementAndGet();
@@ -108,6 +110,7 @@ class KafkaFlinkPartitionLoadTest {
                             }
                         }
                     });
+                    if (offset > 0 && offset % 10_000 == 0) observedLag.add(consumerLag(admin, topic));
                 }
                 producer.flush();
                 long remainingNanos = TimeUnit.SECONDS.toNanos(1L)
@@ -117,6 +120,7 @@ class KafkaFlinkPartitionLoadTest {
                 long intervalAcks = acknowledged.get() - before;
                 acknowledgedRates.add((long) (intervalAcks * 1_000_000_000d / elapsed));
                 observedLag.add(consumerLag(admin, topic));
+                processedAtIntervalEnd.add(LoadSink.processed());
             }
 
             // Advance every source partition's watermark so the real two-stage Top-K emits.
@@ -148,7 +152,14 @@ class KafkaFlinkPartitionLoadTest {
         assertThat(LoadSink.orderViolations()).as("same-user order violations").isZero();
         assertThat(LoadSink.snapshots()).as("real final Top-K output").isPositive();
         assertThat(observedLag).as("Kafka consumer lag sampled during production and after recovery")
-                .isNotEmpty().endsWith(0L);
+                .anyMatch(lag -> lag > 0L).endsWith(0L);
+        assertThat(processedAtIntervalEnd.get(0)).as("the running graph must make progress during warmup")
+                .isPositive();
+        for (int interval = 1; interval < processedAtIntervalEnd.size(); interval++) {
+            assertThat(processedAtIntervalEnd.get(interval))
+                    .as("sink progress by the end of steady-state interval %s", interval + 1)
+                    .isGreaterThan(processedAtIntervalEnd.get(interval - 1));
+        }
         assertPartitionPolicy(perPartition, hotPerPartition);
 
         AccessExecutionGraph graph = cluster.getExecutionGraph(jobId).get(30, TimeUnit.SECONDS);
@@ -160,15 +171,28 @@ class KafkaFlinkPartitionLoadTest {
         AccessExecutionJobVertex finalTopK = graph.getAllVertices().values().stream()
                 .filter(vertex -> vertex.getName().contains("topk-final"))
                 .findFirst().orElseThrow();
+        List<String> metricValues = new ArrayList<>();
+        int activeSubtasks = 0;
         for (AccessExecutionVertex subtask : finalTopK.getTaskVertices()) {
             IOMetrics metrics = subtask.getCurrentExecutionAttempt().getIOMetrics();
             assertThat(metrics).as("live I/O metrics for %s", subtask.getTaskNameWithSubtaskIndex()).isNotNull();
-            double observedMillis = metrics.getAccumulateBackPressuredTime()
-                    + metrics.getAccumulateBusyTime() + metrics.getAccumulateIdleTime();
-            assertThat((double) metrics.getAccumulateBackPressuredTime())
-                    .as("final Top-K subtask must not be continuously backpressured")
-                    .isLessThan(observedMillis);
+            double busy = metrics.getAccumulateBusyTime();
+            long backpressured = metrics.getAccumulateBackPressuredTime();
+            long idle = metrics.getAccumulateIdleTime();
+            assertThat(busy).isGreaterThanOrEqualTo(0d);
+            assertThat(backpressured).isGreaterThanOrEqualTo(0L);
+            assertThat(idle).isGreaterThanOrEqualTo(0L);
+            double activeMillis = busy + backpressured;
+            double ratio = activeMillis == 0d ? 0d : backpressured / activeMillis;
+            metricValues.add(subtask.getParallelSubtaskIndex() + ":busy=" + busy
+                    + ",backpressured=" + backpressured + ",idle=" + idle + ",ratio=" + ratio);
+            if (busy > 0d) activeSubtasks++;
+            assertThat(ratio)
+                    .as("final Top-K continuously-backpressured threshold is <0.95; metrics=%s", metricValues)
+                    .isLessThan(0.95d);
         }
+        assertThat(activeSubtasks).as("at least one final Top-K subtask must report busy time; metrics=%s",
+                metricValues).isPositive();
     }
 
     private void startGraph(String topic) throws Exception {
@@ -198,7 +222,7 @@ class KafkaFlinkPartitionLoadTest {
         jobId = jobGraph.getJobID();
         cluster.submitJob(jobGraph).get(30, TimeUnit.SECONDS);
         await(Duration.ofSeconds(30), () -> {
-            try { return cluster.getJobStatus(jobId).get(5, TimeUnit.SECONDS).isGloballyTerminalState() == false; }
+            try { return cluster.getJobStatus(jobId).get(5, TimeUnit.SECONDS) == JobStatus.RUNNING; }
             catch (Exception e) { return false; }
         });
     }
@@ -274,7 +298,7 @@ class KafkaFlinkPartitionLoadTest {
             if (snapshot) { SNAPSHOTS.incrementAndGet(); return; }
             MovieEvent event = (MovieEvent) value;
             LAST_EVENT_TIME.compute(event.userId, (user, previous) -> {
-                if (previous != null && event.eventTimeMillis < previous) ORDER_VIOLATIONS.incrementAndGet();
+                if (previous != null && event.eventTimeMillis <= previous) ORDER_VIOLATIONS.incrementAndGet();
                 return event.eventTimeMillis;
             });
             PROCESSED.incrementAndGet();

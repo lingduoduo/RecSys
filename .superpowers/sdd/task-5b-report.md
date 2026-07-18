@@ -26,3 +26,13 @@ Run on the benchmark host with:
 ```bash
 mvn -Pstreaming-flink test -DexcludedGroups="" -Dgroups=load,docker -Dtest=KafkaFlinkPartitionLoadTest
 ```
+
+## Review hardening
+
+The follow-up review findings are addressed as follows:
+
+- production does not begin until the MiniCluster reports the exact `RUNNING` job status;
+- the real event sink is sampled at every steady-state interval boundary and must be positive after warmup and strictly increase in every subsequent interval, preventing a post-production-only drain from passing;
+- every event timestamp is its unique global sequence, so the sink requires a strict per-user increase, including all 11,000 events sent to the declared hot user in each interval;
+- consumer lag is sampled every 10,000 sends as well as at interval boundaries, must be positive at least once while production is active, and must recover to zero within the explicit 30-second deadline;
+- each final Top-K execution vertex must expose nonnegative live I/O metrics. At least one subtask must report positive busy time, and every active subtask must keep `backpressured / (busy + backpressured) < 0.95`. Assertion diagnostics include each subtask's actual busy, backpressured, idle, and ratio values. The 0.95 threshold defines “continuously backpressured” while tolerating brief expected pressure during the controlled load.
