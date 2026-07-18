@@ -124,7 +124,7 @@ Processing guarantees:
 
 The Flink job is implemented in:
 
-- `com.recsys.streaming.flink.OnlineFeatureStreamingJob`
+- `com.recsys.online.flink.OnlineFeatureStreamingJob`
 
 It supports:
 
@@ -141,7 +141,7 @@ Run from the bundled file:
 
 ```bash
 mvn -Pstreaming-flink exec:java \
-  -Dexec.mainClass="com.recsys.streaming.flink.OnlineFeatureStreamingJob" \
+  -Dexec.mainClass="com.recsys.online.flink.OnlineFeatureStreamingJob" \
   -Dexec.args="--input-file streaming/online-serving/data/movie_events.ndjson --redis.host localhost --redis.port 6379 --window-seconds 10 --window-label last_hour --top-k 10 --idempotency-ttl-seconds 86400"
 ```
 
@@ -149,8 +149,8 @@ Run from Kafka:
 
 ```bash
 mvn -Pstreaming-flink exec:java \
-  -Dexec.mainClass="com.recsys.streaming.flink.OnlineFeatureStreamingJob" \
-  -Dexec.args="--bootstrap.servers localhost:9092 --topic movie_events_v2 --redis.host localhost --redis.port 6379 --window-seconds 10 --window-label last_hour --top-k 10 --idempotency-ttl-seconds 86400"
+  -Dexec.mainClass="com.recsys.online.flink.OnlineFeatureStreamingJob" \
+  -Dexec.args="--bootstrap.servers localhost:9092 --topic movie_events_v2 --group.id online-features-v2 --expected-topic-partitions 24 --source-parallelism 24 --operator-parallelism 24 --max-parallelism 128 --top-k-bucket-count 24 --final-top-k-parallelism 1 --top-k-allowed-lateness-ms 5000 --watermark-idle-timeout-ms 30000 --redis.host localhost --redis.port 6379 --window-seconds 10 --window-label last_hour --top-k 10 --idempotency-ttl-seconds 86400"
 ```
 
 Flink consistency knobs:
@@ -158,13 +158,25 @@ Flink consistency knobs:
 | Argument | Default | Purpose |
 |---|---:|---|
 | `--idempotency-ttl-seconds` | `86400` | How long Flink state remembers processed `eventId` values for duplicate suppression |
+| `--expected-topic-partitions` | `24` | Startup fence: broker topic must have exactly 24 partitions |
+| `--source-parallelism` | `24` | Kafka source parallelism; cannot exceed the expected partition count |
+| `--operator-parallelism` | `24` | Parallelism for keyed state, partial Top-K, and Redis sinks |
+| `--max-parallelism` | `128` | Stable keyed-state ceiling used when restoring/rescaling |
+| `--top-k-bucket-count` | operator parallelism (`24`) | Number of movie-hash buckets feeding partial Top-K |
+| `--final-top-k-parallelism` | `1` | Final event-time Top-K merge parallelism, capped at operator parallelism |
+| `--top-k-allowed-lateness-ms` | `5000` | Time retained for late partial results after a window watermark |
+| `--watermark-idle-timeout-ms` | `30000` | Marks silent source partitions idle so they cannot stall event-time windows |
 | `--user-history-ttl-seconds` | `86400` | TTL for `user:<id>:recent_movies` and its `:updated_at` guard key |
 | `--metric-ttl-seconds` | `3600` | TTL for movie metric, Top-K, and their `:updated_at` guard keys |
 | `--mq.max-poll-records` | `500` | Kafka consumer batch size for MQ peak shaving |
-| `--mq.fetch-min-bytes` | `1` | Minimum bytes fetched per Kafka request; increase to favor batching over latency |
+| `--mq.fetch-min-bytes` | `1024` | Minimum bytes fetched per Kafka request; increase to favor batching over latency |
 | `--mq.fetch-max-wait-ms` | `500` | Max broker wait for `fetch.min.bytes`, bounding async ingestion latency |
 
 This path intentionally does not use a distributed transaction spanning MQ, Flink state, and Redis. Kafka absorbs retries and bursts; Flink checkpointing plus event-id deduplication handles duplicate delivery; Redis receives compact feature snapshots that converge to the newest `updatedAtMillis` value.
+
+Stateful graph names are migration contracts. Stable UIDs include `kafka-movie-events-v2`, `event-idempotency-v1`, `recent-movies-v1`, `user-embedding-feature-v1`, `session-feature-v1`, `movie-metrics-v1`, `topk-partial-v1`, and `topk-final-v1`, plus the Redis sink UIDs. The event-time Top-K watermark allows five seconds of out-of-order events and uses 30-second partition idleness by default.
+
+The opt-in Kafka/Flink load guard targets **50,000 events/s**, requires completed checkpoints with none failed and zero final consumer lag, and requires ordinary-user partition skew (declared hot users excluded) to stay at or below **twice the median** active-partition volume. Run it only with Docker available. For a production migration, follow the [Kafka partition cutover runbook](../../docs/runbooks/kafka-partition-cutover.md), including producer fencing, savepoint restore, validation, rollback, and delayed old-topic retirement.
 
 What the job writes to Redis:
 
