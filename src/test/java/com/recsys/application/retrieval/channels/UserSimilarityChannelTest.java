@@ -31,7 +31,7 @@ class UserSimilarityChannelTest {
 
         Channels.UserSimilarity channel = new Channels.UserSimilarity(dataManager);
 
-        List<MovieCandidate> candidates = channel.recall(
+        List<MovieCandidate> candidates = channel.recallPrimary(
                 new RecommendationQuery("1", 10, Set.of("10", "11"), null), 10);
 
         assertThat(candidates).extracting(MovieCandidate::itemId)

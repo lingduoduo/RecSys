@@ -158,6 +158,13 @@ class OnlineRecommendationServiceTest {
     }
 
     @Test
+    void primaryReadPreservesInvalidWindowAsClientError() {
+        assertThrows(IllegalArgumentException.class,
+                () -> service.recommendPrimary(
+                        new OnlineRecommendationRequest(USER.userId(), "bad_window", 5)));
+    }
+
+    @Test
     void recallLimitClampedToHundredForLargeK() {
         when(recallService.recall(any(RecommendationQuery.class), anyInt())).thenReturn(List.of());
         service.recommend(new OnlineRecommendationRequest(USER.userId(), "last_hour", 30));

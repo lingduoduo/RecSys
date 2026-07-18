@@ -56,6 +56,8 @@ public final class OnlineRecommendationService {
             return recommend(request, true);
         } catch (UnknownUserException e) {
             throw e;
+        } catch (IllegalArgumentException e) {
+            throw e;
         } catch (RuntimeException e) {
             throw new PrimaryReadUnavailableException("Primary recommendation read failed", e);
         }

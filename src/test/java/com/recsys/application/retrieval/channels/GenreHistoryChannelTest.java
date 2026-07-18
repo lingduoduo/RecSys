@@ -43,6 +43,18 @@ class GenreHistoryChannelTest {
     }
 
     @Test
+    void primaryRecallUsesImmutableDataManagerSnapshot() {
+        CandidateGenerator cg = mock(CandidateGenerator.class);
+        Movie movie = new Movie(5, "Inception", 2010, List.of("Sci-Fi"));
+        when(cg.byUserHistory(7, 10)).thenReturn(List.of(movie));
+
+        assertThat(new Channels.GenreHistory(cg).recallPrimary(
+                new RecommendationQuery("7", 10, Set.of(), null), 10))
+                .extracting(MovieCandidate::itemId)
+                .containsExactly("5");
+    }
+
+    @Test
     void name_returnsGenreHistory() {
         assertThat(new Channels.GenreHistory(mock(CandidateGenerator.class)).name())
                 .isEqualTo("genre_history");
