@@ -17,6 +17,19 @@ import static org.mockito.Mockito.*;
 class OnlineFeatureStoreTest {
 
     @Test
+    void primaryRecentMovieReadBypassesCacheAndReplicaRead() {
+        var stub = RedisExecutorStub.withHistory(1, "10");
+        var store = new OnlineFeatureStore(stub.exec, 5_000L);
+        assertThat(store.getRecentMovieIds(1, 10)).containsExactly(10);
+        when(stub.cmd.get("user:1:recent_movies")).thenReturn("20");
+
+        assertThat(store.getRecentMovieIdsPrimary(1, 10)).containsExactly(20);
+
+        verify(stub.exec).executePrimaryRead(any());
+        verify(stub.exec).executeRead(any());
+    }
+
+    @Test
     void getRecentMovieIds_cachesRedisResultWithinTtl() throws Exception {
         var stub = RedisExecutorStub.withHistory(1, "10 20 30");
         var store = new OnlineFeatureStore(stub.exec, 5_000L);
@@ -193,6 +206,7 @@ class OnlineFeatureStoreTest {
         RedisExecutorStub() {
             when(exec.execute(any())).thenAnswer(i -> i.getArgument(0, Function.class).apply(cmd));
             when(exec.executeRead(any())).thenAnswer(i -> i.getArgument(0, Function.class).apply(cmd));
+            when(exec.executePrimaryRead(any())).thenAnswer(i -> i.getArgument(0, Function.class).apply(cmd));
         }
 
         static RedisExecutorStub withHistory(int userId, String value) {

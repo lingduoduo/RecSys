@@ -48,12 +48,22 @@ public final class OnlineRecommendationService {
     }
 
     public OnlineRecommendationResult recommend(OnlineRecommendationRequest request) {
+        return recommend(request, false);
+    }
+
+    public OnlineRecommendationResult recommendPrimary(OnlineRecommendationRequest request) {
+        return recommend(request, true);
+    }
+
+    private OnlineRecommendationResult recommend(OnlineRecommendationRequest request, boolean primaryFeatureRead) {
         User user = requireUser(request.userId());
         int k = Math.max(1, request.k());
         int recallLimit = Math.min(Math.max(k * 4, 12), 100);
         String window = normalizeWindow(request.window());
 
-        List<Integer> recentIds = recentHistoryStore.getRecentMovieIds(request.userId(), RECENT_HISTORY_LIMIT);
+        List<Integer> recentIds = primaryFeatureRead
+                ? recentHistoryStore.getRecentMovieIdsPrimary(request.userId(), RECENT_HISTORY_LIMIT)
+                : recentHistoryStore.getRecentMovieIds(request.userId(), RECENT_HISTORY_LIMIT);
         Set<String> excluded = new LinkedHashSet<>();
         for (int id : recentIds) excluded.add(String.valueOf(id));
 

@@ -93,6 +93,12 @@ public final class OnlineFeatureStore implements RecentHistoryStore {
         return applyLimit(parseMovieIds(getFeature("user:" + userId + ":recent_movies")), limit);
     }
 
+    @Override
+    public List<Integer> getRecentMovieIdsPrimary(int userId, int limit) {
+        String key = "user:" + userId + ":recent_movies";
+        return applyLimit(parseMovieIds(exec.executePrimaryRead(c -> c.get(key))), limit);
+    }
+
     public String getFeature(String redisKey) {
         CachedFeature feature = getCachedOrLoad(redisKey, System.currentTimeMillis());
         return feature == null ? null : feature.value;

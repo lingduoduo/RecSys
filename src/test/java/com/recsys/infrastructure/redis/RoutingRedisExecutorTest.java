@@ -15,6 +15,23 @@ import static org.mockito.Mockito.when;
 
 class RoutingRedisExecutorTest {
 
+    @Test
+    void primaryReadNeverUsesReplica() {
+        RedisExecutor primary = mock(RedisExecutor.class);
+        RedisExecutor replica = mock(RedisExecutor.class);
+        when(primary.executeRead(any())).thenReturn("PRIMARY_READ");
+        var router = new RedisReadReplicaRouter(primary,
+                List.of(new RedisReadReplicaRouter.AzExecutor(replica, "us-east-1b")), "us-east-1b");
+
+        try (var exec = new RoutingRedisExecutor(router)) {
+            assertThat(exec.executePrimaryRead(anyFn())).isEqualTo("PRIMARY_READ");
+        }
+
+        verify(primary).executeRead(any());
+        verify(replica, never()).execute(any());
+        verify(replica, never()).executeRead(any());
+    }
+
     @SuppressWarnings("unchecked")
     private static Function<RedisCommands<String, String>, String> anyFn() {
         return c -> "ignored";

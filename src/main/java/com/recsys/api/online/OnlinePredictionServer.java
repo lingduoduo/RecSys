@@ -4,6 +4,8 @@ import com.recsys.application.online.OnlineServices;
 import com.recsys.application.online.OnlineBlendingPipeline;
 import com.recsys.application.online.OnlineRecommendationService;
 import com.recsys.application.consistency.ConsistencyTokenCodec;
+import com.recsys.application.consistency.ConsistencyWaiter;
+import com.recsys.application.consistency.RedisLineageReader;
 import com.recsys.application.outbox.DurableEventPublisher;
 import com.recsys.metrics.OnlineServingMetricsService;
 
@@ -151,6 +153,12 @@ public final class OnlinePredictionServer {
                             redisRateLimiter, durableEventPublisher, consistencyTokenCodec, true)
                     : new OnlineServices.Features(recommendationService, metricsService, loadShedder,
                             redisRateLimiter, null, true);
+            OnlineServices.Prediction predictionService = durableConfig.enabled()
+                    ? new OnlineServices.Prediction(recommendationService, metricsService, loadShedder,
+                            redisRateLimiter, true, consistencyTokenCodec,
+                            new ConsistencyWaiter(new RedisLineageReader(jedisPool)))
+                    : new OnlineServices.Prediction(recommendationService, metricsService,
+                            loadShedder, redisRateLimiter, true);
             ServerBuilder sb = Server.builder();
             sb.http(port)
               .requestTimeoutMillis(requestTimeoutMs)
@@ -169,8 +177,7 @@ public final class OnlinePredictionServer {
                               loadShedder, metricsService))
               .service("/online/recommendation",
                       new OnlineAdmissionControl(
-                              new OnlineServices.Prediction(recommendationService, metricsService,
-                                      loadShedder, redisRateLimiter, true),
+                              predictionService,
                               loadShedder, metricsService))
               .service("/online/ops",
                       new OnlineOpsService(metricsService, loadShedder, capacityService,

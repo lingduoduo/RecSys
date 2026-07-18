@@ -4,6 +4,9 @@ import com.recsys.api.serving.BaseApiService;
 import com.recsys.application.recommendation.RecommendationPipeline;
 import com.recsys.application.consistency.ConsistencyToken;
 import com.recsys.application.consistency.ConsistencyTokenCodec;
+import com.recsys.application.consistency.ConsistencyWaiter;
+import com.recsys.application.consistency.ExpiredConsistencyTokenException;
+import com.recsys.application.consistency.InvalidConsistencyTokenException;
 import com.recsys.application.outbox.DurableEventPublisher;
 import com.recsys.domain.item.Movie;
 import com.recsys.domain.online.OnlineRecommendationRequest;
@@ -60,6 +63,8 @@ public final class OnlineServices {
         protected final OnlineLoadShedder loadShedder;
         protected final RedisRateLimiter redisRateLimiter;
         protected final boolean admissionHandledExternally;
+        private final ConsistencyTokenCodec consistencyTokenCodec;
+        private final ConsistencyWaiter consistencyWaiter;
 
         protected Guarded(OnlineRecommendationService recommendationService,
                           OnlineServingMetricsService metricsService,
@@ -71,6 +76,24 @@ public final class OnlineServices {
             this.loadShedder = loadShedder;
             this.redisRateLimiter = redisRateLimiter;
             this.admissionHandledExternally = admissionHandledExternally;
+            this.consistencyTokenCodec = null;
+            this.consistencyWaiter = null;
+        }
+
+        protected Guarded(OnlineRecommendationService recommendationService,
+                          OnlineServingMetricsService metricsService,
+                          OnlineLoadShedder loadShedder,
+                          RedisRateLimiter redisRateLimiter,
+                          boolean admissionHandledExternally,
+                          ConsistencyTokenCodec consistencyTokenCodec,
+                          ConsistencyWaiter consistencyWaiter) {
+            this.recommendationService = recommendationService;
+            this.metricsService = metricsService;
+            this.loadShedder = loadShedder;
+            this.redisRateLimiter = redisRateLimiter;
+            this.admissionHandledExternally = admissionHandledExternally;
+            this.consistencyTokenCodec = Objects.requireNonNull(consistencyTokenCodec, "consistencyTokenCodec");
+            this.consistencyWaiter = Objects.requireNonNull(consistencyWaiter, "consistencyWaiter");
         }
 
         @Override
@@ -94,12 +117,33 @@ public final class OnlineServices {
                     int k = optionalIntParam(ctx, "k", 5, 1, 20);
                     String window = ctx.queryParam("window");
 
-                    OnlineRecommendationResult result = recommendationService.recommend(
-                            new OnlineRecommendationRequest(userId, window, k));
+                    OnlineRecommendationRequest recommendationRequest =
+                            new OnlineRecommendationRequest(userId, window, k);
+                    OnlineRecommendationResult result;
+                    String encodedToken = req.headers().get(ConsistencyTokenCodec.HEADER_NAME);
+                    if (encodedToken == null || encodedToken.isBlank()) {
+                        result = recommendationService.recommend(recommendationRequest);
+                    } else {
+                        if (consistencyTokenCodec == null) throw new InvalidConsistencyTokenException();
+                        ConsistencyToken token = consistencyTokenCodec.decodeAndVerify(encodedToken);
+                        if (token.userId() != userId) throw new ConsistencySubjectMismatchException();
+                        if (consistencyWaiter.await(token.eventId(), userId, Duration.ofSeconds(2))
+                                == ConsistencyWaiter.WaitResult.PENDING) {
+                            return writeErrorWithRetryAfter(HttpStatus.ACCEPTED,
+                                    "event materialization pending", 1);
+                        }
+                        result = recommendationService.recommendPrimary(recommendationRequest);
+                    }
                     HttpResponse response = render(ctx, userId, k, result);
                     metricsService.recordSuccess(elapsedMs(startedAtMs), strategyLabel(result));
                     afterSuccess(userId, result);
                     return response;
+                } catch (ExpiredConsistencyTokenException e) {
+                    metricsService.recordFailure(elapsedMs(startedAtMs));
+                    return writeError(HttpStatus.CONFLICT, "consistency token expired");
+                } catch (ConsistencySubjectMismatchException e) {
+                    metricsService.recordFailure(elapsedMs(startedAtMs));
+                    return writeError(HttpStatus.FORBIDDEN, "consistency token subject mismatch");
                 } catch (BadRequestException | IllegalArgumentException e) {
                     metricsService.recordFailure(elapsedMs(startedAtMs));
                     return writeError(HttpStatus.BAD_REQUEST, e.getMessage());
@@ -140,6 +184,8 @@ public final class OnlineServices {
         }
     }
 
+    private static final class ConsistencySubjectMismatchException extends RuntimeException {}
+
     /** GET /online/recommendation — full recommendation snapshot. */
     public static final class Prediction extends Guarded {
 
@@ -152,6 +198,24 @@ public final class OnlineServices {
                           OnlineServingMetricsService metricsService,
                           OnlineLoadShedder loadShedder) {
             this(recommendationService, metricsService, loadShedder, RedisRateLimiter.disabled());
+        }
+
+        public Prediction(OnlineRecommendationService recommendationService,
+                          ConsistencyTokenCodec tokenCodec,
+                          ConsistencyWaiter consistencyWaiter) {
+            super(recommendationService, new OnlineServingMetricsService(), new OnlineLoadShedder(),
+                    RedisRateLimiter.disabled(), false, tokenCodec, consistencyWaiter);
+        }
+
+        public Prediction(OnlineRecommendationService recommendationService,
+                          OnlineServingMetricsService metricsService,
+                          OnlineLoadShedder loadShedder,
+                          RedisRateLimiter redisRateLimiter,
+                          boolean admissionHandledExternally,
+                          ConsistencyTokenCodec tokenCodec,
+                          ConsistencyWaiter consistencyWaiter) {
+            super(recommendationService, metricsService, loadShedder, redisRateLimiter,
+                    admissionHandledExternally, tokenCodec, consistencyWaiter);
         }
 
         public Prediction(OnlineRecommendationService recommendationService,

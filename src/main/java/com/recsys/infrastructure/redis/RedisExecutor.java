@@ -26,6 +26,11 @@ public interface RedisExecutor extends Closeable {
      */
     <T> T executeRead(Function<RedisCommands<String, String>, T> fn);
 
+    /** Runs a read against the writable primary, bypassing replica routing. */
+    default <T> T executePrimaryRead(Function<RedisCommands<String, String>, T> fn) {
+        return executeRead(fn);
+    }
+
     /**
      * Runs a pipelined batch on a dedicated pooled connection with auto-flush
      * disabled by the adapter. The callback issues async commands via
