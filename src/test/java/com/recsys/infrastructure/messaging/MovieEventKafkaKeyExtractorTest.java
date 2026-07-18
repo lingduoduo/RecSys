@@ -16,9 +16,10 @@ class MovieEventKafkaKeyExtractorTest {
     void extract_acceptsFinalPositiveIntegerSuffix() {
         assertThat(MovieEventKafkaKeyExtractor.extract("{\"user_id\":\"user_42\"}"))
                 .contains("42");
-        assertThat(MovieEventKafkaKeyExtractor.extract(
-                "{\"user_id\":\"user_9223372036854775807\"}"))
-                .contains("9223372036854775807");
+        assertThat(MovieEventKafkaKeyExtractor.extract("{\"user_id\":\"00042\"}"))
+                .contains("42");
+        assertThat(MovieEventKafkaKeyExtractor.extract("{\"userId\":1e3}"))
+                .contains("1000");
     }
 
     @Test
@@ -38,6 +39,10 @@ class MovieEventKafkaKeyExtractorTest {
         assertThat(MovieEventKafkaKeyExtractor.extract("{\"userId\":0}")).isEmpty();
         assertThat(MovieEventKafkaKeyExtractor.extract("{\"userId\":-1}")).isEmpty();
         assertThat(MovieEventKafkaKeyExtractor.extract("{\"userId\":9223372036854775808}")).isEmpty();
+        assertThat(MovieEventKafkaKeyExtractor.extract("{\"userId\":2147483648}")).isEmpty();
+        assertThat(MovieEventKafkaKeyExtractor.extract("{\"userId\":9007199254740992}")).isEmpty();
+        assertThat(MovieEventKafkaKeyExtractor.extract("{\"userId\":1.5}")).isEmpty();
+        assertThat(MovieEventKafkaKeyExtractor.extract("{\"user_id\":\"1e3\"}")).isEmpty();
         assertThat(MovieEventKafkaKeyExtractor.extract("{\"user_id\":\"user_not-a-number\"}")).isEmpty();
     }
 }

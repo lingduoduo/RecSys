@@ -39,6 +39,7 @@ public class AsyncEventPublisher implements AutoCloseable {
     private final AtomicLong publishedCount = new AtomicLong();
     private final AtomicLong droppedCount  = new AtomicLong();
     private final AtomicLong drainedCount  = new AtomicLong();
+    private final AtomicLong deliveryFailureCount = new AtomicLong();
 
     public AsyncEventPublisher() {
         this(
@@ -77,7 +78,8 @@ public class AsyncEventPublisher implements AutoCloseable {
     }
 
     public Snapshot snapshot() {
-        return new Snapshot(queue.size(), publishedCount.get(), droppedCount.get(), drainedCount.get());
+        return new Snapshot(queue.size(), publishedCount.get(), droppedCount.get(), drainedCount.get(),
+                deliveryFailureCount.get());
     }
 
     /** Flush remaining events and stop the drain thread. */
@@ -128,6 +130,10 @@ public class AsyncEventPublisher implements AutoCloseable {
         return false;
     }
 
+    protected void recordDeliveryFailure() {
+        deliveryFailureCount.incrementAndGet();
+    }
+
     private static int readIntEnv(String envName, int defaultValue) {
         String raw = System.getenv(envName);
         if (raw == null || raw.isBlank()) return defaultValue;
@@ -138,7 +144,11 @@ public class AsyncEventPublisher implements AutoCloseable {
         }
     }
 
-    public record Snapshot(int queueSize, long published, long dropped, long drained) {}
+    public record Snapshot(int queueSize, long published, long dropped, long drained, long deliveryFailures) {
+        public Snapshot(int queueSize, long published, long dropped, long drained) {
+            this(queueSize, published, dropped, drained, 0L);
+        }
+    }
 
     public record EventEnvelope(String key, String value) {
         public EventEnvelope {

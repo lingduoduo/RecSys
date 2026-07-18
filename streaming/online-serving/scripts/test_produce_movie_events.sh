@@ -19,7 +19,7 @@ EOF
 chmod +x "$FIXTURE_DIR/docker"
 
 INPUT_FILE="$FIXTURE_DIR/events.ndjson"
-printf '%s\n' '{  "user_id" : "user_9223372036854775807", "timestamp_ms":9223372036854775807, "note" : "spacing retained"  }' > "$INPUT_FILE"
+printf '%s\n' '{  "user_id" : "user_2147483647", "timestamp_ms":9223372036854775807, "note" : "spacing retained"  }' > "$INPUT_FILE"
 
 export PATH="$FIXTURE_DIR:$PATH"
 export DOCKER_CALLS="$FIXTURE_DIR/docker.calls"
@@ -40,5 +40,5 @@ export FIXTURE_PARTITIONS=24
 bash "$PRODUCER_SCRIPT" "$INPUT_FILE" >/dev/null
 
 IFS=$'\t' read -r key value < "$PRODUCED_RECORDS"
-[[ "$key" == "9223372036854775807" ]]
+[[ "$key" == "2147483647" ]]
 [[ "$value" == "$(< "$INPUT_FILE")" ]]

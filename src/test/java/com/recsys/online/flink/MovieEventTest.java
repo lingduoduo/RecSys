@@ -70,4 +70,17 @@ class MovieEventTest {
         MovieEvent e = MAPPER.readValue(json, MovieEvent.class);
         assertThat(e.sessionId()).isEqualTo("sess_legacy");
     }
+
+    @Test
+    void userIdContractAcceptsOnlyPositiveJavaIntsWithoutRounding() throws Exception {
+        assertThat(MAPPER.readValue("{\"userId\":1e3}", MovieEvent.class).userId).isEqualTo(1000);
+        assertThat(MAPPER.readValue("{\"user_id\":\"user_00042\"}", MovieEvent.class).userId).isEqualTo(42);
+        assertThat(MAPPER.readValue("{\"userId\":2147483647}", MovieEvent.class).userId)
+                .isEqualTo(Integer.MAX_VALUE);
+        for (String value : java.util.List.of("0", "-1", "1.5", "2147483648",
+                "9007199254740992", "9223372036854775807")) {
+            assertThat(MAPPER.readValue("{\"userId\":" + value + "}", MovieEvent.class).userId)
+                    .as(value).isZero();
+        }
+    }
 }

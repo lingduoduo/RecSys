@@ -253,6 +253,28 @@ class OnlineFeatureStreamingJobTest {
     }
 
     @Test
+    void kafkaModesRequireDurableCheckpointsAndGenerationSpecificTopics() {
+        assertThatThrownBy(() -> OnlineFeatureStreamingJob.validateConfiguration(ParameterTool.fromArgs(
+                new String[]{"--bootstrap.servers", "broker:9092"})))
+                .hasMessageContaining("checkpoint-dir");
+        assertThatThrownBy(() -> OnlineFeatureStreamingJob.validateConfiguration(ParameterTool.fromArgs(
+                new String[]{"--bootstrap.servers", "broker:9092", "--checkpoint-dir", "s3://cp",
+                        "--topic", "recsys_events"})))
+                .hasMessageContaining("movie_events_v2");
+        assertThatThrownBy(() -> OnlineFeatureStreamingJob.validateConfiguration(ParameterTool.fromArgs(
+                new String[]{"--bootstrap.servers", "broker:9092", "--checkpoint-dir", "s3://cp",
+                        "--bridge-mode", "true"})))
+                .hasMessageContaining("legacy");
+        assertThat(OnlineFeatureStreamingJob.validateConfiguration(ParameterTool.fromArgs(
+                new String[]{"--bootstrap.servers", "broker:9092", "--checkpoint-dir", "s3://cp"})))
+                .isEqualTo(new OnlineFeatureStreamingJob.JobConfiguration(24, 24, 24, 128));
+        assertThat(OnlineFeatureStreamingJob.validateConfiguration(ParameterTool.fromArgs(
+                new String[]{"--bootstrap.servers", "broker:9092", "--checkpoint-dir", "s3://cp",
+                        "--bridge-mode", "true", "--topic", "recsys_events"})))
+                .isEqualTo(new OnlineFeatureStreamingJob.JobConfiguration(24, 24, 24, 128));
+    }
+
+    @Test
     void rejectsNonPositiveParallelism() {
         assertThatThrownBy(() -> OnlineFeatureStreamingJob.validateConfiguration(
                 ParameterTool.fromArgs(new String[]{"--operator-parallelism", "0"})))
@@ -312,7 +334,6 @@ class OnlineFeatureStreamingJobTest {
         Map<String, Long> backingState = new LinkedHashMap<>();
         @SuppressWarnings("unchecked")
         MapState<String, Long> mapState = mock(MapState.class);
-        when(mapState.entries()).thenAnswer(ignored -> backingState.entrySet());
         when(mapState.get(any())).thenAnswer(invocation -> backingState.get(invocation.getArgument(0)));
         org.mockito.Mockito.doAnswer(invocation -> backingState.put(
                 invocation.getArgument(0), invocation.getArgument(1)))
@@ -346,6 +367,7 @@ class OnlineFeatureStreamingJobTest {
 
         assertThat(output).extracting(event -> event.eventId)
                 .containsExactly(firstId, secondId);
+        org.mockito.Mockito.verify(mapState, org.mockito.Mockito.never()).entries();
     }
 
     private static MovieEvent event(int userId, String eventId, int movieId) {

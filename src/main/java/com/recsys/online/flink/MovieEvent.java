@@ -4,7 +4,9 @@ import com.fasterxml.jackson.annotation.JsonAlias;
 import com.fasterxml.jackson.annotation.JsonIgnoreProperties;
 import com.fasterxml.jackson.annotation.JsonProperty;
 import com.fasterxml.jackson.annotation.JsonSetter;
+import com.fasterxml.jackson.databind.JsonNode;
 
+import java.math.BigDecimal;
 import java.util.Map;
 
 @JsonIgnoreProperties(ignoreUnknown = true)
@@ -28,9 +30,14 @@ public class MovieEvent {
 
     public MovieEvent() {}
 
+    @JsonSetter("userId")
+    public void setUserId(JsonNode raw) {
+        this.userId = parsePositiveJavaInt(raw);
+    }
+
     @JsonSetter("user_id")
-    public void setUserIdStr(String raw) {
-        this.userId = parseIdSuffix(raw);
+    public void setUserIdAlias(JsonNode raw) {
+        this.userId = parsePositiveJavaInt(raw);
     }
 
     @JsonSetter("item_id")
@@ -52,6 +59,22 @@ public class MovieEvent {
             return (int) Math.abs((long) Integer.parseInt(suffix));
         } catch (NumberFormatException e) {
             return Math.abs(raw.hashCode()) % Integer.MAX_VALUE;
+        }
+    }
+
+    static int parsePositiveJavaInt(JsonNode raw) {
+        if (raw == null || raw.isNull() || (!raw.isNumber() && !raw.isTextual())) return 0;
+        String candidate = raw.asText();
+        if (raw.isTextual()) {
+            int separator = candidate.lastIndexOf('_');
+            if (separator >= 0) candidate = candidate.substring(separator + 1);
+            if (candidate.isEmpty() || !candidate.chars().allMatch(Character::isDigit)) return 0;
+        }
+        try {
+            int value = new BigDecimal(candidate).intValueExact();
+            return value > 0 ? value : 0;
+        } catch (ArithmeticException | NumberFormatException ignored) {
+            return 0;
         }
     }
 

@@ -120,6 +120,7 @@ class KafkaAsyncEventPublisherTest {
         assertThatCode(() -> pub.sendBatch(List.of("{\"e\":1}", "{\"e\":2}"))).doesNotThrowAnyException();
 
         verify(producer, times(2)).send(any(), any());   // both attempted despite the throw
+        assertThat(pub.snapshot().deliveryFailures()).isEqualTo(2L);
 
         pub.close();
     }

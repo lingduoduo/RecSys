@@ -13,6 +13,7 @@ import org.apache.flink.api.common.state.ListState;
 import org.apache.flink.api.common.state.ListStateDescriptor;
 import org.apache.flink.api.common.state.MapState;
 import org.apache.flink.api.common.state.MapStateDescriptor;
+import org.apache.flink.api.common.state.StateTtlConfig;
 import org.apache.flink.api.common.state.ValueState;
 import org.apache.flink.api.common.state.ValueStateDescriptor;
 import org.apache.flink.api.common.typeinfo.Types;
@@ -169,7 +170,8 @@ public final class OnlineFeatureStreamingJob {
                 .process(new FinalTopKWindowFunction(topK, windowLabel, metricTtlSeconds,
                         topKBucketCount, allowedLatenessMs))
                 .name("topk-final").uid("topk-final-v1")
-                .setParallelism(Math.min(finalTopKParallelism, jobConfiguration.operatorParallelism()));
+                .setParallelism(Math.min(finalTopKParallelism, jobConfiguration.operatorParallelism()))
+                .setMaxParallelism(jobConfiguration.maxParallelism());
 
         topKSnapshots
                 .addSink(new RedisTopKSink(redisHost, redisPort))
@@ -185,6 +187,10 @@ public final class OnlineFeatureStreamingJob {
     }
 
     private static boolean requiresEventIdentity(MovieEvent e) {
+        if (e.userId <= 0) {
+            LOG.warn("Dropping event with invalid userId: movieId={} type={}", e.movieId, e.eventType);
+            return false;
+        }
         if (e.hasEventIdentity()) return true;
         LOG.warn("Dropping event missing eventId — cannot deduplicate safely: userId={} movieId={} type={}",
                 e.userId, e.movieId, e.eventType);
@@ -192,6 +198,20 @@ public final class OnlineFeatureStreamingJob {
     }
 
     static JobConfiguration validateConfiguration(ParameterTool params) {
+        boolean kafka = !StringUtils.isNullOrWhitespaceOnly(params.get("bootstrap.servers"));
+        boolean bridge = params.getBoolean("bridge-mode", false);
+        String topic = params.get("topic", "movie_events_v2");
+        String checkpointDir = params.get("checkpoint-dir", System.getenv("FLINK_CHECKPOINT_DIR"));
+        if (bridge && !kafka) throw new IllegalArgumentException("bridge-mode requires bootstrap.servers");
+        if (bridge && (StringUtils.isNullOrWhitespaceOnly(params.get("topic")) || "movie_events_v2".equals(topic))) {
+            throw new IllegalArgumentException("bridge-mode requires an explicit legacy --topic");
+        }
+        if (kafka && !bridge && !"movie_events_v2".equals(topic)) {
+            throw new IllegalArgumentException("this artifact only supports topic movie_events_v2; use bridge-mode for legacy replay");
+        }
+        if (kafka && StringUtils.isNullOrWhitespaceOnly(checkpointDir)) {
+            throw new IllegalArgumentException("Kafka normal and bridge modes require a durable checkpoint-dir URI");
+        }
         JobConfiguration configuration = new JobConfiguration(
                 params.getInt("expected-topic-partitions", 24),
                 params.getInt("source-parallelism", 24),
@@ -221,7 +241,7 @@ public final class OnlineFeatureStreamingJob {
         Properties adminProperties = kafkaProperties(params);
         adminProperties.setProperty("bootstrap.servers", bootstrapServers);
         try (Admin admin = Admin.create(adminProperties)) {
-            KafkaTopicPartitionValidator.validate(admin, params.get("topic", "recsys_events"),
+            KafkaTopicPartitionValidator.validate(admin, params.get("topic", "movie_events_v2"),
                     configuration.expectedTopicPartitions());
         }
     }
@@ -230,20 +250,23 @@ public final class OnlineFeatureStreamingJob {
                                                            ParameterTool params,
                                                            JobConfiguration configuration) throws IOException {
         String bootstrapServers = params.get("bootstrap.servers");
-        String topic = params.get("topic", "recsys_events");
+        String topic = params.get("topic", "movie_events_v2");
 
         if (!StringUtils.isNullOrWhitespaceOnly(bootstrapServers)) {
             KafkaSource<String> source = KafkaSource.<String>builder()
                     .setBootstrapServers(bootstrapServers)
                     .setTopics(topic)
-                    .setGroupId(params.get("group.id", "online-features"))
+                    .setGroupId(params.get("group.id", params.getBoolean("bridge-mode", false)
+                            ? "online-features-bridge-v1" : "online-features-v2"))
                     .setStartingOffsets(OffsetsInitializer.earliest())
                     .setValueOnlyDeserializer(new SimpleStringSchema())
                     .setProperties(kafkaProperties(params))
                     .build();
 
+            String sourceUid = params.getBoolean("bridge-mode", false)
+                    ? "kafka-movie-events-bridge-v1" : "kafka-movie-events-v2";
             return env.fromSource(source, WatermarkStrategy.noWatermarks(), "kafka-movie-events")
-                    .uid("kafka-movie-events-v2")
+                    .uid(sourceUid)
                     .setParallelism(configuration.sourceParallelism())
                     .setMaxParallelism(configuration.maxParallelism())
                     .flatMap((String line, Collector<MovieEvent> out) -> {
@@ -548,8 +571,15 @@ public final class OnlineFeatureStreamingJob {
 
         @Override
         public void open(Configuration parameters) {
-            eventExpiry = getRuntimeContext().getMapState(
-                    new MapStateDescriptor<>("event-id-expiry", Types.STRING, Types.LONG));
+            MapStateDescriptor<String, Long> descriptor =
+                    new MapStateDescriptor<>("event-id-expiry", Types.STRING, Types.LONG);
+            descriptor.enableTimeToLive(StateTtlConfig.newBuilder(
+                            org.apache.flink.api.common.time.Time.seconds(Math.max(1L, ttlSeconds)))
+                    .setUpdateType(StateTtlConfig.UpdateType.OnCreateAndWrite)
+                    .setStateVisibility(StateTtlConfig.StateVisibility.NeverReturnExpired)
+                    .cleanupInRocksdbCompactFilter(1_000L)
+                    .build());
+            eventExpiry = getRuntimeContext().getMapState(descriptor);
         }
 
         @Override
@@ -557,13 +587,6 @@ public final class OnlineFeatureStreamingJob {
                                    KeyedProcessFunction<Integer, MovieEvent, MovieEvent>.Context context,
                                    Collector<MovieEvent> out) throws Exception {
             long now = context.timerService().currentProcessingTime();
-            List<String> expiredIds = new ArrayList<>();
-            for (Map.Entry<String, Long> entry : eventExpiry.entries()) {
-                if (entry.getValue() <= now) expiredIds.add(entry.getKey());
-            }
-            for (String expiredId : expiredIds) {
-                eventExpiry.remove(expiredId);
-            }
             Long expiry = eventExpiry.get(event.eventId);
             if (expiry != null && expiry > now) {
                 LOG.debug("Skipping duplicate movie event: {}", event.eventId);

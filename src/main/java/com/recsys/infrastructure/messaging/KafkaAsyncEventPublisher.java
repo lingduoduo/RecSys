@@ -119,11 +119,13 @@ public class KafkaAsyncEventPublisher extends AsyncEventPublisher {
         try {
             producer.send(record, (metadata, ex) -> {
                 if (ex != null) {
-                    log.warn("A/B exposure delivery to topic '{}' failed", topic, ex);
+                    recordDeliveryFailure();
+                    log.warn("Kafka event delivery to topic '{}' failed", topic, ex);
                 }
             });
         } catch (RuntimeException e) {
-            log.warn("A/B exposure send to topic '{}' threw", topic, e);
+            recordDeliveryFailure();
+            log.warn("Kafka event send to topic '{}' threw", topic, e);
         }
     }
 
@@ -133,7 +135,7 @@ public class KafkaAsyncEventPublisher extends AsyncEventPublisher {
         try {
             producer.close(CLOSE_TIMEOUT); // bounded — don't block shutdown if the broker is down
         } catch (Exception e) {
-            log.warn("error closing Kafka exposure producer", e);
+            log.warn("error closing Kafka event producer", e);
         }
     }
 }

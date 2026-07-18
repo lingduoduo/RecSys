@@ -13,6 +13,7 @@ export NEW_GROUP=online-features-v2
 export FLINK_JOB_ID=<running-job-id>
 export SAVEPOINT_DIR=file:///durable/flink/savepoints
 export OLD_JOB_JAR=/immutable/releases/recsys-before-partition-optimization.jar
+export BRIDGE_JOB_JAR=/immutable/releases/recsys-kafka-v2.jar
 export NEW_V2_JOB_JAR=/immutable/releases/recsys-kafka-v2.jar
 export OLD_JOB_GRAPH_JSON=/immutable/change-evidence/old-job-graph.json
 ```
@@ -37,7 +38,22 @@ kafka-topics.sh --bootstrap-server "$BOOTSTRAP_SERVERS" \
 
 The description must show `PartitionCount: 24` and partitions 0 through 23. Stop if it does not: neither the replay producer nor the Flink startup validator permits a different count.
 
-## 2. Fence producers and drain the old group
+## 2. Rebuild future-compatible state with a shadow bridge
+
+Never restore the legacy job's generated operator IDs directly. First prove legacy-topic retention covers the full state horizon (at least the dedup TTL and every retained feature horizon), then launch this artifact from earliest in explicit bridge mode:
+
+```bash
+flink run -c com.recsys.online.flink.OnlineFeatureStreamingJob "$BRIDGE_JOB_JAR" \
+  --bridge-mode true --bootstrap.servers "$BOOTSTRAP_SERVERS" \
+  --topic "$OLD_TOPIC" --group.id online-features-bridge-v1 \
+  --expected-topic-partitions <legacy-partition-count> \
+  --source-parallelism <legacy-partition-count> --operator-parallelism 24 \
+  --max-parallelism 128 --checkpoint-dir <durable-checkpoint-uri>
+```
+
+The bridge source UID is `kafka-movie-events-bridge-v1`; its downstream UIDs and state schemas exactly match v2. Wait for zero bridge lag and reconcile Redis history, embeddings, sessions, metrics, dedup behavior, and closed Top-K windows with the active job. Abort on insufficient retention, failed checkpoints, nonzero lag, or reconciliation differences.
+
+## 3. Fence producers and drain the old and bridge groups
 
 Pause every producer deployment that writes movie events. Do not merely scale the consumer down: the fence must stop new writes while offsets drain. Record the fence time and verify the old consumer group's lag reaches zero.
 
@@ -46,9 +62,9 @@ kafka-consumer-groups.sh --bootstrap-server "$BOOTSTRAP_SERVERS" \
   --describe --group "$OLD_GROUP"
 ```
 
-Repeat until each partition's `LAG` is `0`. If lag grows, a producer is still active; find and pause it before continuing.
+Repeat for both `$OLD_GROUP` and `online-features-bridge-v1` until every partition's `LAG` is `0`, and let the final legacy window close. If lag grows, a producer is still active; find and pause it before continuing.
 
-## 3. Take a savepoint and stop the old job
+## 4. Take a savepoint from the bridge
 
 Before stopping, archive the running job's execution graph through the Flink UI/REST endpoint or the deployment platform's job-graph export. Use the platform's savepoint metadata inspector as a second source where available. Inspect the archived metadata, not the new source code:
 
@@ -61,14 +77,14 @@ jq -r '.. | objects | select((.name? // "") | test("kafka-movie-events"; "i")) \
 An authoritative result must show that the deployed old Kafka source has no stable UID or has a recorded UID different from `kafka-movie-events-v2`. **Abort the cutover** if the old source UID equals `kafka-movie-events-v2`, if the graph belongs to a different deployed artifact, or if the source identity cannot be established. In those cases, produce and review a state-migration plan before any restore.
 
 ```bash
-flink stop --savepointPath "$SAVEPOINT_DIR" "$FLINK_JOB_ID"
+flink stop --savepointPath "$SAVEPOINT_DIR" <bridge-job-id>
 ```
 
-Capture the returned savepoint URI. Verify the old job reaches `FINISHED` and retain the savepoint through the recovery window. Downstream stateful operators use stable UIDs, including `event-idempotency-v1`, `recent-movies-v1`, `user-embedding-feature-v1`, `session-feature-v1`, `movie-metrics-v1`, `topk-partial-v1`, and `topk-final-v1`, plus the Redis sink UIDs. Do not rename or remove them during this migration.
+Capture the returned bridge savepoint URI and retain it through the recovery window. Downstream stateful operators use stable UIDs, including `event-idempotency-v1`, `recent-movies-v1`, `user-embedding-feature-v1`, `session-feature-v1`, `movie-metrics-v1`, `topk-partial-v1`, and `topk-final-v1`, plus the Redis sink UIDs. Do not rename or remove them during this migration.
 
 The source is deliberately different: `kafka-movie-events-v2` is generation-specific. KafkaSource savepoints contain enumerator and partition-split state, including topic partitions and offsets. Reusing the old source UID could bind old-topic split state to the v2 source, skip v2 records, or seek meaningless offsets. The cutover must leave the old source state unrestored while restoring the stable downstream state.
 
-## 4. Restore against the new topic and group
+## 5. Restore against the new topic and group
 
 Submit `NEW_V2_JOB_JAR`, not the old artifact and not a mutable `app.jar` alias. The essential arguments are:
 
@@ -84,7 +100,7 @@ flink run -s <savepoint-uri> -n \
   --checkpoint-dir <durable-checkpoint-uri>
 ```
 
-`-n` (long form `--allowNonRestoredState`) is mandatory because the old source state is **unmatched**: the source in `OLD_JOB_JAR` has no stable UID (or has the separately recorded old UID), while the source in `NEW_V2_JOB_JAR` has UID `kafka-movie-events-v2`. Flink may omit that unmatched old source state. This option does not discard state whose UID matches; the stable downstream UIDs must match and restore. Review the submission log and abort unless the only expected non-restored state belongs to the old Kafka source. Because the v2 source is new and `$NEW_GROUP` has no committed offsets, its configured `OffsetsInitializer.earliest()` starts at the beginning of the fenced, initially empty v2 topic. It must never restore old-topic offsets into v2.
+`-n` (long form `--allowNonRestoredState`) is mandatory because bridge source state is unmatched: `kafka-movie-events-bridge-v1` becomes `kafka-movie-events-v2`. Abort unless the only non-restored state is the bridge source. All future-compatible downstream UIDs must match and restore. Direct restore from legacy generated IDs is forbidden. Because the v2 source is new and `$NEW_GROUP` has no committed offsets, its configured `OffsetsInitializer.earliest()` starts at the beginning of the fenced, initially empty v2 topic.
 
 Topic generations require artifact generations. A future `movie_events_v3` cutover must ship a reviewed artifact whose source UID is `kafka-movie-events-v3`; changing only `--topic` while reusing `NEW_V2_JOB_JAR` is forbidden because it would reuse the v2 source identity.
 

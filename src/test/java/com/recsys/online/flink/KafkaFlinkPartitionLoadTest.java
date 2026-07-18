@@ -160,6 +160,18 @@ class KafkaFlinkPartitionLoadTest {
                     .as("sink progress by the end of steady-state interval %s", interval + 1)
                     .isGreaterThan(processedAtIntervalEnd.get(interval - 1));
         }
+        // Two bounded intervals are warmup; thereafter the end-to-end sink, not merely Kafka acks,
+        // must sustain the advertised capacity.
+        for (int interval = 2; interval < processedAtIntervalEnd.size(); interval++) {
+            long processedDelta = processedAtIntervalEnd.get(interval)
+                    - processedAtIntervalEnd.get(interval - 1);
+            assertThat(processedDelta)
+                    .as("end-to-end processed rate after warmup, interval %s", interval + 1)
+                    .isGreaterThanOrEqualTo(TARGET_EVENTS_PER_SECOND);
+        }
+        assertThat(observedLag.stream().mapToLong(Long::longValue).max().orElseThrow())
+                .as("lag remains bounded during load and returns to zero during recovery")
+                .isLessThanOrEqualTo(3L * EVENTS_PER_INTERVAL);
         assertPartitionPolicy(perPartition, hotPerPartition);
 
         AccessExecutionGraph graph = cluster.getExecutionGraph(jobId).get(30, TimeUnit.SECONDS);
@@ -167,6 +179,15 @@ class KafkaFlinkPartitionLoadTest {
         assertThat(checkpoints).isNotNull();
         assertThat(checkpoints.getCounts().getNumberOfCompletedCheckpoints())
                 .as("completed checkpoints reported by the live execution graph").isPositive();
+        assertThat(checkpoints.getCounts().getNumberOfFailedCheckpoints())
+                .as("failed checkpoints reported by the live execution graph").isZero();
+        var latestCheckpoint = checkpoints.getHistory().getLatestCompletedCheckpoint();
+        assertThat(latestCheckpoint).isNotNull();
+        assertThat(latestCheckpoint.getEndToEndDuration()).as("checkpoint duration evidence").isPositive();
+        assertThat(latestCheckpoint.getLatestAckTimestamp()).as("checkpoint completion timestamp evidence")
+                .isPositive();
+        assertThat(System.currentTimeMillis() - latestCheckpoint.getLatestAckTimestamp())
+                .as("latest completed checkpoint age").isLessThan(30_000L);
 
         AccessExecutionJobVertex finalTopK = graph.getAllVertices().values().stream()
                 .filter(vertex -> vertex.getName().contains("topk-final"))
@@ -208,6 +229,7 @@ class KafkaFlinkPartitionLoadTest {
         env.enableCheckpointing(500L);
         ParameterTool params = ParameterTool.fromMap(Map.of(
                 "bootstrap.servers", KAFKA.getBootstrapServers(), "topic", topic,
+                "bridge-mode", "true", "checkpoint-dir", "file:///tmp/recsys-flink-load-checkpoints",
                 "group.id", GROUP, "expected-topic-partitions", "24",
                 "source-parallelism", "24", "operator-parallelism", "24",
                 "max-parallelism", "128", "kafka.partition.discovery.interval.ms", "100"));

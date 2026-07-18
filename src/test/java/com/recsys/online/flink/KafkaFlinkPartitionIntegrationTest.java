@@ -142,7 +142,8 @@ class KafkaFlinkPartitionIntegrationTest {
         String topic = topic("mismatch");
         createTopic(topic, PARTITIONS - 1);
         ParameterTool params = ParameterTool.fromMap(Map.of(
-                "bootstrap.servers", KAFKA.getBootstrapServers(), "topic", topic));
+                "bootstrap.servers", KAFKA.getBootstrapServers(), "topic", topic,
+                "bridge-mode", "true", "checkpoint-dir", "file:///tmp/recsys-flink-it-checkpoints"));
         OnlineFeatureStreamingJob.JobConfiguration configuration =
                 new OnlineFeatureStreamingJob.JobConfiguration(PARTITIONS, PARTITIONS, 4, 128);
         assertThatThrownBy(() -> OnlineFeatureStreamingJob.validateKafkaTopic(params, configuration))
@@ -155,6 +156,7 @@ class KafkaFlinkPartitionIntegrationTest {
         env.enableCheckpointing(500L);
         ParameterTool params = ParameterTool.fromMap(Map.of(
                 "bootstrap.servers", KAFKA.getBootstrapServers(), "topic", topic,
+                "bridge-mode", "true", "checkpoint-dir", "file:///tmp/recsys-flink-it-checkpoints",
                 "group.id", "partition-contract", "expected-topic-partitions", "24",
                 "source-parallelism", "24", "operator-parallelism", Integer.toString(operatorParallelism),
                 "max-parallelism", "128", "kafka.partition.discovery.interval.ms", "100"));
