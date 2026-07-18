@@ -49,7 +49,7 @@ At startup, deployment validation compares the configured expected count with Ka
 
 The Kafka source runs at configurable parallelism, capped at 24 for `movie_events_v2`. Records remain keyed by `userId` at Kafka ingress, but Flink retains explicit downstream `keyBy` boundaries because each operator has its own state and distribution requirement:
 
-- deduplication by event identity;
+- deduplication by `userId`, with recent event IDs stored inside per-user keyed state;
 - recent history and user embedding by `userId`;
 - session features by `(userId, sessionId)`;
 - movie metrics by `(movieId, metricKind)`.
@@ -108,7 +108,7 @@ Scaling adds Flink task slots or raises operator parallelism only when Kafka par
 - Production execution requires durable checkpoint storage. Missing production checkpoint configuration fails deployment validation.
 - A failed checkpoint or savepoint blocks cutover but does not delete the last known-good artifact.
 - Restore failure leaves the old topic and job available for rollback.
-- Deduplication remains event-ID-based and protects downstream features from at-least-once replay across recovery.
+- Deduplication remains event-ID-based inside user-keyed state and protects downstream features from at-least-once replay across recovery. The job must not repartition by event ID before user-state operators because that would weaken strict same-user ordering.
 
 ## Testing
 
