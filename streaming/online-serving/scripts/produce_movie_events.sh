@@ -15,7 +15,10 @@ fi
 KEYED_EVENTS="$(mktemp)"
 trap 'rm -f "$KEYED_EVENTS"' EXIT
 
-jq -r -f "$JQ_FILTER" "$DATA_FILE" > "$KEYED_EVENTS"
+while IFS= read -r event || [[ -n "$event" ]]; do
+  key="$(printf '%s\n' "$event" | jq -r -f "$JQ_FILTER")"
+  printf '%s\t%s\n' "$key" "$event" >> "$KEYED_EVENTS"
+done < "$DATA_FILE"
 if ! awk -F '\t' 'NF != 2 || $1 !~ /^[1-9][0-9]*$/ { exit 1 }' "$KEYED_EVENTS"; then
   echo "Every event must have a positive normalized user ID" >&2
   exit 1
@@ -28,6 +31,16 @@ docker exec "$KAFKA_CONTAINER" kafka-topics \
   --topic "$KAFKA_TOPIC" \
   --partitions "$KAFKA_PARTITIONS" \
   --replication-factor 1 >/dev/null
+
+PARTITION_COUNT="$(docker exec "$KAFKA_CONTAINER" kafka-topics \
+  --bootstrap-server kafka:9092 \
+  --describe \
+  --topic "$KAFKA_TOPIC" \
+  | awk '{ for (i = 1; i <= NF; i++) if ($i == "PartitionCount:") { print $(i + 1); exit } }')"
+if [[ "$PARTITION_COUNT" != "24" ]]; then
+  echo "Kafka topic $KAFKA_TOPIC must have exactly 24 partitions; found ${PARTITION_COUNT:-unknown}" >&2
+  exit 1
+fi
 
 docker exec -i "$KAFKA_CONTAINER" kafka-console-producer \
   --bootstrap-server kafka:9092 \

@@ -99,7 +99,8 @@ sh streaming/online-serving/scripts/produce_movie_events.sh
 That publishes the bundled event stream from `movie_events.ndjson` into the 24-partition Kafka topic
 `movie_events_v2`. Each record is keyed by its normalized positive user ID so one user's events remain
 in partition order. `KAFKA_PARTITIONS` defaults to `24` and the script rejects any other value for this
-topic generation.
+topic generation. After topic creation it also describes the broker topic and aborts before producing
+if an existing topic has a different partition count. Event values retain the original NDJSON line bytes.
 In a real app, `LogCollector` is the counterpart to this replay script: product surfaces call it with
 click, view, like, or order logs, then its JSON output is written to Kafka.
 `OnlineJoiner` is the next step: it combines those behavior records with user, item, and request context

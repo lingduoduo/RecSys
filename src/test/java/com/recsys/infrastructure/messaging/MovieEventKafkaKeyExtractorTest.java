@@ -16,6 +16,9 @@ class MovieEventKafkaKeyExtractorTest {
     void extract_acceptsFinalPositiveIntegerSuffix() {
         assertThat(MovieEventKafkaKeyExtractor.extract("{\"user_id\":\"user_42\"}"))
                 .contains("42");
+        assertThat(MovieEventKafkaKeyExtractor.extract(
+                "{\"user_id\":\"user_9223372036854775807\"}"))
+                .contains("9223372036854775807");
     }
 
     @Test

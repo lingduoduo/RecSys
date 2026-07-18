@@ -13,4 +13,4 @@ def normalized_user_id:
     else error("event lacks a user ID")
     end;
 
-(normalized_user_id) + "\t" + tojson
+normalized_user_id
