@@ -12,6 +12,15 @@ export OLD_GROUP=online-features
 export NEW_GROUP=online-features-v2
 export FLINK_JOB_ID=<running-job-id>
 export SAVEPOINT_DIR=file:///durable/flink/savepoints
+export OLD_JOB_JAR=/immutable/releases/recsys-before-partition-optimization.jar
+export NEW_V2_JOB_JAR=/immutable/releases/recsys-kafka-v2.jar
+export OLD_JOB_GRAPH_JSON=/immutable/change-evidence/old-job-graph.json
+```
+
+`OLD_JOB_JAR` is the exact pre-partition-optimization artifact currently deployed. Its Kafka source must have no stable UID, or its exact observed old UID must be recorded from the deployed graph; it must not be `kafka-movie-events-v2`. `NEW_V2_JOB_JAR` is this feature artifact and its Kafka source UID is exactly `kafka-movie-events-v2`. Record both artifacts' immutable repository coordinates and SHA-256 checksums in the change ticket:
+
+```bash
+shasum -a 256 "$OLD_JOB_JAR" "$NEW_V2_JOB_JAR"
 ```
 
 ## 1. Create and verify the fenced destination
@@ -41,6 +50,16 @@ Repeat until each partition's `LAG` is `0`. If lag grows, a producer is still ac
 
 ## 3. Take a savepoint and stop the old job
 
+Before stopping, archive the running job's execution graph through the Flink UI/REST endpoint or the deployment platform's job-graph export. Use the platform's savepoint metadata inspector as a second source where available. Inspect the archived metadata, not the new source code:
+
+```bash
+jq -r '.. | objects | select((.name? // "") | test("kafka-movie-events"; "i")) \
+  | [.name, (.uid // "<no-stable-uid>"), (.operator_id // .id // "<unknown-id>")] | @tsv' \
+  "$OLD_JOB_GRAPH_JSON"
+```
+
+An authoritative result must show that the deployed old Kafka source has no stable UID or has a recorded UID different from `kafka-movie-events-v2`. **Abort the cutover** if the old source UID equals `kafka-movie-events-v2`, if the graph belongs to a different deployed artifact, or if the source identity cannot be established. In those cases, produce and review a state-migration plan before any restore.
+
 ```bash
 flink stop --savepointPath "$SAVEPOINT_DIR" "$FLINK_JOB_ID"
 ```
@@ -51,11 +70,11 @@ The source is deliberately different: `kafka-movie-events-v2` is generation-spec
 
 ## 4. Restore against the new topic and group
 
-Submit the same artifact from the savepoint. The essential arguments are:
+Submit `NEW_V2_JOB_JAR`, not the old artifact and not a mutable `app.jar` alias. The essential arguments are:
 
 ```bash
-flink run -s <savepoint-uri> --allowNonRestoredState \
-  -c com.recsys.online.flink.OnlineFeatureStreamingJob app.jar \
+flink run -s <savepoint-uri> -n \
+  -c com.recsys.online.flink.OnlineFeatureStreamingJob "$NEW_V2_JOB_JAR" \
   --bootstrap.servers "$BOOTSTRAP_SERVERS" \
   --topic "$NEW_TOPIC" --group.id "$NEW_GROUP" \
   --expected-topic-partitions 24 --source-parallelism 24 \
@@ -65,13 +84,23 @@ flink run -s <savepoint-uri> --allowNonRestoredState \
   --checkpoint-dir <durable-checkpoint-uri>
 ```
 
-`--allowNonRestoredState` (short form `-n`) is mandatory here: it permits the old generation's source state to be discarded while matching the stable downstream UIDs from the savepoint. Review the submission log and confirm only the expected old source state is non-restored. Because the v2 source is new and `$NEW_GROUP` has no committed offsets, its configured `OffsetsInitializer.earliest()` starts at the beginning of the fenced, initially empty v2 topic. It must never restore old-topic offsets into v2.
+`-n` (long form `--allowNonRestoredState`) is mandatory because the old source state is **unmatched**: the source in `OLD_JOB_JAR` has no stable UID (or has the separately recorded old UID), while the source in `NEW_V2_JOB_JAR` has UID `kafka-movie-events-v2`. Flink may omit that unmatched old source state. This option does not discard state whose UID matches; the stable downstream UIDs must match and restore. Review the submission log and abort unless the only expected non-restored state belongs to the old Kafka source. Because the v2 source is new and `$NEW_GROUP` has no committed offsets, its configured `OffsetsInitializer.earliest()` starts at the beginning of the fenced, initially empty v2 topic. It must never restore old-topic offsets into v2.
+
+Topic generations require artifact generations. A future `movie_events_v3` cutover must ship a reviewed artifact whose source UID is `kafka-movie-events-v3`; changing only `--topic` while reusing `NEW_V2_JOB_JAR` is forbidden because it would reuse the v2 source identity.
 
 Keeping producers fenced until the restored job is healthy prevents ambiguity. The Top-K path uses event time, tolerates five seconds of out-of-order data, and marks silent source partitions idle after 30 seconds so one empty partition cannot stall all watermarks.
 
 ## 5. Switch producers and validate
 
-Set `ONLINE_EVENTS_KAFKA_TOPIC=movie_events_v2` with `ONLINE_EVENTS_KAFKA_ENABLED=true`, then resume producers. Online movie events are keyed by normalized positive `userId`, preserving per-user partition order. Record the timestamp and offset of the first accepted v2 event: it is the recovery-phase boundary.
+Before resuming producers, capture the activation/start offset for every v2 partition. Store and checksum the immutable file in the change evidence:
+
+```bash
+kafka-get-offsets.sh --bootstrap-server "$BOOTSTRAP_SERVERS" \
+  --topic "$NEW_TOPIC" --time -1 | sort -t: -k2,2n > v2-start-offsets.tsv
+shasum -a 256 v2-start-offsets.tsv
+```
+
+Set `ONLINE_EVENTS_KAFKA_TOPIC=movie_events_v2` with `ONLINE_EVENTS_KAFKA_ENABLED=true`, then resume producers. Online movie events are keyed by normalized positive `userId`, preserving per-user partition order. The first accepted record at or after a recorded start offset is the recovery-phase boundary.
 
 Validate all of the following before declaring the cutover healthy:
 
@@ -93,7 +122,7 @@ kafka-topics.sh --bootstrap-server "$BOOTSTRAP_SERVERS" \
 
 ### Before the first accepted v2 event
 
-Pre-activation rollback is allowed because no v2-era input or downstream state exists. Stop the new job, restore the exact old artifact/configuration from the original savepoint using `$OLD_TOPIC` and `$OLD_GROUP`, point the still-fenced producers back to `$OLD_TOPIC`, resume them, and validate checkpoints, lag, Redis freshness, and recommendations.
+Pre-activation rollback is allowed because no v2-era input or downstream state exists. Stop the new job, restore `$OLD_JOB_JAR` with its exact old configuration from the original savepoint using `$OLD_TOPIC` and `$OLD_GROUP`, point the still-fenced producers back to `$OLD_TOPIC`, resume them, and validate checkpoints, lag, Redis freshness, and recommendations.
 
 ### After the first accepted v2 event
 
@@ -101,13 +130,21 @@ A simple restore of the pre-cutover savepoint is forbidden: it would discard or 
 
 Moving v2 back to the old topic requires a separately approved replay and reconciliation operation:
 
-1. Fence all producers and drain `$NEW_GROUP` to zero; record per-partition end and committed offsets.
-2. Stop the v2 job with a recovery savepoint and export every accepted v2 record plus its key, partition, offset, event ID, and event time to immutable storage.
-3. Build a replay manifest grouped by normalized positive user ID. Preserve each user's v2 source order; do not repartition by event ID and do not interleave a user's records nondeterministically.
-4. Establish the old topic's recorded cutover boundary. Replay only v2-era records after that boundary into `$OLD_TOPIC`, keyed by the same user ID. Preserve original event IDs so `event-idempotency-v1` suppresses at-least-once duplicates.
+1. Fence all producers and drain `$NEW_GROUP` to zero. After the fence, capture each v2 partition's exclusive end offset and committed offset; store and checksum both immutable files:
+   ```bash
+   kafka-get-offsets.sh --bootstrap-server "$BOOTSTRAP_SERVERS" \
+     --topic "$NEW_TOPIC" --time -1 | sort -t: -k2,2n > v2-end-offsets.tsv
+   kafka-consumer-groups.sh --bootstrap-server "$BOOTSTRAP_SERVERS" \
+     --describe --group "$NEW_GROUP" > v2-committed-offsets.txt
+   shasum -a 256 v2-start-offsets.tsv v2-end-offsets.tsv v2-committed-offsets.txt
+   ```
+   Abort if any committed offset is below its recorded end offset.
+2. Stop the v2 job with a recovery savepoint. Export exactly the half-open offset range `[start,end)` recorded for every v2 partition—no more and no less—to immutable storage. Selection is by v2 partition and Kafka offset only; event time and old-topic offsets must not define or trim the range. Include key, partition, offset, event ID, event time, and original value bytes.
+3. Produce a signed/checksummed replay manifest listing every partition's start, exclusive end, expected count (`end - start`), exported count, payload checksum, and total count. Abort on a gap, duplicate source offset, count mismatch, or checksum mismatch.
+4. Replay the complete manifest into `$OLD_TOPIC`, grouped/keyed by normalized positive user ID. Preserve each user's v2 source order; do not repartition by event ID and do not interleave a user's records nondeterministically. Preserve original event IDs so `event-idempotency-v1` suppresses at-least-once duplicates.
 5. Restore the old job only under an approved state plan: either transform/reconcile the v2 recovery savepoint for the old graph or restore the old savepoint and replay the complete manifest. Never attach v2 Kafka split state to the old source.
 6. Reconcile Redis history, embeddings, sessions, metrics, and Top-K against an authoritative v2 snapshot. Investigate missing IDs, duplicate IDs, per-user ordering violations, count differences, and freshness regressions.
-7. Verify replay consumer lag is zero, checkpoints complete without failure, all manifest event IDs are accounted for exactly once after deduplication, per-user results are ordered, and sampled/all feasible Redis features match the authoritative snapshot before producers resume on the old topic.
+7. Verify replay consumer lag is zero, checkpoints complete without failure, exported/replayed counts and checksums reconcile to every partition's `[start,end)` manifest, all manifest event IDs are accounted for exactly once after deduplication, per-user results are ordered, and sampled/all feasible Redis features match the authoritative snapshot before producers resume on the old topic.
 
 Do not attempt to shrink `movie_events_v2`; Kafka partition counts cannot be reduced. If the restore rejects state compatibility, keep producers fenced and restore the exact prior artifact rather than discarding non-restored state.
 
