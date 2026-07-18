@@ -1,6 +1,7 @@
 package com.recsys.infrastructure.redis;
 
 import io.lettuce.core.api.sync.RedisCommands;
+import io.lettuce.core.ScriptOutputType;
 import org.junit.jupiter.api.Test;
 
 import java.util.List;
@@ -11,6 +12,7 @@ import java.util.function.Function;
 
 import static org.assertj.core.api.Assertions.assertThat;
 import static org.mockito.ArgumentMatchers.any;
+import static org.mockito.ArgumentMatchers.eq;
 import static org.mockito.Mockito.mock;
 import static org.mockito.Mockito.never;
 import static org.mockito.Mockito.times;
@@ -24,7 +26,62 @@ class RedisTopKStoreTest {
         RedisExecutor exec = mock(RedisExecutor.class);
         when(exec.execute(any())).thenAnswer(i -> i.getArgument(0, Function.class).apply(cmd));
         when(exec.executeRead(any())).thenAnswer(i -> i.getArgument(0, Function.class).apply(cmd));
+        when(exec.executePrimaryRead(any())).thenAnswer(i -> i.getArgument(0, Function.class).apply(cmd));
         return exec;
+    }
+
+    @Test
+    void canonicalMarkerMakesPopulatedCanonicalSnapshotAuthoritative() {
+        RedisCommands<String, String> cmd = mockCmd();
+        when(cmd.eval(any(String.class), eq(ScriptOutputType.MULTI), any(String[].class), any(String[].class)))
+                .thenReturn(List.of("canonical", "new-1", "new-2"));
+        when(cmd.zrevrange("topk:last_hour", 0, 99)).thenReturn(List.of("legacy-stale"));
+
+        RedisTopKStore store = new RedisTopKStore(execFor(cmd), "topk:", 5_000L);
+
+        assertThat(store.getTopKIds("last_hour", 2)).containsExactly("new-1", "new-2");
+        verify(cmd, never()).zrevrange("topk:last_hour", 0, 99);
+    }
+
+    @Test
+    void canonicalMarkerMakesEmptySnapshotAuthoritativeAndCacheable() {
+        RedisCommands<String, String> cmd = mockCmd();
+        when(cmd.eval(any(String.class), eq(ScriptOutputType.MULTI), any(String[].class), any(String[].class)))
+                .thenReturn(List.of("canonical"));
+        when(cmd.zrevrange("topk:last_hour", 0, 99)).thenReturn(List.of("legacy-stale"));
+        RedisExecutor exec = execFor(cmd);
+        RedisTopKStore store = new RedisTopKStore(exec, "topk:", 5_000L);
+
+        assertThat(store.getTopKIds("last_hour", 2)).isEmpty();
+        assertThat(store.getTopKIds("last_hour", 2)).isEmpty();
+
+        verify(exec, times(1)).executeRead(any());
+        verify(cmd, never()).zrevrange("topk:last_hour", 0, 99);
+    }
+
+    @Test
+    void absentCanonicalMarkerFallsBackToLegacy() {
+        RedisCommands<String, String> cmd = mockCmd();
+        when(cmd.eval(any(String.class), eq(ScriptOutputType.MULTI), any(String[].class), any(String[].class)))
+                .thenReturn(List.of("absent"));
+        when(cmd.zrevrange("topk:last_hour", 0, 99)).thenReturn(List.of("legacy"));
+
+        assertThat(new RedisTopKStore(execFor(cmd), "topk:", 0L).getTopKIds("last_hour", 1))
+                .containsExactly("legacy");
+    }
+
+    @Test
+    void primaryReadUsesPrimaryExecutorAndHonorsEmptyCanonicalSnapshot() {
+        RedisCommands<String, String> cmd = mockCmd();
+        when(cmd.eval(any(String.class), eq(ScriptOutputType.MULTI), any(String[].class), any(String[].class)))
+                .thenReturn(List.of("canonical"));
+        RedisExecutor exec = execFor(cmd);
+
+        assertThat(new RedisTopKStore(exec, "topk:", 5_000L)
+                .getTopKIdsPrimary("last_hour", 2)).isEmpty();
+
+        verify(exec).executePrimaryRead(any());
+        verify(exec, never()).executeRead(any());
     }
 
     @SuppressWarnings("unchecked")
