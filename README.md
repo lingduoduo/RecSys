@@ -873,6 +873,24 @@ SQL support is opt-in and intentionally small. The serving hot paths use Redis/O
 - `MySqlClient` — read-only JDBC helper backed by a lazily-created HikariCP pool.
 - `/v2/recommend` on ports `6010` and `7010` — existing backend APIs that expose cursor-page semantics to UI clients, even when the current candidate source is Redis-backed recall rather than direct SQL.
 
+### MySQL Index Inventory
+
+The production MySQL catalog currently has two query shapes and two justified secondary indexes:
+
+| Query | Predicates and order | Required index |
+|---|---|---|
+| Genre-filtered catalog page | `genre = ?`, seek on `(popularity_score, id)`, order `DESC` | `idx_movies_genre_popularity_id (genre, popularity_score DESC, id DESC)` |
+| Global catalog page | seek on `(popularity_score, id)`, order `DESC` | `idx_movies_popularity_id (popularity_score DESC, id DESC)` |
+
+Both indexes are required because the genre-leading B-tree cannot efficiently provide a global popularity order. The indexes deliberately omit projected payload columns such as `title`, `year`, and `updated_at`; widen them only when `EXPLAIN ANALYZE`, slow-query evidence, or representative benchmarks show clustered-row lookup is the bottleneck.
+
+Every new production MySQL query must ship with a query-to-index contract test and a Docker-tagged MySQL `EXPLAIN` assertion. Verify the current inventory with:
+
+```bash
+mvn test -Dtest=MySqlIndexContractTest,MovieCatalogRepositoryTest
+mvn test -DexcludedGroups=load -Dtest=MovieCatalogMySqlIntegrationTest
+```
+
 ### Frontend UI Use Cases
 
 The repository does not currently include a standalone frontend app. A UI can still be built directly against the service contracts below:
