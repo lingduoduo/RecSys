@@ -35,7 +35,7 @@ public class KafkaAsyncEventPublisher extends AsyncEventPublisher {
         Objects.requireNonNull(bootstrapServers, "bootstrapServers");
         this.topic = Objects.requireNonNull(topic, "topic");
         this.producer = new KafkaProducer<>(producerProps(bootstrapServers));
-        this.keyExtractor = json -> Optional.empty();
+        this.keyExtractor = null;
     }
 
     public KafkaAsyncEventPublisher(String bootstrapServers, String topic,
@@ -51,7 +51,7 @@ public class KafkaAsyncEventPublisher extends AsyncEventPublisher {
         super(queueCapacity, batchSize);
         this.producer = Objects.requireNonNull(producer, "producer");
         this.topic = Objects.requireNonNull(topic, "topic");
-        this.keyExtractor = json -> Optional.empty();
+        this.keyExtractor = null;
     }
 
     KafkaAsyncEventPublisher(Producer<String, String> producer, String topic, int queueCapacity,

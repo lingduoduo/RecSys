@@ -61,6 +61,45 @@ class KafkaAsyncEventPublisherTest {
     }
 
     @Test
+    void publish_withLegacyConstructorAcceptsAndDeliversNullKey() {
+        MockProducer<String, String> producer =
+                new MockProducer<>(true, new StringSerializer(), new StringSerializer());
+        KafkaAsyncEventPublisher publisher =
+                new KafkaAsyncEventPublisher(producer, "ab_exposures", 100, 10);
+
+        try {
+            assertThat(publisher.publish("{\"eventId\":\"e-1\"}")).isTrue();
+            org.awaitility.Awaitility.await().atMost(Duration.ofSeconds(2)).untilAsserted(() ->
+                    assertThat(producer.history()).singleElement()
+                            .satisfies(record -> assertThat(record.key()).isNull()));
+        } finally {
+            publisher.close();
+        }
+    }
+
+    @Test
+    void publish_kafkaEventUsesDynamicDispatchAndDeliversNullKey() {
+        MockProducer<String, String> producer =
+                new MockProducer<>(true, new StringSerializer(), new StringSerializer());
+        KafkaAsyncEventPublisher publisher =
+                new KafkaAsyncEventPublisher(producer, "ab_exposures", 100, 10);
+        LogCollector.KafkaEvent event = new LogCollector.KafkaEvent(
+                "ab_exposures", "ignored-source-key", "{\"eventId\":\"e-2\"}", java.util.Map.of());
+
+        try {
+            assertThat(publisher.publish(event)).isTrue();
+            org.awaitility.Awaitility.await().atMost(Duration.ofSeconds(2)).untilAsserted(() ->
+                    assertThat(producer.history()).singleElement()
+                            .satisfies(record -> {
+                                assertThat(record.key()).isNull();
+                                assertThat(record.value()).isEqualTo(event.value());
+                            }));
+        } finally {
+            publisher.close();
+        }
+    }
+
+    @Test
     void close_closesProducer() {
         MockProducer<String, String> producer =
                 new MockProducer<>(true, new StringSerializer(), new StringSerializer());
