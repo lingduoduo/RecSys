@@ -37,3 +37,17 @@ mvn -Pstreaming-flink test -Dtest=KafkaFlinkPartitionIntegrationTest -DexcludedG
 ```
 
 The load-test class was not changed and no load-performance claims are made here.
+
+## Review follow-up
+
+The MiniCluster assertion now selects snapshots by their exact event-time window end rather than by arrival order. For the first closed window it computes an independent oracle from accepted input and asserts the exact ten movie IDs, exact scores, deterministic score/id ordering, truncation to K, absence of duplicates, and that the result spans multiple production movie buckets.
+
+The restore phase now leaves the `[6000,7000)` Top-K window open before triggering the savepoint. After restoring with ordinary parallelism changed from 4 to 6 (max parallelism remains 128), it adds the remaining window records and advances the watermark. The exact oracle for the resulting `7000` snapshot includes both pre-savepoint and post-restore contributions, directly proving window-state continuity through rescaling.
+
+Dedup restore coverage now also replays the saved event ID twice: the same-user copy is suppressed, while the identical event ID under another user is accepted. The sink assertion checks that the sole accepted copy after restore belongs to the other user.
+
+Fresh follow-up verification:
+
+- `mvn -Pstreaming-flink -DskipTests test-compile` — build success, 198 test sources compiled.
+- Focused non-Docker command — 26 tests, 0 failures, 0 errors, 3 unrelated Docker-dependent Redis skips.
+- Docker contract command — 2 tests discovered and 2 honestly skipped because the Docker socket remains unavailable; build success.

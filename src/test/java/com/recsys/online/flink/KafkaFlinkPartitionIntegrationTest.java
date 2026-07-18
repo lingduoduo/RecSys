@@ -88,8 +88,17 @@ class KafkaFlinkPartitionIntegrationTest {
         // Advance event time so the production partial/final Top-K stages emit a real window.
         send(topic, java.util.stream.IntStream.rangeClosed(1, 96)
                 .mapToObj(user -> event("advance-" + user, user, user % 31 + 1, 4_000L)).toList());
-        await(Duration.ofSeconds(45), () -> !TestSink.snapshots(firstRun).isEmpty());
-        assertThat(TestSink.snapshots(firstRun).get(0).movies).isNotEmpty();
+        await(Duration.ofSeconds(45), () -> snapshot(firstRun, 2_000L) != null);
+        assertExactTopK(snapshot(firstRun, 2_000L), initial, 10);
+
+        // Accumulate a second window without advancing its watermark. Its state must cross
+        // the savepoint and be merged with records consumed after rescaling.
+        List<MovieEvent> beforeSavepoint = scoredEvents("before", 500, 1, 8, 6_000L, false);
+        MovieEvent sharedBeforeSavepoint = event("shared-event-id", 501, 15, 6_000L);
+        beforeSavepoint.add(sharedBeforeSavepoint);
+        int acceptedBeforeSavepoint = TestSink.events(firstRun).size() + beforeSavepoint.size();
+        send(topic, beforeSavepoint);
+        await(Duration.ofSeconds(45), () -> TestSink.events(firstRun).size() == acceptedBeforeSavepoint);
 
         Path savepointDirectory = temporaryDirectory.resolve("savepoints");
         String savepoint = first.triggerSavepoint(savepointDirectory.toUri().toString())
@@ -99,13 +108,32 @@ class KafkaFlinkPartitionIntegrationTest {
 
         String secondRun = UUID.randomUUID().toString();
         JobClient restored = start(topic, secondRun, 6, savepoint);
-        // event-41-7 was already accepted before the savepoint; only the new event may pass.
-        send(topic, List.of(event("event-41-7", 41, 99, 5_000L),
-                event("after-restore", 41, 100, 5_001L)));
-        await(Duration.ofSeconds(45), () -> TestSink.events(secondRun).stream()
-                .anyMatch(e -> "after-restore".equals(e.eventId)));
+        List<MovieEvent> afterRestore = scoredEvents("after", 700, 1, 15, 6_001L, true);
+        MovieEvent sameUserDuplicate = event("shared-event-id", 501, 99, 6_002L);
+        MovieEvent otherUserSameId = event("shared-event-id", 502, 14, 6_003L);
+        MovieEvent continuityMarker = event("after-restore", 501, 100, 6_004L);
+        List<MovieEvent> restoreInput = new ArrayList<>(afterRestore);
+        restoreInput.add(sameUserDuplicate);
+        restoreInput.add(otherUserSameId);
+        restoreInput.add(continuityMarker);
+        send(topic, restoreInput);
+        int expectedAfterRestore = afterRestore.size() + 2; // duplicate is the sole rejected record
+        await(Duration.ofSeconds(45), () -> TestSink.events(secondRun).size() == expectedAfterRestore);
         assertThat(TestSink.events(secondRun)).extracting(e -> e.eventId)
-                .contains("after-restore").doesNotContain("event-41-7");
+                .contains("after-restore", "shared-event-id");
+        assertThat(TestSink.events(secondRun).stream()
+                .filter(e -> "shared-event-id".equals(e.eventId))).singleElement()
+                .extracting(e -> e.userId).isEqualTo(502);
+
+        send(topic, java.util.stream.IntStream.rangeClosed(1, 96)
+                .mapToObj(user -> event("restore-advance-" + user, user,
+                        user % 31 + 1, 8_000L)).toList());
+        await(Duration.ofSeconds(45), () -> snapshot(secondRun, 7_000L) != null);
+        List<MovieEvent> combinedWindow = new ArrayList<>(beforeSavepoint);
+        combinedWindow.addAll(afterRestore);
+        combinedWindow.add(otherUserSameId);
+        combinedWindow.add(continuityMarker);
+        assertExactTopK(snapshot(secondRun, 7_000L), combinedWindow, 10);
         assertThat(restored.getJobID()).isNotEqualTo(first.getJobID());
     }
 
@@ -179,6 +207,45 @@ class KafkaFlinkPartitionIntegrationTest {
         long deadline = System.nanoTime() + timeout.toNanos();
         while (!condition.getAsBoolean() && System.nanoTime() < deadline) Thread.sleep(100L);
         assertThat(condition.getAsBoolean()).isTrue();
+    }
+
+    private static OnlineFeatureStreamingJob.TopKSnapshot snapshot(String run, long windowEnd) {
+        return TestSink.snapshots(run).stream()
+                .filter(value -> value.updatedAtMillis == windowEnd)
+                .findFirst().orElse(null);
+    }
+
+    private static void assertExactTopK(OnlineFeatureStreamingJob.TopKSnapshot snapshot,
+                                        List<MovieEvent> accepted, int topK) {
+        Map<Integer, Long> scores = accepted.stream().collect(Collectors.groupingBy(
+                event -> event.movieId, Collectors.summingLong(MovieEvent::engagementWeight)));
+        List<Map.Entry<Integer, Long>> expected = scores.entrySet().stream()
+                .sorted(Map.Entry.<Integer, Long>comparingByValue(java.util.Comparator.reverseOrder())
+                        .thenComparing(Map.Entry::getKey))
+                .limit(topK).toList();
+        assertThat(snapshot.movies).hasSize(topK);
+        assertThat(snapshot.movies).extracting(movie -> movie.movieId)
+                .containsExactlyElementsOf(expected.stream().map(Map.Entry::getKey).toList())
+                .doesNotHaveDuplicates();
+        assertThat(snapshot.movies).extracting(movie -> movie.score)
+                .containsExactlyElementsOf(expected.stream().map(Map.Entry::getValue).toList());
+        assertThat(snapshot.movies.stream().map(movie ->
+                OnlineFeatureStreamingJob.movieBucket(movie.movieId, PARTITIONS)).distinct().count())
+                .as("the exact result must merge candidates from multiple partial Top-K buckets")
+                .isGreaterThan(1L);
+    }
+
+    private static List<MovieEvent> scoredEvents(String prefix, int firstUser, int firstMovie,
+                                                  int lastMovie, long timestamp, boolean descending) {
+        List<MovieEvent> events = new ArrayList<>();
+        int user = firstUser;
+        for (int movie = firstMovie; movie <= lastMovie; movie++) {
+            int repetitions = descending ? lastMovie - movie + 1 : movie;
+            for (int repeat = 0; repeat < repetitions; repeat++) {
+                events.add(event(prefix + '-' + movie + '-' + repeat, user++, movie, timestamp));
+            }
+        }
+        return events;
     }
 
     private static MovieEvent event(String id, int user, int movie, long timestamp) {
