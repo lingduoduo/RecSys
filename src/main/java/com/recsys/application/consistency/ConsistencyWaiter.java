@@ -2,16 +2,16 @@ package com.recsys.application.consistency;
 
 import java.time.Clock;
 import java.time.Duration;
-import java.time.Instant;
 import java.util.Objects;
 import java.util.UUID;
+import java.util.function.LongSupplier;
 
 /** Bounded poller for an event's materialized feature lineage. */
 public final class ConsistencyWaiter {
     public enum WaitResult { APPLIED, PENDING }
 
     @FunctionalInterface public interface LineageReader {
-        boolean contains(UUID eventId, int userId);
+        boolean contains(UUID eventId, int userId, Duration remaining);
     }
     @FunctionalInterface public interface Sleeper {
         void sleep(Duration duration) throws InterruptedException;
@@ -19,32 +19,43 @@ public final class ConsistencyWaiter {
 
     private static final Duration MAX_TIMEOUT = Duration.ofSeconds(2);
     private final LineageReader lineage;
-    private final Clock clock;
     private final Sleeper sleeper;
     private final Duration pollInterval;
+    private final LongSupplier monotonicNanos;
 
     public ConsistencyWaiter(LineageReader lineage) {
         this(lineage, Clock.systemUTC(), duration -> Thread.sleep(duration.toMillis()),
-                Duration.ofMillis(50));
+                Duration.ofMillis(50), System::nanoTime);
     }
 
     public ConsistencyWaiter(LineageReader lineage, Clock clock, Sleeper sleeper, Duration pollInterval) {
+        this(lineage, clock, sleeper, pollInterval, System::nanoTime);
+    }
+
+    ConsistencyWaiter(LineageReader lineage, Clock clock, Sleeper sleeper,
+                      Duration pollInterval, LongSupplier monotonicNanos) {
         this.lineage = Objects.requireNonNull(lineage, "lineage");
-        this.clock = Objects.requireNonNull(clock, "clock");
+        Objects.requireNonNull(clock, "clock");
         this.sleeper = Objects.requireNonNull(sleeper, "sleeper");
         this.pollInterval = requirePositive(pollInterval, "pollInterval");
+        this.monotonicNanos = Objects.requireNonNull(monotonicNanos, "monotonicNanos");
     }
 
     public WaitResult await(UUID eventId, int userId, Duration timeout) {
         Objects.requireNonNull(eventId, "eventId");
         Duration bounded = requirePositive(timeout, "timeout").compareTo(MAX_TIMEOUT) > 0
                 ? MAX_TIMEOUT : timeout;
-        Instant deadline = clock.instant().plus(bounded);
+        long started = monotonicNanos.getAsLong();
+        long budgetNanos = bounded.toNanos();
         while (true) {
-            if (lineage.contains(eventId, userId)) return WaitResult.APPLIED;
-            Instant now = clock.instant();
-            if (!now.isBefore(deadline)) return WaitResult.PENDING;
-            Duration remaining = Duration.between(now, deadline);
+            long elapsed = Math.max(0L, monotonicNanos.getAsLong() - started);
+            if (elapsed >= budgetNanos) return WaitResult.PENDING;
+            Duration remaining = Duration.ofNanos(budgetNanos - elapsed);
+            boolean applied = lineage.contains(eventId, userId, remaining);
+            elapsed = Math.max(0L, monotonicNanos.getAsLong() - started);
+            if (elapsed >= budgetNanos) return WaitResult.PENDING;
+            if (applied) return WaitResult.APPLIED;
+            remaining = Duration.ofNanos(budgetNanos - elapsed);
             try {
                 sleeper.sleep(remaining.compareTo(pollInterval) < 0 ? remaining : pollInterval);
             } catch (InterruptedException e) {

@@ -28,6 +28,7 @@ import static org.mockito.ArgumentMatchers.anyInt;
 import static org.mockito.ArgumentMatchers.eq;
 import static org.mockito.Mockito.mock;
 import static org.mockito.Mockito.verify;
+import static org.mockito.Mockito.never;
 import static org.mockito.Mockito.when;
 
 class OnlineRecommendationServiceTest {
@@ -162,5 +163,21 @@ class OnlineRecommendationServiceTest {
         service.recommend(new OnlineRecommendationRequest(USER.userId(), "last_hour", 30));
         // k=30 → unclamped would be 120; must be clamped to 100
         verify(recallService).recall(any(RecommendationQuery.class), eq(100));
+    }
+
+    @Test
+    void appliedReadUsesPrimaryNoCacheForRecallAndResponseDynamicFeatures() {
+        when(recentHistoryStore.getRecentMovieIdsPrimary(eq(USER.userId()), anyInt())).thenReturn(List.of());
+        when(topkStore.getTopKIdsPrimary(eq("last_hour"), anyInt())).thenReturn(List.of());
+        when(recallService.recallPrimary(any(RecommendationQuery.class), anyInt())).thenReturn(List.of());
+
+        service.recommendPrimary(new OnlineRecommendationRequest(USER.userId(), "last_hour", 3));
+
+        verify(recentHistoryStore).getRecentMovieIdsPrimary(eq(USER.userId()), anyInt());
+        verify(topkStore).getTopKIdsPrimary(eq("last_hour"), anyInt());
+        verify(recallService).recallPrimary(any(RecommendationQuery.class), anyInt());
+        verify(recentHistoryStore, never()).getRecentMovieIds(eq(USER.userId()), anyInt());
+        verify(topkStore, never()).getTopKIds(eq("last_hour"), anyInt());
+        verify(recallService, never()).recall(any(RecommendationQuery.class), anyInt());
     }
 }

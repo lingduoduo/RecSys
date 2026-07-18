@@ -35,10 +35,25 @@ public class ColdStartChannel implements RecallChannel {
 
     @Override
     public List<MovieCandidate> recall(RecommendationQuery query, int limit) {
-        Map<String, Double> blended = new LinkedHashMap<>();
+        return recall(query, limit, false);
+    }
 
-        RecallScoring.blendWindows(blended, trendingStore, WINDOW_WEIGHTS, limit);
-        RecallScoring.blendRankDecay(blended, globalPopularityStore.getTopIds(limit), POPULARITY_WEIGHT);
+    @Override
+    public List<MovieCandidate> recallPrimary(RecommendationQuery query, int limit) {
+        return recall(query, limit, true);
+    }
+
+    private List<MovieCandidate> recall(RecommendationQuery query, int limit, boolean primary) {
+        Map<String, Double> blended = new LinkedHashMap<>();
+        for (Map.Entry<String, Double> entry : WINDOW_WEIGHTS.entrySet()) {
+            List<String> ids = primary
+                    ? trendingStore.getTopKIdsPrimary(entry.getKey(), limit)
+                    : trendingStore.getTopKIds(entry.getKey(), limit);
+            RecallScoring.blendRankDecay(blended, ids, entry.getValue());
+        }
+        RecallScoring.blendRankDecay(blended, primary
+                ? globalPopularityStore.getTopIdsPrimary(limit)
+                : globalPopularityStore.getTopIds(limit), POPULARITY_WEIGHT);
 
         return blended.entrySet().stream()
                 .filter(e -> !query.excludedItemIds().contains(e.getKey()))

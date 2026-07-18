@@ -57,6 +57,13 @@ public final class Channels {
             for (Movie m : movies) ids.add(String.valueOf(m.id()));
             return RecallScoring.rankScored(ids, name());
         }
+
+        @Override
+        public List<MovieCandidate> recallPrimary(RecommendationQuery query, int limit) {
+            int userId = Integer.parseInt(query.userId());
+            List<Movie> movies = candidateGenerator.byEmbeddingPrimary(userId, limit);
+            return RecallScoring.rankScored(movies.stream().map(m -> String.valueOf(m.id())).toList(), name());
+        }
     }
 
     /** Movies drawn from the user's genre history, at a fixed mid score. */
@@ -109,9 +116,20 @@ public final class Channels {
 
         @Override
         public List<MovieCandidate> recall(RecommendationQuery query, int limit) {
+            return recall(query, limit, false);
+        }
+
+        @Override
+        public List<MovieCandidate> recallPrimary(RecommendationQuery query, int limit) {
+            return recall(query, limit, true);
+        }
+
+        private List<MovieCandidate> recall(RecommendationQuery query, int limit, boolean primary) {
             if (globalPopularityStore != null) {
                 try {
-                    List<String> ids = globalPopularityStore.getTopIds(limit);
+                    List<String> ids = primary
+                            ? globalPopularityStore.getTopIdsPrimary(limit)
+                            : globalPopularityStore.getTopIds(limit);
                     if (!ids.isEmpty()) {
                         return RecallScoring.rankScored(ids, name());
                     }
@@ -162,8 +180,22 @@ public final class Channels {
 
         @Override
         public List<MovieCandidate> recall(RecommendationQuery query, int limit) {
+            return recall(query, limit, false);
+        }
+
+        @Override
+        public List<MovieCandidate> recallPrimary(RecommendationQuery query, int limit) {
+            return recall(query, limit, true);
+        }
+
+        private List<MovieCandidate> recall(RecommendationQuery query, int limit, boolean primary) {
             Map<String, Double> blended = new HashMap<>();
-            RecallScoring.blendWindows(blended, trendingStore, windowWeights, limit);
+            for (Map.Entry<String, Double> entry : windowWeights.entrySet()) {
+                List<String> ids = primary
+                        ? trendingStore.getTopKIdsPrimary(entry.getKey(), limit)
+                        : trendingStore.getTopKIds(entry.getKey(), limit);
+                RecallScoring.blendRankDecay(blended, ids, entry.getValue());
+            }
             return blended.entrySet().stream()
                     .sorted(Map.Entry.<String, Double>comparingByValue().reversed())
                     .limit(limit)
@@ -347,11 +379,22 @@ public final class Channels {
 
         @Override
         public List<MovieCandidate> recall(RecommendationQuery query, int limit) {
+            return recall(query, limit, false);
+        }
+
+        @Override
+        public List<MovieCandidate> recallPrimary(RecommendationQuery query, int limit) {
+            return recall(query, limit, true);
+        }
+
+        private List<MovieCandidate> recall(RecommendationQuery query, int limit, boolean primary) {
             OptionalInt parsedUserId = RecallScoring.parseUserId(query);
             if (parsedUserId.isEmpty()) return List.of();
             int userId = parsedUserId.getAsInt();
 
-            List<Integer> recentIds = recentHistoryStore.getRecentMovieIds(userId, RECENT_SEED_LIMIT);
+            List<Integer> recentIds = primary
+                    ? recentHistoryStore.getRecentMovieIdsPrimary(userId, RECENT_SEED_LIMIT)
+                    : recentHistoryStore.getRecentMovieIds(userId, RECENT_SEED_LIMIT);
             if (recentIds.isEmpty()) return List.of();
 
             Map<Integer, Double> blended = new LinkedHashMap<>();

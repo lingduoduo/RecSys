@@ -69,10 +69,14 @@ public final class OnlineRecommendationService {
 
         RecommendationQuery query =
                 new RecommendationQuery(String.valueOf(request.userId()), recallLimit, excluded, null);
-        List<MovieCandidate> candidates = recallService.recall(query, recallLimit);
+        List<MovieCandidate> candidates = primaryFeatureRead
+                ? recallService.recallPrimary(query, recallLimit)
+                : recallService.recall(query, recallLimit);
 
         List<Movie> recentMovies = mapMovies(recentIds);
-        List<Movie> trendingMovies = mapMovies(parseIds(topkStore.getTopKIds(window, k)));
+        List<Movie> trendingMovies = mapMovies(parseIds(primaryFeatureRead
+                ? topkStore.getTopKIdsPrimary(window, k)
+                : topkStore.getTopKIds(window, k)));
 
         List<Movie> recommendations = rerank(candidates, excluded, k);
         if (recommendations.isEmpty()) {

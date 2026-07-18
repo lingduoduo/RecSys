@@ -75,6 +75,9 @@ public class LocalEmbeddingCache implements EmbeddingStore {
         this(backingStore, readIntEnv("LOCAL_EMBEDDING_CACHE_MAX_ENTRIES", DEFAULT_MAX_ENTRIES));
     }
 
+    @Override
+    public float[] getEmbeddingPrimary(int id) { return backingStore.getEmbeddingPrimary(id); }
+
     LocalEmbeddingCache(EmbeddingStore backingStore, int maxEntries) {
         this(backingStore, maxEntries, new BloomFilterGuard(Math.max(1, maxEntries) * 2, 0.01));
     }

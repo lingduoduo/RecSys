@@ -6,6 +6,7 @@ import io.lettuce.core.api.sync.RedisCommands;
 import java.util.function.Consumer;
 import java.util.function.Function;
 import java.util.function.Supplier;
+import java.time.Duration;
 
 /**
  * A {@link RedisExecutor} decorator that builds the underlying executor from a
@@ -33,6 +34,14 @@ public final class LazyRedisExecutor implements RedisExecutor {
     @Override
     public <T> T executeRead(Function<RedisCommands<String, String>, T> fn) {
         return delegate().executeRead(fn);
+    }
+
+    @Override public <T> T executePrimaryRead(Function<RedisCommands<String, String>, T> fn) {
+        return delegate().executePrimaryRead(fn);
+    }
+
+    @Override public <T> T executePrimaryRead(Function<RedisCommands<String, String>, T> fn, Duration timeout) {
+        return delegate().executePrimaryRead(fn, timeout);
     }
 
     @Override

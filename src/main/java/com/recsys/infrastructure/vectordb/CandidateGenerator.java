@@ -91,9 +91,17 @@ public class CandidateGenerator {
     // Backends are configured with RECSYS_VECTOR_BACKEND or -Drecsys.vector.backend:
     // lsh (default) or exact. FAISS belongs behind this interface for Linux/JNI deployments.
     public List<Movie> byEmbedding(int userId, int k) {
+        return byEmbedding(userId, k, false);
+    }
+
+    public List<Movie> byEmbeddingPrimary(int userId, int k) {
+        return byEmbedding(userId, k, true);
+    }
+
+    private List<Movie> byEmbedding(int userId, int k, boolean primary) {
         // Check the three-tier cache first (heap → Redis); fall back to classpath map.
         float[] userVec = userEmbeddingStore != null
-                ? userEmbeddingStore.getEmbedding(userId)
+                ? (primary ? userEmbeddingStore.getEmbeddingPrimary(userId) : userEmbeddingStore.getEmbedding(userId))
                 : null;
         if (userVec == null) return List.of();
 

@@ -94,6 +94,14 @@ public class MultiChannelRecallService {
     }
 
     public List<MovieCandidate> recall(RecommendationQuery query, int limit) {
+        return recall(query, limit, false);
+    }
+
+    public List<MovieCandidate> recallPrimary(RecommendationQuery query, int limit) {
+        return recall(query, limit, true);
+    }
+
+    private List<MovieCandidate> recall(RecommendationQuery query, int limit, boolean primary) {
         Objects.requireNonNull(query, "query");
         if (limit <= 0) return List.of();
 
@@ -101,7 +109,8 @@ public class MultiChannelRecallService {
         if (userEmbeddingStore != null) {
             try {
                 int userId = Integer.parseInt(query.userId());
-                boolean isCold = userEmbeddingStore.getEmbedding(userId) == null;
+                boolean isCold = (primary ? userEmbeddingStore.getEmbeddingPrimary(userId)
+                        : userEmbeddingStore.getEmbedding(userId)) == null;
                 quota = isCold ? quotaPolicy.cold(limit) : quotaPolicy.warm(limit);
             } catch (NumberFormatException e) {
                 quota = quotaPolicy.cold(limit);
@@ -121,7 +130,9 @@ public class MultiChannelRecallService {
                         .supplyAsync(() -> {
                             faultInjector.maybeInject("channel:" + name);
                             // Over-fetch to limit so gap fill can pick unselected candidates
-                            return new ChannelResult(name, channel.recall(query, limit), null);
+                            return new ChannelResult(name, primary
+                                    ? channel.recallPrimary(query, limit)
+                                    : channel.recall(query, limit), null);
                         }, executor)
                         .orTimeout(channelTimeoutMs, TimeUnit.MILLISECONDS)
                         .exceptionally(ex -> new ChannelResult(name, List.of(), ex));

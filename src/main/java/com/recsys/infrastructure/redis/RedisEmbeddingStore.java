@@ -80,6 +80,12 @@ public class RedisEmbeddingStore implements EmbeddingStore {
         return VectorMath.parseVector(v);
     }
 
+    @Override
+    public float[] getEmbeddingPrimary(int id) {
+        String v = exec.executePrimaryRead(c -> c.get(keyPrefix + ":" + id));
+        return v == null || v.isBlank() ? null : VectorMath.parseVector(v);
+    }
+
     public void setEmbeddingNoTtl(int movieId, float[] vector) {
         exec.execute(c -> c.set(keyPrefix + ":" + movieId, toVectorString(vector)));
     }

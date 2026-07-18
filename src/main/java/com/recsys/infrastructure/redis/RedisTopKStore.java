@@ -75,6 +75,12 @@ public final class RedisTopKStore implements TrendingStore {
         }
     }
 
+    @Override
+    public List<String> getTopKIdsPrimary(String window, int k) {
+        if (k <= 0) return List.of();
+        return List.copyOf(exec.executePrimaryRead(c -> c.zrevrange(keyPrefix + window, 0, k - 1)));
+    }
+
     private CachedIds fetchWindow(String window, int k, long now) {
         // Always fetch a full list so different k values share the same cache entry.
         int fetchSize = Math.max(k, MAX_FULL_CACHE_SIZE);

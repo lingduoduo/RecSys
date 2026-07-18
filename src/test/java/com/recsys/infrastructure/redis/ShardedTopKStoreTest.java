@@ -40,6 +40,7 @@ class ShardedTopKStoreTest {
         exec = mock(RedisExecutor.class);
         when(exec.execute(any())).thenAnswer(i -> i.getArgument(0, Function.class).apply(cmd));
         when(exec.executeRead(any())).thenAnswer(i -> i.getArgument(0, Function.class).apply(cmd));
+        when(exec.executePrimaryRead(any())).thenAnswer(i -> i.getArgument(0, Function.class).apply(cmd));
 
         // Pipeline wiring: executePipelined runs the consumer against a mocked connection.
         StatefulRedisConnection<String, String> conn = mock(StatefulRedisConnection.class);
@@ -49,6 +50,17 @@ class ShardedTopKStoreTest {
         when(async.zadd(any(String.class), any(ScoredValue[].class)))
                 .thenReturn(future);
         doAnswerPipeline(conn);
+    }
+
+    @Test
+    void primaryReadBypassesHotCacheAndReplicaReadPath() {
+        when(cmd.zrevrange("topk:last_hour", 0, 1)).thenReturn(List.of("fresh", "2"));
+        ShardedTopKStore store = new ShardedTopKStore(exec, exec, "topk:", 2, 5_000L, new HotKeyDetector());
+
+        assertThat(store.getTopKIdsPrimary("last_hour", 2)).containsExactly("fresh", "2");
+
+        verify(exec).executePrimaryRead(any());
+        verify(exec, never()).executeRead(any());
     }
 
     @SuppressWarnings("unchecked")

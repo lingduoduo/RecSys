@@ -28,7 +28,21 @@ class RedisEmbeddingStoreTest {
                 i.getArgument(0, Function.class).apply(cmd));
         when(exec.executeRead(any())).thenAnswer(i ->
                 i.getArgument(0, Function.class).apply(cmd));
+        when(exec.executePrimaryRead(any())).thenAnswer(i ->
+                i.getArgument(0, Function.class).apply(cmd));
         return exec;
+    }
+
+    @Test
+    void primaryEmbeddingUsesPrimaryExecutorNotOrdinaryRead() {
+        RedisCommands<String, String> cmd = mock(RedisCommands.class);
+        when(cmd.get("u2vEmb:7")).thenReturn("1.0 2.0");
+        RedisExecutor exec = execFor(cmd);
+
+        assertThat(new RedisEmbeddingStore(exec, "u2vEmb").getEmbeddingPrimary(7))
+                .containsExactly(1f, 2f);
+        verify(exec).executePrimaryRead(any());
+        verify(exec, org.mockito.Mockito.never()).executeRead(any());
     }
 
     private static List<KeyValue<String, String>> kvs(String... values) {

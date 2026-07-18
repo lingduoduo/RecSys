@@ -10,6 +10,7 @@ import org.apache.commons.pool2.impl.GenericObjectPoolConfig;
 
 import java.util.function.Consumer;
 import java.util.function.Function;
+import java.time.Duration;
 
 /**
  * {@link RedisExecutor} backed by Lettuce: one shared thread-safe connection for
@@ -65,6 +66,23 @@ public final class LettuceRedisExecutor implements RedisExecutor {
     @Override
     public <T> T executeRead(Function<RedisCommands<String, String>, T> fn) {
         return execute(fn); // single-endpoint executor reads from the same connection
+    }
+
+    @Override
+    public <T> T executePrimaryRead(Function<RedisCommands<String, String>, T> fn, Duration timeout) {
+        StatefulRedisConnection<String, String> conn = null;
+        try {
+            conn = pool.borrowObject(Math.max(1L, timeout.toMillis()));
+            RedisCommands<String, String> commands = conn.sync();
+            commands.setTimeout(timeout);
+            return fn.apply(commands);
+        } catch (RuntimeException e) {
+            throw e;
+        } catch (Exception e) {
+            throw new IllegalStateException("Timed primary Redis read failed", e);
+        } finally {
+            if (conn != null) pool.returnObject(conn);
+        }
     }
 
     @Override

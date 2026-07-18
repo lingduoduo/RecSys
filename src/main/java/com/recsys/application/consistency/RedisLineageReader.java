@@ -3,6 +3,7 @@ package com.recsys.application.consistency;
 import com.recsys.infrastructure.redis.RedisExecutor;
 import java.util.Objects;
 import java.util.UUID;
+import java.time.Duration;
 
 /** Primary-only lookup for the feature lineage written atomically by the Flink sink. */
 public final class RedisLineageReader implements ConsistencyWaiter.LineageReader {
@@ -13,9 +14,9 @@ public final class RedisLineageReader implements ConsistencyWaiter.LineageReader
     }
 
     @Override
-    public boolean contains(UUID eventId, int userId) {
+    public boolean contains(UUID eventId, int userId, Duration remaining) {
         String lineageKey = "lineage:event:" + eventId;
         String featureKey = "user:" + userId + ":recent_movies";
-        return redis.executePrimaryRead(c -> c.sismember(lineageKey, featureKey));
+        return redis.executePrimaryRead(c -> c.sismember(lineageKey, featureKey), remaining);
     }
 }

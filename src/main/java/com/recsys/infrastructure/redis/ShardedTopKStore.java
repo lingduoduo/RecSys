@@ -155,6 +155,14 @@ public final class ShardedTopKStore implements TrendingStore {
         }
     }
 
+    @Override
+    public List<String> getTopKIdsPrimary(String window, int k) {
+        if (k <= 0) return List.of();
+        List<String> canonical = writeExec.executePrimaryRead(
+                c -> c.zrevrange(legacyKey(window), 0, k - 1));
+        return canonical == null ? List.of() : List.copyOf(canonical);
+    }
+
     private CachedIds fetchFromRandomShard(String window, int k, long now) {
         // Random shard selection: spreads Redis read load across N keys/hash-slots.
         int shard = ThreadLocalRandom.current().nextInt(shardCount);

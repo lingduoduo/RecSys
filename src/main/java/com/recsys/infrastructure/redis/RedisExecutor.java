@@ -6,6 +6,7 @@ import io.lettuce.core.api.sync.RedisCommands;
 import java.io.Closeable;
 import java.util.function.Consumer;
 import java.util.function.Function;
+import java.time.Duration;
 
 /**
  * Abstraction over a Redis client that preserves the "borrow a connection, run a
@@ -29,6 +30,10 @@ public interface RedisExecutor extends Closeable {
     /** Runs a read against the writable primary, bypassing replica routing. */
     default <T> T executePrimaryRead(Function<RedisCommands<String, String>, T> fn) {
         return executeRead(fn);
+    }
+
+    default <T> T executePrimaryRead(Function<RedisCommands<String, String>, T> fn, Duration timeout) {
+        return executePrimaryRead(fn);
     }
 
     /**

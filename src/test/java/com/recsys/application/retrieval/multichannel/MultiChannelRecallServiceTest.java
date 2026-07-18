@@ -23,8 +23,30 @@ import static org.assertj.core.api.Assertions.assertThat;
 import static org.junit.jupiter.api.Assertions.assertEquals;
 import static org.mockito.Mockito.mock;
 import static org.mockito.Mockito.when;
+import static org.mockito.Mockito.verify;
+import static org.mockito.Mockito.never;
 
 class MultiChannelRecallServiceTest {
+
+    @Test
+    void primaryRecallBypassesCachedUserEmbeddingAndUsesPrimaryChannelMethods() {
+        EmbeddingStore userEmb = mock(EmbeddingStore.class);
+        when(userEmb.getEmbeddingPrimary(1)).thenReturn(new float[]{1f});
+        RecallChannel channel = mock(RecallChannel.class);
+        when(channel.name()).thenReturn("embedding");
+        when(channel.recallPrimary(org.mockito.ArgumentMatchers.any(), org.mockito.ArgumentMatchers.anyInt()))
+                .thenReturn(List.of());
+        MultiChannelRecallService service = new MultiChannelRecallService(
+                List.of(channel), new ChannelHealthMonitor(), ForkJoinPool.commonPool(),
+                200L, FaultInjector.NOOP, userEmb);
+
+        service.recallPrimary(new RecommendationQuery("1", 10, Set.of(), null), 10);
+
+        verify(userEmb).getEmbeddingPrimary(1);
+        verify(userEmb, never()).getEmbedding(1);
+        verify(channel).recallPrimary(org.mockito.ArgumentMatchers.any(), org.mockito.ArgumentMatchers.eq(10));
+        verify(channel, never()).recall(org.mockito.ArgumentMatchers.any(), org.mockito.ArgumentMatchers.anyInt());
+    }
 
     @Test
     void recallMergesDuplicatesByBestScoreAndSkipsExcludedItems() {
