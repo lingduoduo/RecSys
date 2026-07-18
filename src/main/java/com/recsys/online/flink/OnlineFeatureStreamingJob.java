@@ -26,6 +26,7 @@ import org.apache.flink.streaming.api.functions.KeyedProcessFunction;
 import org.apache.flink.streaming.api.functions.sink.RichSinkFunction;
 import org.apache.flink.streaming.api.functions.windowing.ProcessWindowFunction;
 import org.apache.flink.streaming.api.functions.windowing.WindowFunction;
+import org.apache.flink.streaming.api.windowing.assigners.TumblingEventTimeWindows;
 import org.apache.flink.streaming.api.windowing.assigners.TumblingProcessingTimeWindows;
 import org.apache.flink.streaming.api.windowing.time.Time;
 import org.apache.flink.streaming.api.windowing.windows.TimeWindow;
@@ -68,6 +69,8 @@ public final class OnlineFeatureStreamingJob {
         int topK = params.getInt("top-k", 10);
         int topKBucketCount = params.getInt("top-k-bucket-count", jobConfiguration.operatorParallelism());
         int finalTopKParallelism = params.getInt("final-top-k-parallelism", 1);
+        long allowedLatenessMs = validateAllowedLatenessMs(
+                params.getLong("top-k-allowed-lateness-ms", 5_000L));
         if (topKBucketCount <= 0) throw new IllegalArgumentException("top-k-bucket-count must be positive");
         if (finalTopKParallelism <= 0) throw new IllegalArgumentException("final-top-k-parallelism must be positive");
         long windowSeconds = params.getLong("window-seconds", 10L);
@@ -159,7 +162,7 @@ public final class OnlineFeatureStreamingJob {
         DataStream<PartialTopK> partials = events
                 .filter(event -> event.engagementWeight() > 0L)
                 .keyBy(event -> movieBucket(event.movieId, topKBucketCount))
-                .window(TumblingProcessingTimeWindows.of(Time.seconds(windowSeconds)))
+                .window(TumblingEventTimeWindows.of(Time.seconds(windowSeconds)))
                 .apply(new PartialTopKWindowFunction(topK))
                 .name("topk-partial").uid("topk-partial-v1")
                 .setParallelism(jobConfiguration.operatorParallelism())
@@ -168,7 +171,7 @@ public final class OnlineFeatureStreamingJob {
         DataStream<TopKSnapshot> topKSnapshots = partials
                 .keyBy(PartialTopK::windowEnd)
                 .process(new FinalTopKWindowFunction(topK, windowLabel, metricTtlSeconds,
-                        topKBucketCount))
+                        topKBucketCount, allowedLatenessMs))
                 .name("topk-final").uid("topk-final-v1")
                 .setParallelism(Math.min(finalTopKParallelism, jobConfiguration.operatorParallelism()));
 
@@ -306,6 +309,13 @@ public final class OnlineFeatureStreamingJob {
             throw new IllegalArgumentException("bucketCount must be positive");
         }
         return Math.floorMod(Integer.hashCode(movieId), bucketCount);
+    }
+
+    static long validateAllowedLatenessMs(long allowedLatenessMs) {
+        if (allowedLatenessMs < 0L) {
+            throw new IllegalArgumentException("top-k-allowed-lateness-ms must be non-negative");
+        }
+        return allowedLatenessMs;
     }
 
     static final class RecentMoviesFunction extends KeyedProcessFunction<Integer, MovieEvent, UserRecentMoviesUpdate> {
@@ -591,7 +601,7 @@ public final class OnlineFeatureStreamingJob {
                             .thenComparing(Map.Entry::getKey))
                     .limit(topK)
                     .map(entry -> new ScoredMovie(entry.getKey(), entry.getValue()))
-                    .toList();
+                    .collect(Collectors.toCollection(ArrayList::new));
 
             out.collect(new PartialTopK(window.getEnd(), bucket, ranked));
         }
@@ -603,24 +613,30 @@ public final class OnlineFeatureStreamingJob {
         private final String windowLabel;
         private final int ttlSeconds;
         private final int bucketCount;
+        private final long allowedLatenessMs;
         private transient ListState<PartialTopK> partials;
-        private transient ValueState<Long> registeredTimer;
+        private transient ValueState<Long> emitTimer;
+        private transient ValueState<Long> cleanupTimer;
         private transient ValueState<Boolean> emitted;
         private transient LongCounter latePartials;
 
-        FinalTopKWindowFunction(int topK, String windowLabel, int ttlSeconds, int bucketCount) {
+        FinalTopKWindowFunction(int topK, String windowLabel, int ttlSeconds, int bucketCount,
+                                long allowedLatenessMs) {
             this.topK = topK;
             this.windowLabel = windowLabel;
             this.ttlSeconds = ttlSeconds;
             this.bucketCount = bucketCount;
+            this.allowedLatenessMs = validateAllowedLatenessMs(allowedLatenessMs);
         }
 
         @Override
         public void open(Configuration parameters) {
             partials = getRuntimeContext().getListState(
                     new ListStateDescriptor<>("topk-partials", PartialTopK.class));
-            registeredTimer = getRuntimeContext().getState(
-                    new ValueStateDescriptor<>("topk-final-timer", Types.LONG));
+            emitTimer = getRuntimeContext().getState(
+                    new ValueStateDescriptor<>("topk-final-emit-timer", Types.LONG));
+            cleanupTimer = getRuntimeContext().getState(
+                    new ValueStateDescriptor<>("topk-final-cleanup-timer", Types.LONG));
             emitted = getRuntimeContext().getState(
                     new ValueStateDescriptor<>("topk-final-emitted", Types.BOOLEAN));
             latePartials = getRuntimeContext().getLongCounter("topk-late-partials");
@@ -630,17 +646,21 @@ public final class OnlineFeatureStreamingJob {
         public void processElement(PartialTopK partial,
                                    KeyedProcessFunction<Long, PartialTopK, TopKSnapshot>.Context context,
                                    Collector<TopKSnapshot> out) throws Exception {
+            long cleanupAt = cleanupTimestamp(partial.windowEnd, allowedLatenessMs);
+            if (context.timerService().currentWatermark() >= cleanupAt) {
+                rejectLatePartial(partial);
+                return;
+            }
             if (Boolean.TRUE.equals(emitted.value())) {
-                latePartials.add(1L);
-                LOG.warn("Rejecting late Top-K partial for completed window {} bucket {} of {}",
-                        partial.windowEnd, partial.bucket, bucketCount);
+                rejectLatePartial(partial);
                 return;
             }
             partials.add(partial);
-            if (registeredTimer.value() == null) {
-                long timer = partial.windowEnd + 1L;
-                context.timerService().registerProcessingTimeTimer(timer);
-                registeredTimer.update(timer);
+            if (emitTimer.value() == null) {
+                context.timerService().registerEventTimeTimer(partial.windowEnd);
+                emitTimer.update(partial.windowEnd);
+                context.timerService().registerEventTimeTimer(cleanupAt);
+                cleanupTimer.update(cleanupAt);
             }
         }
 
@@ -648,14 +668,38 @@ public final class OnlineFeatureStreamingJob {
         public void onTimer(long timestamp,
                             KeyedProcessFunction<Long, PartialTopK, TopKSnapshot>.OnTimerContext context,
                             Collector<TopKSnapshot> out) throws Exception {
-            if (Boolean.TRUE.equals(emitted.value())) return;
+            Long cleanupAt = cleanupTimer.value();
+            if (cleanupAt != null && timestamp == cleanupAt) {
+                clearWindowState();
+                return;
+            }
+            Long emitAt = emitTimer.value();
+            if (emitAt == null || timestamp != emitAt || Boolean.TRUE.equals(emitted.value())) return;
             List<PartialTopK> available = new ArrayList<>();
             for (PartialTopK partial : partials.get()) available.add(partial);
             out.collect(new TopKSnapshot("topk:" + windowLabel, mergeTopK(available, topK),
                     context.getCurrentKey(), ttlSeconds));
             partials.clear();
-            registeredTimer.clear();
+            emitTimer.clear();
             emitted.update(true);
+        }
+
+        private void rejectLatePartial(PartialTopK partial) {
+            latePartials.add(1L);
+            LOG.warn("Rejecting late Top-K partial for completed window {} bucket {} of {}",
+                    partial.windowEnd, partial.bucket, bucketCount);
+        }
+
+        private void clearWindowState() throws Exception {
+            partials.clear();
+            emitTimer.clear();
+            cleanupTimer.clear();
+            emitted.clear();
+        }
+
+        static long cleanupTimestamp(long windowEnd, long allowedLatenessMs) {
+            long delay = Math.max(1L, allowedLatenessMs);
+            return windowEnd > Long.MAX_VALUE - delay ? Long.MAX_VALUE : windowEnd + delay;
         }
 
         static List<ScoredMovie> mergeTopK(Iterable<PartialTopK> partials, int topK) {
@@ -670,7 +714,7 @@ public final class OnlineFeatureStreamingJob {
                             .thenComparing(Map.Entry::getKey))
                     .limit(topK)
                     .map(entry -> new ScoredMovie(entry.getKey(), entry.getValue()))
-                    .toList();
+                    .collect(Collectors.toCollection(ArrayList::new));
         }
     }
 
@@ -917,9 +961,11 @@ public final class OnlineFeatureStreamingJob {
         }
     }
 
-    static final class ScoredMovie {
-        final int movieId;
-        final long score;
+    public static final class ScoredMovie {
+        public int movieId;
+        public long score;
+
+        public ScoredMovie() {}
 
         ScoredMovie(int movieId, long score) {
             this.movieId = movieId;
@@ -927,13 +973,13 @@ public final class OnlineFeatureStreamingJob {
         }
     }
 
-    static final class PartialTopK {
+    public static final class PartialTopK {
         public long windowEnd;
         public int bucket;
         public List<ScoredMovie> movies;
 
         public PartialTopK() {
-            this.movies = List.of();
+            this.movies = new ArrayList<>();
         }
 
         PartialTopK(long windowEnd, int bucket, List<ScoredMovie> movies) {
@@ -947,11 +993,15 @@ public final class OnlineFeatureStreamingJob {
         }
     }
 
-    static final class TopKSnapshot {
-        final String redisKey;
-        final List<ScoredMovie> movies;
-        final long updatedAtMillis;
-        final int ttlSeconds;
+    public static final class TopKSnapshot {
+        public String redisKey;
+        public List<ScoredMovie> movies;
+        public long updatedAtMillis;
+        public int ttlSeconds;
+
+        public TopKSnapshot() {
+            this.movies = new ArrayList<>();
+        }
 
         TopKSnapshot(String redisKey, List<ScoredMovie> movies, long updatedAtMillis, int ttlSeconds) {
             this.redisKey = redisKey;

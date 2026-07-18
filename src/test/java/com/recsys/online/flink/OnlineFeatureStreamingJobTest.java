@@ -11,11 +11,12 @@ import org.junit.jupiter.api.Test;
 import org.apache.flink.api.java.utils.ParameterTool;
 import org.apache.flink.api.common.functions.RuntimeContext;
 import org.apache.flink.api.common.state.MapState;
-import org.apache.flink.api.common.state.ListState;
-import org.apache.flink.api.common.state.ValueState;
-import org.apache.flink.api.common.accumulators.LongCounter;
 import org.apache.flink.streaming.api.windowing.windows.TimeWindow;
 import org.apache.flink.streaming.api.TimerService;
+import org.apache.flink.streaming.api.operators.KeyedProcessOperator;
+import org.apache.flink.streaming.util.KeyedOneInputStreamOperatorTestHarness;
+import org.apache.flink.streaming.api.watermark.Watermark;
+import org.apache.flink.streaming.runtime.streamrecord.StreamRecord;
 import org.apache.flink.util.Collector;
 import org.testcontainers.containers.GenericContainer;
 import org.testcontainers.DockerClientFactory;
@@ -32,8 +33,6 @@ import static org.assertj.core.api.Assertions.assertThatThrownBy;
 import static org.mockito.ArgumentMatchers.any;
 import static org.mockito.Mockito.mock;
 import static org.mockito.Mockito.when;
-import static org.mockito.Mockito.verify;
-import static org.mockito.Mockito.times;
 import static org.junit.jupiter.api.Assumptions.assumeTrue;
 
 class OnlineFeatureStreamingJobTest {
@@ -54,6 +53,16 @@ class OnlineFeatureStreamingJobTest {
         assertThatThrownBy(() -> OnlineFeatureStreamingJob.movieBucket(1, -1))
                 .isInstanceOf(IllegalArgumentException.class)
                 .hasMessageContaining("bucketCount");
+    }
+
+    @Test
+    void rejectsNegativeTopKAllowedLateness() {
+        assertThatThrownBy(() -> OnlineFeatureStreamingJob.validateAllowedLatenessMs(-1L))
+                .isInstanceOf(IllegalArgumentException.class)
+                .hasMessageContaining("allowed-lateness");
+        assertThat(OnlineFeatureStreamingJob.validateAllowedLatenessMs(0L)).isZero();
+        assertThat(OnlineFeatureStreamingJob.FinalTopKWindowFunction.cleanupTimestamp(100L, 0L))
+                .isEqualTo(101L);
     }
 
     @Test
@@ -84,64 +93,53 @@ class OnlineFeatureStreamingJobTest {
     }
 
     @Test
-    void finalTopKEmitsOnceAndCountsLatePartials() throws Exception {
-        List<OnlineFeatureStreamingJob.PartialTopK> partialBacking = new ArrayList<>();
-        @SuppressWarnings("unchecked")
-        ListState<OnlineFeatureStreamingJob.PartialTopK> partialState = mock(ListState.class);
-        when(partialState.get()).thenAnswer(ignored -> List.copyOf(partialBacking));
-        org.mockito.Mockito.doAnswer(invocation -> partialBacking.add(invocation.getArgument(0)))
-                .when(partialState).add(any());
-        org.mockito.Mockito.doAnswer(ignored -> { partialBacking.clear(); return null; })
-                .when(partialState).clear();
+    void eventTimeHarnessWaitsForWatermarkAndCleansBoundedState() throws Exception {
+        var function = new OnlineFeatureStreamingJob.FinalTopKWindowFunction(3, "hour", 60, 4, 10L);
+        var operator = new KeyedProcessOperator<Long, OnlineFeatureStreamingJob.PartialTopK,
+                OnlineFeatureStreamingJob.TopKSnapshot>(function);
+        try (var harness = new KeyedOneInputStreamOperatorTestHarness<>(
+                operator, OnlineFeatureStreamingJob.PartialTopK::windowEnd, org.apache.flink.api.common.typeinfo.Types.LONG)) {
+            harness.open();
+            harness.processElement(new StreamRecord<>(partial(100, 0, scored(1, 3))));
+            harness.processWatermark(new Watermark(99));
+            harness.processElement(new StreamRecord<>(partial(100, 3, scored(2, 7))));
 
-        @SuppressWarnings("unchecked")
-        ValueState<Long> timerState = mock(ValueState.class);
-        Long[] timerValue = {null};
-        when(timerState.value()).thenAnswer(ignored -> timerValue[0]);
-        org.mockito.Mockito.doAnswer(invocation -> { timerValue[0] = invocation.getArgument(0); return null; })
-                .when(timerState).update(any());
-        org.mockito.Mockito.doAnswer(ignored -> { timerValue[0] = null; return null; })
-                .when(timerState).clear();
+            assertThat(snapshots(harness.getOutput())).isEmpty();
+            assertThat(harness.numKeyedStateEntries()).isPositive();
 
-        @SuppressWarnings("unchecked")
-        ValueState<Boolean> emittedState = mock(ValueState.class);
-        Boolean[] emittedValue = {null};
-        when(emittedState.value()).thenAnswer(ignored -> emittedValue[0]);
-        org.mockito.Mockito.doAnswer(invocation -> { emittedValue[0] = invocation.getArgument(0); return null; })
-                .when(emittedState).update(any());
+            harness.processWatermark(new Watermark(100));
+            assertThat(snapshots(harness.getOutput())).singleElement()
+                    .satisfies(snapshot -> assertThat(snapshot.movies)
+                            .extracting(movie -> movie.movieId).containsExactly(2, 1));
 
-        LongCounter lateCounter = new LongCounter();
-        RuntimeContext runtimeContext = mock(RuntimeContext.class);
-        org.mockito.Mockito.doReturn(partialState).when(runtimeContext).getListState(any());
-        when(runtimeContext.getState(any())).thenAnswer(invocation ->
-                invocation.getArgument(0).toString().contains("timer") ? timerState : emittedState);
-        when(runtimeContext.getLongCounter("topk-late-partials")).thenReturn(lateCounter);
+            harness.processElement(new StreamRecord<>(partial(100, 2, scored(3, 9))));
+            harness.processWatermark(new Watermark(110));
+            assertThat(snapshots(harness.getOutput())).hasSize(1);
+            assertThat(harness.numKeyedStateEntries()).isZero();
 
-        var function = new OnlineFeatureStreamingJob.FinalTopKWindowFunction(2, "hour", 60, 4);
-        function.setRuntimeContext(runtimeContext);
-        function.open(new Configuration());
-        TimerService timerService = mock(TimerService.class);
-        @SuppressWarnings("unchecked")
-        OnlineFeatureStreamingJob.FinalTopKWindowFunction.Context context = mock(
-                OnlineFeatureStreamingJob.FinalTopKWindowFunction.Context.class);
-        when(context.timerService()).thenReturn(timerService);
-        List<OnlineFeatureStreamingJob.TopKSnapshot> output = new ArrayList<>();
+            harness.processElement(new StreamRecord<>(partial(100, 1, scored(4, 12))));
+            harness.processWatermark(new Watermark(200));
+            assertThat(snapshots(harness.getOutput())).hasSize(1);
+            assertThat(harness.numKeyedStateEntries()).isZero();
 
-        function.processElement(partial(100, 0, scored(1, 3)), context, collector(output));
-        function.processElement(partial(100, 1, scored(2, 4)), context, collector(output));
-        verify(timerService, times(1)).registerProcessingTimeTimer(101L);
+            var counterField = OnlineFeatureStreamingJob.FinalTopKWindowFunction.class
+                    .getDeclaredField("latePartials");
+            counterField.setAccessible(true);
+            assertThat(((org.apache.flink.api.common.accumulators.LongCounter)
+                    counterField.get(function)).getLocalValue()).isEqualTo(2L);
+        }
+    }
 
-        @SuppressWarnings("unchecked")
-        OnlineFeatureStreamingJob.FinalTopKWindowFunction.OnTimerContext timerContext = mock(
-                OnlineFeatureStreamingJob.FinalTopKWindowFunction.OnTimerContext.class);
-        when(timerContext.getCurrentKey()).thenReturn(100L);
-        function.onTimer(101L, timerContext, collector(output));
-        function.processElement(partial(100, 2, scored(3, 9)), context, collector(output));
-        function.onTimer(101L, timerContext, collector(output));
-
-        assertThat(output).hasSize(1);
-        assertThat(output.get(0).movies).extracting(movie -> movie.movieId).containsExactly(2, 1);
-        assertThat(lateCounter.getLocalValue()).isEqualTo(1L);
+    private static List<OnlineFeatureStreamingJob.TopKSnapshot> snapshots(
+            Iterable<Object> output) {
+        List<OnlineFeatureStreamingJob.TopKSnapshot> snapshots = new ArrayList<>();
+        for (Object value : output) {
+            if (value instanceof StreamRecord<?> record
+                    && record.getValue() instanceof OnlineFeatureStreamingJob.TopKSnapshot snapshot) {
+                snapshots.add(snapshot);
+            }
+        }
+        return snapshots;
     }
 
     @Test

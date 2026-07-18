@@ -60,7 +60,7 @@
         <configuration>
           <!-- ONNX Runtime appends to the bootstrap classpath, which disables CDS and triggers this warning.
                Disabling CDS upfront suppresses it cleanly. -->
-          <argLine>-Xshare:off -Dapi.version=1.44</argLine>
+          <argLine>-Xshare:off --add-opens=java.base/java.util=ALL-UNNAMED -Dapi.version=1.44</argLine>
           <!-- Load tests are opt-in: mvn test -Dgroups=load
                Normal test runs skip them to keep CI fast. -->
           <excludedGroups>${excludedGroups}</excludedGroups>
@@ -311,6 +311,39 @@
           <groupId>org.apache.flink</groupId>
           <artifactId>flink-streaming-java</artifactId>
           <version>1.18.1</version>
+        </dependency>
+        <dependency>
+          <groupId>org.apache.flink</groupId>
+          <artifactId>flink-streaming-java</artifactId>
+          <version>1.18.1</version>
+          <type>test-jar</type>
+          <scope>test</scope>
+        </dependency>
+        <dependency>
+          <groupId>org.apache.flink</groupId>
+          <artifactId>flink-runtime</artifactId>
+          <version>1.18.1</version>
+          <type>test-jar</type>
+          <scope>test</scope>
+        </dependency>
+        <dependency>
+          <groupId>org.apache.flink</groupId>
+          <artifactId>flink-core</artifactId>
+          <version>1.18.1</version>
+          <type>test-jar</type>
+          <scope>test</scope>
+        </dependency>
+        <dependency>
+          <groupId>org.apache.flink</groupId>
+          <artifactId>flink-test-utils-junit</artifactId>
+          <version>1.18.1</version>
+          <scope>test</scope>
+          <exclusions>
+            <exclusion>
+              <groupId>*</groupId>
+              <artifactId>*</artifactId>
+            </exclusion>
+          </exclusions>
         </dependency>
         <dependency>
           <groupId>org.apache.flink</groupId>
