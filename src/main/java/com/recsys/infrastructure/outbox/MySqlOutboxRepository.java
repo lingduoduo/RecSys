@@ -16,7 +16,6 @@ import java.sql.SQLException;
 import java.sql.Timestamp;
 import java.time.Duration;
 import java.time.Instant;
-import java.time.temporal.ChronoUnit;
 import java.util.ArrayList;
 import java.util.List;
 import java.util.Objects;
@@ -210,8 +209,7 @@ public final class MySqlOutboxRepository implements OutboxRepository {
         return left.eventId().equals(right.eventId()) && left.aggregateType().equals(right.aggregateType())
                 && left.aggregateId().equals(right.aggregateId()) && left.eventType().equals(right.eventType())
                 && left.destination() == right.destination() && Objects.equals(left.partitionKey(), right.partitionKey())
-                && semanticallyEqualJson(left.payload(), right.payload())
-                && normalizeTimestamp(left.createdAt()).equals(normalizeTimestamp(right.createdAt()));
+                && semanticallyEqualJson(left.payload(), right.payload());
     }
 
     private static boolean semanticallyEqualJson(String left, String right) {
@@ -220,10 +218,6 @@ public final class MySqlOutboxRepository implements OutboxRepository {
         } catch (JsonProcessingException invalidJson) {
             return left.equals(right);
         }
-    }
-
-    private static Instant normalizeTimestamp(Instant instant) {
-        return instant.truncatedTo(ChronoUnit.MICROS);
     }
 
     private static String truncate(String error) {

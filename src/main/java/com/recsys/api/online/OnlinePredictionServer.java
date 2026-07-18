@@ -3,6 +3,8 @@ package com.recsys.api.online;
 import com.recsys.application.online.OnlineServices;
 import com.recsys.application.online.OnlineBlendingPipeline;
 import com.recsys.application.online.OnlineRecommendationService;
+import com.recsys.application.consistency.ConsistencyTokenCodec;
+import com.recsys.application.outbox.DurableEventPublisher;
 import com.recsys.metrics.OnlineServingMetricsService;
 
 import com.linecorp.armeria.server.Route;
@@ -45,6 +47,9 @@ import com.recsys.ratelimit.RedisRateLimiter;
 import com.recsys.infrastructure.store.OnlineFeatureStore;
 import com.recsys.infrastructure.store.TrendingStore;
 import com.recsys.infrastructure.messaging.AsyncEventPublisherFactory;
+import com.recsys.infrastructure.outbox.MySqlOutboxRepository;
+import com.recsys.infrastructure.persistence.MySqlConnectionSettings;
+import com.recsys.infrastructure.persistence.TransactionalMySql;
 import com.recsys.application.retrieval.channels.Channels;
 import com.recsys.application.retrieval.coldstart.ColdStartChannel;
 import com.recsys.application.retrieval.coldstart.QuotaPolicy;
@@ -72,6 +77,15 @@ public final class OnlinePredictionServer {
             registrar.start();
         }
         AsyncEventPublisher asyncEventPublisher = createAsyncEventPublisher();
+        MySqlConnectionSettings mysqlSettings = MySqlConnectionSettings.fromEnv();
+        if (!mysqlSettings.enabled()) {
+            throw new IllegalStateException("MYSQL_ENABLED=true is required for durable online event acceptance");
+        }
+        TransactionalMySql transactionalMySql = new TransactionalMySql(mysqlSettings);
+        DurableEventPublisher durableEventPublisher = new DurableEventPublisher(
+                new MySqlOutboxRepository(transactionalMySql));
+        ConsistencyTokenCodec consistencyTokenCodec = new ConsistencyTokenCodec(
+                System.getenv("ONLINE_CONSISTENCY_TOKEN_SECRET"));
         LearnerFlushScheduler learnerFlushScheduler = null;
         ExecutorService recallExecutor = null;
 
@@ -146,7 +160,8 @@ public final class OnlinePredictionServer {
               .service("/online/features",
                       new OnlineAdmissionControl(
                               new OnlineServices.Features(recommendationService, metricsService,
-                                      loadShedder, redisRateLimiter, asyncEventPublisher, true),
+                                      loadShedder, redisRateLimiter, durableEventPublisher,
+                                      consistencyTokenCodec, true),
                               loadShedder, metricsService))
               .service("/online/recommendation",
                       new OnlineAdmissionControl(
@@ -175,6 +190,7 @@ public final class OnlinePredictionServer {
                 loadShedder.markShuttingDown();   // flip readiness to 503 + shed new load before draining
                 server.stop().join();
                 asyncEventPublisher.close();
+                transactionalMySql.close();
                 activeLearnerFlushScheduler.close();
                 GracefulExecutors.shutdownGracefully(activeRecallExecutor);
                 activeTopologyProvider.stop();
@@ -188,6 +204,7 @@ public final class OnlinePredictionServer {
             server.blockUntilShutdown();
         } catch (Exception e) {
             asyncEventPublisher.close();
+            transactionalMySql.close();
             if (learnerFlushScheduler != null) learnerFlushScheduler.close();
             if (recallExecutor != null) GracefulExecutors.shutdownGracefully(recallExecutor);
             jedisPool.close();

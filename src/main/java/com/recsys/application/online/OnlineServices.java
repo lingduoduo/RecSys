@@ -2,12 +2,16 @@ package com.recsys.application.online;
 
 import com.recsys.api.serving.BaseApiService;
 import com.recsys.application.recommendation.RecommendationPipeline;
+import com.recsys.application.consistency.ConsistencyToken;
+import com.recsys.application.consistency.ConsistencyTokenCodec;
+import com.recsys.application.outbox.DurableEventPublisher;
 import com.recsys.domain.item.Movie;
 import com.recsys.domain.online.OnlineRecommendationRequest;
 import com.recsys.domain.online.OnlineRecommendationResult;
 import com.recsys.domain.recommendation.RecommendationQuery;
 import com.recsys.domain.user.User;
 import com.recsys.infrastructure.messaging.AsyncEventPublisher;
+import com.recsys.infrastructure.outbox.OutboxConflictException;
 import com.recsys.metrics.OnlineServingMetricsService;
 import com.recsys.loadshed.OnlineLoadShedder;
 import com.recsys.ratelimit.RedisRateLimiter;
@@ -15,12 +19,17 @@ import com.recsys.ratelimit.RedisRateLimiter;
 import com.linecorp.armeria.common.HttpRequest;
 import com.linecorp.armeria.common.HttpResponse;
 import com.linecorp.armeria.common.HttpStatus;
+import com.linecorp.armeria.common.HttpData;
+import com.linecorp.armeria.common.MediaType;
+import com.linecorp.armeria.common.ResponseHeaders;
 import com.linecorp.armeria.server.ServiceRequestContext;
 
 import java.util.List;
 import java.util.Map;
+import java.util.Objects;
 import java.util.UUID;
 import java.util.concurrent.CompletableFuture;
+import java.time.Duration;
 
 /**
  * The two load-shed/rate-limited online serving handlers, grouped as nested
@@ -87,7 +96,7 @@ public final class OnlineServices {
 
                     OnlineRecommendationResult result = recommendationService.recommend(
                             new OnlineRecommendationRequest(userId, window, k));
-                    HttpResponse response = render(userId, k, result);
+                    HttpResponse response = render(ctx, userId, k, result);
                     metricsService.recordSuccess(elapsedMs(startedAtMs), strategyLabel(result));
                     afterSuccess(userId, result);
                     return response;
@@ -97,6 +106,13 @@ public final class OnlineServices {
                 } catch (OnlineRecommendationService.UnknownUserException e) {
                     metricsService.recordFailure(elapsedMs(startedAtMs));
                     return writeError(HttpStatus.NOT_FOUND, e.getMessage());
+                } catch (OutboxConflictException e) {
+                    metricsService.recordFailure(elapsedMs(startedAtMs));
+                    return writeError(HttpStatus.CONFLICT, "event ID already accepted with different content");
+                } catch (DurableEventPublisher.PersistenceException e) {
+                    metricsService.recordFailure(elapsedMs(startedAtMs));
+                    log.error("Unable to durably accept online event", e);
+                    return writeError(HttpStatus.SERVICE_UNAVAILABLE, "event acceptance unavailable");
                 } catch (Exception e) {
                     metricsService.recordFailure(elapsedMs(startedAtMs));
                     log.error("Unexpected error in {}", getClass().getSimpleName(), e);
@@ -110,7 +126,8 @@ public final class OnlineServices {
         }
 
         /** Build the success response from the shared recall result. */
-        protected abstract HttpResponse render(int userId, int k, OnlineRecommendationResult result);
+        protected abstract HttpResponse render(ServiceRequestContext ctx, int userId, int k,
+                                               OnlineRecommendationResult result);
 
         /** Metrics strategy label passed to {@code recordSuccess}. */
         protected abstract String strategyLabel(OnlineRecommendationResult result);
@@ -154,7 +171,8 @@ public final class OnlineServices {
         }
 
         @Override
-        protected HttpResponse render(int userId, int k, OnlineRecommendationResult result) {
+        protected HttpResponse render(ServiceRequestContext ctx, int userId, int k,
+                                      OnlineRecommendationResult result) {
             return writeJson(HttpStatus.OK, new OnlinePredictionResponse(
                     result.user(),
                     result.window(),
@@ -182,6 +200,8 @@ public final class OnlineServices {
     public static final class Features extends Guarded {
 
         private final AsyncEventPublisher asyncEventPublisher;
+        private final DurableEventPublisher durableEventPublisher;
+        private final ConsistencyTokenCodec tokenCodec;
 
         public Features(OnlineRecommendationService recommendationService) {
             this(recommendationService, new OnlineServingMetricsService(),
@@ -208,6 +228,8 @@ public final class OnlineServices {
                         AsyncEventPublisher asyncEventPublisher) {
             super(recommendationService, metricsService, loadShedder, redisRateLimiter, false);
             this.asyncEventPublisher = asyncEventPublisher;
+            this.durableEventPublisher = null;
+            this.tokenCodec = null;
         }
 
         public Features(OnlineRecommendationService recommendationService,
@@ -219,16 +241,48 @@ public final class OnlineServices {
             super(recommendationService, metricsService, loadShedder, redisRateLimiter,
                     admissionHandledExternally);
             this.asyncEventPublisher = asyncEventPublisher;
+            this.durableEventPublisher = null;
+            this.tokenCodec = null;
+        }
+
+        public Features(OnlineRecommendationService recommendationService,
+                        DurableEventPublisher durableEventPublisher,
+                        ConsistencyTokenCodec tokenCodec) {
+            this(recommendationService, new OnlineServingMetricsService(), new OnlineLoadShedder(),
+                    RedisRateLimiter.disabled(), durableEventPublisher, tokenCodec, false);
+        }
+
+        public Features(OnlineRecommendationService recommendationService,
+                        OnlineServingMetricsService metricsService,
+                        OnlineLoadShedder loadShedder,
+                        RedisRateLimiter redisRateLimiter,
+                        DurableEventPublisher durableEventPublisher,
+                        ConsistencyTokenCodec tokenCodec,
+                        boolean admissionHandledExternally) {
+            super(recommendationService, metricsService, loadShedder, redisRateLimiter,
+                    admissionHandledExternally);
+            this.asyncEventPublisher = null;
+            this.durableEventPublisher = Objects.requireNonNull(durableEventPublisher, "durableEventPublisher");
+            this.tokenCodec = Objects.requireNonNull(tokenCodec, "tokenCodec");
         }
 
         @Override
-        protected HttpResponse render(int userId, int k, OnlineRecommendationResult result) {
-            return writeJson(HttpStatus.OK, new OnlineFeatureSnapshotResponse(
+        protected HttpResponse render(ServiceRequestContext ctx, int userId, int k,
+                                      OnlineRecommendationResult result) {
+            OnlineFeatureSnapshotResponse snapshot = new OnlineFeatureSnapshotResponse(
                     result.user(),
                     result.window(),
                     result.recentMovies(),
                     result.trendingMovies().stream().limit(k).toList()
-            ));
+            );
+            if (durableEventPublisher == null) return writeJson(HttpStatus.OK, snapshot);
+            UUID eventId = optionalEventId(ctx.queryParam("eventId"));
+            String payload = featureViewEvent(eventId, userId, result);
+            DurableEventPublisher.Acceptance acceptance =
+                    durableEventPublisher.publishOnline(eventId, userId, "feature_view", payload);
+            String token = tokenCodec.encode(new ConsistencyToken(acceptance.eventId(), userId,
+                    acceptance.acceptedAt(), acceptance.acceptedAt().plus(Duration.ofHours(24))));
+            return writeJsonWithToken(snapshot, token);
         }
 
         @Override
@@ -239,22 +293,38 @@ public final class OnlineServices {
         @Override
         protected void afterSuccess(int userId, OnlineRecommendationResult result) {
             if (asyncEventPublisher != null) {
-                asyncEventPublisher.publish(featureViewEvent(userId, result));
+                asyncEventPublisher.publish(featureViewEvent(UUID.randomUUID(), userId, result));
             }
         }
 
-        private static String featureViewEvent(int userId, OnlineRecommendationResult result) {
+        private static String featureViewEvent(UUID eventId, int userId, OnlineRecommendationResult result) {
             try {
                 return MAPPER.writeValueAsString(Map.of(
-                        "eventId",         UUID.randomUUID().toString(),
+                        "eventId",         eventId.toString(),
                         "userId",          userId,
                         "eventType",       "feature_view",
                         "window",          result.window(),
-                        "eventTimeMillis", System.currentTimeMillis(),
                         "source",          "online-features"
                 ));
             } catch (Exception e) {
                 return "{}";
+            }
+        }
+
+        private static UUID optionalEventId(String raw) {
+            if (raw == null || raw.isBlank()) return UUID.randomUUID();
+            try { return UUID.fromString(raw); }
+            catch (IllegalArgumentException e) { throw new IllegalArgumentException("eventId must be a UUID"); }
+        }
+
+        private static HttpResponse writeJsonWithToken(Object payload, String token) {
+            try {
+                byte[] body = MAPPER.writeValueAsBytes(payload);
+                return HttpResponse.of(ResponseHeaders.builder(HttpStatus.OK)
+                        .contentType(MediaType.JSON_UTF_8)
+                        .set(ConsistencyTokenCodec.HEADER_NAME, token).build(), HttpData.wrap(body));
+            } catch (Exception e) {
+                return writeError(HttpStatus.INTERNAL_SERVER_ERROR, "serialization error");
             }
         }
 
