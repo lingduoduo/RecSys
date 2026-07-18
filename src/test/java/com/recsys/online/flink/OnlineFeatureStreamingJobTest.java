@@ -8,20 +8,123 @@ import io.lettuce.core.api.sync.RedisCommands;
 import io.lettuce.core.codec.StringCodec;
 import org.apache.flink.configuration.Configuration;
 import org.junit.jupiter.api.Test;
+import org.apache.flink.api.java.utils.ParameterTool;
+import org.apache.flink.api.common.functions.RuntimeContext;
+import org.apache.flink.api.common.state.MapState;
+import org.apache.flink.streaming.api.TimerService;
+import org.apache.flink.util.Collector;
 import org.testcontainers.containers.GenericContainer;
-import org.testcontainers.junit.jupiter.Container;
-import org.testcontainers.junit.jupiter.Testcontainers;
+import org.testcontainers.DockerClientFactory;
 
 import java.util.function.Consumer;
+import java.util.ArrayList;
+import java.util.LinkedHashMap;
+import java.util.List;
+import java.util.Map;
 
 import static org.assertj.core.api.Assertions.assertThat;
+import static org.assertj.core.api.Assertions.assertThatThrownBy;
+import static org.mockito.ArgumentMatchers.any;
+import static org.mockito.Mockito.mock;
+import static org.mockito.Mockito.when;
+import static org.junit.jupiter.api.Assumptions.assumeTrue;
 
-@Testcontainers
 class OnlineFeatureStreamingJobTest {
 
-    @Container
+    @Test
+    void acceptsDefaultParallelismConfiguration() {
+        assertThat(OnlineFeatureStreamingJob.validateConfiguration(ParameterTool.fromArgs(new String[0])))
+                .isEqualTo(new OnlineFeatureStreamingJob.JobConfiguration(24, 24, 24, 128));
+    }
+
+    @Test
+    void rejectsNonPositiveParallelism() {
+        assertThatThrownBy(() -> OnlineFeatureStreamingJob.validateConfiguration(
+                ParameterTool.fromArgs(new String[]{"--operator-parallelism", "0"})))
+                .isInstanceOf(IllegalArgumentException.class)
+                .hasMessageContaining("operator-parallelism");
+    }
+
+    @Test
+    void rejectsSourceParallelismAboveExpectedTopicPartitions() {
+        assertThatThrownBy(() -> OnlineFeatureStreamingJob.validateConfiguration(
+                ParameterTool.fromArgs(new String[]{"--source-parallelism", "25"})))
+                .isInstanceOf(IllegalArgumentException.class)
+                .hasMessageContaining("source-parallelism");
+    }
+
+    @Test
+    void rejectsMaxParallelismBelowOperatorParallelism() {
+        assertThatThrownBy(() -> OnlineFeatureStreamingJob.validateConfiguration(
+                ParameterTool.fromArgs(new String[]{
+                        "--operator-parallelism", "24", "--max-parallelism", "16"})))
+                .isInstanceOf(IllegalArgumentException.class)
+                .hasMessageContaining("max-parallelism");
+    }
+
+    @Test
+    void preservesSameUserOrderWhenEventIdsHashDiffer() throws Exception {
+        String firstId = "event-A";
+        String secondId = "event-B";
+        assertThat(firstId.hashCode()).isNotEqualTo(secondId.hashCode());
+
+        Map<String, Long> backingState = new LinkedHashMap<>();
+        @SuppressWarnings("unchecked")
+        MapState<String, Long> mapState = mock(MapState.class);
+        when(mapState.entries()).thenAnswer(ignored -> backingState.entrySet());
+        when(mapState.get(any())).thenAnswer(invocation -> backingState.get(invocation.getArgument(0)));
+        org.mockito.Mockito.doAnswer(invocation -> backingState.put(
+                invocation.getArgument(0), invocation.getArgument(1)))
+                .when(mapState).put(any(), any());
+        org.mockito.Mockito.doAnswer(invocation -> backingState.remove(invocation.getArgument(0)))
+                .when(mapState).remove(any());
+
+        RuntimeContext runtimeContext = mock(RuntimeContext.class);
+        org.mockito.Mockito.doReturn(mapState).when(runtimeContext).getMapState(any());
+        var function = new OnlineFeatureStreamingJob.DeduplicateEventsFunction(60);
+        function.setRuntimeContext(runtimeContext);
+        function.open(new Configuration());
+
+        TimerService timerService = mock(TimerService.class);
+        when(timerService.currentProcessingTime()).thenReturn(1_000L);
+        @SuppressWarnings("unchecked")
+        OnlineFeatureStreamingJob.DeduplicateEventsFunction.Context context = mock(
+                OnlineFeatureStreamingJob.DeduplicateEventsFunction.Context.class);
+        when(context.timerService()).thenReturn(timerService);
+        List<MovieEvent> output = new ArrayList<>();
+        Collector<MovieEvent> collector = new Collector<>() {
+            @Override public void collect(MovieEvent record) { output.add(record); }
+            @Override public void close() {}
+        };
+
+        MovieEvent first = event(7, firstId, 101);
+        MovieEvent second = event(7, secondId, 102);
+        function.processElement(first, context, collector);
+        function.processElement(second, context, collector);
+        function.processElement(first, context, collector);
+
+        assertThat(output).extracting(event -> event.eventId)
+                .containsExactly(firstId, secondId);
+    }
+
+    private static MovieEvent event(int userId, String eventId, int movieId) {
+        MovieEvent event = new MovieEvent();
+        event.userId = userId;
+        event.eventId = eventId;
+        event.movieId = movieId;
+        event.eventType = "click";
+        return event;
+    }
+
     static final GenericContainer<?> REDIS = new GenericContainer<>("redis:7-alpine")
             .withExposedPorts(6379);
+
+    private static GenericContainer<?> redis() {
+        assumeTrue(DockerClientFactory.instance().isDockerAvailable(),
+                "Docker is required for Redis integration tests");
+        if (!REDIS.isRunning()) REDIS.start();
+        return REDIS;
+    }
 
     /** Connects a short-lived Lettuce client for assertions, then shuts it down. */
     private static void withRedis(String host, int port, Consumer<RedisCommands<String, String>> body) {
@@ -98,8 +201,9 @@ class OnlineFeatureStreamingJobTest {
 
     @Test
     void luaScriptWritesCompanionKeys() throws Exception {
-        String host = REDIS.getHost();
-        int port = REDIS.getMappedPort(6379);
+        GenericContainer<?> redis = redis();
+        String host = redis.getHost();
+        int port = redis.getMappedPort(6379);
 
         var sink = new OnlineFeatureStreamingJob.RedisStringFeatureSink(host, port);
         sink.open(new Configuration());
@@ -123,8 +227,9 @@ class OnlineFeatureStreamingJobTest {
 
     @Test
     void luaScriptSkipsLineageWhenNewerExists() throws Exception {
-        String host = REDIS.getHost();
-        int port = REDIS.getMappedPort(6379);
+        GenericContainer<?> redis = redis();
+        String host = redis.getHost();
+        int port = redis.getMappedPort(6379);
 
         var sink = new OnlineFeatureStreamingJob.RedisStringFeatureSink(host, port);
         sink.open(new Configuration());
@@ -149,8 +254,9 @@ class OnlineFeatureStreamingJobTest {
 
     @Test
     void eventHistoryCapAtFive() throws Exception {
-        String host = REDIS.getHost();
-        int port = REDIS.getMappedPort(6379);
+        GenericContainer<?> redis = redis();
+        String host = redis.getHost();
+        int port = redis.getMappedPort(6379);
 
         var sink = new OnlineFeatureStreamingJob.RedisStringFeatureSink(host, port);
         sink.open(new Configuration());

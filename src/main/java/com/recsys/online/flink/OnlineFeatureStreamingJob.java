@@ -8,9 +8,10 @@ import org.slf4j.Logger;
 import org.slf4j.LoggerFactory;
 import org.apache.flink.api.common.functions.AggregateFunction;
 import org.apache.flink.api.common.serialization.SimpleStringSchema;
-import org.apache.flink.api.common.state.StateTtlConfig;
 import org.apache.flink.api.common.state.ListState;
 import org.apache.flink.api.common.state.ListStateDescriptor;
+import org.apache.flink.api.common.state.MapState;
+import org.apache.flink.api.common.state.MapStateDescriptor;
 import org.apache.flink.api.common.state.ValueState;
 import org.apache.flink.api.common.state.ValueStateDescriptor;
 import org.apache.flink.api.common.typeinfo.Types;
@@ -29,6 +30,7 @@ import org.apache.flink.streaming.api.windowing.time.Time;
 import org.apache.flink.streaming.api.windowing.windows.TimeWindow;
 import org.apache.flink.util.Collector;
 import org.apache.flink.util.StringUtils;
+import org.apache.kafka.clients.admin.Admin;
 import io.lettuce.core.RedisClient;
 import io.lettuce.core.RedisURI;
 import io.lettuce.core.ScriptOutputType;
@@ -57,6 +59,7 @@ public final class OnlineFeatureStreamingJob {
 
     public static void main(String[] args) throws Exception {
         ParameterTool params = ParameterTool.fromArgs(args);
+        JobConfiguration jobConfiguration = validateConfiguration(params);
 
         String redisHost = params.get("redis.host", "localhost");
         int redisPort = params.getInt("redis.port", 6379);
@@ -79,11 +82,24 @@ public final class OnlineFeatureStreamingJob {
             env.getCheckpointConfig().setCheckpointStorage(checkpointDir);
         }
 
-        DataStream<MovieEvent> events = buildEventStream(env, params)
+        String bootstrapServers = params.get("bootstrap.servers");
+        if (!StringUtils.isNullOrWhitespaceOnly(bootstrapServers)) {
+            Properties adminProperties = kafkaProperties(params);
+            adminProperties.setProperty("bootstrap.servers", bootstrapServers);
+            try (Admin admin = Admin.create(adminProperties)) {
+                KafkaTopicPartitionValidator.validate(admin, params.get("topic", "recsys_events"),
+                        jobConfiguration.expectedTopicPartitions());
+            }
+        }
+
+        DataStream<MovieEvent> events = buildEventStream(env, params, jobConfiguration)
                 .filter(OnlineFeatureStreamingJob::requiresEventIdentity)
-                .keyBy(MovieEvent::idempotencyKey)
+                .keyBy(event -> event.userId)
                 .process(new DeduplicateEventsFunction(idempotencyTtlSeconds))
                 .name("event-idempotency")
+                .uid("event-idempotency-v1")
+                .setParallelism(jobConfiguration.operatorParallelism())
+                .setMaxParallelism(jobConfiguration.maxParallelism())
                 .assignTimestampsAndWatermarks(
                         WatermarkStrategy.<MovieEvent>forBoundedOutOfOrderness(Duration.ofSeconds(5))
                                 .withTimestampAssigner((event, timestamp) -> event.eventTimeMillis));
@@ -93,24 +109,35 @@ public final class OnlineFeatureStreamingJob {
                 .keyBy(event -> event.userId)
                 .process(new RecentMoviesFunction(recentMovieLimit, userHistoryTtlSeconds))
                 .name("recent-movies")
+                .uid("recent-movies-v1")
+                .setParallelism(jobConfiguration.operatorParallelism())
+                .setMaxParallelism(jobConfiguration.maxParallelism())
                 .addSink(new RedisRecentMoviesSink(redisHost, redisPort))
-                .name("redis-user-history-sink");
+                .name("redis-user-history-sink").uid("redis-user-history-sink-v1")
+                .setParallelism(jobConfiguration.operatorParallelism())
+                .setMaxParallelism(jobConfiguration.maxParallelism());
 
         events
                 .filter(MovieEvent::updatesRecentHistory)
                 .keyBy(event -> event.userId)
                 .process(new UserEmbeddingFunction(userEmbeddingDimensions, userEmbeddingTtlSeconds))
                 .name("user-embedding-feature")
+                .uid("user-embedding-feature-v1").setParallelism(jobConfiguration.operatorParallelism())
+                .setMaxParallelism(jobConfiguration.maxParallelism())
                 .addSink(new RedisStringFeatureSink(redisHost, redisPort))
-                .name("redis-user-embedding-sink");
+                .name("redis-user-embedding-sink").uid("redis-user-embedding-sink-v1")
+                .setParallelism(jobConfiguration.operatorParallelism()).setMaxParallelism(jobConfiguration.maxParallelism());
 
         events
                 .filter(MovieEvent::hasSessionIdentity)
                 .keyBy(event -> event.userId + "|" + event.sessionId())
                 .process(new SessionFeatureFunction(sessionTtlSeconds))
                 .name("session-feature")
+                .uid("session-feature-v1").setParallelism(jobConfiguration.operatorParallelism())
+                .setMaxParallelism(jobConfiguration.maxParallelism())
                 .addSink(new RedisStringFeatureSink(redisHost, redisPort))
-                .name("redis-session-feature-sink");
+                .name("redis-session-feature-sink").uid("redis-session-feature-sink-v1")
+                .setParallelism(jobConfiguration.operatorParallelism()).setMaxParallelism(jobConfiguration.maxParallelism());
 
         events
                 .filter(event -> metricKind(event) != null)
@@ -118,22 +145,31 @@ public final class OnlineFeatureStreamingJob {
                 .window(TumblingProcessingTimeWindows.of(Time.seconds(windowSeconds)))
                 .aggregate(new CountAggregate(), new MovieMetricWindowFunction(windowLabel, metricTtlSeconds))
                 .name("movie-metrics")
+                .uid("movie-metrics-v1").setParallelism(jobConfiguration.operatorParallelism())
+                .setMaxParallelism(jobConfiguration.maxParallelism())
                 .addSink(new RedisMovieMetricSink(redisHost, redisPort))
-                .name("redis-movie-metric-sink");
+                .name("redis-movie-metric-sink").uid("redis-movie-metric-sink-v1")
+                .setParallelism(jobConfiguration.operatorParallelism()).setMaxParallelism(jobConfiguration.maxParallelism());
 
         DataStream<TopKSnapshot> topKSnapshots = events
                 .filter(event -> event.engagementWeight() > 0L)
                 .windowAll(TumblingProcessingTimeWindows.of(Time.seconds(windowSeconds)))
                 .apply(new TopKAllWindowFunction(topK, windowLabel, metricTtlSeconds))
-                .name("topk-window");
+                .name("topk-partial").uid("topk-partial-v1")
+                .setParallelism(1).setMaxParallelism(jobConfiguration.maxParallelism())
+                .map(snapshot -> snapshot).returns(TopKSnapshot.class)
+                .name("topk-final").uid("topk-final-v1")
+                .setParallelism(jobConfiguration.operatorParallelism()).setMaxParallelism(jobConfiguration.maxParallelism());
 
         topKSnapshots
                 .addSink(new RedisTopKSink(redisHost, redisPort))
-                .name("redis-topk-sink");
+                .name("redis-topk-sink").uid("redis-topk-sink-v1")
+                .setParallelism(jobConfiguration.operatorParallelism()).setMaxParallelism(jobConfiguration.maxParallelism());
 
         topKSnapshots
                 .addSink(new RedisTrendFeatureSink(redisHost, redisPort))
-                .name("redis-trend-feature-sink");
+                .name("redis-trend-feature-sink").uid("redis-trend-feature-sink-v1")
+                .setParallelism(jobConfiguration.operatorParallelism()).setMaxParallelism(jobConfiguration.maxParallelism());
 
         env.execute("recsys-online-feature-streaming");
     }
@@ -145,8 +181,31 @@ public final class OnlineFeatureStreamingJob {
         return false;
     }
 
+    static JobConfiguration validateConfiguration(ParameterTool params) {
+        JobConfiguration configuration = new JobConfiguration(
+                params.getInt("expected-topic-partitions", 24),
+                params.getInt("source-parallelism", 24),
+                params.getInt("operator-parallelism", 24),
+                params.getInt("max-parallelism", 128));
+        if (configuration.expectedTopicPartitions() <= 0) throw new IllegalArgumentException("expected-topic-partitions must be positive");
+        if (configuration.sourceParallelism() <= 0) throw new IllegalArgumentException("source-parallelism must be positive");
+        if (configuration.operatorParallelism() <= 0) throw new IllegalArgumentException("operator-parallelism must be positive");
+        if (configuration.maxParallelism() <= 0) throw new IllegalArgumentException("max-parallelism must be positive");
+        if (configuration.sourceParallelism() > configuration.expectedTopicPartitions()) {
+            throw new IllegalArgumentException("source-parallelism cannot exceed expected-topic-partitions");
+        }
+        if (configuration.maxParallelism() < configuration.operatorParallelism()) {
+            throw new IllegalArgumentException("max-parallelism cannot be below operator-parallelism");
+        }
+        return configuration;
+    }
+
+    record JobConfiguration(int expectedTopicPartitions, int sourceParallelism,
+                            int operatorParallelism, int maxParallelism) {}
+
     private static DataStream<MovieEvent> buildEventStream(StreamExecutionEnvironment env,
-                                                           ParameterTool params) throws IOException {
+                                                           ParameterTool params,
+                                                           JobConfiguration configuration) throws IOException {
         String bootstrapServers = params.get("bootstrap.servers");
         String topic = params.get("topic", "recsys_events");
 
@@ -161,6 +220,9 @@ public final class OnlineFeatureStreamingJob {
                     .build();
 
             return env.fromSource(source, WatermarkStrategy.noWatermarks(), "kafka-movie-events")
+                    .uid("kafka-movie-events-v2")
+                    .setParallelism(configuration.sourceParallelism())
+                    .setMaxParallelism(configuration.maxParallelism())
                     .flatMap((String line, Collector<MovieEvent> out) -> {
                         MovieEvent e = parseEvent(line);
                         if (e != null) out.collect(e);
@@ -169,6 +231,9 @@ public final class OnlineFeatureStreamingJob {
 
         String inputFile = params.get("input-file", "streaming/online-serving/data/movie_events.ndjson");
         return env.readTextFile(inputFile)
+                .uid("kafka-movie-events-v2")
+                .setParallelism(configuration.sourceParallelism())
+                .setMaxParallelism(configuration.maxParallelism())
                 .filter(line -> !line.isBlank())
                 .flatMap((String line, Collector<MovieEvent> out) -> {
                     MovieEvent e = parseEvent(line);
@@ -397,9 +462,9 @@ public final class OnlineFeatureStreamingJob {
         }
     }
 
-    static final class DeduplicateEventsFunction extends KeyedProcessFunction<String, MovieEvent, MovieEvent> {
+    static final class DeduplicateEventsFunction extends KeyedProcessFunction<Integer, MovieEvent, MovieEvent> {
         private final long ttlSeconds;
-        private transient ValueState<Boolean> seen;
+        private transient MapState<String, Long> eventExpiry;
 
         DeduplicateEventsFunction(long ttlSeconds) {
             this.ttlSeconds = ttlSeconds;
@@ -407,26 +472,28 @@ public final class OnlineFeatureStreamingJob {
 
         @Override
         public void open(Configuration parameters) {
-            ValueStateDescriptor<Boolean> descriptor = new ValueStateDescriptor<>("seen-event-id", Types.BOOLEAN);
-            StateTtlConfig ttlConfig = StateTtlConfig
-                    .newBuilder(org.apache.flink.api.common.time.Time.seconds(Math.max(1L, ttlSeconds)))
-                    .setUpdateType(StateTtlConfig.UpdateType.OnCreateAndWrite)
-                    .setStateVisibility(StateTtlConfig.StateVisibility.NeverReturnExpired)
-                    .cleanupIncrementally(100, true)
-                    .build();
-            descriptor.enableTimeToLive(ttlConfig);
-            seen = getRuntimeContext().getState(descriptor);
+            eventExpiry = getRuntimeContext().getMapState(
+                    new MapStateDescriptor<>("event-id-expiry", Types.STRING, Types.LONG));
         }
 
         @Override
         public void processElement(MovieEvent event,
-                                   KeyedProcessFunction<String, MovieEvent, MovieEvent>.Context context,
+                                   KeyedProcessFunction<Integer, MovieEvent, MovieEvent>.Context context,
                                    Collector<MovieEvent> out) throws Exception {
-            if (Boolean.TRUE.equals(seen.value())) {
+            long now = context.timerService().currentProcessingTime();
+            List<String> expiredIds = new ArrayList<>();
+            for (Map.Entry<String, Long> entry : eventExpiry.entries()) {
+                if (entry.getValue() <= now) expiredIds.add(entry.getKey());
+            }
+            for (String expiredId : expiredIds) {
+                eventExpiry.remove(expiredId);
+            }
+            Long expiry = eventExpiry.get(event.eventId);
+            if (expiry != null && expiry > now) {
                 LOG.debug("Skipping duplicate movie event: {}", event.eventId);
                 return;
             }
-            seen.update(true);
+            eventExpiry.put(event.eventId, now + Math.max(1L, ttlSeconds) * 1_000L);
             out.collect(event);
         }
     }
