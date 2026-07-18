@@ -8,20 +8,462 @@ import io.lettuce.core.api.sync.RedisCommands;
 import io.lettuce.core.codec.StringCodec;
 import org.apache.flink.configuration.Configuration;
 import org.junit.jupiter.api.Test;
+import org.apache.flink.api.java.utils.ParameterTool;
+import org.apache.flink.api.common.functions.RuntimeContext;
+import org.apache.flink.api.common.state.MapState;
+import org.apache.flink.api.common.state.StateTtlConfig;
+import org.apache.flink.streaming.api.windowing.windows.TimeWindow;
+import org.apache.flink.streaming.api.TimerService;
+import org.apache.flink.streaming.api.environment.StreamExecutionEnvironment;
+import org.apache.flink.streaming.api.operators.KeyedProcessOperator;
+import org.apache.flink.streaming.util.KeyedOneInputStreamOperatorTestHarness;
+import org.apache.flink.streaming.api.watermark.Watermark;
+import org.apache.flink.streaming.runtime.streamrecord.StreamRecord;
+import org.apache.flink.streaming.runtime.streamrecord.LatencyMarker;
+import org.apache.flink.streaming.runtime.io.PushingAsyncDataInput;
+import org.apache.flink.streaming.runtime.watermarkstatus.StatusWatermarkValve;
+import org.apache.flink.streaming.runtime.watermarkstatus.WatermarkStatus;
+import org.apache.flink.util.Collector;
 import org.testcontainers.containers.GenericContainer;
-import org.testcontainers.junit.jupiter.Container;
-import org.testcontainers.junit.jupiter.Testcontainers;
+import org.testcontainers.DockerClientFactory;
 
 import java.util.function.Consumer;
+import java.util.ArrayList;
+import java.util.LinkedHashMap;
+import java.util.List;
+import java.util.Map;
+import java.util.Random;
 
 import static org.assertj.core.api.Assertions.assertThat;
+import static org.assertj.core.api.Assertions.assertThatThrownBy;
+import static org.mockito.ArgumentMatchers.any;
+import static org.mockito.Mockito.mock;
+import static org.mockito.Mockito.when;
+import static org.junit.jupiter.api.Assumptions.assumeTrue;
 
-@Testcontainers
 class OnlineFeatureStreamingJobTest {
 
-    @Container
+    @Test
+    void assignsMovieBucketsStablyIncludingNegativeIds() {
+        assertThat(OnlineFeatureStreamingJob.movieBucket(42, 7)).isEqualTo(0);
+        assertThat(OnlineFeatureStreamingJob.movieBucket(-42, 7)).isEqualTo(0);
+        assertThat(OnlineFeatureStreamingJob.movieBucket(Integer.MIN_VALUE, 7)).isEqualTo(5);
+        assertThat(OnlineFeatureStreamingJob.movieBucket(-1, 7)).isEqualTo(6);
+    }
+
+    @Test
+    void retainedStateTtlUsesWriteRefreshAndNeverReturnsExpiredValues() {
+        var ttl = OnlineFeatureStreamingJob.stateTtl(1_800L);
+        assertThat(ttl.isEnabled()).isTrue();
+        assertThat(ttl.getTtl().toMilliseconds()).isEqualTo(1_800_000L);
+        assertThat(ttl.getUpdateType()).isEqualTo(StateTtlConfig.UpdateType.OnCreateAndWrite);
+        assertThat(ttl.getStateVisibility()).isEqualTo(StateTtlConfig.StateVisibility.NeverReturnExpired);
+        assertThat(ttl.getCleanupStrategies().inRocksdbCompactFilter()).isTrue();
+    }
+
+    @Test
+    void rejectsInvalidMovieBucketCounts() {
+        assertThatThrownBy(() -> OnlineFeatureStreamingJob.movieBucket(1, 0))
+                .isInstanceOf(IllegalArgumentException.class)
+                .hasMessageContaining("bucketCount");
+        assertThatThrownBy(() -> OnlineFeatureStreamingJob.movieBucket(1, -1))
+                .isInstanceOf(IllegalArgumentException.class)
+                .hasMessageContaining("bucketCount");
+    }
+
+    @Test
+    void rejectsNegativeTopKAllowedLateness() {
+        assertThatThrownBy(() -> OnlineFeatureStreamingJob.validateAllowedLatenessMs(-1L))
+                .isInstanceOf(IllegalArgumentException.class)
+                .hasMessageContaining("allowed-lateness");
+        assertThat(OnlineFeatureStreamingJob.validateAllowedLatenessMs(0L)).isZero();
+        assertThat(OnlineFeatureStreamingJob.FinalTopKWindowFunction.cleanupTimestamp(100L, 0L))
+                .isEqualTo(101L);
+    }
+
+    @Test
+    void validatesWatermarkIdleTimeout() {
+        assertThat(OnlineFeatureStreamingJob.validateWatermarkIdleTimeoutMs(30_000L))
+                .isEqualTo(30_000L);
+        assertThatThrownBy(() -> OnlineFeatureStreamingJob.validateWatermarkIdleTimeoutMs(0L))
+                .isInstanceOf(IllegalArgumentException.class)
+                .hasMessageContaining("watermark-idle-timeout-ms");
+        assertThatThrownBy(() -> OnlineFeatureStreamingJob.validateWatermarkIdleTimeoutMs(-1L))
+                .isInstanceOf(IllegalArgumentException.class);
+    }
+
+    @Test
+    void partialTopKIsBoundedAndUsesStableTieOrdering() throws Exception {
+        var function = new OnlineFeatureStreamingJob.PartialTopKWindowFunction(2);
+        List<OnlineFeatureStreamingJob.PartialTopK> output = new ArrayList<>();
+        function.apply(3, new TimeWindow(0, 10), List.of(
+                weightedEvent(3, 2), weightedEvent(1, 2), weightedEvent(2, 1)), collector(output));
+
+        assertThat(output).hasSize(1);
+        assertThat(output.get(0).windowEnd).isEqualTo(10);
+        assertThat(output.get(0).bucket).isEqualTo(3);
+        assertThat(output.get(0).movies).extracting(movie -> movie.movieId)
+                .containsExactly(1, 3);
+    }
+
+    @Test
+    void finalTopKMergesDuplicateMoviesAndOrdersTiesByMovieId() {
+        var partials = List.of(
+                partial(100, 0, scored(8, 3), scored(4, 2)),
+                partial(100, 1, scored(8, 4), scored(2, 7), scored(3, 7)));
+
+        List<OnlineFeatureStreamingJob.ScoredMovie> result =
+                OnlineFeatureStreamingJob.FinalTopKWindowFunction.mergeTopK(partials, 3);
+
+        assertThat(result).extracting(movie -> movie.movieId).containsExactly(2, 3, 8);
+        assertThat(result).extracting(movie -> movie.score).containsExactly(7L, 7L, 7L);
+    }
+
+    @Test
+    void multiChannelWatermarksWaitForDelayedPartialAndIgnoreIdleChannel() throws Exception {
+        var function = new OnlineFeatureStreamingJob.FinalTopKWindowFunction(3, "hour", 60, 4, 10L);
+        var operator = new KeyedProcessOperator<Long, OnlineFeatureStreamingJob.PartialTopK,
+                OnlineFeatureStreamingJob.TopKSnapshot>(function);
+        try (var harness = new KeyedOneInputStreamOperatorTestHarness<>(
+                operator, OnlineFeatureStreamingJob.PartialTopK::windowEnd, org.apache.flink.api.common.typeinfo.Types.LONG)) {
+            harness.open();
+            StatusWatermarkValve watermarkValve = new StatusWatermarkValve(2);
+            PushingAsyncDataInput.DataOutput<Object> alignedOutput = new PushingAsyncDataInput.DataOutput<>() {
+                @Override public void emitRecord(StreamRecord<Object> record) {}
+                @Override public void emitWatermark(Watermark watermark) throws Exception {
+                    harness.processWatermark(watermark);
+                }
+                @Override public void emitWatermarkStatus(WatermarkStatus status) {}
+                @Override public void emitLatencyMarker(LatencyMarker latencyMarker) {}
+            };
+
+            harness.processElement(new StreamRecord<>(partial(100, 0, scored(1, 3))));
+            watermarkValve.inputWatermark(new Watermark(99), 0, alignedOutput);
+            assertThat(harness.getCurrentWatermark()).isZero();
+            watermarkValve.inputWatermarkStatus(WatermarkStatus.IDLE, 1, alignedOutput);
+            assertThat(harness.getCurrentWatermark()).isEqualTo(99L);
+            assertThat(snapshots(harness.getOutput())).isEmpty();
+
+            harness.processElement(new StreamRecord<>(partial(100, 3, scored(2, 7))));
+            assertThat(snapshots(harness.getOutput())).isEmpty();
+            assertThat(harness.numKeyedStateEntries()).isPositive();
+
+            watermarkValve.inputWatermark(new Watermark(100), 0, alignedOutput);
+            assertThat(snapshots(harness.getOutput())).singleElement()
+                    .satisfies(snapshot -> assertThat(snapshot.movies)
+                            .extracting(movie -> movie.movieId).containsExactly(2, 1));
+            assertThat(snapshots(harness.getOutput()).get(0).movies)
+                    .extracting(movie -> movie.score).containsExactly(7L, 3L);
+
+            harness.processElement(new StreamRecord<>(partial(100, 2, scored(3, 9))));
+            watermarkValve.inputWatermark(new Watermark(110), 0, alignedOutput);
+            assertThat(snapshots(harness.getOutput())).hasSize(1);
+            assertThat(harness.numKeyedStateEntries()).isZero();
+
+            harness.processElement(new StreamRecord<>(partial(100, 1, scored(4, 12))));
+            watermarkValve.inputWatermark(new Watermark(200), 0, alignedOutput);
+            assertThat(snapshots(harness.getOutput())).hasSize(1);
+            assertThat(harness.numKeyedStateEntries()).isZero();
+
+            var counterField = OnlineFeatureStreamingJob.FinalTopKWindowFunction.class
+                    .getDeclaredField("latePartials");
+            counterField.setAccessible(true);
+            assertThat(((org.apache.flink.api.common.accumulators.LongCounter)
+                    counterField.get(function)).getLocalValue()).isEqualTo(2L);
+        }
+    }
+
+    private static List<OnlineFeatureStreamingJob.TopKSnapshot> snapshots(
+            Iterable<Object> output) {
+        List<OnlineFeatureStreamingJob.TopKSnapshot> snapshots = new ArrayList<>();
+        for (Object value : output) {
+            if (value instanceof StreamRecord<?> record
+                    && record.getValue() instanceof OnlineFeatureStreamingJob.TopKSnapshot snapshot) {
+                snapshots.add(snapshot);
+            }
+        }
+        return snapshots;
+    }
+
+    @Test
+    void twoStageTopKMatchesSingleStageOracleForDeterministicEvents() throws Exception {
+        int bucketCount = 17;
+        int topK = 20;
+        Random random = new Random(8675309L);
+        List<MovieEvent> events = new ArrayList<>();
+        int[] weights = {1, 2, 3, 4, 8};
+        for (int i = 0; i < 1_000; i++) {
+            events.add(weightedEvent(random.nextInt(301) - 150,
+                    weights[random.nextInt(weights.length)]));
+        }
+
+        List<OnlineFeatureStreamingJob.PartialTopK> partials = new ArrayList<>();
+        for (int bucket = 0; bucket < bucketCount; bucket++) {
+            List<MovieEvent> bucketEvents = new ArrayList<>();
+            for (MovieEvent event : events) {
+                if (OnlineFeatureStreamingJob.movieBucket(event.movieId, bucketCount) == bucket) {
+                    bucketEvents.add(event);
+                }
+            }
+            if (!bucketEvents.isEmpty()) {
+                new OnlineFeatureStreamingJob.PartialTopKWindowFunction(topK)
+                        .apply(bucket, new TimeWindow(0, 100), bucketEvents, collector(partials));
+            }
+        }
+
+        List<OnlineFeatureStreamingJob.ScoredMovie> actual =
+                OnlineFeatureStreamingJob.FinalTopKWindowFunction.mergeTopK(partials, topK);
+        Map<Integer, Long> oracleScores = new java.util.HashMap<>();
+        events.forEach(event -> oracleScores.merge(event.movieId, event.engagementWeight(), Long::sum));
+        List<Map.Entry<Integer, Long>> oracle = oracleScores.entrySet().stream()
+                .sorted(Map.Entry.<Integer, Long>comparingByValue(java.util.Comparator.reverseOrder())
+                        .thenComparing(Map.Entry::getKey))
+                .limit(topK).toList();
+
+        assertThat(actual).extracting(movie -> movie.movieId)
+                .containsExactlyElementsOf(oracle.stream().map(Map.Entry::getKey).toList());
+        assertThat(actual).extracting(movie -> movie.score)
+                .containsExactlyElementsOf(oracle.stream().map(Map.Entry::getValue).toList());
+    }
+
+    private static OnlineFeatureStreamingJob.PartialTopK partial(
+            long windowEnd, int bucket, OnlineFeatureStreamingJob.ScoredMovie... movies) {
+        return new OnlineFeatureStreamingJob.PartialTopK(windowEnd, bucket, List.of(movies));
+    }
+
+    private static OnlineFeatureStreamingJob.ScoredMovie scored(int movieId, long score) {
+        return new OnlineFeatureStreamingJob.ScoredMovie(movieId, score);
+    }
+
+    private static MovieEvent weightedEvent(int movieId, int weight) {
+        MovieEvent event = new MovieEvent();
+        event.movieId = movieId;
+        event.eventType = switch (weight) {
+            case 8 -> "order";
+            case 4 -> "rating";
+            case 3 -> "like";
+            case 2 -> "click";
+            case 1 -> "view";
+            default -> throw new IllegalArgumentException("unsupported test weight");
+        };
+        event.rating = weight == 4 ? 4 : null;
+        event.watchMs = weight == 1 ? 30_000L : 0L;
+        return event;
+    }
+
+    private static <T> Collector<T> collector(List<T> output) {
+        return new Collector<>() {
+            @Override public void collect(T record) { output.add(record); }
+            @Override public void close() {}
+        };
+    }
+
+    @Test
+    void acceptsDefaultParallelismConfiguration() {
+        assertThat(OnlineFeatureStreamingJob.validateConfiguration(ParameterTool.fromArgs(new String[0])))
+                .isEqualTo(new OnlineFeatureStreamingJob.JobConfiguration(24, 24, 24, 128));
+    }
+
+    @Test
+    void kafkaModesRequireDurableCheckpointsAndGenerationSpecificTopics() {
+        assertThatThrownBy(() -> OnlineFeatureStreamingJob.validateConfiguration(ParameterTool.fromArgs(
+                new String[]{"--bootstrap.servers", "broker:9092"})))
+                .hasMessageContaining("checkpoint-dir");
+        assertThatThrownBy(() -> OnlineFeatureStreamingJob.validateConfiguration(ParameterTool.fromArgs(
+                new String[]{"--bootstrap.servers", "broker:9092", "--checkpoint-dir", "s3://cp",
+                        "--topic", "recsys_events"})))
+                .hasMessageContaining("movie_events_v2");
+        assertThatThrownBy(() -> OnlineFeatureStreamingJob.validateConfiguration(ParameterTool.fromArgs(
+                new String[]{"--bootstrap.servers", "broker:9092", "--checkpoint-dir", "s3://cp",
+                        "--bridge-mode", "true"})))
+                .hasMessageContaining("legacy");
+        assertThatThrownBy(() -> OnlineFeatureStreamingJob.validateConfiguration(ParameterTool.fromArgs(
+                new String[]{"--bootstrap.servers", "broker:9092", "--checkpoint-dir", "s3://cp",
+                        "--bridge-mode", "true", "--topic", "recsys_events"})))
+                .hasMessageContaining("bridge-replay-cutoff-ms");
+        assertThat(OnlineFeatureStreamingJob.validateConfiguration(ParameterTool.fromArgs(
+                new String[]{"--bootstrap.servers", "broker:9092", "--checkpoint-dir", "s3://cp"})))
+                .isEqualTo(new OnlineFeatureStreamingJob.JobConfiguration(24, 24, 24, 128));
+        assertThat(OnlineFeatureStreamingJob.validateConfiguration(ParameterTool.fromArgs(
+                new String[]{"--bootstrap.servers", "broker:9092", "--checkpoint-dir", "s3://cp",
+                        "--bridge-mode", "true", "--topic", "recsys_events",
+                        "--bridge-replay-cutoff-ms", "1000", "--bridge-reference-time-ms", "2000"})))
+                .isEqualTo(new OnlineFeatureStreamingJob.JobConfiguration(24, 24, 24, 128));
+    }
+
+    @Test
+    void bridgeReplayCutoffRejectsOldOrUnclassifiableEventTimeAndAcceptsBoundary() {
+        MovieEvent missing = event(1, "missing", 1); missing.eventTimeMillis = 0L;
+        MovieEvent old = event(1, "old", 1); old.eventTimeMillis = 999L;
+        MovieEvent boundary = event(1, "boundary", 1); boundary.eventTimeMillis = 1_000L;
+        assertThat(OnlineFeatureStreamingJob.acceptsBridgeReplayEvent(missing, true, 1_000L)).isFalse();
+        assertThat(OnlineFeatureStreamingJob.acceptsBridgeReplayEvent(old, true, 1_000L)).isFalse();
+        assertThat(OnlineFeatureStreamingJob.acceptsBridgeReplayEvent(boundary, true, 1_000L)).isTrue();
+        assertThat(OnlineFeatureStreamingJob.acceptsBridgeReplayEvent(old, false, -1L)).isTrue();
+    }
+
+    @Test
+    void operatorSpecificBridgeEligibilityUsesExactExpiryBoundary() {
+        MovieEvent event = event(1, "event", 1);
+        event.eventTimeMillis = 1_000L;
+        assertThat(OnlineFeatureStreamingJob.bridgeEligible(event, true, 30_999L, 30L)).isTrue();
+        assertThat(OnlineFeatureStreamingJob.bridgeEligible(event, true, 31_000L, 30L)).isFalse();
+        assertThat(OnlineFeatureStreamingJob.bridgeEligible(event, false, Long.MAX_VALUE, 1L)).isTrue();
+    }
+
+    @Test
+    void rejectsLocalCheckpointStorageUnlessExplicitlyAllowedForTests() {
+        for (String location : List.of("relative/checkpoints", "file:///tmp/checkpoints", "/tmp/checkpoints")) {
+            assertThatThrownBy(() -> OnlineFeatureStreamingJob.validateConfiguration(ParameterTool.fromArgs(
+                    new String[]{"--bootstrap.servers", "broker:9092", "--checkpoint-dir", location})))
+                    .as(location).hasMessageContaining("shared durable");
+        }
+        assertThat(OnlineFeatureStreamingJob.validateConfiguration(ParameterTool.fromArgs(new String[]{
+                "--bootstrap.servers", "broker:9092", "--checkpoint-dir", "file:///tmp/checkpoints",
+                "--allow-local-checkpoint-storage", "true"})))
+                .isEqualTo(new OnlineFeatureStreamingJob.JobConfiguration(24, 24, 24, 128));
+    }
+
+    @Test
+    void bridgeTerminalUsesNoOpButPreservesProductionSinkUid() {
+        StreamExecutionEnvironment env = StreamExecutionEnvironment.getExecutionEnvironment();
+        var input = env.fromElements(new OnlineFeatureStreamingJob.StringFeatureUpdate(
+                "key", "state", 1L, 60, "event"));
+        var configuration = new OnlineFeatureStreamingJob.JobConfiguration(24, 1, 1, 128);
+        OnlineFeatureStreamingJob.attachSink(input,
+                new OnlineFeatureStreamingJob.RedisStringFeatureSink("localhost", 6379), true,
+                "redis-test-sink", "redis-test-sink-v1", configuration);
+
+        var nodes = env.getStreamGraph().getStreamNodes().stream().toList();
+        assertThat(nodes).anyMatch(node -> node.getOperatorName().contains("bridge-noop-redis-test-sink"));
+        assertThat(nodes).noneMatch(node -> node.getOperatorName().matches(".*Sink: redis-test-sink.*"));
+        assertThat(nodes.stream().filter(node -> node.getOperatorName().contains("sink")).toList())
+                .allMatch(node -> !node.getOperatorFactory().getClass().getName().contains("Redis"));
+
+        StreamExecutionEnvironment normalEnv = StreamExecutionEnvironment.getExecutionEnvironment();
+        var normalInput = normalEnv.fromElements(new OnlineFeatureStreamingJob.StringFeatureUpdate(
+                "key", "state", 1L, 60, "event"));
+        OnlineFeatureStreamingJob.attachSink(normalInput,
+                new OnlineFeatureStreamingJob.RedisStringFeatureSink("localhost", 6379), false,
+                "redis-test-sink", "redis-test-sink-v1", configuration);
+        assertThat(normalEnv.getStreamGraph().getStreamNodes()).anyMatch(
+                node -> node.getOperatorName().contains("redis-test-sink"));
+    }
+
+    @Test
+    void rejectsNonPositiveParallelism() {
+        assertThatThrownBy(() -> OnlineFeatureStreamingJob.validateConfiguration(
+                ParameterTool.fromArgs(new String[]{"--operator-parallelism", "0"})))
+                .isInstanceOf(IllegalArgumentException.class)
+                .hasMessageContaining("operator-parallelism");
+    }
+
+    @Test
+    void rejectsSourceParallelismAboveExpectedTopicPartitions() {
+        assertThatThrownBy(() -> OnlineFeatureStreamingJob.validateConfiguration(
+                ParameterTool.fromArgs(new String[]{"--source-parallelism", "25"})))
+                .isInstanceOf(IllegalArgumentException.class)
+                .hasMessageContaining("source-parallelism");
+    }
+
+    @Test
+    void rejectsMaxParallelismBelowOperatorParallelism() {
+        assertThatThrownBy(() -> OnlineFeatureStreamingJob.validateConfiguration(
+                ParameterTool.fromArgs(new String[]{
+                        "--operator-parallelism", "24", "--max-parallelism", "16"})))
+                .isInstanceOf(IllegalArgumentException.class)
+                .hasMessageContaining("max-parallelism");
+    }
+
+    @Test
+    void rejectsMaxParallelismBelowSourceParallelism() {
+        assertThatThrownBy(() -> OnlineFeatureStreamingJob.validateConfiguration(
+                ParameterTool.fromArgs(new String[]{
+                        "--expected-topic-partitions", "24",
+                        "--source-parallelism", "24",
+                        "--operator-parallelism", "8",
+                        "--max-parallelism", "16"})))
+                .isInstanceOf(IllegalArgumentException.class)
+                .hasMessageContaining("max-parallelism")
+                .hasMessageContaining("source-parallelism")
+                .hasMessageContaining("operator-parallelism");
+    }
+
+    @Test
+    void acceptsMaxParallelismEqualToSourceParallelism() {
+        ParameterTool params = ParameterTool.fromArgs(new String[]{
+                "--expected-topic-partitions", "24",
+                "--source-parallelism", "24",
+                "--operator-parallelism", "8",
+                "--max-parallelism", "24"});
+
+        assertThat(OnlineFeatureStreamingJob.validateConfiguration(params))
+                .isEqualTo(new OnlineFeatureStreamingJob.JobConfiguration(24, 24, 8, 24));
+    }
+
+    @Test
+    void preservesSameUserOrderWhenEventIdsHashDiffer() throws Exception {
+        String firstId = "event-A";
+        String secondId = "event-B";
+        assertThat(firstId.hashCode()).isNotEqualTo(secondId.hashCode());
+
+        Map<String, Long> backingState = new LinkedHashMap<>();
+        @SuppressWarnings("unchecked")
+        MapState<String, Long> mapState = mock(MapState.class);
+        when(mapState.get(any())).thenAnswer(invocation -> backingState.get(invocation.getArgument(0)));
+        org.mockito.Mockito.doAnswer(invocation -> backingState.put(
+                invocation.getArgument(0), invocation.getArgument(1)))
+                .when(mapState).put(any(), any());
+        org.mockito.Mockito.doAnswer(invocation -> backingState.remove(invocation.getArgument(0)))
+                .when(mapState).remove(any());
+
+        RuntimeContext runtimeContext = mock(RuntimeContext.class);
+        org.mockito.Mockito.doReturn(mapState).when(runtimeContext).getMapState(any());
+        var function = new OnlineFeatureStreamingJob.DeduplicateEventsFunction(60);
+        function.setRuntimeContext(runtimeContext);
+        function.open(new Configuration());
+
+        TimerService timerService = mock(TimerService.class);
+        when(timerService.currentProcessingTime()).thenReturn(1_000L);
+        @SuppressWarnings("unchecked")
+        OnlineFeatureStreamingJob.DeduplicateEventsFunction.Context context = mock(
+                OnlineFeatureStreamingJob.DeduplicateEventsFunction.Context.class);
+        when(context.timerService()).thenReturn(timerService);
+        List<MovieEvent> output = new ArrayList<>();
+        Collector<MovieEvent> collector = new Collector<>() {
+            @Override public void collect(MovieEvent record) { output.add(record); }
+            @Override public void close() {}
+        };
+
+        MovieEvent first = event(7, firstId, 101);
+        MovieEvent second = event(7, secondId, 102);
+        function.processElement(first, context, collector);
+        function.processElement(second, context, collector);
+        function.processElement(first, context, collector);
+
+        assertThat(output).extracting(event -> event.eventId)
+                .containsExactly(firstId, secondId);
+        org.mockito.Mockito.verify(mapState, org.mockito.Mockito.never()).entries();
+    }
+
+    private static MovieEvent event(int userId, String eventId, int movieId) {
+        MovieEvent event = new MovieEvent();
+        event.userId = userId;
+        event.eventId = eventId;
+        event.movieId = movieId;
+        event.eventType = "click";
+        return event;
+    }
+
     static final GenericContainer<?> REDIS = new GenericContainer<>("redis:7-alpine")
             .withExposedPorts(6379);
+
+    private static GenericContainer<?> redis() {
+        assumeTrue(DockerClientFactory.instance().isDockerAvailable(),
+                "Docker is required for Redis integration tests");
+        if (!REDIS.isRunning()) REDIS.start();
+        return REDIS;
+    }
 
     /** Connects a short-lived Lettuce client for assertions, then shuts it down. */
     private static void withRedis(String host, int port, Consumer<RedisCommands<String, String>> body) {
@@ -98,8 +540,9 @@ class OnlineFeatureStreamingJobTest {
 
     @Test
     void luaScriptWritesCompanionKeys() throws Exception {
-        String host = REDIS.getHost();
-        int port = REDIS.getMappedPort(6379);
+        GenericContainer<?> redis = redis();
+        String host = redis.getHost();
+        int port = redis.getMappedPort(6379);
 
         var sink = new OnlineFeatureStreamingJob.RedisStringFeatureSink(host, port);
         sink.open(new Configuration());
@@ -123,8 +566,9 @@ class OnlineFeatureStreamingJobTest {
 
     @Test
     void luaScriptSkipsLineageWhenNewerExists() throws Exception {
-        String host = REDIS.getHost();
-        int port = REDIS.getMappedPort(6379);
+        GenericContainer<?> redis = redis();
+        String host = redis.getHost();
+        int port = redis.getMappedPort(6379);
 
         var sink = new OnlineFeatureStreamingJob.RedisStringFeatureSink(host, port);
         sink.open(new Configuration());
@@ -149,8 +593,9 @@ class OnlineFeatureStreamingJobTest {
 
     @Test
     void eventHistoryCapAtFive() throws Exception {
-        String host = REDIS.getHost();
-        int port = REDIS.getMappedPort(6379);
+        GenericContainer<?> redis = redis();
+        String host = redis.getHost();
+        int port = redis.getMappedPort(6379);
 
         var sink = new OnlineFeatureStreamingJob.RedisStringFeatureSink(host, port);
         sink.open(new Configuration());

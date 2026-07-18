@@ -11,13 +11,15 @@ import org.slf4j.LoggerFactory;
 import java.time.Duration;
 import java.util.List;
 import java.util.Objects;
+import java.util.Optional;
 import java.util.Properties;
+import java.util.function.Function;
 
 /**
  * {@link AsyncEventPublisher} transport that produces drained event JSON to a fixed Kafka topic.
  * Fire-and-forget: produce failures (synchronous throws or async delivery errors) are logged and
- * never break the drain loop or the request path. The base queue carries value strings only, so
- * every event from this publisher goes to one topic with a null key (round-robin partitioning).
+ * never break the drain loop or the request path. An optional extractor assigns keys before events
+ * enter the bounded queue; unkeyed batches remain compatible with the legacy transport behavior.
  */
 public class KafkaAsyncEventPublisher extends AsyncEventPublisher {
 
@@ -26,18 +28,67 @@ public class KafkaAsyncEventPublisher extends AsyncEventPublisher {
 
     private final Producer<String, String> producer;
     private final String topic;
+    private final Function<String, Optional<String>> keyExtractor;
 
     public KafkaAsyncEventPublisher(String bootstrapServers, String topic) {
         super();
         Objects.requireNonNull(bootstrapServers, "bootstrapServers");
         this.topic = Objects.requireNonNull(topic, "topic");
         this.producer = new KafkaProducer<>(producerProps(bootstrapServers));
+        this.keyExtractor = null;
+    }
+
+    public KafkaAsyncEventPublisher(String bootstrapServers, String topic,
+                                    Function<String, Optional<String>> keyExtractor) {
+        super();
+        Objects.requireNonNull(bootstrapServers, "bootstrapServers");
+        this.topic = Objects.requireNonNull(topic, "topic");
+        this.producer = new KafkaProducer<>(producerProps(bootstrapServers));
+        this.keyExtractor = keyExtractor;
     }
 
     KafkaAsyncEventPublisher(Producer<String, String> producer, String topic, int queueCapacity, int batchSize) {
         super(queueCapacity, batchSize);
         this.producer = Objects.requireNonNull(producer, "producer");
         this.topic = Objects.requireNonNull(topic, "topic");
+        this.keyExtractor = null;
+    }
+
+    KafkaAsyncEventPublisher(Producer<String, String> producer, String topic, int queueCapacity,
+                             int batchSize, Function<String, Optional<String>> keyExtractor) {
+        super(queueCapacity, batchSize);
+        this.producer = Objects.requireNonNull(producer, "producer");
+        this.topic = Objects.requireNonNull(topic, "topic");
+        this.keyExtractor = keyExtractor;
+    }
+
+    boolean hasKeyExtractor() {
+        return keyExtractor != null;
+    }
+
+    String topic() {
+        return topic;
+    }
+
+    @Override
+    public boolean publish(String event) {
+        if (keyExtractor == null) return super.publish(event);
+        Optional<String> key = keyExtractor.apply(event);
+        if (key.isEmpty()) return rejectInvalidKey();
+        return super.publish(key.get(), event);
+    }
+
+    private boolean rejectInvalidKey() {
+        return recordRejectedEvent();
+    }
+
+    @Override
+    protected void sendEnvelopes(List<EventEnvelope> events) {
+        super.sendBatch(events.stream().map(EventEnvelope::value).toList());
+        if (producer == null) return;
+        for (EventEnvelope envelope : events) {
+            sendRecord(new ProducerRecord<>(topic, envelope.key(), envelope.value()));
+        }
     }
 
     private static Properties producerProps(String bootstrapServers) {
@@ -60,15 +111,21 @@ public class KafkaAsyncEventPublisher extends AsyncEventPublisher {
             return;
         }
         for (String event : events) {
-            try {
-                producer.send(new ProducerRecord<>(topic, event), (metadata, ex) -> {
-                    if (ex != null) {
-                        log.warn("A/B exposure delivery to topic '{}' failed", topic, ex);
-                    }
-                });
-            } catch (RuntimeException e) {
-                log.warn("A/B exposure send to topic '{}' threw", topic, e);
-            }
+            sendRecord(new ProducerRecord<>(topic, event));
+        }
+    }
+
+    private void sendRecord(ProducerRecord<String, String> record) {
+        try {
+            producer.send(record, (metadata, ex) -> {
+                if (ex != null) {
+                    recordDeliveryFailure();
+                    log.warn("Kafka event delivery to topic '{}' failed", topic, ex);
+                }
+            });
+        } catch (RuntimeException e) {
+            recordDeliveryFailure();
+            log.warn("Kafka event send to topic '{}' threw", topic, e);
         }
     }
 
@@ -78,7 +135,7 @@ public class KafkaAsyncEventPublisher extends AsyncEventPublisher {
         try {
             producer.close(CLOSE_TIMEOUT); // bounded — don't block shutdown if the broker is down
         } catch (Exception e) {
-            log.warn("error closing Kafka exposure producer", e);
+            log.warn("error closing Kafka event producer", e);
         }
     }
 }

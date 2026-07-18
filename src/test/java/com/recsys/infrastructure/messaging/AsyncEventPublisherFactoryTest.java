@@ -66,4 +66,34 @@ class AsyncEventPublisherFactoryTest {
         assertThat(publisher).isInstanceOf(KafkaAsyncEventPublisher.class);
         publisher.close();
     }
+
+    @Test
+    void onlineEventsKafkaPublisherUsesKeyExtractorAndVersionedDefaultTopic() {
+        AsyncEventPublisher publisher = AsyncEventPublisherFactory.from(
+                "ONLINE_EVENTS",
+                Map.of(
+                        "ONLINE_EVENTS_KAFKA_ENABLED", "true",
+                        "ONLINE_EVENTS_KAFKA_BOOTSTRAP_SERVERS", "localhost:9092"),
+                region -> mock(SqsClient.class));
+
+        KafkaAsyncEventPublisher kafkaPublisher = (KafkaAsyncEventPublisher) publisher;
+        assertThat(kafkaPublisher.hasKeyExtractor()).isTrue();
+        assertThat(kafkaPublisher.topic()).isEqualTo("movie_events_v2");
+        publisher.close();
+    }
+
+    @Test
+    void genericKafkaPublisherRetainsNullKeysAndLegacyDefaultTopic() {
+        AsyncEventPublisher publisher = AsyncEventPublisherFactory.from(
+                "AB_EXPOSURES",
+                Map.of(
+                        "AB_EXPOSURES_KAFKA_ENABLED", "true",
+                        "AB_EXPOSURES_KAFKA_BOOTSTRAP_SERVERS", "localhost:9092"),
+                region -> mock(SqsClient.class));
+
+        KafkaAsyncEventPublisher kafkaPublisher = (KafkaAsyncEventPublisher) publisher;
+        assertThat(kafkaPublisher.hasKeyExtractor()).isFalse();
+        assertThat(kafkaPublisher.topic()).isEqualTo("online_events");
+        publisher.close();
+    }
 }

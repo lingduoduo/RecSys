@@ -33,6 +33,11 @@ public final class AsyncEventPublisherFactory {
         boolean kafkaEnabled = readBoolean(source, prefix + "_KAFKA_ENABLED");
         String bootstrapServers = source.getOrDefault(prefix + "_KAFKA_BOOTSTRAP_SERVERS", "");
         if (kafkaEnabled && !bootstrapServers.isBlank()) {
+            if ("ONLINE_EVENTS".equals(prefix)) {
+                String topic = source.getOrDefault(prefix + "_KAFKA_TOPIC", "movie_events_v2");
+                return new KafkaAsyncEventPublisher(
+                        bootstrapServers, topic, MovieEventKafkaKeyExtractor::extract);
+            }
             String topic = source.getOrDefault(prefix + "_KAFKA_TOPIC", "online_events");
             return new KafkaAsyncEventPublisher(bootstrapServers, topic);
         }

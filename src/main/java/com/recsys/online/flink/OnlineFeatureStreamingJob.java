@@ -7,10 +7,14 @@ import org.apache.flink.api.common.eventtime.WatermarkStrategy;
 import org.slf4j.Logger;
 import org.slf4j.LoggerFactory;
 import org.apache.flink.api.common.functions.AggregateFunction;
+import org.apache.flink.api.common.functions.RichFilterFunction;
+import org.apache.flink.api.common.accumulators.LongCounter;
 import org.apache.flink.api.common.serialization.SimpleStringSchema;
-import org.apache.flink.api.common.state.StateTtlConfig;
 import org.apache.flink.api.common.state.ListState;
 import org.apache.flink.api.common.state.ListStateDescriptor;
+import org.apache.flink.api.common.state.MapState;
+import org.apache.flink.api.common.state.MapStateDescriptor;
+import org.apache.flink.api.common.state.StateTtlConfig;
 import org.apache.flink.api.common.state.ValueState;
 import org.apache.flink.api.common.state.ValueStateDescriptor;
 import org.apache.flink.api.common.typeinfo.Types;
@@ -22,13 +26,15 @@ import org.apache.flink.streaming.api.datastream.DataStream;
 import org.apache.flink.streaming.api.environment.StreamExecutionEnvironment;
 import org.apache.flink.streaming.api.functions.KeyedProcessFunction;
 import org.apache.flink.streaming.api.functions.sink.RichSinkFunction;
-import org.apache.flink.streaming.api.functions.windowing.AllWindowFunction;
 import org.apache.flink.streaming.api.functions.windowing.ProcessWindowFunction;
+import org.apache.flink.streaming.api.functions.windowing.WindowFunction;
+import org.apache.flink.streaming.api.windowing.assigners.TumblingEventTimeWindows;
 import org.apache.flink.streaming.api.windowing.assigners.TumblingProcessingTimeWindows;
 import org.apache.flink.streaming.api.windowing.time.Time;
 import org.apache.flink.streaming.api.windowing.windows.TimeWindow;
 import org.apache.flink.util.Collector;
 import org.apache.flink.util.StringUtils;
+import org.apache.kafka.clients.admin.Admin;
 import io.lettuce.core.RedisClient;
 import io.lettuce.core.RedisURI;
 import io.lettuce.core.ScriptOutputType;
@@ -38,6 +44,7 @@ import io.lettuce.core.codec.StringCodec;
 
 import java.io.IOException;
 import java.time.Duration;
+import java.net.URI;
 import java.util.ArrayDeque;
 import java.util.ArrayList;
 import java.util.Comparator;
@@ -46,6 +53,7 @@ import java.util.HashMap;
 import java.util.List;
 import java.util.Map;
 import java.util.Properties;
+import java.util.Set;
 import java.util.stream.Collectors;
 
 public final class OnlineFeatureStreamingJob {
@@ -57,11 +65,20 @@ public final class OnlineFeatureStreamingJob {
 
     public static void main(String[] args) throws Exception {
         ParameterTool params = ParameterTool.fromArgs(args);
+        JobConfiguration jobConfiguration = validateConfiguration(params);
 
         String redisHost = params.get("redis.host", "localhost");
         int redisPort = params.getInt("redis.port", 6379);
         int recentMovieLimit = params.getInt("recent-movie-limit", 3);
         int topK = params.getInt("top-k", 10);
+        int topKBucketCount = params.getInt("top-k-bucket-count", jobConfiguration.operatorParallelism());
+        int finalTopKParallelism = params.getInt("final-top-k-parallelism", 1);
+        long allowedLatenessMs = validateAllowedLatenessMs(
+                params.getLong("top-k-allowed-lateness-ms", 5_000L));
+        long watermarkIdleTimeoutMs = validateWatermarkIdleTimeoutMs(
+                params.getLong("watermark-idle-timeout-ms", 30_000L));
+        if (topKBucketCount <= 0) throw new IllegalArgumentException("top-k-bucket-count must be positive");
+        if (finalTopKParallelism <= 0) throw new IllegalArgumentException("final-top-k-parallelism must be positive");
         long windowSeconds = params.getLong("window-seconds", 10L);
         String windowLabel = params.get("window-label", "last_hour");
         int userHistoryTtlSeconds = params.getInt("user-history-ttl-seconds", 86400);
@@ -79,88 +96,220 @@ public final class OnlineFeatureStreamingJob {
             env.getCheckpointConfig().setCheckpointStorage(checkpointDir);
         }
 
-        DataStream<MovieEvent> events = buildEventStream(env, params)
+        String bootstrapServers = params.get("bootstrap.servers");
+        validateKafkaTopic(params, jobConfiguration);
+
+        boolean bridgeMode = params.getBoolean("bridge-mode", false);
+        long bridgeReplayCutoffMs = params.getLong("bridge-replay-cutoff-ms", -1L);
+        long bridgeReferenceTimeMs = params.getLong("bridge-reference-time-ms", -1L);
+        DataStream<MovieEvent> events = buildEventStream(env, params, jobConfiguration)
+                .filter(new BridgeReplayCutoffFilter(bridgeMode, bridgeReplayCutoffMs))
                 .filter(OnlineFeatureStreamingJob::requiresEventIdentity)
-                .keyBy(MovieEvent::idempotencyKey)
-                .process(new DeduplicateEventsFunction(idempotencyTtlSeconds))
+                .keyBy(event -> event.userId)
+                .process(new DeduplicateEventsFunction(idempotencyTtlSeconds, bridgeMode, bridgeReferenceTimeMs))
                 .name("event-idempotency")
+                .uid("event-idempotency-v1")
+                .setParallelism(jobConfiguration.operatorParallelism())
+                .setMaxParallelism(jobConfiguration.maxParallelism())
                 .assignTimestampsAndWatermarks(
                         WatermarkStrategy.<MovieEvent>forBoundedOutOfOrderness(Duration.ofSeconds(5))
-                                .withTimestampAssigner((event, timestamp) -> event.eventTimeMillis));
+                                .withTimestampAssigner((event, timestamp) -> event.eventTimeMillis)
+                                .withIdleness(Duration.ofMillis(watermarkIdleTimeoutMs)));
 
-        events
+        DataStream<UserRecentMoviesUpdate> recentUpdates = events
                 .filter(MovieEvent::updatesRecentHistory)
+                .filter(event -> bridgeEligible(event, bridgeMode, bridgeReferenceTimeMs, userHistoryTtlSeconds))
                 .keyBy(event -> event.userId)
                 .process(new RecentMoviesFunction(recentMovieLimit, userHistoryTtlSeconds))
                 .name("recent-movies")
-                .addSink(new RedisRecentMoviesSink(redisHost, redisPort))
-                .name("redis-user-history-sink");
+                .uid("recent-movies-v1")
+                .setParallelism(jobConfiguration.operatorParallelism())
+                .setMaxParallelism(jobConfiguration.maxParallelism());
+        attachSink(recentUpdates, new RedisRecentMoviesSink(redisHost, redisPort), bridgeMode,
+                "redis-user-history-sink", "redis-user-history-sink-v1", jobConfiguration);
 
-        events
+        DataStream<StringFeatureUpdate> embeddingUpdates = events
                 .filter(MovieEvent::updatesRecentHistory)
+                .filter(event -> bridgeEligible(event, bridgeMode, bridgeReferenceTimeMs, userEmbeddingTtlSeconds))
                 .keyBy(event -> event.userId)
                 .process(new UserEmbeddingFunction(userEmbeddingDimensions, userEmbeddingTtlSeconds))
                 .name("user-embedding-feature")
-                .addSink(new RedisStringFeatureSink(redisHost, redisPort))
-                .name("redis-user-embedding-sink");
+                .uid("user-embedding-feature-v1").setParallelism(jobConfiguration.operatorParallelism())
+                .setMaxParallelism(jobConfiguration.maxParallelism());
+        attachSink(embeddingUpdates, new RedisStringFeatureSink(redisHost, redisPort), bridgeMode,
+                "redis-user-embedding-sink", "redis-user-embedding-sink-v1", jobConfiguration);
 
-        events
+        DataStream<StringFeatureUpdate> sessionUpdates = events
                 .filter(MovieEvent::hasSessionIdentity)
+                .filter(event -> bridgeEligible(event, bridgeMode, bridgeReferenceTimeMs, sessionTtlSeconds))
                 .keyBy(event -> event.userId + "|" + event.sessionId())
                 .process(new SessionFeatureFunction(sessionTtlSeconds))
                 .name("session-feature")
-                .addSink(new RedisStringFeatureSink(redisHost, redisPort))
-                .name("redis-session-feature-sink");
+                .uid("session-feature-v1").setParallelism(jobConfiguration.operatorParallelism())
+                .setMaxParallelism(jobConfiguration.maxParallelism());
+        attachSink(sessionUpdates, new RedisStringFeatureSink(redisHost, redisPort), bridgeMode,
+                "redis-session-feature-sink", "redis-session-feature-sink-v1", jobConfiguration);
 
-        events
+        DataStream<MovieMetricUpdate> metricUpdates = events
                 .filter(event -> metricKind(event) != null)
                 .keyBy(event -> event.movieId + "|" + metricKind(event))
                 .window(TumblingProcessingTimeWindows.of(Time.seconds(windowSeconds)))
                 .aggregate(new CountAggregate(), new MovieMetricWindowFunction(windowLabel, metricTtlSeconds))
                 .name("movie-metrics")
-                .addSink(new RedisMovieMetricSink(redisHost, redisPort))
-                .name("redis-movie-metric-sink");
+                .uid("movie-metrics-v1").setParallelism(jobConfiguration.operatorParallelism())
+                .setMaxParallelism(jobConfiguration.maxParallelism());
+        attachSink(metricUpdates, new RedisMovieMetricSink(redisHost, redisPort), bridgeMode,
+                "redis-movie-metric-sink", "redis-movie-metric-sink-v1", jobConfiguration);
 
-        DataStream<TopKSnapshot> topKSnapshots = events
+        DataStream<PartialTopK> partials = events
                 .filter(event -> event.engagementWeight() > 0L)
-                .windowAll(TumblingProcessingTimeWindows.of(Time.seconds(windowSeconds)))
-                .apply(new TopKAllWindowFunction(topK, windowLabel, metricTtlSeconds))
-                .name("topk-window");
+                .keyBy(event -> movieBucket(event.movieId, topKBucketCount))
+                .window(TumblingEventTimeWindows.of(Time.seconds(windowSeconds)))
+                .apply(new PartialTopKWindowFunction(topK))
+                .name("topk-partial").uid("topk-partial-v1")
+                .setParallelism(jobConfiguration.operatorParallelism())
+                .setMaxParallelism(jobConfiguration.maxParallelism());
 
-        topKSnapshots
-                .addSink(new RedisTopKSink(redisHost, redisPort))
-                .name("redis-topk-sink");
+        DataStream<TopKSnapshot> topKSnapshots = partials
+                .keyBy(PartialTopK::windowEnd)
+                .process(new FinalTopKWindowFunction(topK, windowLabel, metricTtlSeconds,
+                        topKBucketCount, allowedLatenessMs))
+                .name("topk-final").uid("topk-final-v1")
+                .setParallelism(Math.min(finalTopKParallelism, jobConfiguration.operatorParallelism()))
+                .setMaxParallelism(jobConfiguration.maxParallelism());
 
-        topKSnapshots
-                .addSink(new RedisTrendFeatureSink(redisHost, redisPort))
-                .name("redis-trend-feature-sink");
+        attachSink(topKSnapshots, new RedisTopKSink(redisHost, redisPort), bridgeMode,
+                "redis-topk-sink", "redis-topk-sink-v1", jobConfiguration);
+        attachSink(topKSnapshots, new RedisTrendFeatureSink(redisHost, redisPort), bridgeMode,
+                "redis-trend-feature-sink", "redis-trend-feature-sink-v1", jobConfiguration);
 
         env.execute("recsys-online-feature-streaming");
     }
 
     private static boolean requiresEventIdentity(MovieEvent e) {
+        if (e.userId <= 0) {
+            LOG.warn("Dropping event with invalid userId: movieId={} type={}", e.movieId, e.eventType);
+            return false;
+        }
         if (e.hasEventIdentity()) return true;
         LOG.warn("Dropping event missing eventId — cannot deduplicate safely: userId={} movieId={} type={}",
                 e.userId, e.movieId, e.eventType);
         return false;
     }
 
-    private static DataStream<MovieEvent> buildEventStream(StreamExecutionEnvironment env,
-                                                           ParameterTool params) throws IOException {
+    static JobConfiguration validateConfiguration(ParameterTool params) {
+        boolean kafka = !StringUtils.isNullOrWhitespaceOnly(params.get("bootstrap.servers"));
+        boolean bridge = params.getBoolean("bridge-mode", false);
+        String topic = params.get("topic", "movie_events_v2");
+        String checkpointDir = params.get("checkpoint-dir", System.getenv("FLINK_CHECKPOINT_DIR"));
+        if (bridge && !kafka) throw new IllegalArgumentException("bridge-mode requires bootstrap.servers");
+        if (bridge && (StringUtils.isNullOrWhitespaceOnly(params.get("topic")) || "movie_events_v2".equals(topic))) {
+            throw new IllegalArgumentException("bridge-mode requires an explicit legacy --topic");
+        }
+        if (bridge && params.getLong("bridge-replay-cutoff-ms", -1L) <= 0L) {
+            throw new IllegalArgumentException("bridge-mode requires a positive bridge-replay-cutoff-ms");
+        }
+        if (bridge && params.getLong("bridge-reference-time-ms", -1L) <= 0L) {
+            throw new IllegalArgumentException("bridge-mode requires a positive bridge-reference-time-ms");
+        }
+        if (bridge && params.getLong("bridge-replay-cutoff-ms") > params.getLong("bridge-reference-time-ms")) {
+            throw new IllegalArgumentException("bridge-replay-cutoff-ms cannot exceed bridge-reference-time-ms");
+        }
+        if (kafka && !bridge && !"movie_events_v2".equals(topic)) {
+            throw new IllegalArgumentException("this artifact only supports topic movie_events_v2; use bridge-mode for legacy replay");
+        }
+        if (kafka && StringUtils.isNullOrWhitespaceOnly(checkpointDir)) {
+            throw new IllegalArgumentException("Kafka normal and bridge modes require a durable checkpoint-dir URI");
+        }
+        if (kafka && !params.getBoolean("allow-local-checkpoint-storage", false)) {
+            validateDurableCheckpointUri(checkpointDir);
+        }
+        JobConfiguration configuration = new JobConfiguration(
+                params.getInt("expected-topic-partitions", 24),
+                params.getInt("source-parallelism", 24),
+                params.getInt("operator-parallelism", 24),
+                params.getInt("max-parallelism", 128));
+        if (configuration.expectedTopicPartitions() <= 0) throw new IllegalArgumentException("expected-topic-partitions must be positive");
+        if (configuration.sourceParallelism() <= 0) throw new IllegalArgumentException("source-parallelism must be positive");
+        if (configuration.operatorParallelism() <= 0) throw new IllegalArgumentException("operator-parallelism must be positive");
+        if (configuration.maxParallelism() <= 0) throw new IllegalArgumentException("max-parallelism must be positive");
+        if (configuration.sourceParallelism() > configuration.expectedTopicPartitions()) {
+            throw new IllegalArgumentException("source-parallelism cannot exceed expected-topic-partitions");
+        }
+        if (configuration.maxParallelism() < configuration.sourceParallelism()
+                || configuration.maxParallelism() < configuration.operatorParallelism()) {
+            throw new IllegalArgumentException(
+                    "max-parallelism cannot be below source-parallelism or operator-parallelism");
+        }
+        return configuration;
+    }
+
+    private static final Set<String> DURABLE_CHECKPOINT_SCHEMES =
+            Set.of("s3", "s3a", "hdfs", "gs", "abfs", "abfss", "wasb", "wasbs");
+
+    static void validateDurableCheckpointUri(String checkpointDir) {
+        try {
+            URI uri = URI.create(checkpointDir.trim());
+            if (uri.getScheme() == null || !DURABLE_CHECKPOINT_SCHEMES.contains(uri.getScheme().toLowerCase())) {
+                throw new IllegalArgumentException("checkpoint-dir must use shared durable storage; local/file/tmp paths require the explicit local-test override");
+            }
+        } catch (RuntimeException e) {
+            if (e instanceof IllegalArgumentException && e.getMessage().contains("shared durable")) throw e;
+            throw new IllegalArgumentException("checkpoint-dir must be a valid shared durable URI", e);
+        }
+    }
+
+    static <T> void attachSink(DataStream<T> stream, RichSinkFunction<T> productionSink,
+                                       boolean bridgeMode, String name, String uid,
+                                       JobConfiguration configuration) {
+        RichSinkFunction<T> sink = bridgeMode ? new NoOpStateSink<>() : productionSink;
+        stream.addSink(sink)
+                .name(bridgeMode ? "bridge-noop-" + name : name).uid(uid)
+                .setParallelism(configuration.operatorParallelism())
+                .setMaxParallelism(configuration.maxParallelism());
+    }
+
+    record JobConfiguration(int expectedTopicPartitions, int sourceParallelism,
+                            int operatorParallelism, int maxParallelism) {}
+
+    static void validateKafkaTopic(ParameterTool params, JobConfiguration configuration) throws Exception {
         String bootstrapServers = params.get("bootstrap.servers");
-        String topic = params.get("topic", "recsys_events");
+        if (StringUtils.isNullOrWhitespaceOnly(bootstrapServers)) return;
+        Properties adminProperties = kafkaProperties(params);
+        adminProperties.setProperty("bootstrap.servers", bootstrapServers);
+        try (Admin admin = Admin.create(adminProperties)) {
+            KafkaTopicPartitionValidator.validate(admin, params.get("topic", "movie_events_v2"),
+                    configuration.expectedTopicPartitions());
+        }
+    }
+
+    static DataStream<MovieEvent> buildEventStream(StreamExecutionEnvironment env,
+                                                           ParameterTool params,
+                                                           JobConfiguration configuration) throws IOException {
+        String bootstrapServers = params.get("bootstrap.servers");
+        String topic = params.get("topic", "movie_events_v2");
 
         if (!StringUtils.isNullOrWhitespaceOnly(bootstrapServers)) {
+            boolean bridgeMode = params.getBoolean("bridge-mode", false);
+            OffsetsInitializer startingOffsets = bridgeMode
+                    ? OffsetsInitializer.timestamp(params.getLong("bridge-replay-cutoff-ms"))
+                    : OffsetsInitializer.earliest();
             KafkaSource<String> source = KafkaSource.<String>builder()
                     .setBootstrapServers(bootstrapServers)
                     .setTopics(topic)
-                    .setGroupId(params.get("group.id", "online-features"))
-                    .setStartingOffsets(OffsetsInitializer.earliest())
+                    .setGroupId(params.get("group.id", params.getBoolean("bridge-mode", false)
+                            ? "online-features-bridge-v1" : "online-features-v2"))
+                    .setStartingOffsets(startingOffsets)
                     .setValueOnlyDeserializer(new SimpleStringSchema())
                     .setProperties(kafkaProperties(params))
                     .build();
 
+            String sourceUid = params.getBoolean("bridge-mode", false)
+                    ? "kafka-movie-events-bridge-v1" : "kafka-movie-events-v2";
             return env.fromSource(source, WatermarkStrategy.noWatermarks(), "kafka-movie-events")
+                    .uid(sourceUid)
+                    .setParallelism(configuration.sourceParallelism())
+                    .setMaxParallelism(configuration.maxParallelism())
                     .flatMap((String line, Collector<MovieEvent> out) -> {
                         MovieEvent e = parseEvent(line);
                         if (e != null) out.collect(e);
@@ -169,12 +318,47 @@ public final class OnlineFeatureStreamingJob {
 
         String inputFile = params.get("input-file", "streaming/online-serving/data/movie_events.ndjson");
         return env.readTextFile(inputFile)
+                .uid("kafka-movie-events-v2")
+                .setParallelism(configuration.sourceParallelism())
+                .setMaxParallelism(configuration.maxParallelism())
                 .filter(line -> !line.isBlank())
                 .flatMap((String line, Collector<MovieEvent> out) -> {
                     MovieEvent e = parseEvent(line);
                     if (e != null) out.collect(e);
                 }).returns(MovieEvent.class);
     }
+
+    /** Narrow graph seam used by the Kafka/MiniCluster contract test. */
+    static PartitionGraph buildPartitionGraph(DataStream<MovieEvent> input, JobConfiguration configuration,
+                                               int topK, int bucketCount, long windowMillis,
+                                               long allowedLatenessMillis, long idleMillis) {
+        DataStream<MovieEvent> events = input
+                .filter(OnlineFeatureStreamingJob::requiresEventIdentity)
+                .keyBy(event -> event.userId)
+                .process(new DeduplicateEventsFunction(3_600))
+                .name("event-idempotency").uid("event-idempotency-v1")
+                .setParallelism(configuration.operatorParallelism())
+                .setMaxParallelism(configuration.maxParallelism())
+                .assignTimestampsAndWatermarks(WatermarkStrategy.<MovieEvent>forBoundedOutOfOrderness(Duration.ZERO)
+                        .withTimestampAssigner((event, timestamp) -> event.eventTimeMillis)
+                        .withIdleness(Duration.ofMillis(idleMillis)));
+        DataStream<PartialTopK> partials = events.filter(event -> event.engagementWeight() > 0L)
+                .keyBy(event -> movieBucket(event.movieId, bucketCount))
+                .window(TumblingEventTimeWindows.of(Time.milliseconds(windowMillis)))
+                .apply(new PartialTopKWindowFunction(topK))
+                .name("topk-partial").uid("topk-partial-v1")
+                .setParallelism(configuration.operatorParallelism())
+                .setMaxParallelism(configuration.maxParallelism());
+        DataStream<TopKSnapshot> snapshots = partials.keyBy(PartialTopK::windowEnd)
+                .process(new FinalTopKWindowFunction(topK, "integration", 60, bucketCount,
+                        allowedLatenessMillis))
+                .name("topk-final").uid("topk-final-v1")
+                .setParallelism(configuration.operatorParallelism())
+                .setMaxParallelism(configuration.maxParallelism());
+        return new PartitionGraph(events, snapshots);
+    }
+
+    record PartitionGraph(DataStream<MovieEvent> events, DataStream<TopKSnapshot> snapshots) {}
 
     private static Properties kafkaProperties(ParameterTool params) {
         Properties properties = new Properties();
@@ -195,6 +379,48 @@ public final class OnlineFeatureStreamingJob {
         } catch (IOException e) {
             LOG.warn("Skipping malformed movie event JSON: {}", json, e);
             return null;
+        }
+    }
+
+    static boolean acceptsBridgeReplayEvent(MovieEvent event, boolean bridgeMode, long cutoffMs) {
+        if (!bridgeMode) return true;
+        if (event.eventTimeMillis <= 0L) {
+            LOG.warn("Dropping bridge event without a classifiable event timestamp: eventId={}", event.eventId);
+            return false;
+        }
+        if (event.eventTimeMillis < cutoffMs) {
+            LOG.warn("Dropping bridge event older than replay cutoff: eventId={} eventTimeMillis={} cutoffMs={}",
+                    event.eventId, event.eventTimeMillis, cutoffMs);
+            return false;
+        }
+        return true;
+    }
+
+    static boolean bridgeEligible(MovieEvent event, boolean bridgeMode, long referenceMs, long ttlSeconds) {
+        if (!bridgeMode) return true;
+        long ttlMs = Math.max(1L, ttlSeconds) * 1_000L;
+        return event.eventTimeMillis > 0L && event.eventTimeMillis <= Long.MAX_VALUE - ttlMs
+                && event.eventTimeMillis + ttlMs > referenceMs;
+    }
+
+    static final class BridgeReplayCutoffFilter extends RichFilterFunction<MovieEvent> {
+        private final boolean bridgeMode;
+        private final long cutoffMs;
+        private transient LongCounter rejected;
+
+        BridgeReplayCutoffFilter(boolean bridgeMode, long cutoffMs) {
+            this.bridgeMode = bridgeMode;
+            this.cutoffMs = cutoffMs;
+        }
+
+        @Override public void open(Configuration parameters) {
+            rejected = getRuntimeContext().getLongCounter("bridge-replay-rejected-event-time");
+        }
+
+        @Override public boolean filter(MovieEvent event) {
+            boolean accepted = acceptsBridgeReplayEvent(event, bridgeMode, cutoffMs);
+            if (!accepted && rejected != null) rejected.add(1L);
+            return accepted;
         }
     }
 
@@ -223,10 +449,45 @@ public final class OnlineFeatureStreamingJob {
         return null;
     }
 
+    static int movieBucket(int movieId, int bucketCount) {
+        if (bucketCount <= 0) {
+            throw new IllegalArgumentException("bucketCount must be positive");
+        }
+        return Math.floorMod(Integer.hashCode(movieId), bucketCount);
+    }
+
+    static StateTtlConfig stateTtl(long ttlSeconds) {
+        return StateTtlConfig.newBuilder(
+                        org.apache.flink.api.common.time.Time.seconds(Math.max(1L, ttlSeconds)))
+                .setUpdateType(StateTtlConfig.UpdateType.OnCreateAndWrite)
+                .setStateVisibility(StateTtlConfig.StateVisibility.NeverReturnExpired)
+                .cleanupInRocksdbCompactFilter(1_000L)
+                .build();
+    }
+
+    static long expiresAt(long eventTimeMs, long ttlSeconds) {
+        long ttlMs = Math.max(1L, ttlSeconds) * 1_000L;
+        return eventTimeMs > Long.MAX_VALUE - ttlMs ? Long.MAX_VALUE : eventTimeMs + ttlMs;
+    }
+
+    static long validateAllowedLatenessMs(long allowedLatenessMs) {
+        if (allowedLatenessMs < 0L) {
+            throw new IllegalArgumentException("top-k-allowed-lateness-ms must be non-negative");
+        }
+        return allowedLatenessMs;
+    }
+
+    static long validateWatermarkIdleTimeoutMs(long watermarkIdleTimeoutMs) {
+        if (watermarkIdleTimeoutMs <= 0L) {
+            throw new IllegalArgumentException("watermark-idle-timeout-ms must be positive");
+        }
+        return watermarkIdleTimeoutMs;
+    }
+
     static final class RecentMoviesFunction extends KeyedProcessFunction<Integer, MovieEvent, UserRecentMoviesUpdate> {
         private final int limit;
         private final int ttlSeconds;
-        private transient ListState<Integer> recentMoviesState;
+        private transient ValueState<RecentMoviesState> recentMoviesState;
 
         RecentMoviesFunction(int limit, int ttlSeconds) {
             this.limit = limit;
@@ -235,17 +496,21 @@ public final class OnlineFeatureStreamingJob {
 
         @Override
         public void open(Configuration parameters) {
-            recentMoviesState = getRuntimeContext().getListState(
-                    new ListStateDescriptor<>("recent-movie-ids", Types.INT));
+            ValueStateDescriptor<RecentMoviesState> descriptor =
+                    new ValueStateDescriptor<>("recent-movies-state-v2", RecentMoviesState.class);
+            descriptor.enableTimeToLive(stateTtl(ttlSeconds));
+            recentMoviesState = getRuntimeContext().getState(descriptor);
         }
 
         @Override
         public void processElement(MovieEvent event,
                                    KeyedProcessFunction<Integer, MovieEvent, UserRecentMoviesUpdate>.Context context,
                                    Collector<UserRecentMoviesUpdate> out) throws Exception {
+            RecentMoviesState current = recentMoviesState.value();
             Deque<Integer> movies = new ArrayDeque<>();
-            for (Integer movieId : recentMoviesState.get()) {
-                movies.addLast(movieId);
+            if (current != null && event.eventTimeMillis < current.expiresAtEventTimeMs) {
+                if (event.eventTimeMillis < current.lastRelevantEventTimeMs) return;
+                movies.addAll(current.movies);
             }
 
             movies.remove(event.movieId);
@@ -254,7 +519,11 @@ public final class OnlineFeatureStreamingJob {
                 movies.removeFirst();
             }
 
-            recentMoviesState.update(new ArrayList<>(movies));
+            RecentMoviesState next = new RecentMoviesState();
+            next.movies = new ArrayList<>(movies);
+            next.expiresAtEventTimeMs = expiresAt(event.eventTimeMillis, ttlSeconds);
+            next.lastRelevantEventTimeMs = event.eventTimeMillis;
+            recentMoviesState.update(next);
             out.collect(new UserRecentMoviesUpdate(
                     "user:" + event.userId + ":recent_movies",
                     joinMovieIds(movies),
@@ -281,8 +550,10 @@ public final class OnlineFeatureStreamingJob {
 
         @Override
         public void open(Configuration parameters) {
-            state = getRuntimeContext().getState(
-                    new ValueStateDescriptor<>("user-embedding-feature", UserEmbeddingState.class));
+            ValueStateDescriptor<UserEmbeddingState> descriptor =
+                    new ValueStateDescriptor<>("user-embedding-feature", UserEmbeddingState.class);
+            descriptor.enableTimeToLive(stateTtl(ttlSeconds));
+            state = getRuntimeContext().getState(descriptor);
         }
 
         @Override
@@ -290,6 +561,8 @@ public final class OnlineFeatureStreamingJob {
                                    KeyedProcessFunction<Integer, MovieEvent, StringFeatureUpdate>.Context context,
                                    Collector<StringFeatureUpdate> out) throws Exception {
             UserEmbeddingState current = state.value();
+            if (current != null && event.eventTimeMillis >= current.expiresAtEventTimeMs) current = null;
+            if (current != null && event.eventTimeMillis < current.updatedAtMillis) return;
             double[] vector = current == null ? new double[dimensions] : parseVector(current.vector, dimensions);
             int bucket = Math.floorMod(event.movieId, dimensions);
             vector[bucket] += Math.max(1L, event.engagementWeight());
@@ -299,6 +572,7 @@ public final class OnlineFeatureStreamingJob {
             UserEmbeddingState next = new UserEmbeddingState();
             next.vector = rawEncoded;                   // raw counts, not normalised
             next.updatedAtMillis = event.eventTimeMillis;
+            next.expiresAtEventTimeMs = expiresAt(event.eventTimeMillis, ttlSeconds);
             state.update(next);
 
             // Normalise only for the Redis output so the serving layer gets a unit vector.
@@ -362,8 +636,10 @@ public final class OnlineFeatureStreamingJob {
 
         @Override
         public void open(Configuration parameters) {
-            state = getRuntimeContext().getState(
-                    new ValueStateDescriptor<>("session-feature", SessionFeatureState.class));
+            ValueStateDescriptor<SessionFeatureState> descriptor =
+                    new ValueStateDescriptor<>("session-feature", SessionFeatureState.class);
+            descriptor.enableTimeToLive(stateTtl(ttlSeconds));
+            state = getRuntimeContext().getState(descriptor);
         }
 
         @Override
@@ -371,6 +647,8 @@ public final class OnlineFeatureStreamingJob {
                                    KeyedProcessFunction<String, MovieEvent, StringFeatureUpdate>.Context context,
                                    Collector<StringFeatureUpdate> out) throws Exception {
             SessionFeatureState current = state.value();
+            if (current != null && event.eventTimeMillis >= current.expiresAtEventTimeMs) current = null;
+            if (current != null && event.eventTimeMillis < current.updatedAtMillis) return;
             if (current == null) {
                 current = new SessionFeatureState();
                 current.userId = event.userId;
@@ -384,6 +662,7 @@ public final class OnlineFeatureStreamingJob {
             current.engagementScore += event.engagementWeight();
             current.lastMovieId = event.movieId;
             current.updatedAtMillis = event.eventTimeMillis;
+            current.expiresAtEventTimeMs = expiresAt(event.eventTimeMillis, ttlSeconds);
             current.lastEventType = event.eventType == null ? "" : event.eventType;
             state.update(current);
 
@@ -397,36 +676,41 @@ public final class OnlineFeatureStreamingJob {
         }
     }
 
-    static final class DeduplicateEventsFunction extends KeyedProcessFunction<String, MovieEvent, MovieEvent> {
+    static final class DeduplicateEventsFunction extends KeyedProcessFunction<Integer, MovieEvent, MovieEvent> {
         private final long ttlSeconds;
-        private transient ValueState<Boolean> seen;
+        private final boolean bridgeMode;
+        private final long referenceMs;
+        private transient MapState<String, Long> eventExpiry;
 
         DeduplicateEventsFunction(long ttlSeconds) {
+            this(ttlSeconds, false, -1L);
+        }
+
+        DeduplicateEventsFunction(long ttlSeconds, boolean bridgeMode, long referenceMs) {
             this.ttlSeconds = ttlSeconds;
+            this.bridgeMode = bridgeMode;
+            this.referenceMs = referenceMs;
         }
 
         @Override
         public void open(Configuration parameters) {
-            ValueStateDescriptor<Boolean> descriptor = new ValueStateDescriptor<>("seen-event-id", Types.BOOLEAN);
-            StateTtlConfig ttlConfig = StateTtlConfig
-                    .newBuilder(org.apache.flink.api.common.time.Time.seconds(Math.max(1L, ttlSeconds)))
-                    .setUpdateType(StateTtlConfig.UpdateType.OnCreateAndWrite)
-                    .setStateVisibility(StateTtlConfig.StateVisibility.NeverReturnExpired)
-                    .cleanupIncrementally(100, true)
-                    .build();
-            descriptor.enableTimeToLive(ttlConfig);
-            seen = getRuntimeContext().getState(descriptor);
+            MapStateDescriptor<String, Long> descriptor =
+                    new MapStateDescriptor<>("event-id-expiry", Types.STRING, Types.LONG);
+            descriptor.enableTimeToLive(stateTtl(ttlSeconds));
+            eventExpiry = getRuntimeContext().getMapState(descriptor);
         }
 
         @Override
         public void processElement(MovieEvent event,
-                                   KeyedProcessFunction<String, MovieEvent, MovieEvent>.Context context,
+                                   KeyedProcessFunction<Integer, MovieEvent, MovieEvent>.Context context,
                                    Collector<MovieEvent> out) throws Exception {
-            if (Boolean.TRUE.equals(seen.value())) {
+            long comparisonTime = bridgeMode ? referenceMs : event.eventTimeMillis;
+            Long expiry = eventExpiry.get(event.eventId);
+            if (expiry != null && expiry > comparisonTime) {
                 LOG.debug("Skipping duplicate movie event: {}", event.eventId);
                 return;
             }
-            seen.update(true);
+            eventExpiry.put(event.eventId, expiresAt(event.eventTimeMillis, ttlSeconds));
             out.collect(event);
         }
     }
@@ -483,19 +767,17 @@ public final class OnlineFeatureStreamingJob {
         }
     }
 
-    static final class TopKAllWindowFunction implements AllWindowFunction<MovieEvent, TopKSnapshot, TimeWindow> {
+    static final class PartialTopKWindowFunction
+            implements WindowFunction<MovieEvent, PartialTopK, Integer, TimeWindow> {
         private final int topK;
-        private final String windowLabel;
-        private final int ttlSeconds;
 
-        TopKAllWindowFunction(int topK, String windowLabel, int ttlSeconds) {
+        PartialTopKWindowFunction(int topK) {
             this.topK = topK;
-            this.windowLabel = windowLabel;
-            this.ttlSeconds = ttlSeconds;
         }
 
         @Override
-        public void apply(TimeWindow window, Iterable<MovieEvent> values, Collector<TopKSnapshot> out) {
+        public void apply(Integer bucket, TimeWindow window, Iterable<MovieEvent> values,
+                          Collector<PartialTopK> out) {
             Map<Integer, Long> scores = new HashMap<>();
             for (MovieEvent event : values) {
                 scores.merge(event.movieId, event.engagementWeight(), Long::sum);
@@ -506,9 +788,120 @@ public final class OnlineFeatureStreamingJob {
                             .thenComparing(Map.Entry::getKey))
                     .limit(topK)
                     .map(entry -> new ScoredMovie(entry.getKey(), entry.getValue()))
-                    .toList();
+                    .collect(Collectors.toCollection(ArrayList::new));
 
-            out.collect(new TopKSnapshot("topk:" + windowLabel, ranked, window.getEnd(), ttlSeconds));
+            out.collect(new PartialTopK(window.getEnd(), bucket, ranked));
+        }
+    }
+
+    static final class FinalTopKWindowFunction
+            extends KeyedProcessFunction<Long, PartialTopK, TopKSnapshot> {
+        private final int topK;
+        private final String windowLabel;
+        private final int ttlSeconds;
+        private final int bucketCount;
+        private final long allowedLatenessMs;
+        private transient ListState<PartialTopK> partials;
+        private transient ValueState<Long> emitTimer;
+        private transient ValueState<Long> cleanupTimer;
+        private transient ValueState<Boolean> emitted;
+        private transient LongCounter latePartials;
+
+        FinalTopKWindowFunction(int topK, String windowLabel, int ttlSeconds, int bucketCount,
+                                long allowedLatenessMs) {
+            this.topK = topK;
+            this.windowLabel = windowLabel;
+            this.ttlSeconds = ttlSeconds;
+            this.bucketCount = bucketCount;
+            this.allowedLatenessMs = validateAllowedLatenessMs(allowedLatenessMs);
+        }
+
+        @Override
+        public void open(Configuration parameters) {
+            partials = getRuntimeContext().getListState(
+                    new ListStateDescriptor<>("topk-partials", PartialTopK.class));
+            emitTimer = getRuntimeContext().getState(
+                    new ValueStateDescriptor<>("topk-final-emit-timer", Types.LONG));
+            cleanupTimer = getRuntimeContext().getState(
+                    new ValueStateDescriptor<>("topk-final-cleanup-timer", Types.LONG));
+            emitted = getRuntimeContext().getState(
+                    new ValueStateDescriptor<>("topk-final-emitted", Types.BOOLEAN));
+            latePartials = getRuntimeContext().getLongCounter("topk-late-partials");
+        }
+
+        @Override
+        public void processElement(PartialTopK partial,
+                                   KeyedProcessFunction<Long, PartialTopK, TopKSnapshot>.Context context,
+                                   Collector<TopKSnapshot> out) throws Exception {
+            long cleanupAt = cleanupTimestamp(partial.windowEnd, allowedLatenessMs);
+            if (context.timerService().currentWatermark() >= cleanupAt) {
+                rejectLatePartial(partial);
+                return;
+            }
+            if (Boolean.TRUE.equals(emitted.value())) {
+                rejectLatePartial(partial);
+                return;
+            }
+            partials.add(partial);
+            if (emitTimer.value() == null) {
+                context.timerService().registerEventTimeTimer(partial.windowEnd);
+                emitTimer.update(partial.windowEnd);
+                context.timerService().registerEventTimeTimer(cleanupAt);
+                cleanupTimer.update(cleanupAt);
+            }
+        }
+
+        @Override
+        public void onTimer(long timestamp,
+                            KeyedProcessFunction<Long, PartialTopK, TopKSnapshot>.OnTimerContext context,
+                            Collector<TopKSnapshot> out) throws Exception {
+            Long cleanupAt = cleanupTimer.value();
+            if (cleanupAt != null && timestamp == cleanupAt) {
+                clearWindowState();
+                return;
+            }
+            Long emitAt = emitTimer.value();
+            if (emitAt == null || timestamp != emitAt || Boolean.TRUE.equals(emitted.value())) return;
+            List<PartialTopK> available = new ArrayList<>();
+            for (PartialTopK partial : partials.get()) available.add(partial);
+            out.collect(new TopKSnapshot("topk:" + windowLabel, mergeTopK(available, topK),
+                    context.getCurrentKey(), ttlSeconds));
+            partials.clear();
+            emitTimer.clear();
+            emitted.update(true);
+        }
+
+        private void rejectLatePartial(PartialTopK partial) {
+            latePartials.add(1L);
+            LOG.warn("Rejecting late Top-K partial for completed window {} bucket {} of {}",
+                    partial.windowEnd, partial.bucket, bucketCount);
+        }
+
+        private void clearWindowState() throws Exception {
+            partials.clear();
+            emitTimer.clear();
+            cleanupTimer.clear();
+            emitted.clear();
+        }
+
+        static long cleanupTimestamp(long windowEnd, long allowedLatenessMs) {
+            long delay = Math.max(1L, allowedLatenessMs);
+            return windowEnd > Long.MAX_VALUE - delay ? Long.MAX_VALUE : windowEnd + delay;
+        }
+
+        static List<ScoredMovie> mergeTopK(Iterable<PartialTopK> partials, int topK) {
+            Map<Integer, Long> scores = new HashMap<>();
+            for (PartialTopK partial : partials) {
+                for (ScoredMovie movie : partial.movies) {
+                    scores.merge(movie.movieId, movie.score, Long::sum);
+                }
+            }
+            return scores.entrySet().stream()
+                    .sorted(Map.Entry.<Integer, Long>comparingByValue(Comparator.reverseOrder())
+                            .thenComparing(Map.Entry::getKey))
+                    .limit(topK)
+                    .map(entry -> new ScoredMovie(entry.getKey(), entry.getValue()))
+                    .collect(Collectors.toCollection(ArrayList::new));
         }
     }
 
@@ -624,6 +1017,11 @@ public final class OnlineFeatureStreamingJob {
         }
     }
 
+    /** State-only bridge terminal: preserves sink UIDs without any external side effect. */
+    static final class NoOpStateSink<T> extends RichSinkFunction<T> {
+        @Override public void invoke(T value, Context context) { }
+    }
+
     static final class RedisStringFeatureSink extends AbstractRedisSink<StringFeatureUpdate> {
         RedisStringFeatureSink(String host, int port) { super(host, port); }
 
@@ -728,6 +1126,13 @@ public final class OnlineFeatureStreamingJob {
     public static final class UserEmbeddingState {
         public String vector = "";
         public long updatedAtMillis;
+        public long expiresAtEventTimeMs;
+    }
+
+    public static final class RecentMoviesState {
+        public List<Integer> movies = new ArrayList<>();
+        public long expiresAtEventTimeMs;
+        public long lastRelevantEventTimeMs;
     }
 
     public static final class SessionFeatureState {
@@ -742,6 +1147,7 @@ public final class OnlineFeatureStreamingJob {
         public int lastMovieId;
         public String lastEventType = "";
         public long updatedAtMillis;
+        public long expiresAtEventTimeMs;
 
         String encode() {
             return "eventCount=" + eventCount
@@ -755,9 +1161,11 @@ public final class OnlineFeatureStreamingJob {
         }
     }
 
-    static final class ScoredMovie {
-        final int movieId;
-        final long score;
+    public static final class ScoredMovie {
+        public int movieId;
+        public long score;
+
+        public ScoredMovie() {}
 
         ScoredMovie(int movieId, long score) {
             this.movieId = movieId;
@@ -765,11 +1173,35 @@ public final class OnlineFeatureStreamingJob {
         }
     }
 
-    static final class TopKSnapshot {
-        final String redisKey;
-        final List<ScoredMovie> movies;
-        final long updatedAtMillis;
-        final int ttlSeconds;
+    public static final class PartialTopK {
+        public long windowEnd;
+        public int bucket;
+        public List<ScoredMovie> movies;
+
+        public PartialTopK() {
+            this.movies = new ArrayList<>();
+        }
+
+        PartialTopK(long windowEnd, int bucket, List<ScoredMovie> movies) {
+            this.windowEnd = windowEnd;
+            this.bucket = bucket;
+            this.movies = movies;
+        }
+
+        long windowEnd() {
+            return windowEnd;
+        }
+    }
+
+    public static final class TopKSnapshot {
+        public String redisKey;
+        public List<ScoredMovie> movies;
+        public long updatedAtMillis;
+        public int ttlSeconds;
+
+        public TopKSnapshot() {
+            this.movies = new ArrayList<>();
+        }
 
         TopKSnapshot(String redisKey, List<ScoredMovie> movies, long updatedAtMillis, int ttlSeconds) {
             this.redisKey = redisKey;
