@@ -1,5 +1,7 @@
 package com.recsys.infrastructure.outbox;
 
+import com.fasterxml.jackson.core.JsonProcessingException;
+import com.fasterxml.jackson.databind.ObjectMapper;
 import com.recsys.domain.outbox.OutboxDestination;
 import com.recsys.domain.outbox.OutboxEvent;
 import com.recsys.domain.outbox.OutboxStatus;
@@ -13,6 +15,7 @@ import java.sql.SQLException;
 import java.sql.Timestamp;
 import java.time.Duration;
 import java.time.Instant;
+import java.time.temporal.ChronoUnit;
 import java.util.ArrayList;
 import java.util.List;
 import java.util.Objects;
@@ -20,6 +23,7 @@ import java.util.Optional;
 import java.util.UUID;
 
 public final class MySqlOutboxRepository {
+    private static final ObjectMapper JSON = new ObjectMapper();
     private static final int MAX_ERROR_LENGTH = 2_000;
     private static final String COLUMNS = "event_id, aggregate_type, aggregate_id, event_type, destination, "
             + "partition_key, payload, status, attempt_count, next_attempt_at, lease_owner, lease_expires_at, "
@@ -111,31 +115,35 @@ public final class MySqlOutboxRepository {
         });
     }
 
-    public boolean markDelivered(UUID eventId, long version, Instant acknowledgedAt) {
+    public boolean markDelivered(UUID eventId, long version, String leaseOwner, Instant acknowledgedAt) {
+        requireText(leaseOwner, "leaseOwner");
         Objects.requireNonNull(acknowledgedAt, "acknowledgedAt");
         return terminalUpdate("UPDATE event_outbox SET status = 'DELIVERED', broker_acknowledged_at = ?, "
                 + "lease_owner = NULL, lease_expires_at = NULL, last_error = NULL, version = version + 1 "
-                + "WHERE event_id = ? AND version = ? AND status = 'IN_FLIGHT' AND lease_owner IS NOT NULL",
-                eventId, version, acknowledgedAt, null, false);
+                + "WHERE event_id = ? AND version = ? AND status = 'IN_FLIGHT' AND lease_owner = ?",
+                eventId, version, leaseOwner, acknowledgedAt, null, false);
     }
 
-    public boolean reschedule(UUID eventId, long version, Instant nextAttemptAt, String error) {
+    public boolean reschedule(UUID eventId, long version, String leaseOwner, Instant nextAttemptAt, String error) {
+        requireText(leaseOwner, "leaseOwner");
         Objects.requireNonNull(nextAttemptAt, "nextAttemptAt");
         return terminalUpdate("UPDATE event_outbox SET status = 'PENDING', next_attempt_at = ?, last_error = ?, "
                 + "lease_owner = NULL, lease_expires_at = NULL, version = version + 1 "
-                + "WHERE event_id = ? AND version = ? AND status = 'IN_FLIGHT' AND lease_owner IS NOT NULL",
-                eventId, version, nextAttemptAt, truncate(error), true);
+                + "WHERE event_id = ? AND version = ? AND status = 'IN_FLIGHT' AND lease_owner = ?",
+                eventId, version, leaseOwner, nextAttemptAt, truncate(error), true);
     }
 
-    public boolean markDead(UUID eventId, long version, String error) {
+    public boolean markDead(UUID eventId, long version, String leaseOwner, String error) {
+        requireText(leaseOwner, "leaseOwner");
         return mysql.inTransaction(connection -> {
             String sql = "UPDATE event_outbox SET status = 'DEAD', last_error = ?, lease_owner = NULL, "
                     + "lease_expires_at = NULL, version = version + 1 WHERE event_id = ? AND version = ? "
-                    + "AND status = 'IN_FLIGHT' AND lease_owner IS NOT NULL";
+                    + "AND status = 'IN_FLIGHT' AND lease_owner = ?";
             try (PreparedStatement statement = connection.prepareStatement(sql)) {
                 statement.setString(1, truncate(error));
                 statement.setBytes(2, bytes(Objects.requireNonNull(eventId, "eventId")));
                 statement.setLong(3, version);
+                statement.setString(4, leaseOwner);
                 return statement.executeUpdate() == 1;
             }
         });
@@ -163,7 +171,7 @@ public final class MySqlOutboxRepository {
     }
 
     private boolean terminalUpdate(
-            String sql, UUID eventId, long version, Instant instant, String error, boolean bindError) {
+            String sql, UUID eventId, long version, String leaseOwner, Instant instant, String error, boolean bindError) {
         return mysql.inTransaction(connection -> {
             try (PreparedStatement statement = connection.prepareStatement(sql)) {
                 statement.setTimestamp(1, timestamp(instant));
@@ -171,6 +179,7 @@ public final class MySqlOutboxRepository {
                 if (bindError) statement.setString(++offset, error);
                 statement.setBytes(++offset, bytes(Objects.requireNonNull(eventId, "eventId")));
                 statement.setLong(++offset, version);
+                statement.setString(++offset, leaseOwner);
                 return statement.executeUpdate() == 1;
             }
         });
@@ -200,7 +209,20 @@ public final class MySqlOutboxRepository {
         return left.eventId().equals(right.eventId()) && left.aggregateType().equals(right.aggregateType())
                 && left.aggregateId().equals(right.aggregateId()) && left.eventType().equals(right.eventType())
                 && left.destination() == right.destination() && Objects.equals(left.partitionKey(), right.partitionKey())
-                && left.payload().equals(right.payload()) && left.createdAt().equals(right.createdAt());
+                && semanticallyEqualJson(left.payload(), right.payload())
+                && normalizeTimestamp(left.createdAt()).equals(normalizeTimestamp(right.createdAt()));
+    }
+
+    private static boolean semanticallyEqualJson(String left, String right) {
+        try {
+            return JSON.readTree(left).equals(JSON.readTree(right));
+        } catch (JsonProcessingException invalidJson) {
+            return left.equals(right);
+        }
+    }
+
+    private static Instant normalizeTimestamp(Instant instant) {
+        return instant.truncatedTo(ChronoUnit.MICROS);
     }
 
     private static String truncate(String error) {
