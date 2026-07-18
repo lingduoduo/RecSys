@@ -41,3 +41,10 @@ Status: DONE_WITH_CONCERNS
 - The runbook defines cutoff arithmetic, signed per-partition `[timestampStartOffset,fencedEndOffset)` manifests, gap checks, dormant-expired-key reconciliation, and authoritative savepoint metadata plus isolated restore dry-run compatibility checks.
 - Cutoff boundary test: 1 test, 0 failures/errors, BUILD SUCCESS. Package build: BUILD SUCCESS.
 - The broader focused class rerun reached 26 passing tests before the pre-existing Mockito inline-agent self-attachment test errored in this environment; no product assertion failed. Docker remains unavailable.
+
+## Logical event-time expiry follow-up
+
+- Bridge mode now requires a distinct positive cutover reference. The Kafka cutoff remains the maximum-horizon read bound, while history, embedding, and session branches apply their own TTL eligibility at the reference.
+- Dedup expiry is event-time based; history uses a versioned value wrapper carrying movies, last relevant event time, and logical expiry; embedding and session states carry logical expiry. Exact expiry boundaries reset, and late events cannot regress active state.
+- Flink State TTL remains physical cleanup only and does not define replay eligibility or restored remaining lifetime.
+- Focused cutoff/eligibility tests: 2 passed, 0 failures/errors. Streaming test compilation and package build completed with BUILD SUCCESS.

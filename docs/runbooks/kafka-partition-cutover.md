@@ -51,6 +51,7 @@ Derive `BRIDGE_REPLAY_CUTOFF_MS` as `CUTOVER_REFERENCE_MS - max(configured state
 flink run -c com.recsys.online.flink.OnlineFeatureStreamingJob "$BRIDGE_JOB_JAR" \
   --bridge-mode true --bootstrap.servers "$BOOTSTRAP_SERVERS" \
   --bridge-replay-cutoff-ms "$BRIDGE_REPLAY_CUTOFF_MS" \
+  --bridge-reference-time-ms "$CUTOVER_REFERENCE_MS" \
   --topic "$OLD_TOPIC" --group.id online-features-bridge-v1 \
   --expected-topic-partitions <legacy-partition-count> \
   --source-parallelism <legacy-partition-count> --operator-parallelism 24 \
@@ -60,6 +61,8 @@ flink run -c com.recsys.online.flink.OnlineFeatureStreamingJob "$BRIDGE_JOB_JAR"
 The bridge source UID is `kafka-movie-events-bridge-v1`; its downstream UIDs and state schemas exactly match v2, while production sink UIDs terminate in no-op state-only sinks. Verify `$BRIDGE_JOB_GRAPH_JSON` contains the bridge source UID, every documented downstream UID, expected max parallelism, compatible state descriptors, and no Redis sink implementation. Reconcile rebuilt state only through controlled savepoint/state inspection or an approved isolated export—not production Redis writes. Abort on insufficient retention, failed checkpoints, nonzero lag, or reconciliation differences.
 
 Before bridge startup, capture every partition's timestamp-derived start offset in a signed/checksummed manifest. At the producer fence capture each exclusive end offset. Replay exactly `[timestampStartOffset,fencedEndOffset)` and verify contiguous offsets, counts, and checksums prove no gaps or duplicates. Reconciliation compares active keys and explicitly confirms dormant keys expired before the horizon are absent.
+
+The global cutoff only bounds Kafka reads. Each state branch independently admits events whose original `eventTime + configured TTL` is strictly greater than `CUTOVER_REFERENCE_MS`; equality is expired. Dedup, recent history, embeddings, and sessions persist their original event-time expiry. Flink TTL is only physical cleanup safety. Late events cannot move an active state's logical expiry or last-update time backward, and a gap at or beyond expiry resets that state before applying the new event.
 
 `--allow-local-checkpoint-storage true` exists only for automated local/Docker tests. It is forbidden in staging and production. Production checkpoint URIs must use approved shared storage such as `s3`, `s3a`, `hdfs`, `gs`, `abfs`, `abfss`, `wasb`, or `wasbs`.
 

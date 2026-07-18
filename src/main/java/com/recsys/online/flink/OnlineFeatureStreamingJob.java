@@ -101,11 +101,12 @@ public final class OnlineFeatureStreamingJob {
 
         boolean bridgeMode = params.getBoolean("bridge-mode", false);
         long bridgeReplayCutoffMs = params.getLong("bridge-replay-cutoff-ms", -1L);
+        long bridgeReferenceTimeMs = params.getLong("bridge-reference-time-ms", -1L);
         DataStream<MovieEvent> events = buildEventStream(env, params, jobConfiguration)
                 .filter(new BridgeReplayCutoffFilter(bridgeMode, bridgeReplayCutoffMs))
                 .filter(OnlineFeatureStreamingJob::requiresEventIdentity)
                 .keyBy(event -> event.userId)
-                .process(new DeduplicateEventsFunction(idempotencyTtlSeconds))
+                .process(new DeduplicateEventsFunction(idempotencyTtlSeconds, bridgeMode, bridgeReferenceTimeMs))
                 .name("event-idempotency")
                 .uid("event-idempotency-v1")
                 .setParallelism(jobConfiguration.operatorParallelism())
@@ -117,6 +118,7 @@ public final class OnlineFeatureStreamingJob {
 
         DataStream<UserRecentMoviesUpdate> recentUpdates = events
                 .filter(MovieEvent::updatesRecentHistory)
+                .filter(event -> bridgeEligible(event, bridgeMode, bridgeReferenceTimeMs, userHistoryTtlSeconds))
                 .keyBy(event -> event.userId)
                 .process(new RecentMoviesFunction(recentMovieLimit, userHistoryTtlSeconds))
                 .name("recent-movies")
@@ -128,6 +130,7 @@ public final class OnlineFeatureStreamingJob {
 
         DataStream<StringFeatureUpdate> embeddingUpdates = events
                 .filter(MovieEvent::updatesRecentHistory)
+                .filter(event -> bridgeEligible(event, bridgeMode, bridgeReferenceTimeMs, userEmbeddingTtlSeconds))
                 .keyBy(event -> event.userId)
                 .process(new UserEmbeddingFunction(userEmbeddingDimensions, userEmbeddingTtlSeconds))
                 .name("user-embedding-feature")
@@ -138,6 +141,7 @@ public final class OnlineFeatureStreamingJob {
 
         DataStream<StringFeatureUpdate> sessionUpdates = events
                 .filter(MovieEvent::hasSessionIdentity)
+                .filter(event -> bridgeEligible(event, bridgeMode, bridgeReferenceTimeMs, sessionTtlSeconds))
                 .keyBy(event -> event.userId + "|" + event.sessionId())
                 .process(new SessionFeatureFunction(sessionTtlSeconds))
                 .name("session-feature")
@@ -204,6 +208,12 @@ public final class OnlineFeatureStreamingJob {
         }
         if (bridge && params.getLong("bridge-replay-cutoff-ms", -1L) <= 0L) {
             throw new IllegalArgumentException("bridge-mode requires a positive bridge-replay-cutoff-ms");
+        }
+        if (bridge && params.getLong("bridge-reference-time-ms", -1L) <= 0L) {
+            throw new IllegalArgumentException("bridge-mode requires a positive bridge-reference-time-ms");
+        }
+        if (bridge && params.getLong("bridge-replay-cutoff-ms") > params.getLong("bridge-reference-time-ms")) {
+            throw new IllegalArgumentException("bridge-replay-cutoff-ms cannot exceed bridge-reference-time-ms");
         }
         if (kafka && !bridge && !"movie_events_v2".equals(topic)) {
             throw new IllegalArgumentException("this artifact only supports topic movie_events_v2; use bridge-mode for legacy replay");
@@ -386,6 +396,13 @@ public final class OnlineFeatureStreamingJob {
         return true;
     }
 
+    static boolean bridgeEligible(MovieEvent event, boolean bridgeMode, long referenceMs, long ttlSeconds) {
+        if (!bridgeMode) return true;
+        long ttlMs = Math.max(1L, ttlSeconds) * 1_000L;
+        return event.eventTimeMillis > 0L && event.eventTimeMillis <= Long.MAX_VALUE - ttlMs
+                && event.eventTimeMillis + ttlMs > referenceMs;
+    }
+
     static final class BridgeReplayCutoffFilter extends RichFilterFunction<MovieEvent> {
         private final boolean bridgeMode;
         private final long cutoffMs;
@@ -448,6 +465,11 @@ public final class OnlineFeatureStreamingJob {
                 .build();
     }
 
+    static long expiresAt(long eventTimeMs, long ttlSeconds) {
+        long ttlMs = Math.max(1L, ttlSeconds) * 1_000L;
+        return eventTimeMs > Long.MAX_VALUE - ttlMs ? Long.MAX_VALUE : eventTimeMs + ttlMs;
+    }
+
     static long validateAllowedLatenessMs(long allowedLatenessMs) {
         if (allowedLatenessMs < 0L) {
             throw new IllegalArgumentException("top-k-allowed-lateness-ms must be non-negative");
@@ -465,7 +487,7 @@ public final class OnlineFeatureStreamingJob {
     static final class RecentMoviesFunction extends KeyedProcessFunction<Integer, MovieEvent, UserRecentMoviesUpdate> {
         private final int limit;
         private final int ttlSeconds;
-        private transient ListState<Integer> recentMoviesState;
+        private transient ValueState<RecentMoviesState> recentMoviesState;
 
         RecentMoviesFunction(int limit, int ttlSeconds) {
             this.limit = limit;
@@ -474,18 +496,21 @@ public final class OnlineFeatureStreamingJob {
 
         @Override
         public void open(Configuration parameters) {
-            ListStateDescriptor<Integer> descriptor = new ListStateDescriptor<>("recent-movie-ids", Types.INT);
+            ValueStateDescriptor<RecentMoviesState> descriptor =
+                    new ValueStateDescriptor<>("recent-movies-state-v2", RecentMoviesState.class);
             descriptor.enableTimeToLive(stateTtl(ttlSeconds));
-            recentMoviesState = getRuntimeContext().getListState(descriptor);
+            recentMoviesState = getRuntimeContext().getState(descriptor);
         }
 
         @Override
         public void processElement(MovieEvent event,
                                    KeyedProcessFunction<Integer, MovieEvent, UserRecentMoviesUpdate>.Context context,
                                    Collector<UserRecentMoviesUpdate> out) throws Exception {
+            RecentMoviesState current = recentMoviesState.value();
             Deque<Integer> movies = new ArrayDeque<>();
-            for (Integer movieId : recentMoviesState.get()) {
-                movies.addLast(movieId);
+            if (current != null && event.eventTimeMillis < current.expiresAtEventTimeMs) {
+                if (event.eventTimeMillis < current.lastRelevantEventTimeMs) return;
+                movies.addAll(current.movies);
             }
 
             movies.remove(event.movieId);
@@ -494,7 +519,11 @@ public final class OnlineFeatureStreamingJob {
                 movies.removeFirst();
             }
 
-            recentMoviesState.update(new ArrayList<>(movies));
+            RecentMoviesState next = new RecentMoviesState();
+            next.movies = new ArrayList<>(movies);
+            next.expiresAtEventTimeMs = expiresAt(event.eventTimeMillis, ttlSeconds);
+            next.lastRelevantEventTimeMs = event.eventTimeMillis;
+            recentMoviesState.update(next);
             out.collect(new UserRecentMoviesUpdate(
                     "user:" + event.userId + ":recent_movies",
                     joinMovieIds(movies),
@@ -532,6 +561,8 @@ public final class OnlineFeatureStreamingJob {
                                    KeyedProcessFunction<Integer, MovieEvent, StringFeatureUpdate>.Context context,
                                    Collector<StringFeatureUpdate> out) throws Exception {
             UserEmbeddingState current = state.value();
+            if (current != null && event.eventTimeMillis >= current.expiresAtEventTimeMs) current = null;
+            if (current != null && event.eventTimeMillis < current.updatedAtMillis) return;
             double[] vector = current == null ? new double[dimensions] : parseVector(current.vector, dimensions);
             int bucket = Math.floorMod(event.movieId, dimensions);
             vector[bucket] += Math.max(1L, event.engagementWeight());
@@ -541,6 +572,7 @@ public final class OnlineFeatureStreamingJob {
             UserEmbeddingState next = new UserEmbeddingState();
             next.vector = rawEncoded;                   // raw counts, not normalised
             next.updatedAtMillis = event.eventTimeMillis;
+            next.expiresAtEventTimeMs = expiresAt(event.eventTimeMillis, ttlSeconds);
             state.update(next);
 
             // Normalise only for the Redis output so the serving layer gets a unit vector.
@@ -615,6 +647,8 @@ public final class OnlineFeatureStreamingJob {
                                    KeyedProcessFunction<String, MovieEvent, StringFeatureUpdate>.Context context,
                                    Collector<StringFeatureUpdate> out) throws Exception {
             SessionFeatureState current = state.value();
+            if (current != null && event.eventTimeMillis >= current.expiresAtEventTimeMs) current = null;
+            if (current != null && event.eventTimeMillis < current.updatedAtMillis) return;
             if (current == null) {
                 current = new SessionFeatureState();
                 current.userId = event.userId;
@@ -628,6 +662,7 @@ public final class OnlineFeatureStreamingJob {
             current.engagementScore += event.engagementWeight();
             current.lastMovieId = event.movieId;
             current.updatedAtMillis = event.eventTimeMillis;
+            current.expiresAtEventTimeMs = expiresAt(event.eventTimeMillis, ttlSeconds);
             current.lastEventType = event.eventType == null ? "" : event.eventType;
             state.update(current);
 
@@ -643,10 +678,18 @@ public final class OnlineFeatureStreamingJob {
 
     static final class DeduplicateEventsFunction extends KeyedProcessFunction<Integer, MovieEvent, MovieEvent> {
         private final long ttlSeconds;
+        private final boolean bridgeMode;
+        private final long referenceMs;
         private transient MapState<String, Long> eventExpiry;
 
         DeduplicateEventsFunction(long ttlSeconds) {
+            this(ttlSeconds, false, -1L);
+        }
+
+        DeduplicateEventsFunction(long ttlSeconds, boolean bridgeMode, long referenceMs) {
             this.ttlSeconds = ttlSeconds;
+            this.bridgeMode = bridgeMode;
+            this.referenceMs = referenceMs;
         }
 
         @Override
@@ -661,13 +704,13 @@ public final class OnlineFeatureStreamingJob {
         public void processElement(MovieEvent event,
                                    KeyedProcessFunction<Integer, MovieEvent, MovieEvent>.Context context,
                                    Collector<MovieEvent> out) throws Exception {
-            long now = context.timerService().currentProcessingTime();
+            long comparisonTime = bridgeMode ? referenceMs : event.eventTimeMillis;
             Long expiry = eventExpiry.get(event.eventId);
-            if (expiry != null && expiry > now) {
+            if (expiry != null && expiry > comparisonTime) {
                 LOG.debug("Skipping duplicate movie event: {}", event.eventId);
                 return;
             }
-            eventExpiry.put(event.eventId, now + Math.max(1L, ttlSeconds) * 1_000L);
+            eventExpiry.put(event.eventId, expiresAt(event.eventTimeMillis, ttlSeconds));
             out.collect(event);
         }
     }
@@ -1083,6 +1126,13 @@ public final class OnlineFeatureStreamingJob {
     public static final class UserEmbeddingState {
         public String vector = "";
         public long updatedAtMillis;
+        public long expiresAtEventTimeMs;
+    }
+
+    public static final class RecentMoviesState {
+        public List<Integer> movies = new ArrayList<>();
+        public long expiresAtEventTimeMs;
+        public long lastRelevantEventTimeMs;
     }
 
     public static final class SessionFeatureState {
@@ -1097,6 +1147,7 @@ public final class OnlineFeatureStreamingJob {
         public int lastMovieId;
         public String lastEventType = "";
         public long updatedAtMillis;
+        public long expiresAtEventTimeMs;
 
         String encode() {
             return "eventCount=" + eventCount

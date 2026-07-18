@@ -231,6 +231,7 @@ class KafkaFlinkPartitionLoadTest {
         values.put("bootstrap.servers", KAFKA.getBootstrapServers()); values.put("topic", topic);
         values.put("bridge-mode", "true"); values.put("checkpoint-dir", "file:///tmp/recsys-flink-load-checkpoints");
         values.put("bridge-replay-cutoff-ms", "1");
+        values.put("bridge-reference-time-ms", "1");
         values.put("allow-local-checkpoint-storage", "true"); values.put("group.id", GROUP);
         values.put("expected-topic-partitions", "24"); values.put("source-parallelism", "24");
         values.put("operator-parallelism", "24"); values.put("max-parallelism", "128");

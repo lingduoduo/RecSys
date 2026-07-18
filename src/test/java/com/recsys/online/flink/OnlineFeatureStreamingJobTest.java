@@ -287,7 +287,7 @@ class OnlineFeatureStreamingJobTest {
         assertThat(OnlineFeatureStreamingJob.validateConfiguration(ParameterTool.fromArgs(
                 new String[]{"--bootstrap.servers", "broker:9092", "--checkpoint-dir", "s3://cp",
                         "--bridge-mode", "true", "--topic", "recsys_events",
-                        "--bridge-replay-cutoff-ms", "1000"})))
+                        "--bridge-replay-cutoff-ms", "1000", "--bridge-reference-time-ms", "2000"})))
                 .isEqualTo(new OnlineFeatureStreamingJob.JobConfiguration(24, 24, 24, 128));
     }
 
@@ -300,6 +300,15 @@ class OnlineFeatureStreamingJobTest {
         assertThat(OnlineFeatureStreamingJob.acceptsBridgeReplayEvent(old, true, 1_000L)).isFalse();
         assertThat(OnlineFeatureStreamingJob.acceptsBridgeReplayEvent(boundary, true, 1_000L)).isTrue();
         assertThat(OnlineFeatureStreamingJob.acceptsBridgeReplayEvent(old, false, -1L)).isTrue();
+    }
+
+    @Test
+    void operatorSpecificBridgeEligibilityUsesExactExpiryBoundary() {
+        MovieEvent event = event(1, "event", 1);
+        event.eventTimeMillis = 1_000L;
+        assertThat(OnlineFeatureStreamingJob.bridgeEligible(event, true, 30_999L, 30L)).isTrue();
+        assertThat(OnlineFeatureStreamingJob.bridgeEligible(event, true, 31_000L, 30L)).isFalse();
+        assertThat(OnlineFeatureStreamingJob.bridgeEligible(event, false, Long.MAX_VALUE, 1L)).isTrue();
     }
 
     @Test

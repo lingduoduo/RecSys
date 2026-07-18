@@ -162,6 +162,7 @@ Flink consistency knobs:
 | `--allow-local-checkpoint-storage` | `false` | Local/Docker test override; forbidden in production |
 | `--bridge-mode` | `false` | Legacy replay mode with a distinct source UID/group; requires an explicit legacy topic |
 | `--bridge-replay-cutoff-ms` | none | Required positive cutoff for bridge Kafka offsets and parsed event-time filtering |
+| `--bridge-reference-time-ms` | none | Required cutover reference used for per-operator logical event-time expiry |
 | `--expected-topic-partitions` | `24` | Startup fence: broker topic must have exactly 24 partitions |
 | `--source-parallelism` | `24` | Kafka source parallelism; cannot exceed the expected partition count |
 | `--operator-parallelism` | `24` | Parallelism for keyed state, partial Top-K, and Redis sinks |
