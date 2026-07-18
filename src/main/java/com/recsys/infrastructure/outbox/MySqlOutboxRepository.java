@@ -5,6 +5,7 @@ import com.fasterxml.jackson.databind.ObjectMapper;
 import com.recsys.domain.outbox.OutboxDestination;
 import com.recsys.domain.outbox.OutboxEvent;
 import com.recsys.domain.outbox.OutboxStatus;
+import com.recsys.application.outbox.OutboxRepository;
 import com.recsys.infrastructure.persistence.TransactionalMySql;
 
 import java.nio.ByteBuffer;
@@ -22,7 +23,7 @@ import java.util.Objects;
 import java.util.Optional;
 import java.util.UUID;
 
-public final class MySqlOutboxRepository {
+public final class MySqlOutboxRepository implements OutboxRepository {
     private static final ObjectMapper JSON = new ObjectMapper();
     private static final int MAX_ERROR_LENGTH = 2_000;
     private static final String COLUMNS = "event_id, aggregate_type, aggregate_id, event_type, destination, "
