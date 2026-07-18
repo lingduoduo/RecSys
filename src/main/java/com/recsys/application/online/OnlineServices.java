@@ -276,13 +276,18 @@ public final class OnlineServices {
                     result.trendingMovies().stream().limit(k).toList()
             );
             if (durableEventPublisher == null) return writeJson(HttpStatus.OK, snapshot);
-            UUID eventId = optionalEventId(ctx.queryParam("eventId"));
+            String rawEventId = ctx.queryParam("eventId");
+            if (rawEventId == null || rawEventId.isBlank()) {
+                return writeJson(HttpStatus.OK, snapshot);
+            }
+            UUID eventId = requiredEventId(rawEventId);
+            byte[] responseBody = serialize(snapshot);
             String payload = featureViewEvent(eventId, userId, result);
             DurableEventPublisher.Acceptance acceptance =
                     durableEventPublisher.publishOnline(eventId, userId, "feature_view", payload);
             String token = tokenCodec.encode(new ConsistencyToken(acceptance.eventId(), userId,
                     acceptance.acceptedAt(), acceptance.acceptedAt().plus(Duration.ofHours(24))));
-            return writeJsonWithToken(snapshot, token);
+            return writeJsonWithToken(responseBody, token);
         }
 
         @Override
@@ -307,25 +312,27 @@ public final class OnlineServices {
                         "source",          "online-features"
                 ));
             } catch (Exception e) {
-                return "{}";
+                throw new IllegalStateException("unable to serialize feature-view event", e);
             }
         }
 
-        private static UUID optionalEventId(String raw) {
-            if (raw == null || raw.isBlank()) return UUID.randomUUID();
+        private static UUID requiredEventId(String raw) {
             try { return UUID.fromString(raw); }
             catch (IllegalArgumentException e) { throw new IllegalArgumentException("eventId must be a UUID"); }
         }
 
-        private static HttpResponse writeJsonWithToken(Object payload, String token) {
+        private static byte[] serialize(Object payload) {
             try {
-                byte[] body = MAPPER.writeValueAsBytes(payload);
-                return HttpResponse.of(ResponseHeaders.builder(HttpStatus.OK)
-                        .contentType(MediaType.JSON_UTF_8)
-                        .set(ConsistencyTokenCodec.HEADER_NAME, token).build(), HttpData.wrap(body));
+                return MAPPER.writeValueAsBytes(payload);
             } catch (Exception e) {
-                return writeError(HttpStatus.INTERNAL_SERVER_ERROR, "serialization error");
+                throw new IllegalStateException("unable to serialize feature snapshot", e);
             }
+        }
+
+        private static HttpResponse writeJsonWithToken(byte[] body, String token) {
+            return HttpResponse.of(ResponseHeaders.builder(HttpStatus.OK)
+                    .contentType(MediaType.JSON_UTF_8)
+                    .set(ConsistencyTokenCodec.HEADER_NAME, token).build(), HttpData.wrap(body));
         }
 
         private record OnlineFeatureSnapshotResponse(User user,

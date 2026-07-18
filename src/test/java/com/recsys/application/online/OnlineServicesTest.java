@@ -4,6 +4,7 @@ import static org.assertj.core.api.Assertions.assertThat;
 import static org.mockito.ArgumentMatchers.any;
 import static org.mockito.Mockito.mock;
 import static org.mockito.Mockito.reset;
+import static org.mockito.Mockito.verifyNoInteractions;
 import static org.mockito.Mockito.when;
 
 import com.linecorp.armeria.common.AggregatedHttpResponse;
@@ -56,6 +57,15 @@ class OnlineServicesTest {
                 .get("/features?userId=42&eventId=" + EVENT_ID);
         assertThat(duplicate.headers().get(ConsistencyTokenCodec.HEADER_NAME))
                 .isEqualTo(response.headers().get(ConsistencyTokenCodec.HEADER_NAME));
+    }
+
+    @Test void tokenlessFeatureReadDoesNotCreateDurableEventOrReturnToken() {
+        AggregatedHttpResponse response = server.blockingWebClient()
+                .get("/features?userId=42");
+
+        assertThat(response.status()).isEqualTo(HttpStatus.OK);
+        assertThat(response.headers().get(ConsistencyTokenCodec.HEADER_NAME)).isNull();
+        verifyNoInteractions(publisher);
     }
 
     @Test void repositoryFailureReturns503WithoutToken() {

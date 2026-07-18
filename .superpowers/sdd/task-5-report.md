@@ -26,3 +26,11 @@
 - Confirmed tokens use the persisted acceptance timestamp, so identical retries produce the same token even when retry time differs.
 - Confirmed unrelated dirty reports and the `src/main/resources/artifacts` scratch link are excluded from Task 5 staging.
 - Known operational requirement: online serving now fails fast unless durable MySQL configuration and a 32-byte-or-longer `ONLINE_CONSISTENCY_TOKEN_SECRET` are present; this is intentional.
+
+## Task 5 review fixes (2026-07-18)
+
+- Restored ordinary tokenless `GET /online/features` as a read-only snapshot: no generated event ID, durable publish, consistency token, or MySQL dependency. Durable acceptance occurs only for a caller-supplied valid UUID `eventId`.
+- Pre-serializes both the snapshot response and durable event payload before committing. The token is still created and attached only after commit. The documented recovery for an unavoidable post-commit transport failure is to retry identical content with the same stable `eventId`; duplicate/conflict behavior remains deterministic.
+- Made durability opt-in with `ONLINE_DURABLE_EVENTS_ENABLED=false` by default. Explicit durable mode validates `MYSQL_ENABLED=true` and the token secret before acquiring service resources.
+- Moved Redis, registrar, async publisher, MySQL, learner scheduler, recall executor, and topology provider into startup failure-cleanup ownership; optional MySQL is closed only when acquired.
+- Added RED/GREEN coverage for tokenless reads and durable configuration validation. Focused verification: `mvn test -Dtest=ConsistencyTokenCodecTest,OnlineServicesTest,AsyncEventPublisherTest,OnlinePredictionServerDurableConfigTest,OnlinePredictionServerIntegrationTest,MySqlOutboxRepositoryIntegrationTest -DfailIfNoTests=false` — 31 tests, 0 failures/errors. The Docker-gated MySQL integration class did not execute locally.

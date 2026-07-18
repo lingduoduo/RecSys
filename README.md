@@ -1458,6 +1458,8 @@ The online server (7010) adds its own `ONLINE_MAX_CONCURRENT_REQUESTS` / `ONLINE
 | `RECALL_BULKHEAD_QUEUE_CAPACITY` | `4 × recall pool` | Bounded recall work queue ([Overload Protection](#overload-protection)) |
 | `ONLINE_REDIS_RATE_LIMIT_QPS` | `0` | Cross-instance Redis rate limit; `0` = disabled |
 | `ONLINE_FEATURE_CACHE_MAX_USERS` | `10000` | Max Redis feature keys in JVM cache |
+| `ONLINE_DURABLE_EVENTS_ENABLED` | `false` | Durably accept `/online/features` feature-view events only when callers provide a stable UUID `eventId` |
+| `ONLINE_CONSISTENCY_TOKEN_SECRET` | _(required for durable events)_ | HMAC secret for consistency tokens; at least 32 UTF-8 bytes |
 | `ONLINE_FEATURE_STALE_TTL_MS` | `60000` | Maximum stale recent-history age served during Redis errors |
 | `ONLINE_TOPK_STALE_TTL_MS` | `60000` | Maximum stale Top-K age served during Redis errors |
 | `ONLINE_FEATURE_REDIS_MGET_BATCH_SIZE` | `500` | Redis `MGET` batch size |
@@ -1499,6 +1501,8 @@ The online server (7010) adds its own `ONLINE_MAX_CONCURRENT_REQUESTS` / `ONLINE
 | `GATEWAY_UPSTREAM_HEALTHCHECK_INTERVAL_MS` | `10000` | Upstream probe interval |
 
 > Service discovery for the gateway (`SERVICE_REGISTRY_*`) is opt-in and shared across all services — see [Service Registry](#service-registry). The dedicated LLM proxy client (`LLM_CONNECT_TIMEOUT_MS`, `LLM_IDLE_TIMEOUT_MS`, `LLM_PING_INTERVAL_MS`) is tuned under [LLM Gateway](#llm-gateway).
+
+`GET /online/features` is a read-only snapshot when `eventId` is omitted: it does not require MySQL and returns no consistency token. With durable events enabled, supplying a stable UUID `eventId` synchronously commits the feature-view event and returns `X-Consistency-Token`. If a connection fails after the commit but before the response is observed, retry the identical request with that same `eventId`; identical content returns the original acceptance/token, while different content returns `409`.
 
 ### Model Serving — Spring Boot (port 8080)
 
