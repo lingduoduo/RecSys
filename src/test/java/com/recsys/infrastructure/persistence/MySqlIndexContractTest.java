@@ -14,10 +14,9 @@ import java.util.regex.Pattern;
 import java.util.stream.Collectors;
 
 class MySqlIndexContractTest {
-    private static final Pattern INLINE_INDEX = Pattern.compile(
-            "(?im)(?:^|[,\\(])\\s*(?:INDEX|KEY)\\s+`?([a-zA-Z0-9_]+)`?\\s*\\(");
-    private static final Pattern STANDALONE_INDEX = Pattern.compile(
-            "(?i)\\bCREATE\\s+INDEX\\s+`?([a-zA-Z0-9_]+)`?\\s+ON\\b");
+    private static final Pattern SECONDARY_INDEX = Pattern.compile(
+            "(?i)\\b(?:(?:CREATE|ADD)\\s+)?(?:UNIQUE\\s+)?(?:INDEX|KEY)"
+                    + "\\s+`?([a-zA-Z0-9_]+)`?\\s*(?:\\(|ON\\b)");
     private static final Position AFTER =
             new Position(null, new BigDecimal("42.000000"), 8L);
 
@@ -49,10 +48,31 @@ class MySqlIndexContractTest {
         String sql = """
                 CREATE TABLE movies (INDEX idx_inline (genre));
                 CREATE INDEX idx_standalone ON movies (popularity_score);
+                CREATE UNIQUE INDEX idx_create_unique ON movies (title);
+                ALTER TABLE movies ADD INDEX idx_alter_index (genre);
+                ALTER TABLE movies ADD KEY idx_alter_key (genre);
+                ALTER TABLE movies ADD UNIQUE INDEX idx_alter_unique_index (title);
+                ALTER TABLE movies ADD UNIQUE KEY idx_alter_unique_key (title);
+                CREATE TABLE users (
+                    UNIQUE INDEX idx_inline_unique_index (email),
+                    UNIQUE KEY idx_inline_unique_key (username),
+                    PRIMARY KEY (id),
+                    FOREIGN KEY (favorite_movie_id) REFERENCES movies (id)
+                );
                 """;
 
         org.junit.jupiter.api.Assertions.assertEquals(
-                Set.of("idx_inline", "idx_standalone"), secondaryIndexNames(sql));
+                Set.of(
+                        "idx_inline",
+                        "idx_standalone",
+                        "idx_create_unique",
+                        "idx_alter_index",
+                        "idx_alter_key",
+                        "idx_alter_unique_index",
+                        "idx_alter_unique_key",
+                        "idx_inline_unique_index",
+                        "idx_inline_unique_key"),
+                secondaryIndexNames(sql));
     }
 
     @Test
@@ -64,11 +84,9 @@ class MySqlIndexContractTest {
 
     private static Set<String> secondaryIndexNames(String sql) {
         var names = new TreeSet<String>();
-        for (Pattern pattern : List.of(INLINE_INDEX, STANDALONE_INDEX)) {
-            var matcher = pattern.matcher(sql);
-            while (matcher.find()) {
-                names.add(matcher.group(1));
-            }
+        var matcher = SECONDARY_INDEX.matcher(sql);
+        while (matcher.find()) {
+            names.add(matcher.group(1));
         }
         return names;
     }
