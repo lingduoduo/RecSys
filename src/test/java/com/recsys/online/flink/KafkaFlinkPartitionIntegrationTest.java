@@ -1,38 +1,41 @@
 package com.recsys.online.flink;
 
-import org.apache.flink.api.common.typeinfo.Types;
-import org.apache.flink.runtime.checkpoint.OperatorSubtaskState;
-import org.apache.flink.streaming.api.operators.KeyedProcessOperator;
-import org.apache.flink.streaming.runtime.streamrecord.StreamRecord;
-import org.apache.flink.streaming.util.KeyedOneInputStreamOperatorTestHarness;
-import org.apache.flink.util.Collector;
-import org.apache.flink.streaming.api.windowing.windows.TimeWindow;
+import org.apache.flink.api.common.JobID;
+import org.apache.flink.api.common.restartstrategy.RestartStrategies;
+import org.apache.flink.api.java.utils.ParameterTool;
+import org.apache.flink.core.execution.JobClient;
+import org.apache.flink.runtime.jobgraph.SavepointRestoreSettings;
+import org.apache.flink.streaming.api.graph.StreamGraph;
+import org.apache.flink.streaming.api.environment.StreamExecutionEnvironment;
+import org.apache.flink.streaming.api.functions.sink.RichSinkFunction;
 import org.apache.kafka.clients.admin.Admin;
 import org.apache.kafka.clients.admin.NewTopic;
-import org.apache.kafka.clients.consumer.ConsumerConfig;
-import org.apache.kafka.clients.consumer.KafkaConsumer;
 import org.apache.kafka.clients.producer.KafkaProducer;
 import org.apache.kafka.clients.producer.ProducerConfig;
 import org.apache.kafka.clients.producer.ProducerRecord;
-import org.apache.kafka.common.TopicPartition;
-import org.apache.kafka.common.serialization.StringDeserializer;
 import org.apache.kafka.common.serialization.StringSerializer;
+import org.junit.jupiter.api.AfterEach;
 import org.junit.jupiter.api.Tag;
 import org.junit.jupiter.api.Test;
+import org.junit.jupiter.api.io.TempDir;
 import org.testcontainers.containers.KafkaContainer;
 import org.testcontainers.junit.jupiter.Container;
 import org.testcontainers.junit.jupiter.Testcontainers;
 import org.testcontainers.utility.DockerImageName;
 
+import java.nio.file.Path;
 import java.time.Duration;
 import java.util.ArrayList;
-import java.util.Comparator;
-import java.util.HashMap;
 import java.util.List;
 import java.util.Map;
 import java.util.Properties;
+import java.util.Set;
 import java.util.UUID;
+import java.util.concurrent.ConcurrentHashMap;
+import java.util.concurrent.CopyOnWriteArrayList;
 import java.util.concurrent.TimeUnit;
+import java.util.function.BooleanSupplier;
+import java.util.stream.Collectors;
 
 import static org.assertj.core.api.Assertions.assertThat;
 import static org.assertj.core.api.Assertions.assertThatThrownBy;
@@ -46,167 +49,164 @@ class KafkaFlinkPartitionIntegrationTest {
     static final KafkaContainer KAFKA = new KafkaContainer(
             DockerImageName.parse("confluentinc/cp-kafka:7.6.1"));
 
+    @TempDir Path temporaryDirectory;
+    private final List<JobClient> jobs = new ArrayList<>();
+
+    @AfterEach
+    void stopJobs() {
+        jobs.forEach(job -> {
+            try { job.cancel().get(20, TimeUnit.SECONDS); } catch (Exception ignored) { }
+        });
+        TestSink.clear();
+    }
+
     @Test
-    void keyedTrafficUsesManyPartitionsAndPreservesPerUserOrderThroughDedup() throws Exception {
-        String topic = topic("ordered");
+    void kafkaSourceProductionGraphAndRescaledRestorePreserveOrderingDedupAndTopK() throws Exception {
+        String topic = topic("graph");
         createTopic(topic, PARTITIONS);
-        List<MovieEvent> expected = new ArrayList<>();
-        try (KafkaProducer<String, String> producer = producer()) {
-            for (int sequence = 0; sequence < 40; sequence++) {
-                for (int user = 1; user <= 96; user++) {
-                    String eventId = (sequence % 2 == 0 ? "Aa" : "BB") + '-' + user + '-' + sequence;
-                    MovieEvent event = event(eventId, user, sequence + 1, sequence);
-                    expected.add(event);
-                    producer.send(new ProducerRecord<>(topic, Integer.toString(user), json(event))).get(10, TimeUnit.SECONDS);
-                }
+        String firstRun = UUID.randomUUID().toString();
+        JobClient first = start(topic, firstRun, 4, null);
+
+        List<MovieEvent> initial = new ArrayList<>();
+        for (int sequence = 0; sequence < 8; sequence++) {
+            for (int user = 1; user <= 96; user++) {
+                initial.add(event("event-" + user + '-' + sequence, user,
+                        user % 31 + 1, 1_000L + sequence));
             }
         }
+        Set<Integer> writtenPartitions = send(topic, initial);
+        await(Duration.ofSeconds(45), () -> TestSink.events(firstRun).size() == initial.size());
 
-        List<Consumed> consumed = consume(topic, expected.size());
-        assertThat(consumed.stream().map(Consumed::partition).collect(java.util.stream.Collectors.toSet()))
-                .as("representative traffic must exercise at least half of the 24 partitions")
-                .hasSizeGreaterThanOrEqualTo(12);
-        Map<Integer, List<MovieEvent>> byUser = new HashMap<>();
-        for (Consumed record : consumed) byUser.computeIfAbsent(record.event.userId, ignored -> new ArrayList<>()).add(record.event);
-        assertThat(byUser).hasSize(96);
-        byUser.forEach((user, events) -> assertThat(events).extracting(e -> e.eventTimeMillis)
-                .containsExactlyElementsOf(java.util.stream.LongStream.range(0, 40).boxed().toList()));
+        Map<Integer, List<Long>> perUser = TestSink.events(firstRun).stream()
+                .collect(Collectors.groupingBy(e -> e.userId,
+                        Collectors.mapping(e -> e.eventTimeMillis, Collectors.toList())));
+        assertThat(perUser).hasSize(96);
+        perUser.values().forEach(times -> assertThat(times)
+                .containsExactly(1_000L, 1_001L, 1_002L, 1_003L, 1_004L, 1_005L, 1_006L, 1_007L));
+        assertThat(writtenPartitions).hasSizeGreaterThanOrEqualTo(12);
 
-        // "Aa" and "BB" deliberately collide in String.hashCode; appendages make event IDs
-        // vary independently of the Kafka key. Dedup must still be keyed by user, not event ID.
-        assertThat(expected.stream().map(e -> e.eventId.hashCode()).distinct().count()).isGreaterThan(40);
-        List<MovieEvent> deduped = runDedup(consumed.stream().map(Consumed::event).toList());
-        assertThat(deduped).hasSameSizeAs(expected);
-        deduped.stream().collect(java.util.stream.Collectors.groupingBy(e -> e.userId))
-                .forEach((user, events) -> assertThat(events).extracting(e -> e.eventTimeMillis)
-                        .containsExactlyElementsOf(java.util.stream.LongStream.range(0, 40).boxed().toList()));
+        // Advance event time so the production partial/final Top-K stages emit a real window.
+        send(topic, java.util.stream.IntStream.rangeClosed(1, 96)
+                .mapToObj(user -> event("advance-" + user, user, user % 31 + 1, 4_000L)).toList());
+        await(Duration.ofSeconds(45), () -> !TestSink.snapshots(firstRun).isEmpty());
+        assertThat(TestSink.snapshots(firstRun).get(0).movies).isNotEmpty();
+
+        Path savepointDirectory = temporaryDirectory.resolve("savepoints");
+        String savepoint = first.triggerSavepoint(savepointDirectory.toUri().toString())
+                .get(60, TimeUnit.SECONDS);
+        first.cancel().get(30, TimeUnit.SECONDS);
+        jobs.remove(first);
+
+        String secondRun = UUID.randomUUID().toString();
+        JobClient restored = start(topic, secondRun, 6, savepoint);
+        // event-41-7 was already accepted before the savepoint; only the new event may pass.
+        send(topic, List.of(event("event-41-7", 41, 99, 5_000L),
+                event("after-restore", 41, 100, 5_001L)));
+        await(Duration.ofSeconds(45), () -> TestSink.events(secondRun).stream()
+                .anyMatch(e -> "after-restore".equals(e.eventId)));
+        assertThat(TestSink.events(secondRun)).extracting(e -> e.eventId)
+                .contains("after-restore").doesNotContain("event-41-7");
+        assertThat(restored.getJobID()).isNotEqualTo(first.getJobID());
     }
 
     @Test
-    void replayIsDeduplicatedWithinUserButSameEventIdForAnotherUserSurvives() throws Exception {
-        List<MovieEvent> input = List.of(event("replay", 7, 1, 1), event("replay", 7, 2, 2), event("replay", 8, 3, 3));
-        assertThat(runDedup(input)).extracting(e -> e.userId, e -> e.movieId)
-                .containsExactly(org.assertj.core.groups.Tuple.tuple(7, 1), org.assertj.core.groups.Tuple.tuple(8, 3));
-    }
-
-    @Test
-    void realKafkaTopicMismatchFailsValidation() throws Exception {
+    void productionValidationSeamRejectsRealTopicMismatch() throws Exception {
         String topic = topic("mismatch");
         createTopic(topic, PARTITIONS - 1);
-        try (Admin admin = Admin.create(Map.of("bootstrap.servers", KAFKA.getBootstrapServers()))) {
-            assertThatThrownBy(() -> KafkaTopicPartitionValidator.validate(admin, topic, PARTITIONS))
-                    .isInstanceOf(IllegalStateException.class).hasMessageContaining("23").hasMessageContaining("24");
-        }
+        ParameterTool params = ParameterTool.fromMap(Map.of(
+                "bootstrap.servers", KAFKA.getBootstrapServers(), "topic", topic));
+        OnlineFeatureStreamingJob.JobConfiguration configuration =
+                new OnlineFeatureStreamingJob.JobConfiguration(PARTITIONS, PARTITIONS, 4, 128);
+        assertThatThrownBy(() -> OnlineFeatureStreamingJob.validateKafkaTopic(params, configuration))
+                .isInstanceOf(IllegalStateException.class).hasMessageContaining("23").hasMessageContaining("24");
     }
 
-    @Test
-    void twoStageTopKExactlyMatchesOracleAcrossTwentyFourBuckets() throws Exception {
-        List<MovieEvent> events = new ArrayList<>();
-        for (int i = 0; i < 20_000; i++) events.add(event("top-" + i, i % 997 + 1, i % 211 + 1, i));
-        int k = 30;
-        List<OnlineFeatureStreamingJob.PartialTopK> partials = new ArrayList<>();
-        var partialFunction = new OnlineFeatureStreamingJob.PartialTopKWindowFunction(k);
-        for (int bucket = 0; bucket < PARTITIONS; bucket++) {
-            List<MovieEvent> values = new ArrayList<>();
-            for (MovieEvent event : events) if (OnlineFeatureStreamingJob.movieBucket(event.movieId, PARTITIONS) == bucket) values.add(event);
-            partialFunction.apply(bucket, new TimeWindow(0, 1_000), values, collector(partials));
+    private JobClient start(String topic, String run, int operatorParallelism, String savepoint) throws Exception {
+        StreamExecutionEnvironment env = StreamExecutionEnvironment.createLocalEnvironment(PARTITIONS);
+        env.setRestartStrategy(RestartStrategies.noRestart());
+        env.enableCheckpointing(500L);
+        ParameterTool params = ParameterTool.fromMap(Map.of(
+                "bootstrap.servers", KAFKA.getBootstrapServers(), "topic", topic,
+                "group.id", "partition-contract", "expected-topic-partitions", "24",
+                "source-parallelism", "24", "operator-parallelism", Integer.toString(operatorParallelism),
+                "max-parallelism", "128", "kafka.partition.discovery.interval.ms", "100"));
+        OnlineFeatureStreamingJob.JobConfiguration configuration =
+                OnlineFeatureStreamingJob.validateConfiguration(params);
+        OnlineFeatureStreamingJob.PartitionGraph graph = OnlineFeatureStreamingJob.buildPartitionGraph(
+                OnlineFeatureStreamingJob.buildEventStream(env, params, configuration), configuration,
+                10, PARTITIONS, 1_000L, 100L, 200L);
+        graph.events().addSink(new TestSink<>(run, "events")).name("test-events-" + run);
+        graph.snapshots().addSink(new TestSink<>(run, "snapshots")).name("test-snapshots-" + run);
+        StreamGraph streamGraph = env.getStreamGraph();
+        streamGraph.setJobName("partition-contract-" + run);
+        if (savepoint != null) {
+            streamGraph.setSavepointRestoreSettings(SavepointRestoreSettings.forPath(savepoint));
         }
-        List<OnlineFeatureStreamingJob.ScoredMovie> actual =
-                OnlineFeatureStreamingJob.FinalTopKWindowFunction.mergeTopK(partials, k);
-        Map<Integer, Long> scores = new HashMap<>();
-        events.forEach(e -> scores.merge(e.movieId, e.engagementWeight(), Long::sum));
-        List<Map.Entry<Integer, Long>> oracle = scores.entrySet().stream()
-                .sorted(Map.Entry.<Integer, Long>comparingByValue(Comparator.reverseOrder()).thenComparing(Map.Entry::getKey))
-                .limit(k).toList();
-        assertThat(actual).extracting(m -> m.movieId).containsExactlyElementsOf(oracle.stream().map(Map.Entry::getKey).toList());
-        assertThat(actual).extracting(m -> m.score).containsExactlyElementsOf(oracle.stream().map(Map.Entry::getValue).toList());
+        JobClient client = env.executeAsync(streamGraph);
+        jobs.add(client);
+        return client;
     }
 
-    @Test
-    void dedupStateRestoresAtChangedParallelismWithStableMaxParallelism() throws Exception {
-        int maxParallelism = 128;
-        OperatorSubtaskState snapshot;
-        var first = dedupHarness(maxParallelism, 1, 0);
-        try (first) {
-            first.open();
-            first.processElement(new StreamRecord<>(event("saved", 41, 1, 1)));
-            snapshot = first.snapshot(1, 1);
+    private static Set<Integer> send(String topic, List<MovieEvent> events) throws Exception {
+        Set<Integer> partitions = ConcurrentHashMap.newKeySet();
+        try (KafkaProducer<String, String> producer = producer()) {
+            for (MovieEvent event : events) {
+                partitions.add(producer.send(new ProducerRecord<>(topic,
+                                Integer.toString(event.userId), json(event)))
+                        .get(10, TimeUnit.SECONDS).partition());
+            }
         }
-        // Restore the state into the subtask that owns user 41 after scaling 1 -> 2.
-        int owner = org.apache.flink.runtime.state.KeyGroupRangeAssignment.assignKeyToParallelOperator(41, maxParallelism, 2);
-        OperatorSubtaskState repartitioned = org.apache.flink.streaming.util.AbstractStreamOperatorTestHarness
-                .repartitionOperatorState(snapshot, maxParallelism, 1, 2, owner);
-        var restored = dedupHarness(maxParallelism, 2, owner);
-        try (restored) {
-            restored.initializeState(repartitioned);
-            restored.open();
-            restored.processElement(new StreamRecord<>(event("saved", 41, 2, 2)));
-            assertThat(records(restored)).isEmpty();
-        }
-    }
-
-    private static KeyedOneInputStreamOperatorTestHarness<Integer, MovieEvent, MovieEvent> dedupHarness(
-            int maxParallelism, int parallelism, int subtask) throws Exception {
-        return new KeyedOneInputStreamOperatorTestHarness<>(new KeyedProcessOperator<>(
-                new OnlineFeatureStreamingJob.DeduplicateEventsFunction(3_600)), e -> e.userId,
-                Types.INT, maxParallelism, parallelism, subtask);
-    }
-
-    private static List<MovieEvent> runDedup(List<MovieEvent> input) throws Exception {
-        try (var harness = dedupHarness(128, 1, 0)) {
-            harness.open();
-            for (MovieEvent event : input) harness.processElement(new StreamRecord<>(event));
-            return records(harness);
-        }
-    }
-
-    private static List<MovieEvent> records(KeyedOneInputStreamOperatorTestHarness<Integer, MovieEvent, MovieEvent> harness) {
-        List<MovieEvent> output = new ArrayList<>();
-        for (Object item : harness.getOutput()) if (item instanceof StreamRecord<?> record) output.add((MovieEvent) record.getValue());
-        return output;
+        return partitions;
     }
 
     private static KafkaProducer<String, String> producer() {
-        Properties p = new Properties();
-        p.put(ProducerConfig.BOOTSTRAP_SERVERS_CONFIG, KAFKA.getBootstrapServers());
-        p.put(ProducerConfig.KEY_SERIALIZER_CLASS_CONFIG, StringSerializer.class);
-        p.put(ProducerConfig.VALUE_SERIALIZER_CLASS_CONFIG, StringSerializer.class);
-        p.put(ProducerConfig.ACKS_CONFIG, "all");
-        return new KafkaProducer<>(p);
-    }
-
-    private static List<Consumed> consume(String topic, int expected) {
-        Properties p = new Properties();
-        p.put(ConsumerConfig.BOOTSTRAP_SERVERS_CONFIG, KAFKA.getBootstrapServers());
-        p.put(ConsumerConfig.GROUP_ID_CONFIG, "integration-" + UUID.randomUUID());
-        p.put(ConsumerConfig.KEY_DESERIALIZER_CLASS_CONFIG, StringDeserializer.class);
-        p.put(ConsumerConfig.VALUE_DESERIALIZER_CLASS_CONFIG, StringDeserializer.class);
-        p.put(ConsumerConfig.AUTO_OFFSET_RESET_CONFIG, "earliest");
-        List<Consumed> result = new ArrayList<>();
-        try (KafkaConsumer<String, String> consumer = new KafkaConsumer<>(p)) {
-            consumer.subscribe(List.of(topic));
-            long deadline = System.nanoTime() + Duration.ofSeconds(30).toNanos();
-            while (result.size() < expected && System.nanoTime() < deadline) {
-                consumer.poll(Duration.ofMillis(250)).forEach(r -> result.add(new Consumed(r.partition(), parse(r.value()))));
-            }
-        }
-        assertThat(result).hasSize(expected);
-        return result;
+        Properties properties = new Properties();
+        properties.put(ProducerConfig.BOOTSTRAP_SERVERS_CONFIG, KAFKA.getBootstrapServers());
+        properties.put(ProducerConfig.KEY_SERIALIZER_CLASS_CONFIG, StringSerializer.class);
+        properties.put(ProducerConfig.VALUE_SERIALIZER_CLASS_CONFIG, StringSerializer.class);
+        properties.put(ProducerConfig.ACKS_CONFIG, "all");
+        return new KafkaProducer<>(properties);
     }
 
     private static void createTopic(String topic, int partitions) throws Exception {
         try (Admin admin = Admin.create(Map.of("bootstrap.servers", KAFKA.getBootstrapServers()))) {
-            admin.createTopics(List.of(new NewTopic(topic, partitions, (short) 1))).all().get(20, TimeUnit.SECONDS);
+            admin.createTopics(List.of(new NewTopic(topic, partitions, (short) 1)))
+                    .all().get(20, TimeUnit.SECONDS);
         }
     }
 
-    private static String topic(String prefix) { return prefix + '-' + UUID.randomUUID(); }
-    private static MovieEvent event(String id, int user, int movie, long sequence) {
-        MovieEvent event = new MovieEvent(); event.eventId = id; event.userId = user; event.movieId = movie;
-        event.eventType = "click"; event.eventTimeMillis = sequence; return event;
+    private static void await(Duration timeout, BooleanSupplier condition) throws Exception {
+        long deadline = System.nanoTime() + timeout.toNanos();
+        while (!condition.getAsBoolean() && System.nanoTime() < deadline) Thread.sleep(100L);
+        assertThat(condition.getAsBoolean()).isTrue();
     }
-    private static String json(MovieEvent e) { return "{\"eventId\":\"" + e.eventId + "\",\"userId\":" + e.userId + ",\"movieId\":" + e.movieId + ",\"eventType\":\"click\",\"eventTimeMillis\":" + e.eventTimeMillis + "}"; }
-    private static MovieEvent parse(String json) { try { return new com.fasterxml.jackson.databind.ObjectMapper().readValue(json, MovieEvent.class); } catch (Exception e) { throw new AssertionError(e); } }
-    private static <T> Collector<T> collector(List<T> out) { return new Collector<>() { public void collect(T value) { out.add(value); } public void close() {} }; }
-    private record Consumed(int partition, MovieEvent event) {}
+
+    private static MovieEvent event(String id, int user, int movie, long timestamp) {
+        MovieEvent event = new MovieEvent();
+        event.eventId = id; event.userId = user; event.movieId = movie;
+        event.eventType = "click"; event.eventTimeMillis = timestamp;
+        return event;
+    }
+
+    private static String json(MovieEvent event) {
+        return "{\"eventId\":\"" + event.eventId + "\",\"userId\":" + event.userId
+                + ",\"movieId\":" + event.movieId + ",\"eventType\":\"click\",\"eventTimeMillis\":"
+                + event.eventTimeMillis + "}";
+    }
+
+    private static String topic(String prefix) { return prefix + '-' + UUID.randomUUID(); }
+
+    static final class TestSink<T> extends RichSinkFunction<T> {
+        private static final Map<String, CopyOnWriteArrayList<Object>> VALUES = new ConcurrentHashMap<>();
+        private final String key;
+        TestSink(String run, String stream) { key = run + ':' + stream; }
+        @Override public void invoke(T value, Context context) { VALUES.computeIfAbsent(key,
+                ignored -> new CopyOnWriteArrayList<>()).add(value); }
+        static List<MovieEvent> events(String run) { return values(run + ":events"); }
+        static List<OnlineFeatureStreamingJob.TopKSnapshot> snapshots(String run) { return values(run + ":snapshots"); }
+        @SuppressWarnings("unchecked") private static <T> List<T> values(String key) {
+            return (List<T>) (List<?>) VALUES.computeIfAbsent(key, ignored -> new CopyOnWriteArrayList<>());
+        }
+        static void clear() { VALUES.clear(); }
+    }
 }

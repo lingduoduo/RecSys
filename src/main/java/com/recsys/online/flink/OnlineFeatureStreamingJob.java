@@ -93,14 +93,7 @@ public final class OnlineFeatureStreamingJob {
         }
 
         String bootstrapServers = params.get("bootstrap.servers");
-        if (!StringUtils.isNullOrWhitespaceOnly(bootstrapServers)) {
-            Properties adminProperties = kafkaProperties(params);
-            adminProperties.setProperty("bootstrap.servers", bootstrapServers);
-            try (Admin admin = Admin.create(adminProperties)) {
-                KafkaTopicPartitionValidator.validate(admin, params.get("topic", "recsys_events"),
-                        jobConfiguration.expectedTopicPartitions());
-            }
-        }
+        validateKafkaTopic(params, jobConfiguration);
 
         DataStream<MovieEvent> events = buildEventStream(env, params, jobConfiguration)
                 .filter(OnlineFeatureStreamingJob::requiresEventIdentity)
@@ -222,7 +215,18 @@ public final class OnlineFeatureStreamingJob {
     record JobConfiguration(int expectedTopicPartitions, int sourceParallelism,
                             int operatorParallelism, int maxParallelism) {}
 
-    private static DataStream<MovieEvent> buildEventStream(StreamExecutionEnvironment env,
+    static void validateKafkaTopic(ParameterTool params, JobConfiguration configuration) throws Exception {
+        String bootstrapServers = params.get("bootstrap.servers");
+        if (StringUtils.isNullOrWhitespaceOnly(bootstrapServers)) return;
+        Properties adminProperties = kafkaProperties(params);
+        adminProperties.setProperty("bootstrap.servers", bootstrapServers);
+        try (Admin admin = Admin.create(adminProperties)) {
+            KafkaTopicPartitionValidator.validate(admin, params.get("topic", "recsys_events"),
+                    configuration.expectedTopicPartitions());
+        }
+    }
+
+    static DataStream<MovieEvent> buildEventStream(StreamExecutionEnvironment env,
                                                            ParameterTool params,
                                                            JobConfiguration configuration) throws IOException {
         String bootstrapServers = params.get("bootstrap.servers");
@@ -259,6 +263,38 @@ public final class OnlineFeatureStreamingJob {
                     if (e != null) out.collect(e);
                 }).returns(MovieEvent.class);
     }
+
+    /** Narrow graph seam used by the Kafka/MiniCluster contract test. */
+    static PartitionGraph buildPartitionGraph(DataStream<MovieEvent> input, JobConfiguration configuration,
+                                               int topK, int bucketCount, long windowMillis,
+                                               long allowedLatenessMillis, long idleMillis) {
+        DataStream<MovieEvent> events = input
+                .filter(OnlineFeatureStreamingJob::requiresEventIdentity)
+                .keyBy(event -> event.userId)
+                .process(new DeduplicateEventsFunction(3_600))
+                .name("event-idempotency").uid("event-idempotency-v1")
+                .setParallelism(configuration.operatorParallelism())
+                .setMaxParallelism(configuration.maxParallelism())
+                .assignTimestampsAndWatermarks(WatermarkStrategy.<MovieEvent>forBoundedOutOfOrderness(Duration.ZERO)
+                        .withTimestampAssigner((event, timestamp) -> event.eventTimeMillis)
+                        .withIdleness(Duration.ofMillis(idleMillis)));
+        DataStream<PartialTopK> partials = events.filter(event -> event.engagementWeight() > 0L)
+                .keyBy(event -> movieBucket(event.movieId, bucketCount))
+                .window(TumblingEventTimeWindows.of(Time.milliseconds(windowMillis)))
+                .apply(new PartialTopKWindowFunction(topK))
+                .name("topk-partial").uid("topk-partial-v1")
+                .setParallelism(configuration.operatorParallelism())
+                .setMaxParallelism(configuration.maxParallelism());
+        DataStream<TopKSnapshot> snapshots = partials.keyBy(PartialTopK::windowEnd)
+                .process(new FinalTopKWindowFunction(topK, "integration", 60, bucketCount,
+                        allowedLatenessMillis))
+                .name("topk-final").uid("topk-final-v1")
+                .setParallelism(configuration.operatorParallelism())
+                .setMaxParallelism(configuration.maxParallelism());
+        return new PartitionGraph(events, snapshots);
+    }
+
+    record PartitionGraph(DataStream<MovieEvent> events, DataStream<TopKSnapshot> snapshots) {}
 
     private static Properties kafkaProperties(ParameterTool params) {
         Properties properties = new Properties();
