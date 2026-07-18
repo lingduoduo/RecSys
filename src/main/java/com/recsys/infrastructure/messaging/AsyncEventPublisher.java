@@ -5,6 +5,7 @@ import org.slf4j.LoggerFactory;
 
 import java.util.ArrayList;
 import java.util.List;
+import java.util.Objects;
 import java.util.concurrent.ArrayBlockingQueue;
 import java.util.concurrent.TimeUnit;
 import java.util.concurrent.atomic.AtomicLong;
@@ -31,7 +32,7 @@ public class AsyncEventPublisher implements AutoCloseable {
     private static final int DEFAULT_QUEUE_CAPACITY = 10_000;
     private static final int DEFAULT_BATCH_SIZE = 100;
 
-    private final ArrayBlockingQueue<String> queue;
+    private final ArrayBlockingQueue<EventEnvelope> queue;
     private final int batchSize;
     private final Thread drainThread;
     private volatile boolean running = true;
@@ -59,14 +60,16 @@ public class AsyncEventPublisher implements AutoCloseable {
      * {@code false} if the queue was full and the event was dropped (peak shaving).
      */
     public boolean publish(String event) {
+        return publish(null, event);
+    }
+
+    public boolean publish(String key, String event) {
         if (event == null || !running) return false;
-        if (queue.offer(event)) {
+        if (queue.offer(new EventEnvelope(key, event))) {
             publishedCount.incrementAndGet();
             return true;
         }
-        long dropped = droppedCount.incrementAndGet();
-        log.warn("AsyncEventPublisher queue full — event dropped (total dropped: {})", dropped);
-        return false;
+        return recordRejectedEvent();
     }
 
     public boolean publish(LogCollector.KafkaEvent event) {
@@ -82,22 +85,22 @@ public class AsyncEventPublisher implements AutoCloseable {
     public void close() {
         running = false;
         drainThread.interrupt();
-        List<String> remaining = new ArrayList<>();
+        List<EventEnvelope> remaining = new ArrayList<>();
         queue.drainTo(remaining);
         if (!remaining.isEmpty()) {
-            sendBatch(remaining);
+            sendEnvelopes(remaining);
         }
     }
 
     private void drainLoop() {
-        List<String> batch = new ArrayList<>(batchSize);
+        List<EventEnvelope> batch = new ArrayList<>(batchSize);
         while (running || !queue.isEmpty()) {
             try {
-                String first = queue.poll(50, TimeUnit.MILLISECONDS);
+                EventEnvelope first = queue.poll(50, TimeUnit.MILLISECONDS);
                 if (first == null) continue;
                 batch.add(first);
                 queue.drainTo(batch, batchSize - 1);
-                sendBatch(batch);
+                sendEnvelopes(batch);
                 batch.clear();
             } catch (InterruptedException e) {
                 Thread.currentThread().interrupt();
@@ -115,6 +118,16 @@ public class AsyncEventPublisher implements AutoCloseable {
         log.debug("AsyncEventPublisher draining {} events to MQ", events.size());
     }
 
+    protected void sendEnvelopes(List<EventEnvelope> events) {
+        sendBatch(events.stream().map(EventEnvelope::value).toList());
+    }
+
+    protected boolean recordRejectedEvent() {
+        long dropped = droppedCount.incrementAndGet();
+        log.warn("AsyncEventPublisher event rejected (total dropped: {})", dropped);
+        return false;
+    }
+
     private static int readIntEnv(String envName, int defaultValue) {
         String raw = System.getenv(envName);
         if (raw == null || raw.isBlank()) return defaultValue;
@@ -126,4 +139,10 @@ public class AsyncEventPublisher implements AutoCloseable {
     }
 
     public record Snapshot(int queueSize, long published, long dropped, long drained) {}
+
+    public record EventEnvelope(String key, String value) {
+        public EventEnvelope {
+            Objects.requireNonNull(value, "value");
+        }
+    }
 }

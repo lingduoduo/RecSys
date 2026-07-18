@@ -34,6 +34,30 @@ class AsyncEventPublisherTest {
     }
 
     @Test
+    void publish_withKeyPreservesEnvelopeAndIncrementsPublished() throws InterruptedException {
+        CountDownLatch drained = new CountDownLatch(1);
+        List<AsyncEventPublisher.EventEnvelope> received = new ArrayList<>();
+        AsyncEventPublisher publisher = new AsyncEventPublisher(100, 10) {
+            @Override
+            protected void sendEnvelopes(List<EventEnvelope> events) {
+                received.addAll(events);
+                super.sendEnvelopes(events);
+                drained.countDown();
+            }
+        };
+
+        try {
+            String json = "{\"eventType\":\"click\"}";
+            assertThat(publisher.publish("42", json)).isTrue();
+            assertThat(drained.await(2, TimeUnit.SECONDS)).isTrue();
+            assertThat(publisher.snapshot().published()).isEqualTo(1L);
+            assertThat(received).containsExactly(new AsyncEventPublisher.EventEnvelope("42", json));
+        } finally {
+            publisher.close();
+        }
+    }
+
+    @Test
     void publish_dropsSilentlyWhenQueueFull() throws InterruptedException {
         CountDownLatch drainStarted = new CountDownLatch(1);
         CountDownLatch releaseDrain = new CountDownLatch(1);

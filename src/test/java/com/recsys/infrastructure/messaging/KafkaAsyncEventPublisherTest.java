@@ -6,6 +6,7 @@ import org.apache.kafka.clients.producer.ProducerRecord;
 import org.apache.kafka.common.serialization.StringSerializer;
 import org.junit.jupiter.api.Test;
 
+import java.time.Duration;
 import java.util.List;
 
 import static org.assertj.core.api.Assertions.assertThat;
@@ -40,6 +41,23 @@ class KafkaAsyncEventPublisherTest {
                 .containsExactlyInAnyOrder("{\"e\":1}", "{\"e\":2}");
 
         pub.close();
+    }
+
+    @Test
+    void publish_usesExtractedUserIdAsKafkaKey() {
+        MockProducer<String, String> producer =
+                new MockProducer<>(true, new StringSerializer(), new StringSerializer());
+        KafkaAsyncEventPublisher publisher = new KafkaAsyncEventPublisher(
+                producer, "movie_events", 100, 10, MovieEventKafkaKeyExtractor::extract);
+
+        try {
+            assertThat(publisher.publish("{\"userId\":42,\"eventId\":\"e-1\"}")).isTrue();
+            org.awaitility.Awaitility.await().atMost(Duration.ofSeconds(2)).untilAsserted(() ->
+                    assertThat(producer.history()).singleElement()
+                            .satisfies(record -> assertThat(record.key()).isEqualTo("42")));
+        } finally {
+            publisher.close();
+        }
     }
 
     @Test
