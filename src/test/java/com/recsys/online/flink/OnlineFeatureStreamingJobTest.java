@@ -17,6 +17,10 @@ import org.apache.flink.streaming.api.operators.KeyedProcessOperator;
 import org.apache.flink.streaming.util.KeyedOneInputStreamOperatorTestHarness;
 import org.apache.flink.streaming.api.watermark.Watermark;
 import org.apache.flink.streaming.runtime.streamrecord.StreamRecord;
+import org.apache.flink.streaming.runtime.streamrecord.LatencyMarker;
+import org.apache.flink.streaming.runtime.io.PushingAsyncDataInput;
+import org.apache.flink.streaming.runtime.watermarkstatus.StatusWatermarkValve;
+import org.apache.flink.streaming.runtime.watermarkstatus.WatermarkStatus;
 import org.apache.flink.util.Collector;
 import org.testcontainers.containers.GenericContainer;
 import org.testcontainers.DockerClientFactory;
@@ -66,6 +70,17 @@ class OnlineFeatureStreamingJobTest {
     }
 
     @Test
+    void validatesWatermarkIdleTimeout() {
+        assertThat(OnlineFeatureStreamingJob.validateWatermarkIdleTimeoutMs(30_000L))
+                .isEqualTo(30_000L);
+        assertThatThrownBy(() -> OnlineFeatureStreamingJob.validateWatermarkIdleTimeoutMs(0L))
+                .isInstanceOf(IllegalArgumentException.class)
+                .hasMessageContaining("watermark-idle-timeout-ms");
+        assertThatThrownBy(() -> OnlineFeatureStreamingJob.validateWatermarkIdleTimeoutMs(-1L))
+                .isInstanceOf(IllegalArgumentException.class);
+    }
+
+    @Test
     void partialTopKIsBoundedAndUsesStableTieOrdering() throws Exception {
         var function = new OnlineFeatureStreamingJob.PartialTopKWindowFunction(2);
         List<OnlineFeatureStreamingJob.PartialTopK> output = new ArrayList<>();
@@ -93,32 +108,48 @@ class OnlineFeatureStreamingJobTest {
     }
 
     @Test
-    void eventTimeHarnessWaitsForWatermarkAndCleansBoundedState() throws Exception {
+    void multiChannelWatermarksWaitForDelayedPartialAndIgnoreIdleChannel() throws Exception {
         var function = new OnlineFeatureStreamingJob.FinalTopKWindowFunction(3, "hour", 60, 4, 10L);
         var operator = new KeyedProcessOperator<Long, OnlineFeatureStreamingJob.PartialTopK,
                 OnlineFeatureStreamingJob.TopKSnapshot>(function);
         try (var harness = new KeyedOneInputStreamOperatorTestHarness<>(
                 operator, OnlineFeatureStreamingJob.PartialTopK::windowEnd, org.apache.flink.api.common.typeinfo.Types.LONG)) {
             harness.open();
-            harness.processElement(new StreamRecord<>(partial(100, 0, scored(1, 3))));
-            harness.processWatermark(new Watermark(99));
-            harness.processElement(new StreamRecord<>(partial(100, 3, scored(2, 7))));
+            StatusWatermarkValve watermarkValve = new StatusWatermarkValve(2);
+            PushingAsyncDataInput.DataOutput<Object> alignedOutput = new PushingAsyncDataInput.DataOutput<>() {
+                @Override public void emitRecord(StreamRecord<Object> record) {}
+                @Override public void emitWatermark(Watermark watermark) throws Exception {
+                    harness.processWatermark(watermark);
+                }
+                @Override public void emitWatermarkStatus(WatermarkStatus status) {}
+                @Override public void emitLatencyMarker(LatencyMarker latencyMarker) {}
+            };
 
+            harness.processElement(new StreamRecord<>(partial(100, 0, scored(1, 3))));
+            watermarkValve.inputWatermark(new Watermark(99), 0, alignedOutput);
+            assertThat(harness.getCurrentWatermark()).isZero();
+            watermarkValve.inputWatermarkStatus(WatermarkStatus.IDLE, 1, alignedOutput);
+            assertThat(harness.getCurrentWatermark()).isEqualTo(99L);
+            assertThat(snapshots(harness.getOutput())).isEmpty();
+
+            harness.processElement(new StreamRecord<>(partial(100, 3, scored(2, 7))));
             assertThat(snapshots(harness.getOutput())).isEmpty();
             assertThat(harness.numKeyedStateEntries()).isPositive();
 
-            harness.processWatermark(new Watermark(100));
+            watermarkValve.inputWatermark(new Watermark(100), 0, alignedOutput);
             assertThat(snapshots(harness.getOutput())).singleElement()
                     .satisfies(snapshot -> assertThat(snapshot.movies)
                             .extracting(movie -> movie.movieId).containsExactly(2, 1));
+            assertThat(snapshots(harness.getOutput()).get(0).movies)
+                    .extracting(movie -> movie.score).containsExactly(7L, 3L);
 
             harness.processElement(new StreamRecord<>(partial(100, 2, scored(3, 9))));
-            harness.processWatermark(new Watermark(110));
+            watermarkValve.inputWatermark(new Watermark(110), 0, alignedOutput);
             assertThat(snapshots(harness.getOutput())).hasSize(1);
             assertThat(harness.numKeyedStateEntries()).isZero();
 
             harness.processElement(new StreamRecord<>(partial(100, 1, scored(4, 12))));
-            harness.processWatermark(new Watermark(200));
+            watermarkValve.inputWatermark(new Watermark(200), 0, alignedOutput);
             assertThat(snapshots(harness.getOutput())).hasSize(1);
             assertThat(harness.numKeyedStateEntries()).isZero();
 

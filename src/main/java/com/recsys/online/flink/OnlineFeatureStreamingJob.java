@@ -71,6 +71,8 @@ public final class OnlineFeatureStreamingJob {
         int finalTopKParallelism = params.getInt("final-top-k-parallelism", 1);
         long allowedLatenessMs = validateAllowedLatenessMs(
                 params.getLong("top-k-allowed-lateness-ms", 5_000L));
+        long watermarkIdleTimeoutMs = validateWatermarkIdleTimeoutMs(
+                params.getLong("watermark-idle-timeout-ms", 30_000L));
         if (topKBucketCount <= 0) throw new IllegalArgumentException("top-k-bucket-count must be positive");
         if (finalTopKParallelism <= 0) throw new IllegalArgumentException("final-top-k-parallelism must be positive");
         long windowSeconds = params.getLong("window-seconds", 10L);
@@ -110,7 +112,8 @@ public final class OnlineFeatureStreamingJob {
                 .setMaxParallelism(jobConfiguration.maxParallelism())
                 .assignTimestampsAndWatermarks(
                         WatermarkStrategy.<MovieEvent>forBoundedOutOfOrderness(Duration.ofSeconds(5))
-                                .withTimestampAssigner((event, timestamp) -> event.eventTimeMillis));
+                                .withTimestampAssigner((event, timestamp) -> event.eventTimeMillis)
+                                .withIdleness(Duration.ofMillis(watermarkIdleTimeoutMs)));
 
         events
                 .filter(MovieEvent::updatesRecentHistory)
@@ -316,6 +319,13 @@ public final class OnlineFeatureStreamingJob {
             throw new IllegalArgumentException("top-k-allowed-lateness-ms must be non-negative");
         }
         return allowedLatenessMs;
+    }
+
+    static long validateWatermarkIdleTimeoutMs(long watermarkIdleTimeoutMs) {
+        if (watermarkIdleTimeoutMs <= 0L) {
+            throw new IllegalArgumentException("watermark-idle-timeout-ms must be positive");
+        }
+        return watermarkIdleTimeoutMs;
     }
 
     static final class RecentMoviesFunction extends KeyedProcessFunction<Integer, MovieEvent, UserRecentMoviesUpdate> {
