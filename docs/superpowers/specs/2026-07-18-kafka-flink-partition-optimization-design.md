@@ -60,12 +60,12 @@ Stateful operators receive stable UIDs so savepoints can map state across deploy
 
 The global `windowAll` operator is replaced with two stages:
 
-1. Assign each eligible event to a deterministic movie bucket and compute a bounded partial Top-K for each window and bucket in parallel.
-2. Route only the bounded partial lists to a final merge operator, which computes the exact global Top-K for the window.
+1. Assign each eligible event to a deterministic movie bucket and compute a bounded partial Top-K for each event-time window and bucket in parallel.
+2. Route only the bounded partial lists to a final merge operator keyed by window end. An event-time timer fires only after the downstream watermark proves every upstream bucket has emitted all on-time partials, then computes the exact global Top-K.
 
 Each partial result contains at most `topK` entries, so the final operator processes `bucketCount × topK` candidates rather than every event. Bucket count is configurable, positive, and no greater than the useful upstream parallelism. Bucket assignment uses a stable hash of `movieId`; changing bucket count requires a savepoint-aware deployment and explicit compatibility review.
 
-The final Redis Top-K and trend payload formats remain unchanged.
+The final Redis Top-K and trend payload formats remain unchanged. Final-merge state is cleared after the configured allowed-lateness interval; partials arriving after cleanup are rejected and counted. Processing-time timers are not used for cross-subtask completion because they cannot prove all shuffled partials have arrived.
 
 ## Safe Cutover Procedure
 
