@@ -77,12 +77,14 @@ Moving from the current topic to `movie_events_v2` uses a fenced, drain-and-rest
 4. Allow the old consumer to drain to zero lag.
 5. Trigger and verify a Flink savepoint.
 6. Stop the old job only after the savepoint succeeds.
-7. Restore the new job from that savepoint using stable downstream operator UIDs and the generation-specific `kafka-movie-events-v2` source UID, explicitly allowing the old Kafka source state to remain unrestored.
-8. Switch producers to `movie_events_v2` and resume writes.
-9. Verify per-partition ingestion, user ordering, output freshness, checkpoint health, and bounded lag.
-10. Retire the old topic only after the rollback window expires.
+7. Before the production cutover, run a shadow bridge deployment against the retained old topic from its earliest required offsets. The bridge uses its own source UID and consumer group but the future-compatible v2 downstream UIDs and state schemas. It must catch up to zero lag and prove retention covers the full deduplication/state rebuild horizon.
+8. Fence producers, let open windows close, drain both old and bridge consumers, and take the cutover savepoint from the bridge job.
+9. Restore the new job from that bridge savepoint using the generation-specific `kafka-movie-events-v2` source UID, explicitly allowing only the bridge Kafka source state to remain unrestored.
+10. Switch producers to `movie_events_v2` and resume writes.
+11. Verify per-partition ingestion, user ordering, output freshness, checkpoint health, and bounded lag.
+12. Retire the old topic only after the rollback window expires.
 
-The cutover aborts without switching producers if drain, savepoint, restore, topic validation, or healthy-checkpoint verification fails. Before v2 producers activate, rollback may restore the old job and resume the old topic from the recorded boundary. After any v2 event is accepted, simple rollback to the pre-cutover savepoint is forbidden because it would lose or regress v2-era state. Post-activation recovery is fix-forward on v2 unless an explicit, verified v2-to-old replay and state-reconciliation procedure is executed. The procedure does not dual-write because independent topics cannot provide a single atomic order for the same user.
+The bridge is a rebuild from retained Kafka events, not a direct restore of generated operator IDs from the legacy job. Cutover aborts if retention cannot rebuild the required state horizon, bridge outputs do not reconcile with the active job/Redis view, or drain, savepoint, restore, topic validation, or healthy-checkpoint verification fails. Before v2 producers activate, rollback may resume the old job and topic from the recorded boundary. After any v2 event is accepted, simple rollback to the pre-cutover savepoint is forbidden because it would lose or regress v2-era state. Post-activation recovery is fix-forward on v2 unless an explicit, verified v2-to-old replay and state-reconciliation procedure is executed. The procedure does not dual-write because independent topics cannot provide a single atomic order for the same user.
 
 ## Skew and Backpressure Policy
 
