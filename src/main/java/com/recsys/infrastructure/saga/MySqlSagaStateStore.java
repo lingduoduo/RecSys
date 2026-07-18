@@ -79,7 +79,11 @@ public final class MySqlSagaStateStore implements SagaStateStore {
 
     private static void saveConditionally(Connection connection, SagaInstance saga, int expected) throws SQLException {
         Objects.requireNonNull(saga, "saga");
-        int affected = findVersion(connection, saga.sagaId()).isPresent()
+        Optional<Integer> storedVersion = findVersion(connection, saga.sagaId());
+        if (storedVersion.isEmpty() && expected != 0) {
+            throw new SagaConflictException(saga.sagaId(), expected, 0);
+        }
+        int affected = storedVersion.isPresent()
                 ? update(connection, saga, expected)
                 : insert(connection, saga);
         if (affected != 1) {

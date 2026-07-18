@@ -5,6 +5,7 @@ import com.recsys.application.saga.SagaEventPublisher;
 import com.recsys.application.saga.SagaOrchestrators;
 import com.recsys.domain.outbox.OutboxDestination;
 import com.recsys.domain.outbox.OutboxEvent;
+import com.recsys.domain.saga.SagaConflictException;
 import com.recsys.domain.saga.SagaEventType;
 import com.recsys.domain.saga.SagaInstance;
 import com.recsys.domain.saga.SagaStatus;
@@ -154,6 +155,32 @@ class MySqlSagaStateStoreIntegrationTest {
             assertThat(stored.version()).isEqualTo(1);
             assertThat(stored.status()).isEqualTo(SagaStatus.STEP_STARTED);
         });
+    }
+
+    @Test
+    void saveRejectsMissingRowWhenExpectedVersionIsNonzero() {
+        SagaInstance saga = saga();
+        saga.setVersion(3);
+
+        assertThatThrownBy(() -> store.save(saga))
+                .isInstanceOf(SagaConflictException.class);
+
+        assertThat(saga.version()).isEqualTo(3);
+        assertThat(store.find(saga.sagaId())).isEmpty();
+    }
+
+    @Test
+    void saveWithEventRejectsMissingRowWhenExpectedVersionIsNonzeroWithoutEnqueueing() {
+        SagaInstance saga = saga();
+        saga.setVersion(3);
+        SagaTransitionEvent event = transition("missing-row-conflict", saga);
+
+        assertThatThrownBy(() -> store.saveWithEvent(saga, event))
+                .isInstanceOf(SagaConflictException.class);
+
+        assertThat(saga.version()).isEqualTo(3);
+        assertThat(store.find(saga.sagaId())).isEmpty();
+        assertThat(outbox.find(uuid(event.eventId()))).isEmpty();
     }
 
     @Test
