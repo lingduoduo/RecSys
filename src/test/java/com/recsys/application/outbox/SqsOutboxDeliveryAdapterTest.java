@@ -6,6 +6,7 @@ import software.amazon.awssdk.services.sqs.SqsAsyncClient;
 import software.amazon.awssdk.services.sqs.model.*;
 
 import java.time.Instant;
+import java.time.Duration;
 import java.util.UUID;
 import java.util.concurrent.CompletableFuture;
 
@@ -22,7 +23,7 @@ class SqsOutboxDeliveryAdapterTest {
         OutboxEvent event = OutboxEvent.pending(eventId, "saga", "order-7", "PaymentRequested",
                 OutboxDestination.SQS_SAGA, null, "{\"amount\":4}", Instant.EPOCH);
 
-        DeliveryAttempt attempt = new SqsOutboxDeliveryAdapter(sqs, "https://sqs/queue", java.time.Clock.systemUTC())
+        DeliveryAttempt attempt = new SqsOutboxDeliveryAdapter(sqs, "https://sqs/queue", java.time.Clock.systemUTC(), Duration.ofMillis(750))
                 .deliver(event);
         var receipt = attempt.completion().toCompletableFuture();
         assertThat(receipt).isNotDone();
@@ -35,20 +36,27 @@ class SqsOutboxDeliveryAdapterTest {
                 .extractingByKey("aggregateId").extracting(MessageAttributeValue::stringValue).isEqualTo("order-7");
         assertThat(request.getValue().messageAttributes())
                 .extractingByKey("eventType").extracting(MessageAttributeValue::stringValue).isEqualTo("PaymentRequested");
+        assertThat(request.getValue().overrideConfiguration().flatMap(c -> c.apiCallTimeout()))
+                .contains(Duration.ofMillis(750));
+        assertThat(request.getValue().overrideConfiguration().flatMap(c -> c.apiCallAttemptTimeout()))
+                .contains(Duration.ofMillis(750));
 
         ack.complete(SendMessageResponse.builder().messageId("broker-id").build());
         assertThat(receipt).isCompleted();
     }
 
-    @Test void cancellationSettlesTheNativeSqsFuture() {
+    @Test void cancellationWaitsForDefinitiveSdkSettlementWithoutCancellingTheLocalFuture() {
         SqsAsyncClient sqs = mock(SqsAsyncClient.class);
         CompletableFuture<SendMessageResponse> nativeFuture = new CompletableFuture<>();
         when(sqs.sendMessage(any(SendMessageRequest.class))).thenReturn(nativeFuture);
         OutboxEvent event = OutboxEvent.pending(UUID.randomUUID(), "saga", "order-7", "PaymentRequested",
                 OutboxDestination.SQS_SAGA, null, "{}", Instant.EPOCH);
 
-        DeliveryAttempt attempt = new SqsOutboxDeliveryAdapter(sqs, "https://sqs/queue").deliver(event);
-        assertThat(attempt.cancel().toCompletableFuture()).isCompleted();
-        assertThat(nativeFuture).isCancelled();
+        DeliveryAttempt attempt = new SqsOutboxDeliveryAdapter(sqs, "https://sqs/queue", Duration.ofSeconds(1)).deliver(event);
+        CompletableFuture<Void> cancellation = attempt.cancel().toCompletableFuture();
+        assertThat(cancellation).isNotDone();
+        assertThat(nativeFuture).isNotCancelled();
+        nativeFuture.completeExceptionally(new RuntimeException("SDK API-call timeout"));
+        assertThat(cancellation).isCompleted();
     }
 }

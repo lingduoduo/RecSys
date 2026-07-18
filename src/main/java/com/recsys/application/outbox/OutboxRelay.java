@@ -51,6 +51,11 @@ public final class OutboxRelay implements AutoCloseable {
         this.maxConcurrentSends = maxConcurrentSends;
         this.leaseDuration = positive(leaseDuration, "leaseDuration");
         this.cycleDeadline = positive(cycleDeadline, "cycleDeadline");
+        this.adapters.forEach((destination, adapter) -> adapter.deliveryDeadline().ifPresent(adapterDeadline -> {
+            if (!this.cycleDeadline.equals(adapterDeadline))
+                throw new IllegalArgumentException(destination + " adapter deadline " + adapterDeadline
+                        + " must equal relay cycleDeadline " + this.cycleDeadline);
+        }));
         this.failureObserver = Objects.requireNonNull(failureObserver, "failureObserver");
         this.terminalExecutor = new ThreadPoolExecutor(
                 Math.min(maxConcurrentSends, 4), Math.min(maxConcurrentSends, 4),

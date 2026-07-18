@@ -6,6 +6,7 @@ import org.apache.kafka.common.serialization.StringSerializer;
 import org.junit.jupiter.api.Test;
 
 import java.time.Instant;
+import java.time.Duration;
 import java.util.Properties;
 import java.util.UUID;
 
@@ -13,17 +14,20 @@ import static org.assertj.core.api.Assertions.assertThat;
 
 class KafkaOutboxDeliveryAdapterTest {
     @Test void kafkaPropertiesEnableBoundedIdempotentDelivery() {
-        Properties p = KafkaOutboxDeliveryAdapter.producerProps("broker:9092");
+        Properties p = KafkaOutboxDeliveryAdapter.producerProps("broker:9092", Duration.ofMillis(1750));
         assertThat(p).containsEntry(ProducerConfig.ENABLE_IDEMPOTENCE_CONFIG, true)
                 .containsEntry(ProducerConfig.ACKS_CONFIG, "all")
                 .containsEntry(ProducerConfig.MAX_IN_FLIGHT_REQUESTS_PER_CONNECTION, 5)
                 .containsKeys(ProducerConfig.RETRIES_CONFIG, ProducerConfig.DELIVERY_TIMEOUT_MS_CONFIG,
-                        ProducerConfig.REQUEST_TIMEOUT_MS_CONFIG);
+                        ProducerConfig.REQUEST_TIMEOUT_MS_CONFIG)
+                .containsEntry(ProducerConfig.DELIVERY_TIMEOUT_MS_CONFIG, 1750)
+                .containsEntry(ProducerConfig.REQUEST_TIMEOUT_MS_CONFIG, 1750)
+                .containsEntry(ProducerConfig.LINGER_MS_CONFIG, 0);
     }
 
     @Test void acknowledgementCompletesOnlyFromKafkaCallbackAndPreservesKeyAndPayload() {
         MockProducer<String, String> producer = new MockProducer<>(false, new StringSerializer(), new StringSerializer());
-        KafkaOutboxDeliveryAdapter adapter = new KafkaOutboxDeliveryAdapter(producer, "online-events", java.time.Clock.systemUTC());
+        KafkaOutboxDeliveryAdapter adapter = new KafkaOutboxDeliveryAdapter(producer, "online-events", java.time.Clock.systemUTC(), Duration.ofSeconds(2));
         OutboxEvent event = event();
 
         DeliveryAttempt attempt = adapter.deliver(event);
@@ -40,7 +44,7 @@ class KafkaOutboxDeliveryAdapterTest {
 
     @Test void cancellationConfirmationWaitsUntilNativeKafkaFutureSettles() {
         MockProducer<String, String> producer = new MockProducer<>(false, new StringSerializer(), new StringSerializer());
-        DeliveryAttempt attempt = new KafkaOutboxDeliveryAdapter(producer, "online-events", java.time.Clock.systemUTC())
+        DeliveryAttempt attempt = new KafkaOutboxDeliveryAdapter(producer, "online-events", java.time.Clock.systemUTC(), Duration.ofSeconds(2))
                 .deliver(event());
 
         var cancellation = attempt.cancel().toCompletableFuture();
@@ -48,6 +52,11 @@ class KafkaOutboxDeliveryAdapterTest {
         producer.errorNext(new org.apache.kafka.common.errors.TimeoutException("delivery timeout"));
         assertThat(cancellation).isCompleted();
         assertThat(attempt.completion().toCompletableFuture()).isCompletedExceptionally();
+    }
+
+    @Test void rejectsDeadlinesKafkaCannotRepresent() {
+        org.assertj.core.api.Assertions.assertThatIllegalArgumentException()
+                .isThrownBy(() -> KafkaOutboxDeliveryAdapter.producerProps("broker:9092", Duration.ofNanos(1)));
     }
 
     private static OutboxEvent event() {

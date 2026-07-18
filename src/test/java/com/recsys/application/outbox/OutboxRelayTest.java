@@ -58,6 +58,20 @@ class OutboxRelayTest {
         assertThat(repository.claimLimit).isEqualTo(2);
     }
 
+    @Test void rejectsAdapterDeadlineThatDiffersFromRelayDeadline() {
+        FakeRepository repository = new FakeRepository(claimed(1));
+        OutboxDeliveryAdapter adapter = new OutboxDeliveryAdapter() {
+            @Override public DeliveryAttempt deliver(OutboxEvent event) {
+                return attempt(CompletableFuture.completedFuture(new DeliveryReceipt(NOW)));
+            }
+            @Override public Optional<Duration> deliveryDeadline() { return Optional.of(Duration.ofSeconds(3)); }
+        };
+        org.assertj.core.api.Assertions.assertThatIllegalArgumentException().isThrownBy(() ->
+                new OutboxRelay(repository, Map.of(OutboxDestination.KAFKA_ONLINE, adapter), retryPolicy(),
+                        "configured-worker", Clock.fixed(NOW, ZoneOffset.UTC), 10, Duration.ofSeconds(30),
+                        Duration.ofSeconds(2), 2)).withMessageContaining("deadline");
+    }
+
     @Test void doesNotClaimAnotherBatchWhileSendCapacityIsExhausted() {
         FakeRepository repository = new FakeRepository(claimed(1));
         CompletableFuture<DeliveryReceipt> pending = new CompletableFuture<>();
