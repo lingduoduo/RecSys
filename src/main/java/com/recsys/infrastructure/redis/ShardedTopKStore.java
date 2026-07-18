@@ -158,8 +158,11 @@ public final class ShardedTopKStore implements TrendingStore {
     @Override
     public List<String> getTopKIdsPrimary(String window, int k) {
         if (k <= 0) return List.of();
-        List<String> canonical = writeExec.executePrimaryRead(
-                c -> c.zrevrange(legacyKey(window), 0, k - 1));
+        List<String> canonical = writeExec.executePrimaryRead(c -> {
+            List<String> current = c.zrevrange(canonicalKey(window), 0, k - 1);
+            return current == null || current.isEmpty()
+                    ? c.zrevrange(legacyKey(window), 0, k - 1) : current;
+        });
         return canonical == null ? List.of() : List.copyOf(canonical);
     }
 
@@ -172,7 +175,12 @@ public final class ShardedTopKStore implements TrendingStore {
         return readExec.executeRead(c -> {
             List<String> ids = List.copyOf(c.zrevrange(key, 0, fetchSize - 1));
             if (ids.isEmpty()) {
-                List<String> legacyIds = List.copyOf(c.zrevrange(legacyKey(window), 0, fetchSize - 1));
+                List<String> canonicalIds = c.zrevrange(canonicalKey(window), 0, fetchSize - 1);
+                List<String> legacyIds = canonicalIds == null ? List.of() : List.copyOf(canonicalIds);
+                if (legacyIds.isEmpty()) {
+                    List<String> oldIds = c.zrevrange(legacyKey(window), 0, fetchSize - 1);
+                    legacyIds = oldIds == null ? List.of() : List.copyOf(oldIds);
+                }
                 if (!legacyIds.isEmpty()) {
                     legacyFallbackFetches.incrementAndGet();
                     ids = legacyIds;
@@ -183,6 +191,10 @@ public final class ShardedTopKStore implements TrendingStore {
             if (staleTtlMs > 0L) hotCache.put(window, result);
             return result;
         });
+    }
+
+    private String canonicalKey(String window) {
+        return keyPrefix + "{" + window + "}:value";
     }
 
     // ── Write path (fan-out to all shards) ────────────────────────────────────────

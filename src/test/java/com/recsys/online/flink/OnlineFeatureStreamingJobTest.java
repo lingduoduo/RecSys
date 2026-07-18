@@ -475,6 +475,65 @@ class OnlineFeatureStreamingJobTest {
         }
     }
 
+    @Test
+    void equalTimestampUsesEventIdTieBreakerRegardlessOfArrivalOrder() throws Exception {
+        GenericContainer<?> redis = redis();
+        withRedis(redis.getHost(), redis.getMappedPort(6379), RedisCommands::flushall);
+        var sink = new OnlineFeatureStreamingJob.RedisTopKSink(redis.getHost(), redis.getMappedPort(6379));
+        sink.open(new Configuration());
+        try {
+            sink.apply(snapshot(1_000L, "b", scored(2, 9)));
+            sink.apply(snapshot(1_000L, "a", scored(1, 10)));
+            withRedis(redis.getHost(), redis.getMappedPort(6379), cmd ->
+                    assertThat(cmd.zrevrange("topk:{last_hour}:value", 0, -1)).containsExactly("2"));
+        } finally {
+            sink.close();
+        }
+    }
+
+    @Test
+    void replayOfIdenticalTopKVersionIsNoOp() throws Exception {
+        GenericContainer<?> redis = redis();
+        withRedis(redis.getHost(), redis.getMappedPort(6379), RedisCommands::flushall);
+        var sink = new OnlineFeatureStreamingJob.RedisTopKSink(redis.getHost(), redis.getMappedPort(6379));
+        sink.open(new Configuration());
+        try {
+            var value = snapshot(2_000L, "replay", scored(2, 9));
+            assertThat(sink.apply(value)).isEqualTo(1L);
+            assertThat(sink.apply(value)).isZero();
+        } finally {
+            sink.close();
+        }
+    }
+
+    @Test
+    void atomicScriptUpdatesAllTopKRepresentationsAndLineage() throws Exception {
+        GenericContainer<?> redis = redis();
+        withRedis(redis.getHost(), redis.getMappedPort(6379), RedisCommands::flushall);
+        var sink = new OnlineFeatureStreamingJob.RedisTopKSink(redis.getHost(), redis.getMappedPort(6379));
+        sink.open(new Configuration());
+        try {
+            sink.apply(snapshot(3_000L, "evt-topk", scored(2, 9)));
+            withRedis(redis.getHost(), redis.getMappedPort(6379), cmd -> {
+                assertThat(cmd.zrevrange("topk:{last_hour}:value", 0, -1)).containsExactly("2");
+                assertThat(cmd.zrevrange("feature:{last_hour}:hot_movies", 0, -1)).containsExactly("2");
+                assertThat(cmd.get("feature:{last_hour}:trend")).isEqualTo("2:9");
+                assertThat(cmd.get("topk:{last_hour}:version")).isEqualTo("3000|evt-topk");
+                assertThat(cmd.smembers("lineage:{last_hour}:event:evt-topk"))
+                        .containsExactlyInAnyOrder("topk:{last_hour}:value",
+                                "feature:{last_hour}:hot_movies", "feature:{last_hour}:trend");
+            });
+        } finally {
+            sink.close();
+        }
+    }
+
+    private static OnlineFeatureStreamingJob.TopKSnapshot snapshot(
+            long eventTime, String eventId, OnlineFeatureStreamingJob.ScoredMovie... movies) {
+        return new OnlineFeatureStreamingJob.TopKSnapshot(
+                "last_hour", List.of(movies), eventTime, 3600, eventId);
+    }
+
     // ── pre-existing tests (unchanged) ──────────────────────────────────────
 
     @Test

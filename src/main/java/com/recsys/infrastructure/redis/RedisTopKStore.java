@@ -78,20 +78,33 @@ public final class RedisTopKStore implements TrendingStore {
     @Override
     public List<String> getTopKIdsPrimary(String window, int k) {
         if (k <= 0) return List.of();
-        return List.copyOf(exec.executePrimaryRead(c -> c.zrevrange(keyPrefix + window, 0, k - 1)));
+        List<String> ids = exec.executePrimaryRead(c -> {
+            List<String> current = c.zrevrange(canonicalKey(window), 0, k - 1);
+            return current == null || current.isEmpty()
+                    ? c.zrevrange(keyPrefix + window, 0, k - 1) : current;
+        });
+        return ids == null ? List.of() : List.copyOf(ids);
     }
 
     private CachedIds fetchWindow(String window, int k, long now) {
         // Always fetch a full list so different k values share the same cache entry.
         int fetchSize = Math.max(k, MAX_FULL_CACHE_SIZE);
-        String key = keyPrefix + window;
+        String key = canonicalKey(window);
         CachedIds ids = new CachedIds(
-                List.copyOf(exec.executeRead(c -> c.zrevrange(key, 0, fetchSize - 1))),
+                List.copyOf(java.util.Optional.ofNullable(exec.executeRead(c -> {
+                    List<String> current = c.zrevrange(key, 0, fetchSize - 1);
+                    return current == null || current.isEmpty()
+                            ? c.zrevrange(keyPrefix + window, 0, fetchSize - 1) : current;
+                })).orElse(List.of())),
                 now + cacheTtlMs);
         if (cacheTtlMs > 0L) {
             hotTopKCache.put(window, ids);
         }
         return ids;
+    }
+
+    private String canonicalKey(String window) {
+        return keyPrefix + "{" + window + "}:value";
     }
 
     public int hotCacheSize() {

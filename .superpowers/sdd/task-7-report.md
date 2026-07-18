@@ -1,46 +1,28 @@
-# Task 7 Report: HTTP API and Server Lifecycle
+# Task 7 report: atomic Top-K publication
 
-## Status
+## Result
 
-Complete. The optional MySQL movie catalog is exposed at `GET /v1/catalog/movies` without changing existing routes.
+- Replaced the independent canonical Top-K, hot-movies, and trend writes with one Redis Lua invocation.
+- The script uses the shared `{window}` Redis Cluster hash tag for all five keys and atomically rebuilds both sorted sets, stores trend and `eventTimeMillis|eventId` metadata, and records lineage with matching TTLs.
+- Versions are ordered by numeric event time and then lexicographic event ID. Only a strictly greater tuple applies; identical replay and stale/equal-lower IDs are no-ops.
+- `TopKSnapshot` now carries a deterministic version ID. Flink-generated window snapshots use `window-<windowEnd>`.
+- Readers prefer `topk:{<window>}:value` and retain fallback to legacy `topk:<window>` data.
 
-## RED evidence
+## Stateful topology and savepoints
 
-- Added HTTP and lifecycle/wiring tests first.
-- `mvn test -Dtest=MovieCatalogApiServiceTest` failed during test compilation because `MovieCatalogApiService` and `CatalogComponent` did not exist.
-- After the first implementation, the focused suite exposed a second valid RED: success returned HTTP 500 because the shared mapper could not serialize `Instant`. The API response boundary was changed to emit an explicit JSON-safe representation.
+The stateful UIDs and max parallelism are unchanged: `topk-partial-v1` and `topk-final-v1` retain their prior state contracts. The atomic sink keeps `redis-topk-sink-v1`. The retired `redis-trend-feature-sink-v1` remains attached as a state-only no-op terminal, avoiding a savepoint topology removal while eliminating its external Redis write.
 
-## GREEN evidence
+## TDD evidence
 
-- `mvn test -Dtest=MovieCatalogApiServiceTest,RecSysServerCatalogWiringTest,BaseApiServiceCachingTest` — exit 0; 14 focused tests passed.
-- `mvn test` — exit 0; full repository test suite passed.
-- `git diff --check` — exit 0.
+- RED: `mvn -Pstreaming-flink test -Dtest=OnlineFeatureStreamingJobTest` failed test compilation because the snapshot event ID and atomic `apply` API did not exist.
+- GREEN: focused Redis/Flink and reader suites pass after implementation (see final verification output in the task handoff).
 
-## Implementation
+## Key contract
 
-- Added a strict bounded optional integer parser to `BaseApiService`; invalid values are rejected, never clamped.
-- Added `MovieCatalogApiService`, running database work on `ctx.blockingTaskExecutor()` and returning `Cache-Control: no-store` on every response.
-- Mapped invalid request/cursor to 400, disabled or connection-unavailable to 503, SQL timeout to 504, and unexpected SQL/mapping failures to 500. HTTP bodies use stable public messages and do not expose exception details.
-- Added package-private `CatalogComponent` to isolate optional construction and lifecycle ownership.
-- Disabled startup creates the 503 service without migration, client construction, connection, or signing-key requirement.
-- Enabled startup migrates before client/service construction; the owned client closes on component construction failure, server startup failure, and shutdown.
-- Registered `/v1/catalog/movies` in `RecSysServer`; existing registrations are unchanged.
+- `topk:{last_hour}:value`
+- `feature:{last_hour}:hot_movies`
+- `feature:{last_hour}:trend`
+- `topk:{last_hour}:version`
+- `lineage:{last_hour}:event:<eventId>`
 
-## Files
-
-- `src/main/java/com/recsys/api/serving/BaseApiService.java`
-- `src/main/java/com/recsys/api/serving/CatalogComponent.java`
-- `src/main/java/com/recsys/api/serving/MovieCatalogApiService.java`
-- `src/main/java/com/recsys/api/serving/RecSysServer.java`
-- `src/test/java/com/recsys/api/serving/MovieCatalogApiServiceTest.java`
-- `src/test/java/com/recsys/api/serving/RecSysServerCatalogWiringTest.java`
-
-## Self-review and concerns
-
-- Strengthened the wiring test to verify the literal RecSysServer route and fixed the migration/client assertion to use one ordered verification sequence.
-- The full suite still emits the repository's pre-existing Netty version warning; it does not fail tests.
-- No open implementation concerns.
-
-## Commit
-
-`feat(catalog): expose mysql movie catalog api`
+All keys share the `last_hour` hash slot tag. Top-K lineage is intentionally window-scoped to satisfy Redis Cluster script rules; the existing per-user lineage contract (`lineage:event:<eventId>`) is unchanged.

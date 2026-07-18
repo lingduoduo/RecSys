@@ -180,8 +180,9 @@ public final class OnlineFeatureStreamingJob {
 
         attachSink(topKSnapshots, new RedisTopKSink(redisHost, redisPort), bridgeMode,
                 "redis-topk-sink", "redis-topk-sink-v1", jobConfiguration);
-        attachSink(topKSnapshots, new RedisTrendFeatureSink(redisHost, redisPort), bridgeMode,
-                "redis-trend-feature-sink", "redis-trend-feature-sink-v1", jobConfiguration);
+        // Keep the retired terminal UID as a state-only no-op so existing savepoints restore cleanly.
+        attachSink(topKSnapshots, new NoOpStateSink<>(), bridgeMode,
+                "retired-redis-trend-feature-sink", "redis-trend-feature-sink-v1", jobConfiguration);
 
         env.execute("recsys-online-feature-streaming");
     }
@@ -864,8 +865,9 @@ public final class OnlineFeatureStreamingJob {
             if (emitAt == null || timestamp != emitAt || Boolean.TRUE.equals(emitted.value())) return;
             List<PartialTopK> available = new ArrayList<>();
             for (PartialTopK partial : partials.get()) available.add(partial);
-            out.collect(new TopKSnapshot("topk:" + windowLabel, mergeTopK(available, topK),
-                    context.getCurrentKey(), ttlSeconds));
+            long windowEnd = context.getCurrentKey();
+            out.collect(new TopKSnapshot(windowLabel, mergeTopK(available, topK),
+                    windowEnd, ttlSeconds, "window-" + windowEnd));
             partials.clear();
             emitTimer.clear();
             emitted.update(true);
@@ -932,20 +934,6 @@ public final class OnlineFeatureStreamingJob {
                 return 1
                 """;
 
-        private static final String ZSET_IF_NEWER_SCRIPT = """
-                local current = redis.call('GET', KEYS[2])
-                if current and tonumber(current) > tonumber(ARGV[1]) then
-                  return 0
-                end
-                redis.call('DEL', KEYS[1])
-                for i = 3, #ARGV, 2 do
-                  redis.call('ZADD', KEYS[1], tonumber(ARGV[i + 1]), ARGV[i])
-                end
-                redis.call('EXPIRE', KEYS[1], tonumber(ARGV[2]))
-                redis.call('SETEX', KEYS[2], tonumber(ARGV[2]), ARGV[1])
-                return 1
-                """;
-
         private final String host;
         private final int port;
         transient RedisClient client;
@@ -1000,21 +988,6 @@ public final class OnlineFeatureStreamingJob {
             );
         }
 
-        void setTopKIfNewer(RedisCommands<String, String> cmd, TopKSnapshot value) {
-            List<String> args = new ArrayList<>(2 + value.movies.size() * 2);
-            args.add(Long.toString(value.updatedAtMillis));
-            args.add(Integer.toString(value.ttlSeconds));
-            for (ScoredMovie movie : value.movies) {
-                args.add(Integer.toString(movie.movieId));
-                args.add(Long.toString(movie.score));
-            }
-            cmd.eval(
-                    ZSET_IF_NEWER_SCRIPT,
-                    ScriptOutputType.INTEGER,
-                    new String[]{value.redisKey, value.redisKey + ":updated_at"},
-                    args.toArray(new String[0])
-            );
-        }
     }
 
     /** State-only bridge terminal: preserves sink UIDs without any external side effect. */
@@ -1053,23 +1026,56 @@ public final class OnlineFeatureStreamingJob {
     }
 
     static final class RedisTopKSink extends AbstractRedisSink<TopKSnapshot> {
+        private static final String ATOMIC_TOPK_SCRIPT = """
+                local current = redis.call('GET', KEYS[4])
+                if current then
+                  local separator = string.find(current, '|', 1, true)
+                  local currentTime = tonumber(string.sub(current, 1, separator - 1))
+                  local currentId = string.sub(current, separator + 1)
+                  local incomingTime = tonumber(ARGV[1])
+                  if currentTime > incomingTime or
+                     (currentTime == incomingTime and currentId >= ARGV[2]) then
+                    return 0
+                  end
+                end
+                redis.call('DEL', KEYS[1], KEYS[2])
+                for i = 5, #ARGV, 2 do
+                  redis.call('ZADD', KEYS[1], tonumber(ARGV[i + 1]), ARGV[i])
+                  redis.call('ZADD', KEYS[2], tonumber(ARGV[i + 1]), ARGV[i])
+                end
+                redis.call('SET', KEYS[3], ARGV[4])
+                redis.call('SET', KEYS[4], ARGV[1] .. '|' .. ARGV[2])
+                redis.call('SADD', KEYS[5], KEYS[1], KEYS[2], KEYS[3])
+                for i = 1, 5 do redis.call('EXPIRE', KEYS[i], tonumber(ARGV[3])) end
+                return 1
+                """;
+
         RedisTopKSink(String host, int port) { super(host, port); }
 
         @Override
         public void invoke(TopKSnapshot value, Context context) {
-            RedisCommands<String, String> cmd = commands();
-            setTopKIfNewer(cmd, value);
-            setTopKIfNewer(cmd, value.withRedisKey(value.redisKey.replace("topk:", "feature:hot_movies:")));
+            apply(value);
         }
-    }
 
-    static final class RedisTrendFeatureSink extends AbstractRedisSink<TopKSnapshot> {
-        RedisTrendFeatureSink(String host, int port) { super(host, port); }
-
-        @Override
-        public void invoke(TopKSnapshot value, Context context) {
-            setStringIfNewer(commands(), value.redisKey.replace("topk:", "feature:trend:"),
-                    value.encodeTrend(), value.updatedAtMillis, value.ttlSeconds);
+        long apply(TopKSnapshot value) {
+            String tag = "{" + value.windowLabel + "}";
+            List<String> args = new ArrayList<>(4 + value.movies.size() * 2);
+            args.add(Long.toString(value.updatedAtMillis));
+            args.add(value.eventId);
+            args.add(Integer.toString(value.ttlSeconds));
+            args.add(value.encodeTrend());
+            for (ScoredMovie movie : value.movies) {
+                args.add(Integer.toString(movie.movieId));
+                args.add(Long.toString(movie.score));
+            }
+            Number result = commands().eval(ATOMIC_TOPK_SCRIPT, ScriptOutputType.INTEGER,
+                    new String[]{"topk:" + tag + ":value",
+                            "feature:" + tag + ":hot_movies",
+                            "feature:" + tag + ":trend",
+                            "topk:" + tag + ":version",
+                            "lineage:" + tag + ":event:" + value.eventId},
+                    args.toArray(new String[0]));
+            return result.longValue();
         }
     }
 
@@ -1194,24 +1200,23 @@ public final class OnlineFeatureStreamingJob {
     }
 
     public static final class TopKSnapshot {
-        public String redisKey;
+        public String windowLabel;
         public List<ScoredMovie> movies;
         public long updatedAtMillis;
         public int ttlSeconds;
+        public String eventId;
 
         public TopKSnapshot() {
             this.movies = new ArrayList<>();
         }
 
-        TopKSnapshot(String redisKey, List<ScoredMovie> movies, long updatedAtMillis, int ttlSeconds) {
-            this.redisKey = redisKey;
+        TopKSnapshot(String windowLabel, List<ScoredMovie> movies, long updatedAtMillis, int ttlSeconds,
+                     String eventId) {
+            this.windowLabel = windowLabel;
             this.movies = movies;
             this.updatedAtMillis = updatedAtMillis;
             this.ttlSeconds = ttlSeconds;
-        }
-
-        TopKSnapshot withRedisKey(String nextRedisKey) {
-            return new TopKSnapshot(nextRedisKey, movies, updatedAtMillis, ttlSeconds);
+            this.eventId = eventId;
         }
 
         String encodeTrend() {
