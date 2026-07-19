@@ -18,11 +18,11 @@ A compact Maven workspace demonstrating recommendation-system serving, retrieval
 | Online Serving | `OnlinePredictionServer`, `OnlineFeatureStore`, `ShardedTopKStore`, `OnlineLearner` |
 | Catalog Serving | `RecSysServer` (Armeria), embedding-based recall, `SimilarMovieService` |
 | Recommendation Service | Shared recall → rank → paginate → hydrate pipeline, `MultiChannelRecallService` |
-| Data Infrastructure | Redis embedding store, AZ-aware read-replica router, multi-level cache (L1/L2/L3), LSH vector index, consistent-hash sharded record store, sharded top-K, MySQL |
-| Messaging & Load Balancing | `AsyncEventPublisher` (SQS/Kafka transports), `ApplicationLoadBalancer` (L7), capacity-weight feedback |
+| Data Infrastructure | Redis embedding store, AZ-aware read-replica router, multi-level cache (L1/L2/L3), LSH vector index, consistent-hash sharded record store, sharded top-K, MySQL catalog + transactional outbox |
+| Messaging & Load Balancing | `AsyncEventPublisher` (SQS/Kafka transports), durable outbox relay + read-your-writes consistency, `ApplicationLoadBalancer` (L7), capacity-weight feedback |
 | Domain Model | Shared value objects: `Movie`, `User`, `MovieCandidate`, `RecommendationQuery` |
 | Configuration | Spring `@ConfigurationProperties`, feature flag providers, JVM tuning options |
-| Infrastructure | Kubernetes base + EKS overlay, Docker, Flink streaming topology |
+| Infrastructure | Kubernetes base + EKS overlay, CloudFront CDN edge, Docker, Flink streaming topology |
 | Documentation | README, architecture docs, design specs, implementation plans |
 
 ![Architecture](recsys-architecture.png)
@@ -112,6 +112,7 @@ curl http://localhost:8010/health
   - [Port 8010 — API Gateway](#port-8010--api-gateway)
 - [SQL Use Cases](#sql-use-cases)
 - [Microservice Gateway](#microservice-gateway)
+- [CDN Edge](#cdn-edge)
 - [Service Registry](#service-registry)
 - [Overload Protection](#overload-protection)
 - [Configuration](#configuration)
@@ -125,6 +126,7 @@ curl http://localhost:8010/health
 - [Sharded Record Store](#sharded-record-store)
 - [Redis Read Replicas](#redis-read-replicas)
 - [Event Publishers (Message Queues)](#event-publishers-message-queues)
+- [Durable Eventual Consistency](#durable-eventual-consistency)
 - [Load Balancing](#load-balancing)
 - [Offline Item Embeddings](#offline-item-embeddings)
 - [Kubernetes & EKS](#kubernetes--eks)
@@ -884,6 +886,8 @@ The production MySQL catalog currently has two query shapes and two justified se
 
 Both indexes are required because the genre-leading B-tree cannot efficiently provide a global popularity order. The indexes deliberately omit projected payload columns such as `title`, `year`, and `updated_at`; widen them only when `EXPLAIN ANALYZE`, slow-query evidence, or representative benchmarks show clustered-row lookup is the bottleneck.
 
+Both fixed query shapes pin their plan with `FORCE INDEX (...)` rather than trusting the optimizer; `MySqlIndexContractTest` / `MySqlIndexContractAssertions` assert the hint and column order statically, and `MovieCatalogMySqlIntegrationTest` (`@Tag("docker")`) confirms the same index in a real `EXPLAIN`.
+
 Every new production MySQL query must ship with a query-to-index contract test and a Docker-tagged MySQL `EXPLAIN` assertion. Verify the current inventory with:
 
 ```bash
@@ -982,6 +986,9 @@ export MYSQL_USER="recsys"
 export MYSQL_PASSWORD="<from-secret-manager>"
 export MYSQL_POOL_MAX_SIZE=5
 export MYSQL_POOL_MIN_IDLE=1
+export MYSQL_POOL_CONNECTION_TIMEOUT_MS=10000
+export MYSQL_POOL_IDLE_TIMEOUT_MS=60000
+export MYSQL_POOL_MAX_LIFETIME_MS=1800000
 export MYSQL_QUERY_TIMEOUT_SECONDS=2
 export MYSQL_READ_MAX_ATTEMPTS=2
 export MYSQL_READ_RETRY_BACKOFF_MS=50
@@ -1001,6 +1008,18 @@ Keep the same genre while paging: a changed filter, tampered/malformed cursor, b
 limit returns `400`. The service fetches `limit + 1`, so `hasMore` and `nextCursor` are exact for the
 current query; the final page has `hasMore: false` and `nextCursor: null`. Cursors are not offsets and
 must be treated as opaque.
+
+Catalog failures map to a fixed status contract rather than leaking SQL internals:
+
+| Condition | Status |
+|---|---:|
+| Invalid `limit`/`genre`, malformed or tampered cursor, cursor/filter mismatch | `400` |
+| MySQL disabled, or the HikariCP pool is unavailable/exhausted (`MySqlPoolUnavailableException`) | `503` |
+| Query exceeds `MYSQL_QUERY_TIMEOUT_SECONDS` (`SQLTimeoutException`) | `504` |
+| Unexpected SQL or mapping failure | `500` |
+
+Every response carries `Cache-Control: no-store`. Failures are logged with exception class, SQL state,
+and elapsed time only — never bind values or credentials.
 
 ```bash
 # Direct first page
@@ -1346,6 +1365,90 @@ curl -v -X POST http://localhost:8010/api/llm/api/generate \
 
 ---
 
+## CDN Edge
+
+An optional CloudFront distribution sits in front of the API Gateway ALB to terminate viewer TLS at the edge, drop attack traffic before it reaches the region, accelerate the uncacheable-but-dominant `POST /api/recommend` path over the AWS backbone, and cache the two genuinely shared read routes. It is created out-of-band by an idempotent script, matching how the WAF WebACL and Route53 records are already managed — this repo has no IaC toolchain.
+
+**The primary route earns nothing from caching.** `POST /api/recommend` is POST-only and personalized per `userId`, so CloudFront forwards 100% of those requests to the origin — the cache hit ratio there is zero, by design. The CDN's value on that path is edge TLS termination, WAF enforcement, and AWS-backbone acceleration, not caching. Caching is real but narrow: only the two catalog reads below.
+
+Design: `docs/superpowers/specs/2026-07-14-cdn-edge-acceleration-design.md` and `docs/superpowers/specs/2026-07-14-local-cdn-and-origin-secret-hardening-design.md`. Operations: `docs/runbooks/cdn-operations.md`, `docs/runbooks/cdn-local.md`.
+
+### What is cached
+
+| Path pattern | Policy | Fresh (`s-maxage`) | `stale-while-revalidate` / `stale-if-error` | Cache key |
+|---|---|---:|---:|---|
+| `/api/catalog/item*` | Cache | 3600s (1h) | 86400s (24h) | `id` |
+| `/api/catalog/similar*` | Cache | 300s (5min) | 3600s (1h) | `movieId`, `k` |
+| everything else, including `POST /api/recommend` and `/api/catalog/user` | **CachingDisabled** | — | — | — |
+
+Cache keys whitelist only the listed query params — forwarding the full query string would let `?id=1&cachebuster=<n>` fragment the cache arbitrarily and act as an origin-DoS amplifier. `stale-while-revalidate` and `stale-if-error` share the same window (`HttpCaching.publicCache`, `src/main/java/com/recsys/api/serving/HttpCaching.java`), so a total origin outage still serves cached `/item` for up to 24h and `/similar` for up to 1h. `GET /getuser`, `GET /api/v1/token`, and not-found responses are `Cache-Control: no-store` so a miss or a single-use token can never get pinned at the edge.
+
+For the edge to hit at a useful ratio these two routes must not vary on `Authorization`, so they are marked public via `GATEWAY_PUBLIC_PATHS` (see [Authentication](#authentication-gatewayauthenticator)) and CloudFront does not forward `Authorization` on those two behaviors. This is an explicit trust decision: movie catalog metadata and item-to-item similarity are treated as non-sensitive and world-readable. `GATEWAY_PUBLIC_PATHS` **must be the exact paths**, never the `/api/catalog` prefix — public-path matching is prefix-with-boundary, so the bare prefix would also expose `/api/catalog/user?userId=1`.
+
+```bash
+GATEWAY_PUBLIC_PATHS=/health,/api/catalog/item,/api/catalog/similar
+```
+
+### Origin lockdown
+
+The ALB security group is pinned to CloudFront's origin-facing managed prefix list, but that list covers *every* AWS account's distributions — so it alone doesn't prove a request came from *our* distribution. `GatewayOriginSecret` closes that gap: CloudFront injects a custom `x-origin-secret` header on every origin request, and the gateway rejects anything missing or mismatched with `403`.
+
+`GATEWAY_ORIGIN_SECRET` defaults to unset (disabled — local dev and the test suite are unaffected). It accepts a **comma-separated set** of secrets so rotation has no 403 window: add the new secret alongside the old, roll the pods, flip the distribution to the new value, then drop the old one.
+
+```bash
+# Zero-downtime rotation
+GATEWAY_ORIGIN_SECRET="old-secret,new-secret"   # 1. pods accept either
+# ... flip the distribution's custom header to new-secret ...
+GATEWAY_ORIGIN_SECRET="new-secret"              # 2. old retired
+```
+
+`/health` and `/metrics` are exempt (boundary-matched, not prefix — `/healthcheck` does not inherit `/health`'s exemption), since the ALB health check, kubelet probes, and the Prometheus scrape all reach the pod directly and can't carry the secret. Every rejection increments `gateway_origin_secret_rejected_total` on the gateway's `/metrics`, and the first rejection also logs one WARN (subsequent ones are counted, not logged, to avoid flooding under a scan or a botched rotation).
+
+```bash
+curl http://localhost:8010/metrics | grep gateway_origin_secret_rejected_total
+```
+
+`scripts/create-cdn-distribution.sh` defaults `ORIGIN_PROTOCOL_POLICY` to `https-only`, which encrypts the secret across the CloudFront→ALB hop (requires an ALB `:443` listener and a regional ACM cert). `http-only` remains available as an explicit, loudly-warned opt-out for environments without that listener yet — under it the secret crosses the hop in cleartext and is replayable if observed.
+
+### Local CDN stand-in
+
+`docker-compose.cdn.yml` runs an nginx 1.27-alpine container on `:8090` that mirrors the CloudFront cache behaviors one-for-one, so the caching semantics can be run and observed with no AWS account.
+
+```bash
+# 1. Gateway + backends on the host (gateway listens on :8010)
+sh scripts/run-microservices-local.sh
+
+# 2. The CDN in front of it, on :8090
+docker compose -f docker-compose.cdn.yml up
+
+# 3. See it work
+curl -sI 'localhost:8090/api/catalog/item?id=1' | grep -i x-cache            # X-Cache: MISS
+curl -sI 'localhost:8090/api/catalog/item?id=1' | grep -i x-cache            # X-Cache: HIT
+curl -sI 'localhost:8090/api/catalog/item?id=1&cachebuster=99' | grep -i x-cache  # HIT — key whitelist holds
+curl -sI -X POST localhost:8090/api/recommend | grep -i x-cache              # X-Cache: BYPASS — default-deny holds
+```
+
+If the gateway has `GATEWAY_ORIGIN_SECRET` set, `CDN_ORIGIN_SECRET` must match it or every request 403s. Purge with `./scripts/invalidate-local-cdn.sh` (purges the whole cache — nginx OSS has no path-scoped invalidation).
+
+This is a **semantics harness, not a CloudFront emulator** — it demonstrates caching behavior only: no WAF, no Shield, no edge TLS, no geographic distribution (one nginx container, not 400+ POPs), and coarser whole-cache invalidation.
+
+### Deployment
+
+The distribution is created out-of-band, matching the existing convention for the WAF WebACL and Route53 records:
+
+```bash
+ORIGIN_DOMAIN=origin.recsys.example.com \
+ALIAS_DOMAIN=app.recsys.example.com \
+ACM_CERT_ARN=arn:aws:acm:us-east-1:<acct>:certificate/<id> \
+WEB_ACL_ARN=arn:aws:wafv2:us-east-1:<acct>:global/webacl/recsys-edge/<id> \
+ORIGIN_SECRET="$(openssl rand -hex 32)" \
+./scripts/create-cdn-distribution.sh
+```
+
+Full rollout order (reversing the last two steps locks all traffic out of the origin) is in `docs/runbooks/cdn-operations.md`.
+
+---
+
 ## Service Registry
 
 Opt-in, Redis-backed service discovery for the gateway → backend hop. It is **off by default** (`SERVICE_REGISTRY_ENABLED=false`): the gateway opens no Redis connection and resolves every upstream from its static route address (env var / configmap), exactly as documented under [Microservice Gateway](#microservice-gateway). Turn it on to let backends advertise their own address and the gateway follow them without a redeploy.
@@ -1443,6 +1546,11 @@ The online server (7010) adds its own `ONLINE_MAX_CONCURRENT_REQUESTS` / `ONLINE
 | `MYSQL_READ_MAX_ATTEMPTS` | `2` | Total transient-connection read attempts; valid range 1–2 |
 | `MYSQL_READ_RETRY_BACKOFF_MS` | `50` | Backoff before the one allowed retry; valid range 0–1000 ms |
 | `MYSQL_CURSOR_SIGNING_KEY` | _(required when enabled)_ | Secret HMAC key for catalog cursors; at least 32 UTF-8 bytes, with no built-in production default |
+| `MYSQL_POOL_MAX_SIZE` | `5` | HikariCP max pool size for the read-only catalog pool |
+| `MYSQL_POOL_MIN_IDLE` | `1` | HikariCP min idle connections kept warm |
+| `MYSQL_POOL_CONNECTION_TIMEOUT_MS` | `10000` | Max wait to acquire a pooled connection before failing fast |
+| `MYSQL_POOL_IDLE_TIMEOUT_MS` | `60000` | Idle-connection eviction time |
+| `MYSQL_POOL_MAX_LIFETIME_MS` | `1800000` | Max connection lifetime before recycling |
 
 ### Online Prediction Server (port 7010)
 
@@ -1479,7 +1587,7 @@ The online server (7010) adds its own `ONLINE_MAX_CONCURRENT_REQUESTS` / `ONLINE
 | `ONLINE_EVENTS_SQS_QUEUE_URL` | _(unset)_ | Target SQS queue URL for online events |
 | `ONLINE_EVENTS_KAFKA_ENABLED` | `false` | Drain online events to Kafka (needs `ONLINE_EVENTS_KAFKA_BOOTSTRAP_SERVERS`) |
 | `ONLINE_EVENTS_KAFKA_BOOTSTRAP_SERVERS` | _(unset)_ | Kafka bootstrap servers for online events |
-| `ONLINE_EVENTS_KAFKA_TOPIC` | `online_events` | Kafka topic for online events |
+| `ONLINE_EVENTS_KAFKA_TOPIC` | `movie_events_v2` | Kafka topic for online events; records are keyed by `userId`, matching the Flink source topic's partition contract |
 
 ### API Gateway (port 8010)
 
@@ -1493,7 +1601,8 @@ The online server (7010) adds its own `ONLINE_MAX_CONCURRENT_REQUESTS` / `ONLINE
 | `GATEWAY_COGNITO_ISSUER` | _(unset)_ | Cognito user-pool issuer URL; enables JWT auth (JWKS from `<issuer>/.well-known/jwks.json`) |
 | `GATEWAY_COGNITO_AUDIENCE` | _(unset)_ | Required when issuer is set — expected `aud` / client id |
 | `GATEWAY_COGNITO_TOKEN_USE` | `access` | Comma-separated accepted `token_use` values (e.g. `access,id`) |
-| `GATEWAY_PUBLIC_PATHS` | `/health` | Comma-separated path prefixes that bypass auth |
+| `GATEWAY_PUBLIC_PATHS` | `/health` | Comma-separated exact paths that bypass auth (prefix-with-boundary match); the k8s configmap sets `/health,/api/catalog/item,/api/catalog/similar` so the two CDN-cached reads don't vary on `Authorization` ([CDN Edge](#cdn-edge)) |
+| `GATEWAY_ORIGIN_SECRET` | _(unset = disabled)_ | Comma-separated set of accepted `x-origin-secret` values; rejects direct-origin requests with `403` ([CDN Edge](#cdn-edge)) |
 | `GATEWAY_RATE_LIMIT_RPS` | `0` | Global token-bucket rate (per route+principal); `0` = disabled |
 | `GATEWAY_RATE_LIMIT_<ROUTE>_RPS` | _(unset)_ | Per-route override, e.g. `GATEWAY_RATE_LIMIT_MODEL_RPS` |
 | `GATEWAY_RL_MAX_PRINCIPALS` | `100000` | Max distinct rate-limit buckets held in the Caffeine cache |
@@ -1979,7 +2088,7 @@ Behavioral and experiment events leave the serving path through a bounded, **fir
 | A/B exposures (`8080`) | log-only | `recsys.events.sqs.*` | `recsys.events.kafka.*` |
 | Saga lifecycle | NOOP | `SAGA_EVENTS_SQS_*` | — |
 
-**Online server (port 7010)** — `AsyncEventPublisherFactory.fromEnvironment("ONLINE_EVENTS")` picks SQS first (when enabled with a non-blank queue URL), then Kafka, else log-only. Drain stats surface in `/online/ops` under `events` (`queueSize`, `published`, `dropped`, `drained`).
+**Online server (port 7010)** — `AsyncEventPublisherFactory.fromEnvironment("ONLINE_EVENTS")` picks SQS first (when enabled with a non-blank queue URL), then Kafka, else log-only. Drain stats surface in `/online/ops` under `events` (`queueSize`, `published`, `dropped`, `drained`, `deliveryFailures`) — `deliveryFailures` counts Kafka broker-side send failures separately from `dropped` (queue-full or invalid-key rejections).
 
 ```bash
 # Ship online events to SQS
@@ -1987,14 +2096,16 @@ export ONLINE_EVENTS_SQS_ENABLED=true
 export ONLINE_EVENTS_SQS_QUEUE_URL="https://sqs.us-east-1.amazonaws.com/123456789012/online-events"
 export AWS_REGION=us-east-1
 
-# …or to Kafka (topic defaults to online_events)
+# …or to Kafka (topic defaults to movie_events_v2)
 export ONLINE_EVENTS_KAFKA_ENABLED=true
 export ONLINE_EVENTS_KAFKA_BOOTSTRAP_SERVERS=localhost:9092
-export ONLINE_EVENTS_KAFKA_TOPIC=online_events
+# ONLINE_EVENTS_KAFKA_TOPIC defaults to movie_events_v2; override only for a non-default deployment
 
 curl "http://localhost:7010/online/ops" | jq '.events'
-# {"queueSize":0,"published":128,"dropped":0,"drained":128}
+# {"queueSize":0,"published":128,"dropped":0,"drained":128,"deliveryFailures":0}
 ```
+
+Online events targeting Kafka are **keyed**, not published unkeyed: `MovieEventKafkaKeyExtractor` pulls a normalized positive `userId` (`userId`/`user_id`, numeric or `..._<id>` string) out of each event and uses it as the Kafka record key, so a given user's events land in the same partition in order — the same per-user ordering contract the Flink job (`movie_events_v2`, 24 partitions) depends on. Events with a missing, zero, negative, or unparseable user ID are rejected before send rather than published unkeyed and count toward `dropped`. This extractor applies only to the `ONLINE_EVENTS` Kafka transport — A/B exposure events (`recsys.events.kafka.*`) are unaffected and keep publishing without a key extractor.
 
 **Model server (port 8080)** — `ModelEventConfig` ships A/B exposure events the same way, configured via Spring properties (topic defaults to `ab_exposures`):
 
@@ -2008,6 +2119,120 @@ recsys:
 **Saga lifecycle** — `SagaEventPublishers.fromEnvironment()` emits saga state transitions to SQS when `SAGA_EVENTS_SQS_ENABLED=true` and `SAGA_EVENTS_SQS_QUEUE_URL` is set; otherwise NOOP. Set `SAGA_EVENTS_SQS_BEST_EFFORT=true` to swallow publish failures instead of surfacing them.
 
 > SQS sends in batches of ≤ 10 (`SendMessageBatch`); both transports log and swallow broker errors so the drain loop and request path never break.
+
+---
+
+## Durable Eventual Consistency
+
+The `AsyncEventPublisher` above is deliberately fire-and-forget: a broker outage silently drops events. That is the right default for the demo path, but some callers need stronger guarantees. This subsystem adds them — and is **opt-in and off by default** (`ONLINE_DURABLE_EVENTS_ENABLED=false`, `MYSQL_ENABLED=false`). Ordinary online-serving reads stay on the existing replica-and-cache path (see [Redis Read Replicas](#redis-read-replicas)); nothing here changes their behavior. When enabled it provides:
+
+1. a **MySQL transactional outbox** so accepted online events and saga transitions cannot be lost by a broker or process crash;
+2. **bounded read-your-writes** — a signed consistency token a caller presents on a follow-up recommendation read to wait (up to 2s) for their own write to become visible; and
+3. **automated reconciliation** that republishes any outbox event whose Redis lineage never appeared.
+
+Full rollout order, dead-letter operations, and rollback are in `docs/runbooks/durable-eventual-consistency.md`.
+
+### Transactional outbox → Kafka/SQS
+
+`POST`-shaped writes never publish directly to a broker. An accepted event (or a saga state transition) is committed to the `event_outbox` MySQL table in the *same transaction* as the domain write; the request succeeds only after that commit. Dedicated relay workers (`OutboxRelayCommand`, deployed separately as `recsys-outbox-relay` on its own port `7020`) claim batches with `SELECT ... FOR UPDATE SKIP LOCKED`, lease them, and publish to Kafka (`KAFKA_ONLINE`) or SQS (`SQS_SAGA`) — marking a row `DELIVERED` only after the broker acknowledges. A worker crash after the ack but before the `DELIVERED` write simply republishes on the next claim; stable event IDs, keyed Kafka records, and idempotent Redis writes absorb the duplicate. Failed sends back off exponentially (jittered), and a row goes `DEAD` after `OUTBOX_RELAY_MAX_ATTEMPTS` — dead rows are never retried automatically.
+
+```bash
+# Enable durable event acceptance (requires MySQL already configured — see the MySQL section above)
+export MYSQL_ENABLED=true
+export ONLINE_DURABLE_EVENTS_ENABLED=true
+export ONLINE_CONSISTENCY_TOKEN_SECRET="<32+ random bytes from secret manager>"
+export OUTBOX_KAFKA_BOOTSTRAP_SERVERS=localhost:9092
+export OUTBOX_KAFKA_ONLINE_TOPIC=online-events
+
+# A feature-view event is durable only when the caller supplies a stable UUID eventId
+curl -i "http://localhost:7010/online/features?userId=123&eventId=$(uuidgen)"
+# HTTP/1.1 200 OK
+# x-consistency-token: eyJldmVudElkIjoi...   <- opaque, HMAC-signed, 24h expiry
+# {"user":{"userId":123,"name":"Alice"},"window":"last_hour","recentMovies":[...],"trendingMovies":[...]}
+```
+
+Repeating the identical request with the same `eventId` returns the original acceptance and token (idempotent); reusing the same `eventId` with different content returns `409 Conflict`; a MySQL commit failure returns `503` and never issues a token — the caller cannot mistake a non-durable write for a durable one.
+
+Kafka producers (both the outbox relay and the legacy `KafkaAsyncEventPublisher`) set `enable.idempotence=true`, `acks=all`, explicit `retries` / `delivery.timeout.ms` / `request.timeout.ms`, and `max.in.flight.requests.per.connection=5`, so retries within a producer session cannot duplicate a record; end-to-end duplicate protection across relay restarts comes from the stable event ID plus the deterministic Redis version comparison below.
+
+### Read-your-writes: bounded primary reads
+
+Present the token from `/online/features` on a follow-up `GET /online/recommendation` via the `X-Consistency-Token` header to request that the read observe your own write:
+
+```bash
+TOKEN=$(curl -si "http://localhost:7010/online/features?userId=123&eventId=$(uuidgen)" \
+  | awk -F': ' '/x-consistency-token/{print $2}' | tr -d '\r')
+
+curl -i "http://localhost:7010/online/recommendation?userId=123&k=10" \
+  -H "X-Consistency-Token: $TOKEN"
+# 200  — lineage observed: served from the Redis primary, JVM feature caches bypassed
+# 202  — Retry-After: 1 — valid token, event not yet visible after a 2s bounded wait
+# 400  — malformed / bad signature
+# 409  — token expired (tokens are valid 24h)
+# 403  — token subject does not match the requested userId
+# 503  — primary Redis unavailable during the check (fails closed — never served from stale cache)
+```
+
+The wait is capped at 2 seconds and polls in 50ms steps against Redis lineage on the **primary** connection, never a replica and never the JVM feature cache — trading a little primary read load for a bounded staleness guarantee. Requests without the header are unaffected and keep using the existing replica/cache path.
+
+### Deterministic, atomic Redis writes
+
+The Flink job (`OnlineFeatureStreamingJob`) writes every lineage-aware feature through a single Lua script per update, so related keys can never diverge from a partial write. Recent-history and scalar features record their applied event into `lineage:event:<eventId>` (an `SADD` of the Redis key that changed); per-window Top-K writes rebuild the canonical `topk:{window}:value` and derived `feature:{window}:hot_movies` sorted sets, `feature:{window}:trend`, and `topk:{window}:version` (`eventTimeMillis|eventId`) in one call under a shared `{window}` hash tag — all-or-nothing, Redis Cluster single-slot compatible. Ordering compares the tuple `(eventTimeMillis, eventId)`; a replayed or out-of-order update that isn't strictly newer is a no-op, so two events with an identical timestamp resolve to the same final value regardless of arrival order.
+
+### Reconciliation
+
+A standalone Kubernetes CronJob (`recsys-outbox-reconciliation`, hourly, `concurrencyPolicy: Forbid`) scans `DELIVERED` `KAFKA_ONLINE` outbox rows from the previous `RECONCILIATION_WINDOW_HOURS` (default 24) and checks each event's Redis lineage against the primary. Missing lineage is republished under a per-event MySQL lease (so overlapping runs can't double-repair) with the original event ID and partition key — safe because delivery is idempotent. It ships in report-only mode (`RECONCILIATION_REPAIR=false`); a republish is counted immediately, but a **repair** is only confirmed on a later run once lineage actually appears. `DEAD` rows are excluded and never auto-repaired.
+
+```bash
+kubectl -n recsys create job --from=cronjob/recsys-outbox-reconciliation manual-reconcile-check
+kubectl -n recsys logs job/manual-reconcile-check
+```
+
+### Metrics
+
+All consistency/outbox meters are on the existing `/metrics` endpoint (online serving, `7010`) and the relay's own `/metrics` (`7020`), with **bounded enum tags only** — no user ID, event ID, or Redis-key labels:
+
+```bash
+curl -s http://localhost:7020/metrics | grep -E '^outbox_'
+# outbox_delivery_lag_seconds_count{destination="kafka_online"} 42
+# outbox_delivery_failures_total{destination="kafka_online"} 0
+# outbox_pending_events 0
+# outbox_in_flight_events 0
+
+curl -s http://localhost:7010/metrics | grep -E '^consistency_|^redis_replica_lag|^redis_feature_version|^reconciliation_events'
+# consistency_token_validation_total{outcome="valid"} 12
+# consistency_wait_total{outcome="applied"} 10
+# consistency_wait_total{outcome="timeout"} 2
+# redis_replica_lag_available 1
+# redis_replica_lag_seconds 0.04
+# redis_feature_version_age_seconds 3.2
+# reconciliation_events_total{outcome="missing"} 0
+```
+
+`redis_replica_lag_seconds` comes from a periodic monotonic probe written to the primary and read through the replica router; a probe failure reports `redis_replica_lag_available 0` rather than a misleading zero lag. `redis_feature_version_*` are aggregate min/max/age gauges across a bounded sample, not per-feature — cardinality stays flat regardless of catalog size.
+
+### Configuration
+
+`ONLINE_DURABLE_EVENTS_ENABLED` and `ONLINE_CONSISTENCY_TOKEN_SECRET` are documented in the [port-7010 config table](#online-prediction-server-port-7010); the outbox relay and reconciliation job add their own settings:
+
+| Env var | Default | Purpose |
+|---|---:|---|
+| `OUTBOX_KAFKA_BOOTSTRAP_SERVERS` | _(required when enabled)_ | Kafka bootstrap for the outbox relay |
+| `OUTBOX_KAFKA_ONLINE_TOPIC` | `online-events` | Kafka topic the relay publishes `KAFKA_ONLINE` rows to |
+| `OUTBOX_DELIVERY_DEADLINE_MS` | `5000` | Per-send / relay-cycle deadline |
+| `OUTBOX_RELAY_PORT` | `7020` | Standalone relay deployment's HTTP port (`/health/*`, `/metrics`) |
+| `OUTBOX_RELAY_BATCH_SIZE` | `100` | Rows claimed per relay cycle |
+| `OUTBOX_RELAY_MAX_CONCURRENT_SENDS` | `16` | Bounded concurrent broker sends |
+| `OUTBOX_RELAY_MAX_ATTEMPTS` | `8` | Attempts before a row becomes `DEAD` |
+| `OUTBOX_RELAY_LEASE_SECONDS` | `30` | Claim lease; an expired lease is reclaimable after a worker crash |
+| `OUTBOX_RELAY_POLL_MS` | `500` | Claim-loop cadence |
+| `OUTBOX_RELAY_READINESS_MAX_BACKLOG` | `100000` | Pending-row count past which `/health/ready` reports not-ready |
+| `RECONCILIATION_WINDOW_HOURS` | `24` | Lookback window scanned per CronJob run |
+| `RECONCILIATION_MAX_BATCH` | `500` | Max rows examined per run |
+| `RECONCILIATION_REPAIR` | `false` | Report-only until explicitly enabled |
+| `RECONCILIATION_LEASE_SECONDS` | `300` | Per-event DB lease so overlapping runs can't double-repair |
+
+MySQL connection settings (`MYSQL_URL`, `MYSQL_USER`, `MYSQL_PASSWORD`, pool sizing) reuse the same variables as the catalog browse route — see [Configuration → Catalog / Recommendation Serving](#catalog--recommendation-serving-port-6010).
 
 ---
 

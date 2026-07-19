@@ -71,6 +71,8 @@ Related production concerns:
 - `streaming/online-serving/data/movie_events.ndjson`
 - `streaming/online-serving/scripts/load_online_features.sh`
 - `streaming/online-serving/scripts/produce_movie_events.sh`
+- `streaming/online-serving/scripts/key_movie_events.jq` — jq filter normalizing/validating each event's `userId` into the Kafka record key
+- `streaming/online-serving/scripts/test_produce_movie_events.sh` — smoke test for the keyed producer script
 - `src/main/java/com/recsys/streaming/LogCollector.java`
 - `src/main/java/com/recsys/streaming/OnlineJoiner.java`
 - `src/main/java/com/recsys/streaming/ExperienceCollector.java`
