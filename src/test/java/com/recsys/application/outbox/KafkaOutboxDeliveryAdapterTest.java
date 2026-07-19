@@ -9,6 +9,8 @@ import java.time.Instant;
 import java.time.Duration;
 import java.util.Properties;
 import java.util.UUID;
+import java.time.Clock;
+import java.time.ZoneOffset;
 
 import static org.assertj.core.api.Assertions.assertThat;
 
@@ -53,6 +55,15 @@ class KafkaOutboxDeliveryAdapterTest {
         producer.errorNext(new org.apache.kafka.common.errors.TimeoutException("delivery timeout"));
         assertThat(cancellation).isCompleted();
         assertThat(attempt.completion().toCompletableFuture()).isCompletedExceptionally();
+    }
+
+    @Test void receiptUsesCallbackClockRatherThanBrokerRecordTimestamp() {
+        Instant callback = Instant.parse("2026-07-18T12:00:00Z");
+        MockProducer<String, String> producer = new MockProducer<>(false, new StringSerializer(), new StringSerializer());
+        DeliveryAttempt attempt = new KafkaOutboxDeliveryAdapter(producer, "online-events",
+                Clock.fixed(callback, ZoneOffset.UTC), Duration.ofSeconds(2)).deliver(event());
+        producer.completeNext();
+        assertThat(attempt.completion().toCompletableFuture().join().acknowledgedAt()).isEqualTo(callback);
     }
 
     @Test void rejectsDeadlinesKafkaCannotRepresent() {

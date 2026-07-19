@@ -7,6 +7,7 @@ import java.io.Closeable;
 import java.util.function.Consumer;
 import java.util.function.Function;
 import java.time.Duration;
+import java.util.Optional;
 
 /**
  * Abstraction over a Redis client that preserves the "borrow a connection, run a
@@ -26,6 +27,11 @@ public interface RedisExecutor extends Closeable {
      * Single-endpoint implementations delegate to {@link #execute}.
      */
     <T> T executeRead(Function<RedisCommands<String, String>, T> fn);
+
+    /** Executes only on an identified configured replica; empty means no replica exists. */
+    default <T> Optional<T> executeReplicaRead(Function<RedisCommands<String, String>, T> fn) {
+        return Optional.empty();
+    }
 
     /** Runs a read against the writable primary, bypassing replica routing. */
     default <T> T executePrimaryRead(Function<RedisCommands<String, String>, T> fn) {

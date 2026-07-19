@@ -15,4 +15,6 @@ public interface OutboxRepository {
     boolean markDelivered(UUID eventId, long version, String leaseOwner, Instant acknowledgedAt);
     boolean reschedule(UUID eventId, long version, String leaseOwner, Instant nextAttemptAt, String error);
     boolean markDead(UUID eventId, long version, String leaseOwner, String error);
+    /** PENDING plus expired IN_FLIGHT rows that are eligible for retry. */
+    default long countRetryableBacklog(Instant now) { return 0; }
 }

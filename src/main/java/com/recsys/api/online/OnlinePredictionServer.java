@@ -10,6 +10,7 @@ import com.recsys.application.outbox.DurableEventPublisher;
 import com.recsys.metrics.OnlineServingMetricsService;
 import com.recsys.metrics.ConsistencyMetrics;
 import com.recsys.infrastructure.redis.RedisReplicaLagProbe;
+import com.recsys.infrastructure.redis.RedisFeatureVersionSampler;
 
 import com.linecorp.armeria.server.Route;
 import com.linecorp.armeria.server.Server;
@@ -83,6 +84,8 @@ public final class OnlinePredictionServer {
         ExecutorService recallExecutor = null;
         ShardTopologyProvider topologyProvider = null;
         RedisReplicaLagProbe replicaLagProbe = null;
+        RedisFeatureVersionSampler featureVersionSampler = null;
+        MySqlOutboxRepository outboxRepository = null;
 
         try {
             jedisPool = LettuceClientFactory.routingFromEnv();
@@ -95,7 +98,8 @@ public final class OnlinePredictionServer {
             ConsistencyTokenCodec consistencyTokenCodec = null;
             if (durableConfig.enabled()) {
                 transactionalMySql = new TransactionalMySql(MySqlConnectionSettings.fromEnv());
-                durableEventPublisher = new DurableEventPublisher(new MySqlOutboxRepository(transactionalMySql));
+                outboxRepository = new MySqlOutboxRepository(transactionalMySql);
+                durableEventPublisher = new DurableEventPublisher(outboxRepository);
                 consistencyTokenCodec = new ConsistencyTokenCodec(durableConfig.tokenSecret());
             }
             DataManager dataManager = DataManager.getInstance();
@@ -137,12 +141,19 @@ public final class OnlinePredictionServer {
                     new LearnerFlushScheduler(onlineLearner, jedisPool, "bias:item", 30L);
             learnerFlushScheduler.start();
             PrometheusMeterRegistry registry = PrometheusMeterRegistries.defaultRegistry();
-            ConsistencyMetrics consistencyMetrics = new ConsistencyMetrics(registry);
+            MySqlOutboxRepository metricsOutboxRepository = outboxRepository;
+            ConsistencyMetrics consistencyMetrics = metricsOutboxRepository == null
+                    ? new ConsistencyMetrics(registry)
+                    : new ConsistencyMetrics(registry,
+                            () -> metricsOutboxRepository.countRetryableBacklog(Clock.systemUTC().instant()));
             asyncEventPublisher.bindConsistencyMetrics(consistencyMetrics);
             replicaLagProbe = new RedisReplicaLagProbe(jedisPool, Clock.systemUTC());
             replicaLagProbe.start(Duration.ofSeconds(readIntEnv("REDIS_REPLICA_LAG_PROBE_SECONDS", 10)),
                     result -> consistencyMetrics.updateReplicaLag(
                             new ConsistencyMetrics.ReplicaLag(result.available(), result.lagSeconds())));
+            featureVersionSampler = new RedisFeatureVersionSampler(jedisPool, consistencyMetrics,
+                    Clock.systemUTC(), readIntEnv("REDIS_FEATURE_VERSION_SAMPLE_LIMIT", 1000));
+            featureVersionSampler.start(Duration.ofSeconds(readIntEnv("REDIS_FEATURE_VERSION_SAMPLE_SECONDS", 30)));
             OnlineServingMetricsService metricsService = new OnlineServingMetricsService();
             OnlineLoadShedder loadShedder = new OnlineLoadShedder();
             OnlineCapacityService capacityService = new OnlineCapacityService();
@@ -213,11 +224,13 @@ public final class OnlinePredictionServer {
             com.recsys.infrastructure.registry.ServiceRegistrar activeRegistrar = registrar;
             ExecutorService activeRecallExecutor = recallExecutor;
             RedisReplicaLagProbe activeReplicaLagProbe = replicaLagProbe;
+            RedisFeatureVersionSampler activeFeatureVersionSampler = featureVersionSampler;
             Runtime.getRuntime().addShutdownHook(new Thread(() -> {
                 loadShedder.markShuttingDown();   // flip readiness to 503 + shed new load before draining
                 server.stop().join();
                 activeAsyncEventPublisher.close();
                 activeReplicaLagProbe.close();
+                activeFeatureVersionSampler.close();
                 if (activeTransactionalMySql != null) activeTransactionalMySql.close();
                 activeLearnerFlushScheduler.close();
                 GracefulExecutors.shutdownGracefully(activeRecallExecutor);
@@ -237,6 +250,7 @@ public final class OnlinePredictionServer {
             if (recallExecutor != null) GracefulExecutors.shutdownGracefully(recallExecutor);
             if (topologyProvider != null) topologyProvider.stop();
             if (replicaLagProbe != null) replicaLagProbe.close();
+            if (featureVersionSampler != null) featureVersionSampler.close();
             if (registrar != null) registrar.close();
             if (jedisPool != null) jedisPool.close();
             throw e;

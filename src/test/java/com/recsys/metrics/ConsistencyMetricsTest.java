@@ -49,4 +49,17 @@ class ConsistencyMetricsTest {
         assertThat(registry.get("redis_replica_lag_available").gauge().value()).isZero();
         assertThat(registry.get("redis_replica_lag_seconds").gauge().value()).isNaN();
     }
+
+    @Test void facadesForSameRegistryShareStateAndRegisterMetersOnce() {
+        var registry = new SimpleMeterRegistry();
+        var first = new ConsistencyMetrics(registry, () -> 7);
+        var second = new ConsistencyMetrics(registry);
+        first.recordDeliveryFailure(ConsistencyMetrics.Destination.KAFKA_ONLINE);
+        second.recordDeliveryFailure(ConsistencyMetrics.Destination.KAFKA_ONLINE);
+        second.updateInFlightEvents(3);
+        assertThat(registry.find("outbox_delivery_failures_total").meters()).hasSize(2);
+        assertThat(registry.get("outbox_delivery_failures_total").tag("destination", "kafka_online").counter().count()).isEqualTo(2);
+        assertThat(registry.get("outbox_pending_events").gauge().value()).isEqualTo(7);
+        assertThat(registry.get("outbox_in_flight_events").gauge().value()).isEqualTo(3);
+    }
 }

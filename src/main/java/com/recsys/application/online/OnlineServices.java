@@ -147,10 +147,12 @@ public final class OnlineServices {
                             waitResult = consistencyWaiter.await(token.eventId(), userId, Duration.ofSeconds(2));
                         } catch (RuntimeException primaryReadFailure) {
                             log.warn("Primary consistency lookup unavailable", primaryReadFailure);
+                            metricsService.recordFailure(elapsedMs(startedAtMs));
                             return writeErrorWithRetryAfter(HttpStatus.SERVICE_UNAVAILABLE,
                                     "consistency lookup unavailable", 1);
                         }
                         if (waitResult == ConsistencyWaiter.WaitResult.PENDING) {
+                            metricsService.recordFailure(elapsedMs(startedAtMs));
                             return writeErrorWithRetryAfter(HttpStatus.ACCEPTED,
                                     "event materialization pending", 1);
                         }

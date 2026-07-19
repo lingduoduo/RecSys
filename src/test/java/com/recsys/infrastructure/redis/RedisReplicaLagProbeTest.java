@@ -10,6 +10,7 @@ import java.time.ZoneOffset;
 import java.util.HashMap;
 import java.util.Map;
 import java.util.function.Function;
+import java.util.Optional;
 
 import static org.assertj.core.api.Assertions.assertThat;
 
@@ -17,20 +18,23 @@ class RedisReplicaLagProbeTest {
     @Test void writesPrimaryAndMeasuresReplicaLagFromPreviouslyReplicatedProbe() {
         Map<String, String> primary = new HashMap<>();
         Map<String, String> replica = new HashMap<>();
-        replica.put("recsys:replica-lag-probe", "3:1750000000000");
+        replica.put("probe:test", "0:1750000000000");
         RedisReplicaLagProbe probe = new RedisReplicaLagProbe(executor(primary, replica),
-                Clock.fixed(Instant.ofEpochMilli(1750000001500L), ZoneOffset.UTC));
+                Clock.fixed(Instant.ofEpochMilli(1750000001500L), ZoneOffset.UTC), "probe:test");
 
         RedisReplicaLagProbe.ProbeResult result = probe.sample();
 
         assertThat(result.available()).isTrue();
         assertThat(result.lagSeconds()).isEqualTo(1.5);
-        assertThat(primary.get("recsys:replica-lag-probe")).startsWith("1:1750000001500");
+        assertThat(primary.get("probe:test")).startsWith("1:1750000001500");
     }
 
     @Test void probeFailureReportsUnavailableNotZero() {
         RedisExecutor failing = new StubExecutor() {
             @Override public <T> T executeRead(Function<RedisCommands<String, String>, T> fn) {
+                throw new IllegalStateException("replica offline");
+            }
+            @Override public <T> Optional<T> executeReplicaRead(Function<RedisCommands<String, String>, T> fn) {
                 throw new IllegalStateException("replica offline");
             }
         };
@@ -42,6 +46,9 @@ class RedisReplicaLagProbeTest {
         return new StubExecutor() {
             @Override public <T> T execute(Function<RedisCommands<String, String>, T> fn) { return fn.apply(commands(primary)); }
             @Override public <T> T executeRead(Function<RedisCommands<String, String>, T> fn) { return fn.apply(commands(replica)); }
+            @Override public <T> Optional<T> executeReplicaRead(Function<RedisCommands<String, String>, T> fn) {
+                return Optional.ofNullable(fn.apply(commands(replica)));
+            }
         };
     }
 

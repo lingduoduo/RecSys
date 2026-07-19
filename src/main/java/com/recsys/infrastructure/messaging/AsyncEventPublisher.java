@@ -42,6 +42,7 @@ public class AsyncEventPublisher implements AutoCloseable {
     private final AtomicLong drainedCount  = new AtomicLong();
     private final AtomicLong deliveryFailureCount = new AtomicLong();
     private volatile ConsistencyMetrics consistencyMetrics;
+    private final ConsistencyMetrics.EventType metricEventType;
 
     public AsyncEventPublisher() {
         this(
@@ -55,9 +56,15 @@ public class AsyncEventPublisher implements AutoCloseable {
     }
 
     public AsyncEventPublisher(int queueCapacity, int batchSize, ConsistencyMetrics consistencyMetrics) {
+        this(queueCapacity, batchSize, consistencyMetrics, ConsistencyMetrics.EventType.ONLINE_INTERACTION);
+    }
+
+    public AsyncEventPublisher(int queueCapacity, int batchSize, ConsistencyMetrics consistencyMetrics,
+                               ConsistencyMetrics.EventType metricEventType) {
         this.queue      = new ArrayBlockingQueue<>(Math.max(1, queueCapacity));
         this.batchSize  = Math.max(1, batchSize);
         this.consistencyMetrics = consistencyMetrics;
+        this.metricEventType = Objects.requireNonNull(metricEventType, "metricEventType");
         this.drainThread = new Thread(this::drainLoop, "async-event-publisher");
         this.drainThread.setDaemon(true);
         this.drainThread.start();
@@ -72,7 +79,8 @@ public class AsyncEventPublisher implements AutoCloseable {
     }
 
     public boolean publish(String key, String event) {
-        if (event == null || !running) return false;
+        if (event == null) return false;
+        if (!running) return recordRejectedEvent();
         if (queue.offer(new EventEnvelope(key, event))) {
             publishedCount.incrementAndGet();
             return true;
@@ -144,7 +152,7 @@ public class AsyncEventPublisher implements AutoCloseable {
 
     protected boolean recordRejectedEvent() {
         long dropped = droppedCount.incrementAndGet();
-        if (consistencyMetrics != null) consistencyMetrics.recordAsyncDrop(ConsistencyMetrics.EventType.ONLINE_INTERACTION);
+        if (consistencyMetrics != null) consistencyMetrics.recordAsyncDrop(metricEventType);
         log.warn("AsyncEventPublisher event rejected (total dropped: {})", dropped);
         return false;
     }

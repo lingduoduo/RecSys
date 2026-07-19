@@ -51,8 +51,7 @@ public final class KafkaOutboxDeliveryAdapter implements OutboxDeliveryAdapter, 
             nativeFuture = producer.send(new ProducerRecord<>(topic, event.partitionKey(), event.payload()), (metadata, error) -> {
                 if (error != null) result.completeExceptionally(error);
                 else {
-                    long timestamp = metadata == null ? -1 : metadata.timestamp();
-                    result.complete(new DeliveryReceipt(timestamp >= 0 ? Instant.ofEpochMilli(timestamp) : clock.instant()));
+                    result.complete(new DeliveryReceipt(clock.instant()));
                 }
             });
         } catch (RuntimeException failure) {

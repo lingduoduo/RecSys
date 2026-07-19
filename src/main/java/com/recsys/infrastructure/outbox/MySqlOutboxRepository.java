@@ -115,6 +115,21 @@ public final class MySqlOutboxRepository implements OutboxRepository {
         });
     }
 
+    @Override public long countRetryableBacklog(Instant now) {
+        Objects.requireNonNull(now, "now");
+        return mysql.inTransaction(connection -> {
+            String sql = "SELECT COUNT(*) FROM event_outbox WHERE status = 'PENDING' "
+                    + "OR (status = 'IN_FLIGHT' AND lease_expires_at < ?)";
+            try (PreparedStatement statement = connection.prepareStatement(sql)) {
+                statement.setTimestamp(1, timestamp(now));
+                try (ResultSet rows = statement.executeQuery()) {
+                    if (!rows.next()) throw new SQLException("outbox backlog count returned no row");
+                    return rows.getLong(1);
+                }
+            }
+        });
+    }
+
     public boolean markDelivered(UUID eventId, long version, String leaseOwner, Instant acknowledgedAt) {
         requireText(leaseOwner, "leaseOwner");
         Objects.requireNonNull(acknowledgedAt, "acknowledgedAt");

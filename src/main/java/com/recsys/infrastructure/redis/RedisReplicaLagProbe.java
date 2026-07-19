@@ -8,10 +8,11 @@ import java.util.concurrent.ScheduledExecutorService;
 import java.util.concurrent.TimeUnit;
 import java.util.concurrent.atomic.AtomicLong;
 import java.util.function.Consumer;
+import java.util.UUID;
 
 /** Writes a primary marker and observes the latest marker visible through replica routing. */
 public final class RedisReplicaLagProbe implements AutoCloseable {
-    public static final String DEFAULT_KEY = "recsys:replica-lag-probe";
+    public static final String DEFAULT_KEY_PREFIX = "recsys:replica-lag-probe:";
     public record ProbeResult(boolean available, double lagSeconds) {}
 
     private final RedisExecutor redis;
@@ -20,7 +21,9 @@ public final class RedisReplicaLagProbe implements AutoCloseable {
     private final AtomicLong sequence = new AtomicLong();
     private ScheduledExecutorService executor;
 
-    public RedisReplicaLagProbe(RedisExecutor redis, Clock clock) { this(redis, clock, DEFAULT_KEY); }
+    public RedisReplicaLagProbe(RedisExecutor redis, Clock clock) {
+        this(redis, clock, DEFAULT_KEY_PREFIX + UUID.randomUUID());
+    }
     public RedisReplicaLagProbe(RedisExecutor redis, Clock clock, String key) {
         this.redis = Objects.requireNonNull(redis); this.clock = Objects.requireNonNull(clock);
         if (key == null || key.isBlank()) throw new IllegalArgumentException("key must not be blank");
@@ -30,13 +33,18 @@ public final class RedisReplicaLagProbe implements AutoCloseable {
     public ProbeResult sample() {
         long now = clock.millis();
         try {
-            redis.execute(commands -> commands.set(key, sequence.incrementAndGet() + ":" + now));
-            String observed = redis.executeRead(commands -> commands.get(key));
+            long writtenSequence = sequence.incrementAndGet();
+            redis.execute(commands -> commands.set(key, writtenSequence + ":" + now));
+            String observed = redis.executeReplicaRead(commands -> commands.get(key)).orElse(null);
             if (observed == null) return unavailable();
             int separator = observed.indexOf(':');
             if (separator < 1) return unavailable();
+            long observedSequence = Long.parseLong(observed.substring(0, separator));
             long observedMillis = Long.parseLong(observed.substring(separator + 1));
-            return new ProbeResult(true, Math.max(0, now - observedMillis) / 1000d);
+            if (observedSequence > writtenSequence) return unavailable();
+            // Correlated replica staleness: zero/elapsed for the just-written sequence,
+            // otherwise the age of the latest marker that this one stable replica exposes.
+            return new ProbeResult(true, Math.max(0, clock.millis() - observedMillis) / 1000d);
         } catch (RuntimeException failure) {
             return unavailable();
         }
@@ -49,9 +57,18 @@ public final class RedisReplicaLagProbe implements AutoCloseable {
         executor = Executors.newSingleThreadScheduledExecutor(runnable -> {
             Thread thread = new Thread(runnable, "redis-replica-lag-probe"); thread.setDaemon(true); return thread;
         });
-        executor.scheduleWithFixedDelay(() -> observer.accept(sample()), 0, interval.toMillis(), TimeUnit.MILLISECONDS);
+        executor.scheduleWithFixedDelay(() -> {
+            try { observer.accept(sample()); }
+            catch (Throwable ignored) { /* an observer must not permanently cancel fixed-delay sampling */ }
+        }, 0, interval.toMillis(), TimeUnit.MILLISECONDS);
     }
 
-    @Override public synchronized void close() { if (executor != null) executor.shutdownNow(); }
+    @Override public synchronized void close() {
+        if (executor == null) return;
+        executor.shutdownNow();
+        try { executor.awaitTermination(5, TimeUnit.SECONDS); }
+        catch (InterruptedException interrupted) { Thread.currentThread().interrupt(); }
+        executor = null;
+    }
     private static ProbeResult unavailable() { return new ProbeResult(false, Double.NaN); }
 }

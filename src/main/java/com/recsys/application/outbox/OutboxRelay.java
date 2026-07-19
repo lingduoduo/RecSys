@@ -99,7 +99,7 @@ public final class OutboxRelay implements AutoCloseable {
         Instant claimedAt = clock.instant();
         List<OutboxEvent> claimed = repository.claimBatch(worker, claimedAt,
                 Math.min(batchSize, available), leaseDuration);
-        if (metrics != null) metrics.updatePendingEvents(pendingDeliveries.addAndGet(claimed.size()));
+        if (metrics != null) metrics.updateInFlightEvents(pendingDeliveries.addAndGet(claimed.size()));
         for (OutboxEvent event : claimed) {
             if (!sendCapacity.tryAcquire()) throw new IllegalStateException("relay send capacity invariant violated");
             dispatch(event);
@@ -148,14 +148,15 @@ public final class OutboxRelay implements AutoCloseable {
                         handleFailure(event, unwrap(failure));
                     }
                 } catch (Throwable terminalFailure) {
+                    if (metrics != null) metrics.recordDeliveryFailure(destination(event.destination()));
                     report(terminalFailure);
                 } finally {
-                    if (metrics != null) metrics.updatePendingEvents(pendingDeliveries.decrementAndGet());
+                    if (metrics != null) metrics.updateInFlightEvents(pendingDeliveries.decrementAndGet());
                     sendCapacity.release();
                 }
             });
         } catch (RejectedExecutionException rejected) {
-            if (metrics != null) metrics.updatePendingEvents(pendingDeliveries.decrementAndGet());
+            if (metrics != null) metrics.updateInFlightEvents(pendingDeliveries.decrementAndGet());
             sendCapacity.release();
             report(rejected);
         }
