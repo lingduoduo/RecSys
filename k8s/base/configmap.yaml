@@ -73,3 +73,20 @@ data:
   SAGA_EVENTS_SQS_ENABLED: "false"
   SAGA_EVENTS_SQS_QUEUE_URL: ""
   SAGA_EVENTS_SQS_BEST_EFFORT: "false"
+  # --- Durable eventual consistency (see docs/runbooks/durable-eventual-consistency.md) ---
+  # OFF by default. Enable per overlay after applying the Flyway V2/V3 migrations. Secrets
+  # MYSQL_PASSWORD and ONLINE_CONSISTENCY_TOKEN_SECRET come from the recsys-secrets Secret,
+  # never this ConfigMap.
+  MYSQL_ENABLED: "false"
+  MYSQL_URL: "jdbc:mysql://mysql:3306/recsys"
+  MYSQL_USER: "recsys"
+  # Outbox relay + reconciliation share these Kafka settings.
+  OUTBOX_KAFKA_BOOTSTRAP_SERVERS: "kafka:9092"
+  OUTBOX_KAFKA_ONLINE_TOPIC: "online-events"
+  OUTBOX_DELIVERY_DEADLINE_MS: "5000"
+  # Reconciliation CronJob. Ships in report-only mode: RECONCILIATION_REPAIR flips to "true"
+  # only after the report-only counters have been observed for the agreed window.
+  RECONCILIATION_WINDOW_HOURS: "24"
+  RECONCILIATION_MAX_BATCH: "500"
+  RECONCILIATION_REPAIR: "false"
+  RECONCILIATION_LEASE_SECONDS: "300"

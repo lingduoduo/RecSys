@@ -130,6 +130,42 @@ public final class MySqlOutboxRepository implements OutboxRepository {
         });
     }
 
+    @Override public boolean claimReconciliationLease(UUID eventId, String worker, Instant now, Duration leaseDuration) {
+        Objects.requireNonNull(eventId, "eventId");
+        requireText(worker, "worker");
+        Objects.requireNonNull(now, "now");
+        Objects.requireNonNull(leaseDuration, "leaseDuration");
+        if (leaseDuration.isZero() || leaseDuration.isNegative()) {
+            throw new IllegalArgumentException("leaseDuration must be positive");
+        }
+        return mysql.inTransaction(connection -> {
+            String sql = "UPDATE event_outbox SET lease_owner = ?, lease_expires_at = ? "
+                    + "WHERE event_id = ? AND status = 'DELIVERED' "
+                    + "AND (lease_owner IS NULL OR lease_expires_at < ?)";
+            try (PreparedStatement statement = connection.prepareStatement(sql)) {
+                statement.setString(1, worker);
+                statement.setTimestamp(2, timestamp(now.plus(leaseDuration)));
+                statement.setBytes(3, bytes(eventId));
+                statement.setTimestamp(4, timestamp(now));
+                return statement.executeUpdate() == 1;
+            }
+        });
+    }
+
+    @Override public boolean releaseReconciliationLease(UUID eventId, String worker) {
+        Objects.requireNonNull(eventId, "eventId");
+        requireText(worker, "worker");
+        return mysql.inTransaction(connection -> {
+            String sql = "UPDATE event_outbox SET lease_owner = NULL, lease_expires_at = NULL "
+                    + "WHERE event_id = ? AND status = 'DELIVERED' AND lease_owner = ?";
+            try (PreparedStatement statement = connection.prepareStatement(sql)) {
+                statement.setBytes(1, bytes(eventId));
+                statement.setString(2, worker);
+                return statement.executeUpdate() == 1;
+            }
+        });
+    }
+
     public boolean markDelivered(UUID eventId, long version, String leaseOwner, Instant acknowledgedAt) {
         requireText(leaseOwner, "leaseOwner");
         Objects.requireNonNull(acknowledgedAt, "acknowledgedAt");
