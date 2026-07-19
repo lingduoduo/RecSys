@@ -21,7 +21,19 @@ start_service() {
   pids="${pids} $!"
 }
 
+# The MySQL-backed catalog route (GET /v1/catalog/movies on 6010) is opt-in and OFF by
+# default, so this script comes up with no database dependency. To wire it to a running
+# MySQL, export MYSQL_ENABLED=true plus credentials before running, e.g.:
+#   export MYSQL_ENABLED=true MYSQL_PASSWORD=... \
+#          MYSQL_CURSOR_SIGNING_KEY="$(openssl rand -hex 32)"
+# When enabled, MYSQL_URL/USER/PASSWORD and a >=32-byte MYSQL_CURSOR_SIGNING_KEY are all
+# required — the server fails fast at startup if any is missing.
 start_service recsys-serving env PORT=6010 \
+  MYSQL_ENABLED="${MYSQL_ENABLED:-false}" \
+  MYSQL_URL="${MYSQL_URL:-jdbc:mysql://localhost:3306/recsys?useSSL=false&serverTimezone=UTC}" \
+  MYSQL_USER="${MYSQL_USER:-recsys}" \
+  MYSQL_PASSWORD="${MYSQL_PASSWORD:-}" \
+  MYSQL_CURSOR_SIGNING_KEY="${MYSQL_CURSOR_SIGNING_KEY:-}" \
   sh scripts/run-with-jvm-tuning.sh recsys-serving -- \
   mvn exec:java -Dexec.mainClass=com.recsys.api.serving.RecSysServer
 
