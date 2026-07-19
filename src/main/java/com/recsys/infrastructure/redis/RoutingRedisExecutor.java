@@ -44,7 +44,8 @@ public final class RoutingRedisExecutor implements RedisExecutor {
 
     @Override
     public <T> T executePrimaryRead(Function<RedisCommands<String, String>, T> fn) {
-        return router.writable().execute(fn);
+        // Read on the primary/writable node via its read path — never a replica.
+        return router.writable().executeRead(fn);
     }
 
     @Override

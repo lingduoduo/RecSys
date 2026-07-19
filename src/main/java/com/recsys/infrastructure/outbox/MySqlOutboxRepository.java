@@ -16,6 +16,7 @@ import java.sql.SQLException;
 import java.sql.Timestamp;
 import java.time.Duration;
 import java.time.Instant;
+import java.time.temporal.ChronoUnit;
 import java.util.ArrayList;
 import java.util.List;
 import java.util.Objects;
@@ -276,7 +277,9 @@ public final class MySqlOutboxRepository implements OutboxRepository {
         return error.length() <= MAX_ERROR_LENGTH ? error : error.substring(0, MAX_ERROR_LENGTH);
     }
 
-    private static Timestamp timestamp(Instant instant) { return Timestamp.from(instant); }
+    // Truncate to microseconds so persisted values match MySQL DATETIME(6) deterministically,
+    // rather than relying on the driver's round-half-up of sub-microsecond nanos.
+    private static Timestamp timestamp(Instant instant) { return Timestamp.from(instant.truncatedTo(ChronoUnit.MICROS)); }
     private static Instant instant(ResultSet row, String name) throws SQLException {
         Timestamp value = row.getTimestamp(name);
         return value == null ? null : value.toInstant();

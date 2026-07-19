@@ -11,6 +11,7 @@ import java.util.concurrent.atomic.AtomicInteger;
 import java.util.concurrent.atomic.AtomicReference;
 
 import static org.assertj.core.api.Assertions.assertThat;
+import static org.awaitility.Awaitility.await;
 
 class OutboxRelayTest {
     private static final Instant NOW = Instant.parse("2026-07-18T00:00:00Z");
@@ -171,7 +172,10 @@ class OutboxRelayTest {
                 Duration.ofSeconds(30), Duration.ofSeconds(1), 1, observed::set)) {
             relay.runOnce();
             repository.awaitTerminal();
-            assertThat(observed.get()).isSameAs(repository.terminalFailure);
+            // The failure is reported after markDelivered throws, which races the latch countdown;
+            // poll rather than reading once.
+            await().atMost(Duration.ofSeconds(2))
+                    .untilAsserted(() -> assertThat(observed.get()).isSameAs(repository.terminalFailure));
         }
     }
 
