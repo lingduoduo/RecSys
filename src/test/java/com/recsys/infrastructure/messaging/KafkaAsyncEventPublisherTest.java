@@ -8,6 +8,7 @@ import org.junit.jupiter.api.Test;
 
 import java.time.Duration;
 import java.util.List;
+import java.util.Properties;
 
 import static org.assertj.core.api.Assertions.assertThat;
 import static org.assertj.core.api.Assertions.assertThatCode;
@@ -18,6 +19,17 @@ import static org.mockito.Mockito.verify;
 import static org.mockito.Mockito.when;
 
 class KafkaAsyncEventPublisherTest {
+
+    @Test
+    void producerPropertiesEnableBoundedIdempotentDelivery() {
+        Properties properties = KafkaAsyncEventPublisher.producerProps("broker:9092");
+        assertThat(properties).containsEntry(org.apache.kafka.clients.producer.ProducerConfig.ENABLE_IDEMPOTENCE_CONFIG, true)
+                .containsEntry(org.apache.kafka.clients.producer.ProducerConfig.ACKS_CONFIG, "all")
+                .containsEntry(org.apache.kafka.clients.producer.ProducerConfig.MAX_IN_FLIGHT_REQUESTS_PER_CONNECTION, 5)
+                .containsKeys(org.apache.kafka.clients.producer.ProducerConfig.RETRIES_CONFIG,
+                        org.apache.kafka.clients.producer.ProducerConfig.DELIVERY_TIMEOUT_MS_CONFIG,
+                        org.apache.kafka.clients.producer.ProducerConfig.REQUEST_TIMEOUT_MS_CONFIG);
+    }
 
     // Calls the protected sendBatch directly (same package) for a deterministic, single-threaded
     // check — the base's background drain thread is idle here (nothing is published), and the new

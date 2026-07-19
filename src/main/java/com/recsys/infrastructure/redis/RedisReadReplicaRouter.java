@@ -2,7 +2,7 @@ package com.recsys.infrastructure.redis;
 
 import java.io.Closeable;
 import java.util.List;
-import java.util.concurrent.ThreadLocalRandom;
+import java.util.Optional;
 
 /**
  * Routes Redis operations to the correct {@link RedisExecutor} based on access
@@ -62,8 +62,15 @@ public final class RedisReadReplicaRouter implements Closeable {
             if (localAz.equals(ae.az())) return ae.exec();
         }
 
-        // fall back to random replica
-        return replicas.get(ThreadLocalRandom.current().nextInt(replicas.size())).exec();
+        // Stable fallback: the configured order identifies one replica for the process lifetime.
+        return replicas.get(0).exec();
+    }
+
+    /** Stable replica used by correlated health probes; never falls back to primary. */
+    public Optional<RedisExecutor> probeReadable() {
+        if (replicas.isEmpty()) return Optional.empty();
+        for (AzExecutor ae : replicas) if (localAz.equals(ae.az())) return Optional.of(ae.exec());
+        return Optional.of(replicas.get(0).exec());
     }
 
     /** Number of configured read replicas (0 when running without replicas). */

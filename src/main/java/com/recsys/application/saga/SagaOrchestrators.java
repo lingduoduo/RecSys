@@ -58,8 +58,7 @@ public final class SagaOrchestrators {
                     .orElseGet(() -> {
                         SagaInstance created = new SagaInstance(
                                 sagaId, definition.name(), correlationId, payloadJson, now());
-                        store.saveConditionally(created);
-                        publish(created, SagaEventType.SAGA_STARTED, null);
+                        persistTransition(created, SagaEventType.SAGA_STARTED, null);
                         return created;
                     });
         }
@@ -83,13 +82,12 @@ public final class SagaOrchestrators {
 
         protected void transition(SagaInstance saga, SagaStatus status, SagaEventType eventType, String stepName) {
             saga.mark(status, stepName, now());
-            store.saveConditionally(saga);
-            publish(saga, eventType, stepName);
+            persistTransition(saga, eventType, stepName);
         }
 
-        protected void publish(SagaInstance saga, SagaEventType type, String stepName) {
-            publisher.publish(new SagaTransitionEvent(
-                    saga.sagaId() + ":" + type + ":" + (stepName == null ? "saga" : stepName),
+        protected void persistTransition(SagaInstance saga, SagaEventType type, String stepName) {
+            SagaTransitionEvent event = new SagaTransitionEvent(
+                    saga.sagaId() + ":transition:" + (saga.version() + 1),
                     saga.sagaId(),
                     saga.sagaType(),
                     saga.correlationId(),
@@ -97,8 +95,11 @@ public final class SagaOrchestrators {
                     saga.status(),
                     stepName,
                     saga.payloadJson(),
-                    saga.updatedAt()
-            ));
+                    saga.updatedAt());
+            store.saveWithEvent(saga, event);
+            if (!store.storesEventsDurably()) {
+                publisher.publish(event);
+            }
         }
 
         protected Instant now() {
@@ -135,7 +136,6 @@ public final class SagaOrchestrators {
                 return saga;
             }
 
-            List<SagaStep> completedInThisRun = new ArrayList<>();
             try {
                 for (SagaStep step : definition.steps()) {
                     if (saga.completedSteps().contains(step.name())) {
@@ -148,26 +148,24 @@ public final class SagaOrchestrators {
                     transition(saga, SagaStatus.STEP_STARTED, SagaEventType.STEP_STARTED, step.name());
                     runWithRetry(saga, step, action);
                     saga.markStepCompleted(step.name(), now());
-                    store.saveConditionally(saga);
-                    completedInThisRun.add(step);
-                    publish(saga, SagaEventType.STEP_COMPLETED, step.name());
+                    persistTransition(saga, SagaEventType.STEP_COMPLETED, step.name());
                 }
                 transition(saga, SagaStatus.COMPLETED, SagaEventType.SAGA_COMPLETED, null);
                 return saga.copy();
             } catch (RuntimeException e) {
-                compensate(saga, completedInThisRun, definition.steps(), compensations, e);
+                compensate(saga, definition.steps(), compensations, e);
                 return saga.copy();
             }
         }
 
         private void compensate(SagaInstance saga,
-                                List<SagaStep> completedInThisRun,
                                 List<SagaStep> allSteps,
                                 Map<String, SagaStepAction> compensations,
                                 RuntimeException originalFailure) {
-            List<SagaStep> completed = completedInThisRun.isEmpty()
-                    ? allSteps.stream().filter(step -> saga.completedSteps().contains(step.name())).toList()
-                    : completedInThisRun;
+            List<SagaStep> completed = allSteps.stream()
+                    .filter(step -> saga.completedSteps().contains(step.name()))
+                    .filter(step -> !saga.compensatedSteps().contains(step.name()))
+                    .toList();
             // Best-effort: attempt every compensation regardless of individual failures so no
             // step is silently left uncompensated. Failures are accumulated and reported together.
             List<String> compensationErrors = new ArrayList<>();
@@ -181,8 +179,7 @@ public final class SagaOrchestrators {
                     transition(saga, SagaStatus.COMPENSATING, SagaEventType.COMPENSATION_STARTED, step.name());
                     runWithRetry(saga, step, compensation);
                     saga.markCompensated(step.name(), now());
-                    store.saveConditionally(saga);
-                    publish(saga, SagaEventType.COMPENSATION_COMPLETED, step.name());
+                    persistTransition(saga, SagaEventType.COMPENSATION_COMPLETED, step.name());
                 } catch (RuntimeException e) {
                     compensationErrors.add(step.name() + ": " + e.getMessage());
                 }
@@ -192,8 +189,7 @@ public final class SagaOrchestrators {
                 failureMessage += "; compensation errors: " + String.join(", ", compensationErrors);
             }
             saga.fail(failureMessage, now());
-            store.saveConditionally(saga);
-            publish(saga, SagaEventType.SAGA_FAILED, saga.currentStep());
+            persistTransition(saga, SagaEventType.SAGA_FAILED, saga.currentStep());
             if (!compensationErrors.isEmpty()) {
                 throw new SagaException(failureMessage, originalFailure);
             }
@@ -247,8 +243,7 @@ public final class SagaOrchestrators {
                 transition(saga, SagaStatus.TRYING, SagaEventType.TRY_STARTED, step.name());
                 runWithRetry(saga, step, participant::tryReserve);
                 saga.markTried(step.name(), now());
-                store.saveConditionally(saga);
-                publish(saga, SagaEventType.TRY_COMPLETED, step.name());
+                persistTransition(saga, SagaEventType.TRY_COMPLETED, step.name());
             }
         }
 
@@ -261,8 +256,7 @@ public final class SagaOrchestrators {
                 transition(saga, SagaStatus.CONFIRMING, SagaEventType.CONFIRM_STARTED, step.name());
                 runWithRetry(saga, step, participant::confirm);
                 saga.markConfirmed(step.name(), now());
-                store.saveConditionally(saga);
-                publish(saga, SagaEventType.CONFIRM_COMPLETED, step.name());
+                persistTransition(saga, SagaEventType.CONFIRM_COMPLETED, step.name());
             }
         }
 
@@ -288,8 +282,7 @@ public final class SagaOrchestrators {
                     transition(saga, SagaStatus.CANCELLING, SagaEventType.CANCEL_STARTED, step.name());
                     runWithRetry(saga, step, participant::cancel);
                     saga.markCancelled(step.name(), now());
-                    store.saveConditionally(saga);
-                    publish(saga, SagaEventType.CANCEL_COMPLETED, step.name());
+                    persistTransition(saga, SagaEventType.CANCEL_COMPLETED, step.name());
                 } catch (RuntimeException e) {
                     cancelErrors.add(step.name() + ": " + e.getMessage());
                 }
@@ -299,8 +292,7 @@ public final class SagaOrchestrators {
                 failureMessage += "; cancel errors: " + String.join(", ", cancelErrors);
             }
             saga.fail(failureMessage, now());
-            store.saveConditionally(saga);
-            publish(saga, SagaEventType.SAGA_FAILED, saga.currentStep());
+            persistTransition(saga, SagaEventType.SAGA_FAILED, saga.currentStep());
             if (!cancelErrors.isEmpty()) {
                 throw new SagaException(failureMessage, originalFailure);
             }

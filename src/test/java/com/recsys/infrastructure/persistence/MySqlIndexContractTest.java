@@ -78,7 +78,15 @@ class MySqlIndexContractTest {
     @Test
     void flywaySecondaryIndexInventoryContainsOnlyWorkloadRequiredIndexes() throws Exception {
         org.junit.jupiter.api.Assertions.assertEquals(
-                Set.of("idx_movies_genre_popularity_id", "idx_movies_popularity_id"),
+                Set.of(
+                        "idx_movies_genre_popularity_id",
+                        "idx_movies_popularity_id",
+                        // Durable eventual-consistency outbox + saga workload indexes (V2/V3).
+                        "idx_outbox_claim",
+                        "idx_outbox_lease",
+                        "idx_outbox_reconcile",
+                        "idx_outbox_aggregate",
+                        "idx_saga_correlation"),
                 secondaryIndexNames(migrationSql()));
     }
 

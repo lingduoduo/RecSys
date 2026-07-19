@@ -10,6 +10,8 @@ import org.apache.commons.pool2.impl.GenericObjectPoolConfig;
 
 import java.util.function.Consumer;
 import java.util.function.Function;
+import java.time.Duration;
+import java.util.function.LongSupplier;
 
 /**
  * {@link RedisExecutor} backed by Lettuce: one shared thread-safe connection for
@@ -28,6 +30,7 @@ public final class LettuceRedisExecutor implements RedisExecutor {
     private final RedisClient client;
     private final GenericObjectPool<StatefulRedisConnection<String, String>> pool;
     private final boolean ownsClient;
+    private final LongSupplier monotonicNanos;
 
     private volatile StatefulRedisConnection<String, String> shared;
     private final Object sharedLock = new Object();
@@ -35,11 +38,18 @@ public final class LettuceRedisExecutor implements RedisExecutor {
     public LettuceRedisExecutor(RedisClient client,
                                 GenericObjectPoolConfig<StatefulRedisConnection<String, String>> poolCfg,
                                 boolean ownsClient) {
+        this(client, ConnectionPoolSupport.createGenericObjectPool(
+                () -> client.connect(StringCodec.UTF8), poolCfg), ownsClient, System::nanoTime);
+    }
+
+    LettuceRedisExecutor(RedisClient client,
+                         GenericObjectPool<StatefulRedisConnection<String, String>> pool,
+                         boolean ownsClient,
+                         LongSupplier monotonicNanos) {
         this.client = client;
         this.ownsClient = ownsClient;
-        // Pool creation does not open connections — they are created lazily on borrow.
-        this.pool = ConnectionPoolSupport.createGenericObjectPool(
-                () -> client.connect(StringCodec.UTF8), poolCfg);
+        this.pool = pool;
+        this.monotonicNanos = monotonicNanos;
     }
 
     /** Lazily opens the shared connection on first use (double-checked locking). */
@@ -65,6 +75,38 @@ public final class LettuceRedisExecutor implements RedisExecutor {
     @Override
     public <T> T executeRead(Function<RedisCommands<String, String>, T> fn) {
         return execute(fn); // single-endpoint executor reads from the same connection
+    }
+
+    @Override
+    public <T> T executePrimaryRead(Function<RedisCommands<String, String>, T> fn, Duration timeout) {
+        StatefulRedisConnection<String, String> conn = null;
+        long budgetNanos = timeout.toNanos();
+        if (budgetNanos <= 0) throw new IllegalArgumentException("timeout must be positive");
+        long deadline = monotonicNanos.getAsLong() + budgetNanos;
+        Duration previousTimeout = null;
+        try {
+            long borrowMillis = Math.max(1L, (budgetNanos + 999_999L) / 1_000_000L);
+            conn = pool.borrowObject(borrowMillis);
+            long remainingNanos = deadline - monotonicNanos.getAsLong();
+            if (remainingNanos <= 0) throw new IllegalStateException("Timed primary Redis read deadline exceeded");
+            RedisCommands<String, String> commands = conn.sync();
+            previousTimeout = conn.getTimeout();
+            conn.setTimeout(Duration.ofNanos(Math.max(1L, remainingNanos)));
+            return fn.apply(commands);
+        } catch (RuntimeException e) {
+            throw e;
+        } catch (Exception e) {
+            throw new IllegalStateException("Timed primary Redis read failed", e);
+        } finally {
+            if (conn != null) {
+                try {
+                    if (previousTimeout != null) conn.setTimeout(previousTimeout);
+                    pool.returnObject(conn);
+                } catch (RuntimeException restoreFailure) {
+                    try { pool.invalidateObject(conn); } catch (Exception ignored) { }
+                }
+            }
+        }
     }
 
     @Override

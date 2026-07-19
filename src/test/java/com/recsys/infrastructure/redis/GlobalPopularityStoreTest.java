@@ -24,7 +24,20 @@ class GlobalPopularityStoreTest {
         RedisExecutor exec = mock(RedisExecutor.class);
         when(exec.execute(any())).thenAnswer(i -> i.getArgument(0, Function.class).apply(cmd));
         when(exec.executeRead(any())).thenAnswer(i -> i.getArgument(0, Function.class).apply(cmd));
+        when(exec.executePrimaryRead(any())).thenAnswer(i -> i.getArgument(0, Function.class).apply(cmd));
         return exec;
+    }
+
+    @Test
+    void primaryPopularityBypassesJvmCacheAndOrdinaryRead() {
+        RedisCommands<String, String> cmd = mockCmd();
+        when(cmd.zrevrange(eq(GlobalPopularityStore.KEY), anyLong(), anyLong()))
+                .thenReturn(List.of("fresh"));
+        RedisExecutor exec = execFor(cmd);
+
+        assertThat(new GlobalPopularityStore(exec).getTopIdsPrimary(1)).containsExactly("fresh");
+        verify(exec).executePrimaryRead(any());
+        verify(exec, org.mockito.Mockito.never()).executeRead(any());
     }
 
     @SuppressWarnings("unchecked")

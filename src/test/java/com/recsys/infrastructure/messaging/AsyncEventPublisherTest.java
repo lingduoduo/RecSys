@@ -161,4 +161,13 @@ class AsyncEventPublisherTest {
             publisher.close();
         }
     }
+
+    @Test void closedPublisherCountsEveryRejectedNonNullEvent() {
+        AsyncEventPublisher publisher = new AsyncEventPublisher(1, 1);
+        publisher.close();
+        assertThat(publisher.publish("one")).isFalse();
+        assertThat(publisher.publish("two")).isFalse();
+        assertThat(publisher.publish((String) null)).isFalse();
+        assertThat(publisher.snapshot().dropped()).isEqualTo(2);
+    }
 }

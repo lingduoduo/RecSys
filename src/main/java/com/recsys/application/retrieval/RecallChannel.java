@@ -9,4 +9,8 @@ public interface RecallChannel {
     String name();
 
     List<MovieCandidate> recall(RecommendationQuery query, int limit);
+
+    default List<MovieCandidate> recallPrimary(RecommendationQuery query, int limit) {
+        throw new UnsupportedOperationException("Primary recall is not implemented for " + name());
+    }
 }

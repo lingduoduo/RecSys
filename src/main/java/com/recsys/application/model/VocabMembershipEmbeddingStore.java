@@ -34,6 +34,11 @@ public class VocabMembershipEmbeddingStore implements EmbeddingStore {
     }
 
     @Override
+    public float[] getEmbeddingPrimary(int id) {
+        return getEmbedding(id);
+    }
+
+    @Override
     public Map<Integer, float[]> getEmbeddings(Collection<Integer> ids) {
         return Map.of();
     }

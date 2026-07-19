@@ -28,6 +28,65 @@ class SagaOrchestratorTest {
     private final Clock clock = Clock.fixed(Instant.parse("2026-05-25T12:00:00Z"), ZoneOffset.UTC);
 
     @Test
+    void durableStoreDoesNotAlsoPublishTransitionDirectly() {
+        AtomicInteger durableEvents = new AtomicInteger();
+        AtomicInteger directEvents = new AtomicInteger();
+        SagaStateStore store = new InMemorySagaStateStore() {
+            @Override public void saveWithEvent(SagaInstance saga, SagaTransitionEvent event) {
+                saveConditionally(saga);
+                durableEvents.incrementAndGet();
+            }
+
+            @Override public boolean storesEventsDurably() { return true; }
+        };
+
+        new SagaOrchestrators.Standard(store, event -> directEvents.incrementAndGet(), clock).execute(
+                "durable-1", "request-1", "{}",
+                new SagaDefinition("single", List.of(SagaStep.local("step"))),
+                Map.of("step", (saga, step) -> { }), Map.of());
+
+        assertThat(durableEvents).hasValue(4);
+        assertThat(directEvents).hasValue(0);
+    }
+
+    @Test
+    void retryingSameTransitionKeepsIdentityAndImmutableContentButLaterOccurrenceIsDistinct() {
+        List<SagaTransitionEvent> events = new ArrayList<>();
+        InMemorySagaStateStore store = new InMemorySagaStateStore() {
+            @Override public void saveWithEvent(SagaInstance saga, SagaTransitionEvent event) {
+                events.add(event);
+                if (events.size() != 2) saveConditionally(saga);
+                else throw new IllegalStateException("simulated rollback");
+            }
+            @Override public boolean storesEventsDurably() { return true; }
+        };
+        TransitionHarness harness = new TransitionHarness(store, clock);
+        SagaInstance saga = new SagaInstance("identity-1", "test", "request", "{}", clock.instant());
+
+        harness.persist(saga, SagaEventType.STEP_STARTED, "step");
+        assertThatThrownBy(() -> harness.persist(saga, SagaEventType.STEP_COMPLETED, "step"))
+                .isInstanceOf(IllegalStateException.class);
+        harness.persist(saga, SagaEventType.STEP_COMPLETED, "step");
+        harness.persist(saga, SagaEventType.STEP_STARTED, "step");
+
+        assertThat(events.get(1)).isEqualTo(events.get(2));
+        assertThat(events.get(0).eventId()).isNotEqualTo(events.get(3).eventId());
+        assertThat(List.of(events.get(0).eventId(), events.get(2).eventId(), events.get(3).eventId()))
+                .doesNotHaveDuplicates();
+    }
+
+    private static final class TransitionHarness extends SagaOrchestrators.Base {
+        private TransitionHarness(SagaStateStore store, Clock clock) {
+            super(store, SagaEventPublisher.NOOP, clock, "step");
+        }
+        private void persist(SagaInstance saga, SagaEventType type, String step) {
+            saga.mark(type == SagaEventType.STEP_STARTED ? SagaStatus.STEP_STARTED : SagaStatus.STEP_COMPLETED,
+                    step, now());
+            persistTransition(saga, type, step);
+        }
+    }
+
+    @Test
     void execute_completesAllStepsAndPublishesTransitions() {
         InMemorySagaStateStore store = new InMemorySagaStateStore();
         List<SagaTransitionEvent> events = new ArrayList<>();

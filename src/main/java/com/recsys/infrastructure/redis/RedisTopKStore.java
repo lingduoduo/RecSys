@@ -1,6 +1,7 @@
 package com.recsys.infrastructure.redis;
 
 import com.recsys.infrastructure.store.TrendingStore;
+import io.lettuce.core.ScriptOutputType;
 
 import java.util.List;
 import java.util.concurrent.CompletableFuture;
@@ -18,6 +19,12 @@ import java.util.concurrent.TimeoutException;
  * eliminating duplicate Redis round-trips for the same trending window.
  */
 public final class RedisTopKStore implements TrendingStore {
+    private static final String READ_CANONICAL_SNAPSHOT = """
+            if not redis.call('GET', KEYS[2]) then return {'absent'} end
+            local ids = redis.call('ZREVRANGE', KEYS[1], 0, tonumber(ARGV[1]))
+            table.insert(ids, 1, 'canonical')
+            return ids
+            """;
     private static final long DEFAULT_CACHE_TTL_MS = 2_000L;
     private static final long FETCH_WAIT_TIMEOUT_MS = 2_000L;
     private static final int MAX_FULL_CACHE_SIZE = 100;
@@ -75,17 +82,50 @@ public final class RedisTopKStore implements TrendingStore {
         }
     }
 
+    @Override
+    public List<String> getTopKIdsPrimary(String window, int k) {
+        if (k <= 0) return List.of();
+        List<String> ids = exec.executePrimaryRead(c -> {
+            CanonicalSnapshot snapshot = readCanonicalSnapshot(c, window, k);
+            return snapshot.present ? snapshot.ids : c.zrevrange(keyPrefix + window, 0, k - 1);
+        });
+        return ids == null ? List.of() : List.copyOf(ids);
+    }
+
     private CachedIds fetchWindow(String window, int k, long now) {
         // Always fetch a full list so different k values share the same cache entry.
         int fetchSize = Math.max(k, MAX_FULL_CACHE_SIZE);
-        String key = keyPrefix + window;
         CachedIds ids = new CachedIds(
-                List.copyOf(exec.executeRead(c -> c.zrevrange(key, 0, fetchSize - 1))),
+                List.copyOf(java.util.Optional.ofNullable(exec.executeRead(c -> {
+                    CanonicalSnapshot snapshot = readCanonicalSnapshot(c, window, fetchSize);
+                    return snapshot.present ? snapshot.ids
+                            : c.zrevrange(keyPrefix + window, 0, fetchSize - 1);
+                })).orElse(List.of())),
                 now + cacheTtlMs);
         if (cacheTtlMs > 0L) {
             hotTopKCache.put(window, ids);
         }
         return ids;
+    }
+
+    private String canonicalKey(String window) {
+        return keyPrefix + "{" + window + "}:value";
+    }
+
+    private String canonicalVersionKey(String window) {
+        return keyPrefix + "{" + window + "}:version";
+    }
+
+    private CanonicalSnapshot readCanonicalSnapshot(
+            io.lettuce.core.api.sync.RedisCommands<String, String> commands, String window, int limit) {
+        List<Object> raw = commands.eval(READ_CANONICAL_SNAPSHOT, ScriptOutputType.MULTI,
+                new String[]{canonicalKey(window), canonicalVersionKey(window)},
+                Integer.toString(limit - 1));
+        if (raw == null || raw.isEmpty() || !"canonical".equals(String.valueOf(raw.get(0)))) {
+            return new CanonicalSnapshot(false, List.of());
+        }
+        return new CanonicalSnapshot(true, raw.subList(1, raw.size()).stream()
+                .map(String::valueOf).toList());
     }
 
     public int hotCacheSize() {
@@ -97,4 +137,5 @@ public final class RedisTopKStore implements TrendingStore {
     }
 
     private record CachedIds(List<String> ids, long expiresAtMs) {}
+    private record CanonicalSnapshot(boolean present, List<String> ids) {}
 }

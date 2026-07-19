@@ -4,6 +4,7 @@ import com.recsys.infrastructure.resilience.HotKeyDetector;
 import com.recsys.infrastructure.store.TrendingStore;
 import io.lettuce.core.LettuceFutures;
 import io.lettuce.core.RedisFuture;
+import io.lettuce.core.ScriptOutputType;
 import org.slf4j.Logger;
 import org.slf4j.LoggerFactory;
 
@@ -41,6 +42,13 @@ import java.util.concurrent.atomic.AtomicLong;
  * hottest and how effectively the local cache is absorbing load.
  */
 public final class ShardedTopKStore implements TrendingStore {
+
+    private static final String READ_CANONICAL_SNAPSHOT = """
+            if not redis.call('GET', KEYS[2]) then return {'absent'} end
+            local ids = redis.call('ZREVRANGE', KEYS[1], 0, tonumber(ARGV[1]))
+            table.insert(ids, 1, 'canonical')
+            return ids
+            """;
 
     private static final Logger log = LoggerFactory.getLogger(ShardedTopKStore.class);
 
@@ -155,6 +163,16 @@ public final class ShardedTopKStore implements TrendingStore {
         }
     }
 
+    @Override
+    public List<String> getTopKIdsPrimary(String window, int k) {
+        if (k <= 0) return List.of();
+        List<String> canonical = writeExec.executePrimaryRead(c -> {
+            CanonicalSnapshot snapshot = readCanonicalSnapshot(c, window, k);
+            return snapshot.present ? snapshot.ids : c.zrevrange(legacyKey(window), 0, k - 1);
+        });
+        return canonical == null ? List.of() : List.copyOf(canonical);
+    }
+
     private CachedIds fetchFromRandomShard(String window, int k, long now) {
         // Random shard selection: spreads Redis read load across N keys/hash-slots.
         int shard = ThreadLocalRandom.current().nextInt(shardCount);
@@ -162,12 +180,15 @@ public final class ShardedTopKStore implements TrendingStore {
         int fetchSize = Math.max(k, MAX_FULL_CACHE_SIZE);
 
         return readExec.executeRead(c -> {
-            List<String> ids = List.copyOf(c.zrevrange(key, 0, fetchSize - 1));
-            if (ids.isEmpty()) {
-                List<String> legacyIds = List.copyOf(c.zrevrange(legacyKey(window), 0, fetchSize - 1));
-                if (!legacyIds.isEmpty()) {
-                    legacyFallbackFetches.incrementAndGet();
-                    ids = legacyIds;
+            CanonicalSnapshot snapshot = readCanonicalSnapshot(c, window, fetchSize);
+            List<String> ids = snapshot.ids;
+            if (!snapshot.present) {
+                List<String> shardIds = c.zrevrange(key, 0, fetchSize - 1);
+                ids = shardIds == null ? List.of() : List.copyOf(shardIds);
+                if (ids.isEmpty()) {
+                    List<String> oldIds = c.zrevrange(legacyKey(window), 0, fetchSize - 1);
+                    ids = oldIds == null ? List.of() : List.copyOf(oldIds);
+                    if (!ids.isEmpty()) legacyFallbackFetches.incrementAndGet();
                 }
             }
             redisFetches.incrementAndGet();
@@ -175,6 +196,26 @@ public final class ShardedTopKStore implements TrendingStore {
             if (staleTtlMs > 0L) hotCache.put(window, result);
             return result;
         });
+    }
+
+    private String canonicalKey(String window) {
+        return keyPrefix + "{" + window + "}:value";
+    }
+
+    private String canonicalVersionKey(String window) {
+        return keyPrefix + "{" + window + "}:version";
+    }
+
+    private CanonicalSnapshot readCanonicalSnapshot(
+            io.lettuce.core.api.sync.RedisCommands<String, String> commands, String window, int limit) {
+        List<Object> raw = commands.eval(READ_CANONICAL_SNAPSHOT, ScriptOutputType.MULTI,
+                new String[]{canonicalKey(window), canonicalVersionKey(window)},
+                Integer.toString(limit - 1));
+        if (raw == null || raw.isEmpty() || !"canonical".equals(String.valueOf(raw.get(0)))) {
+            return new CanonicalSnapshot(false, List.of());
+        }
+        return new CanonicalSnapshot(true, raw.subList(1, raw.size()).stream()
+                .map(String::valueOf).toList());
     }
 
     // ── Write path (fan-out to all shards) ────────────────────────────────────────
@@ -264,4 +305,5 @@ public final class ShardedTopKStore implements TrendingStore {
     }
 
     private record CachedIds(List<String> ids, long expiresAtMs, long staleExpiresAtMs) {}
+    private record CanonicalSnapshot(boolean present, List<String> ids) {}
 }

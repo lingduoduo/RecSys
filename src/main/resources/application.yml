@@ -60,6 +60,11 @@ recsys:
     read-retry-backoff-ms: ${MYSQL_READ_RETRY_BACKOFF_MS:50}
     # Required when MySQL catalog serving is enabled; inject through secret management.
     cursor-signing-key: ${MYSQL_CURSOR_SIGNING_KEY:}
+  # Durable eventual consistency (transactional outbox, saga state, relay, consistency tokens,
+  # reconciliation) is NOT a Spring feature. It runs in the online Armeria service and the
+  # standalone OutboxRelayCommand / ReconciliationCommand, configured entirely through env vars
+  # (ONLINE_DURABLE_EVENTS_ENABLED, ONLINE_CONSISTENCY_TOKEN_SECRET, OUTBOX_*, RECONCILIATION_*).
+  # It reuses the MYSQL_* settings above. See docs/runbooks/durable-eventual-consistency.md.
   health:
     # Rolling window for latency/failure-rate metrics used by the readiness probe
     window-seconds: 60

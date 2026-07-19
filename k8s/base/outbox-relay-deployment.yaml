@@ -1,0 +1,85 @@
+apiVersion: apps/v1
+kind: Deployment
+metadata:
+  name: recsys-outbox-relay
+  namespace: recsys
+  labels:
+    app: recsys-outbox-relay
+spec:
+  # Relay workers coordinate through SKIP-LOCKED leases, so replicas scale horizontally without
+  # double-delivering. Kept separate from online-serving so a request-tier surge cannot starve
+  # (or be starved by) delivery.
+  replicas: 1
+  selector:
+    matchLabels:
+      app: recsys-outbox-relay
+  template:
+    metadata:
+      labels:
+        app: recsys-outbox-relay
+      annotations:
+        prometheus.io/scrape: "true"
+        prometheus.io/path: "/metrics"
+        prometheus.io/port: "7020"
+    spec:
+      terminationGracePeriodSeconds: 30
+      securityContext:
+        runAsNonRoot: true
+        seccompProfile:
+          type: RuntimeDefault
+      containers:
+        - name: outbox-relay
+          image: recsys-backend-service:local
+          imagePullPolicy: IfNotPresent
+          securityContext:
+            allowPrivilegeEscalation: false
+            readOnlyRootFilesystem: true
+            capabilities:
+              drop: ["ALL"]
+          envFrom:
+            - configMapRef:
+                name: recsys-config
+            # MYSQL_PASSWORD and ONLINE_CONSISTENCY_TOKEN_SECRET live here, never in the ConfigMap.
+            - secretRef:
+                name: recsys-secrets
+                optional: true
+          env:
+            - name: RECSYS_MAIN_CLASS
+              value: com.recsys.application.outbox.OutboxRelayCommand
+            - name: OUTBOX_RELAY_PORT
+              value: "7020"
+            - name: JAVA_OPTS
+              value: "-Xms256m -Xmx512m"
+          ports:
+            - name: http
+              containerPort: 7020
+          volumeMounts:
+            - name: tmp
+              mountPath: /tmp
+          startupProbe:
+            httpGet:
+              path: /health/ready
+              port: http
+            failureThreshold: 24
+            periodSeconds: 5
+          readinessProbe:
+            httpGet:
+              path: /health/ready
+              port: http
+            periodSeconds: 10
+          livenessProbe:
+            httpGet:
+              path: /health/live
+              port: http
+            periodSeconds: 20
+            failureThreshold: 3
+          resources:
+            requests:
+              cpu: 100m
+              memory: 384Mi
+            limits:
+              cpu: "1"
+              memory: 768Mi
+      volumes:
+        - name: tmp
+          emptyDir: {}

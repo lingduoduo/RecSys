@@ -5,6 +5,8 @@ import io.lettuce.core.api.sync.RedisCommands;
 
 import java.util.function.Consumer;
 import java.util.function.Function;
+import java.time.Duration;
+import java.util.Optional;
 
 /**
  * A {@link RedisExecutor} that splits reads from writes across a
@@ -34,6 +36,21 @@ public final class RoutingRedisExecutor implements RedisExecutor {
     @Override
     public <T> T executeRead(Function<RedisCommands<String, String>, T> fn) {
         return router.readable().executeRead(fn);
+    }
+
+    @Override public <T> Optional<T> executeReplicaRead(Function<RedisCommands<String, String>, T> fn) {
+        return router.probeReadable().map(replica -> replica.executeRead(fn));
+    }
+
+    @Override
+    public <T> T executePrimaryRead(Function<RedisCommands<String, String>, T> fn) {
+        // Read on the primary/writable node via its read path — never a replica.
+        return router.writable().executeRead(fn);
+    }
+
+    @Override
+    public <T> T executePrimaryRead(Function<RedisCommands<String, String>, T> fn, Duration timeout) {
+        return router.writable().executePrimaryRead(fn, timeout);
     }
 
     @Override

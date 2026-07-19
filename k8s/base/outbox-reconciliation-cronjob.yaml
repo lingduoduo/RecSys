@@ -1,0 +1,63 @@
+apiVersion: batch/v1
+kind: CronJob
+metadata:
+  name: recsys-outbox-reconciliation
+  namespace: recsys
+  labels:
+    app: recsys-outbox-reconciliation
+spec:
+  # Hourly; each run scans the previous RECONCILIATION_WINDOW_HOURS, so overlapping windows are
+  # expected and safe (republish is idempotent). Forbid prevents a slow run from stacking.
+  schedule: "0 * * * *"
+  concurrencyPolicy: Forbid
+  startingDeadlineSeconds: 300
+  successfulJobsHistoryLimit: 3
+  failedJobsHistoryLimit: 3
+  jobTemplate:
+    spec:
+      activeDeadlineSeconds: 600
+      backoffLimit: 3
+      template:
+        metadata:
+          labels:
+            app: recsys-outbox-reconciliation
+        spec:
+          restartPolicy: Never
+          securityContext:
+            runAsNonRoot: true
+            seccompProfile:
+              type: RuntimeDefault
+          containers:
+            - name: reconciliation
+              image: recsys-backend-service:local
+              imagePullPolicy: IfNotPresent
+              securityContext:
+                allowPrivilegeEscalation: false
+                readOnlyRootFilesystem: true
+                capabilities:
+                  drop: ["ALL"]
+              envFrom:
+                - configMapRef:
+                    name: recsys-config
+                # MYSQL_PASSWORD and ONLINE_CONSISTENCY_TOKEN_SECRET live here, never in the ConfigMap.
+                - secretRef:
+                    name: recsys-secrets
+                    optional: true
+              env:
+                - name: RECSYS_MAIN_CLASS
+                  value: com.recsys.application.reconciliation.ReconciliationCommand
+                - name: JAVA_OPTS
+                  value: "-Xms256m -Xmx512m"
+              volumeMounts:
+                - name: tmp
+                  mountPath: /tmp
+              resources:
+                requests:
+                  cpu: 100m
+                  memory: 384Mi
+                limits:
+                  cpu: "1"
+                  memory: 768Mi
+          volumes:
+            - name: tmp
+              emptyDir: {}

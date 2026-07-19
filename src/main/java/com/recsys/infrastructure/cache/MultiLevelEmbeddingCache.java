@@ -125,6 +125,11 @@ public final class MultiLevelEmbeddingCache implements EmbeddingStore {
     }
 
     @Override
+    public float[] getEmbeddingPrimary(int id) {
+        return l2 == null ? null : l2.getEmbeddingPrimary(id);
+    }
+
+    @Override
     public Map<Integer, float[]> getEmbeddings(Collection<Integer> ids) {
         if (ids == null || ids.isEmpty()) return Collections.emptyMap();
 

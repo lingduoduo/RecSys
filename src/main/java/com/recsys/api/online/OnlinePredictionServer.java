@@ -3,7 +3,14 @@ package com.recsys.api.online;
 import com.recsys.application.online.OnlineServices;
 import com.recsys.application.online.OnlineBlendingPipeline;
 import com.recsys.application.online.OnlineRecommendationService;
+import com.recsys.application.consistency.ConsistencyTokenCodec;
+import com.recsys.application.consistency.ConsistencyWaiter;
+import com.recsys.application.consistency.RedisLineageReader;
+import com.recsys.application.outbox.DurableEventPublisher;
 import com.recsys.metrics.OnlineServingMetricsService;
+import com.recsys.metrics.ConsistencyMetrics;
+import com.recsys.infrastructure.redis.RedisReplicaLagProbe;
+import com.recsys.infrastructure.redis.RedisFeatureVersionSampler;
 
 import com.linecorp.armeria.server.Route;
 import com.linecorp.armeria.server.Server;
@@ -45,6 +52,9 @@ import com.recsys.ratelimit.RedisRateLimiter;
 import com.recsys.infrastructure.store.OnlineFeatureStore;
 import com.recsys.infrastructure.store.TrendingStore;
 import com.recsys.infrastructure.messaging.AsyncEventPublisherFactory;
+import com.recsys.infrastructure.outbox.MySqlOutboxRepository;
+import com.recsys.infrastructure.persistence.MySqlConnectionSettings;
+import com.recsys.infrastructure.persistence.TransactionalMySql;
 import com.recsys.application.retrieval.channels.Channels;
 import com.recsys.application.retrieval.coldstart.ColdStartChannel;
 import com.recsys.application.retrieval.coldstart.QuotaPolicy;
@@ -52,7 +62,10 @@ import com.recsys.application.retrieval.multichannel.ChannelHealthMonitor;
 import com.recsys.application.retrieval.multichannel.MultiChannelRecallService;
 import com.recsys.application.retrieval.multichannel.RecallConfig;
 import java.util.List;
+import java.util.Map;
 import java.util.concurrent.ExecutorService;
+import java.time.Clock;
+import java.time.Duration;
 
 public final class OnlinePredictionServer {
     private static final int DEFAULT_PORT = 7010;
@@ -62,20 +75,33 @@ public final class OnlinePredictionServer {
     public static void main(String[] args) throws Exception {
         int port = readIntEnv("ONLINE_DEMO_PORT", DEFAULT_PORT);
         int requestTimeoutMs = readIntEnv("ONLINE_REQUEST_TIMEOUT_MS", 500);
-
-        RedisExecutor jedisPool = LettuceClientFactory.routingFromEnv();
-        final com.recsys.infrastructure.registry.ServiceRegistrar registrar =
-                com.recsys.infrastructure.registry.ServiceRegistrar.fromEnvironment(
-                        new com.recsys.infrastructure.registry.ServiceRegistryStore(
-                                jedisPool, com.recsys.infrastructure.registry.ServiceRegistryStore.DEFAULT_KEY_PREFIX));
-        if (registrar != null) {
-            registrar.start();
-        }
-        AsyncEventPublisher asyncEventPublisher = createAsyncEventPublisher();
+        DurableConfig durableConfig = durableConfig(System.getenv());
+        RedisExecutor jedisPool = null;
+        com.recsys.infrastructure.registry.ServiceRegistrar registrar = null;
+        AsyncEventPublisher asyncEventPublisher = null;
+        TransactionalMySql transactionalMySql = null;
         LearnerFlushScheduler learnerFlushScheduler = null;
         ExecutorService recallExecutor = null;
+        ShardTopologyProvider topologyProvider = null;
+        RedisReplicaLagProbe replicaLagProbe = null;
+        RedisFeatureVersionSampler featureVersionSampler = null;
+        MySqlOutboxRepository outboxRepository = null;
 
         try {
+            jedisPool = LettuceClientFactory.routingFromEnv();
+            registrar = com.recsys.infrastructure.registry.ServiceRegistrar.fromEnvironment(
+                    new com.recsys.infrastructure.registry.ServiceRegistryStore(
+                            jedisPool, com.recsys.infrastructure.registry.ServiceRegistryStore.DEFAULT_KEY_PREFIX));
+            if (registrar != null) registrar.start();
+            asyncEventPublisher = createAsyncEventPublisher();
+            DurableEventPublisher durableEventPublisher = null;
+            ConsistencyTokenCodec consistencyTokenCodec = null;
+            if (durableConfig.enabled()) {
+                transactionalMySql = new TransactionalMySql(MySqlConnectionSettings.fromEnv());
+                outboxRepository = new MySqlOutboxRepository(transactionalMySql);
+                durableEventPublisher = new DurableEventPublisher(outboxRepository);
+                consistencyTokenCodec = new ConsistencyTokenCodec(durableConfig.tokenSecret());
+            }
             DataManager dataManager = DataManager.getInstance();
             RedisEmbeddingStore userEmbeddingStore = new RedisEmbeddingStore(jedisPool, "u2vEmb");
             // u2vEmb is continuously rewritten by Flink: use a soft-TTL cache (serve-stale +
@@ -115,6 +141,19 @@ public final class OnlinePredictionServer {
                     new LearnerFlushScheduler(onlineLearner, jedisPool, "bias:item", 30L);
             learnerFlushScheduler.start();
             PrometheusMeterRegistry registry = PrometheusMeterRegistries.defaultRegistry();
+            MySqlOutboxRepository metricsOutboxRepository = outboxRepository;
+            ConsistencyMetrics consistencyMetrics = metricsOutboxRepository == null
+                    ? new ConsistencyMetrics(registry)
+                    : new ConsistencyMetrics(registry,
+                            () -> metricsOutboxRepository.countRetryableBacklog(Clock.systemUTC().instant()));
+            asyncEventPublisher.bindConsistencyMetrics(consistencyMetrics);
+            replicaLagProbe = new RedisReplicaLagProbe(jedisPool, Clock.systemUTC());
+            replicaLagProbe.start(Duration.ofSeconds(readIntEnv("REDIS_REPLICA_LAG_PROBE_SECONDS", 10)),
+                    result -> consistencyMetrics.updateReplicaLag(
+                            new ConsistencyMetrics.ReplicaLag(result.available(), result.lagSeconds())));
+            featureVersionSampler = new RedisFeatureVersionSampler(jedisPool, consistencyMetrics,
+                    Clock.systemUTC(), readIntEnv("REDIS_FEATURE_VERSION_SAMPLE_LIMIT", 1000));
+            featureVersionSampler.start(Duration.ofSeconds(readIntEnv("REDIS_FEATURE_VERSION_SAMPLE_SECONDS", 30)));
             OnlineServingMetricsService metricsService = new OnlineServingMetricsService();
             OnlineLoadShedder loadShedder = new OnlineLoadShedder();
             OnlineCapacityService capacityService = new OnlineCapacityService();
@@ -123,7 +162,7 @@ public final class OnlinePredictionServer {
             int shardCount = readIntEnv("SHARDED_RECORD_SHARD_COUNT", 2);
             long refreshMs = readIntEnv("SHARD_TOPOLOGY_REFRESH_SECONDS", 30) * 1000L;
             ShardTopologyStore topologyStore = new ShardTopologyStore(jedisPool, "shard:topology");
-            ShardTopologyProvider topologyProvider = new ShardTopologyProvider(
+            topologyProvider = new ShardTopologyProvider(
                     topologyStore, 150, shardCount, refreshMs,
                     System::currentTimeMillis);
             topologyProvider.start();
@@ -131,6 +170,18 @@ public final class OnlinePredictionServer {
                     jedisPool, jedisPool, topologyProvider,
                     new SequenceGenerator(jedisPool, "sr:"), "sr:");
 
+            OnlineServices.Features featuresService = durableConfig.enabled()
+                    ? new OnlineServices.Features(recommendationService, metricsService, loadShedder,
+                            redisRateLimiter, durableEventPublisher, consistencyTokenCodec, true)
+                    : new OnlineServices.Features(recommendationService, metricsService, loadShedder,
+                            redisRateLimiter, null, true);
+            OnlineServices.Prediction predictionService = durableConfig.enabled()
+                    ? new OnlineServices.Prediction(recommendationService, metricsService, loadShedder,
+                            redisRateLimiter, true, consistencyTokenCodec,
+                            new ConsistencyWaiter(new RedisLineageReader(jedisPool), consistencyMetrics),
+                            consistencyMetrics)
+                    : new OnlineServices.Prediction(recommendationService, metricsService,
+                            loadShedder, redisRateLimiter, true);
             ServerBuilder sb = Server.builder();
             sb.http(port)
               .requestTimeoutMillis(requestTimeoutMs)
@@ -145,13 +196,11 @@ public final class OnlinePredictionServer {
               .service("/metrics", PrometheusExpositionService.of(registry.getPrometheusRegistry()))
               .service("/online/features",
                       new OnlineAdmissionControl(
-                              new OnlineServices.Features(recommendationService, metricsService,
-                                      loadShedder, redisRateLimiter, asyncEventPublisher, true),
+                              featuresService,
                               loadShedder, metricsService))
               .service("/online/recommendation",
                       new OnlineAdmissionControl(
-                              new OnlineServices.Prediction(recommendationService, metricsService,
-                                      loadShedder, redisRateLimiter, true),
+                              predictionService,
                               loadShedder, metricsService))
               .service("/online/ops",
                       new OnlineOpsService(metricsService, loadShedder, capacityService,
@@ -169,31 +218,57 @@ public final class OnlinePredictionServer {
             metricsService.registerGauges(registry);
             LearnerFlushScheduler activeLearnerFlushScheduler = learnerFlushScheduler;
             ShardTopologyProvider activeTopologyProvider = topologyProvider;
-
+            AsyncEventPublisher activeAsyncEventPublisher = asyncEventPublisher;
+            TransactionalMySql activeTransactionalMySql = transactionalMySql;
+            RedisExecutor activeJedisPool = jedisPool;
+            com.recsys.infrastructure.registry.ServiceRegistrar activeRegistrar = registrar;
             ExecutorService activeRecallExecutor = recallExecutor;
+            RedisReplicaLagProbe activeReplicaLagProbe = replicaLagProbe;
+            RedisFeatureVersionSampler activeFeatureVersionSampler = featureVersionSampler;
             Runtime.getRuntime().addShutdownHook(new Thread(() -> {
                 loadShedder.markShuttingDown();   // flip readiness to 503 + shed new load before draining
                 server.stop().join();
-                asyncEventPublisher.close();
+                activeAsyncEventPublisher.close();
+                activeReplicaLagProbe.close();
+                activeFeatureVersionSampler.close();
+                if (activeTransactionalMySql != null) activeTransactionalMySql.close();
                 activeLearnerFlushScheduler.close();
                 GracefulExecutors.shutdownGracefully(activeRecallExecutor);
                 activeTopologyProvider.stop();
-                if (registrar != null) {
-                    registrar.close();
+                if (activeRegistrar != null) {
+                    activeRegistrar.close();
                 }
-                jedisPool.close();
+                activeJedisPool.close();
             }));
 
             server.start().join();
             server.blockUntilShutdown();
         } catch (Exception e) {
-            asyncEventPublisher.close();
+            if (asyncEventPublisher != null) asyncEventPublisher.close();
+            if (transactionalMySql != null) transactionalMySql.close();
             if (learnerFlushScheduler != null) learnerFlushScheduler.close();
             if (recallExecutor != null) GracefulExecutors.shutdownGracefully(recallExecutor);
-            jedisPool.close();
+            if (topologyProvider != null) topologyProvider.stop();
+            if (replicaLagProbe != null) replicaLagProbe.close();
+            if (featureVersionSampler != null) featureVersionSampler.close();
+            if (registrar != null) registrar.close();
+            if (jedisPool != null) jedisPool.close();
             throw e;
         }
     }
+
+    static DurableConfig durableConfig(Map<String, String> env) {
+        boolean enabled = Boolean.parseBoolean(env.getOrDefault("ONLINE_DURABLE_EVENTS_ENABLED", "false"));
+        if (!enabled) return new DurableConfig(false, null);
+        if (!Boolean.parseBoolean(env.getOrDefault("MYSQL_ENABLED", "false"))) {
+            throw new IllegalStateException("MYSQL_ENABLED=true is required for durable online event acceptance");
+        }
+        String secret = env.get("ONLINE_CONSISTENCY_TOKEN_SECRET");
+        new ConsistencyTokenCodec(secret);
+        return new DurableConfig(true, secret);
+    }
+
+    record DurableConfig(boolean enabled, String tokenSecret) {}
 
     private static int readIntEnv(String envName, int defaultValue) {
         String raw = System.getenv(envName);

@@ -48,21 +48,47 @@ public final class OnlineRecommendationService {
     }
 
     public OnlineRecommendationResult recommend(OnlineRecommendationRequest request) {
+        return recommend(request, false);
+    }
+
+    public OnlineRecommendationResult recommendPrimary(OnlineRecommendationRequest request) {
+        try {
+            return recommend(request, true);
+        } catch (UnknownUserException e) {
+            throw e;
+        } catch (IllegalArgumentException e) {
+            throw e;
+        } catch (RuntimeException e) {
+            throw new PrimaryReadUnavailableException("Primary recommendation read failed", e);
+        }
+    }
+
+    public static final class PrimaryReadUnavailableException extends RuntimeException {
+        public PrimaryReadUnavailableException(String message, Throwable cause) { super(message, cause); }
+    }
+
+    private OnlineRecommendationResult recommend(OnlineRecommendationRequest request, boolean primaryFeatureRead) {
         User user = requireUser(request.userId());
         int k = Math.max(1, request.k());
         int recallLimit = Math.min(Math.max(k * 4, 12), 100);
         String window = normalizeWindow(request.window());
 
-        List<Integer> recentIds = recentHistoryStore.getRecentMovieIds(request.userId(), RECENT_HISTORY_LIMIT);
+        List<Integer> recentIds = primaryFeatureRead
+                ? recentHistoryStore.getRecentMovieIdsPrimary(request.userId(), RECENT_HISTORY_LIMIT)
+                : recentHistoryStore.getRecentMovieIds(request.userId(), RECENT_HISTORY_LIMIT);
         Set<String> excluded = new LinkedHashSet<>();
         for (int id : recentIds) excluded.add(String.valueOf(id));
 
         RecommendationQuery query =
                 new RecommendationQuery(String.valueOf(request.userId()), recallLimit, excluded, null);
-        List<MovieCandidate> candidates = recallService.recall(query, recallLimit);
+        List<MovieCandidate> candidates = primaryFeatureRead
+                ? recallService.recallPrimary(query, recallLimit)
+                : recallService.recall(query, recallLimit);
 
         List<Movie> recentMovies = mapMovies(recentIds);
-        List<Movie> trendingMovies = mapMovies(parseIds(topkStore.getTopKIds(window, k)));
+        List<Movie> trendingMovies = mapMovies(parseIds(primaryFeatureRead
+                ? topkStore.getTopKIdsPrimary(window, k)
+                : topkStore.getTopKIds(window, k)));
 
         List<Movie> recommendations = rerank(candidates, excluded, k);
         if (recommendations.isEmpty()) {

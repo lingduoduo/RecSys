@@ -96,6 +96,9 @@ public final class LogicalExpiryEmbeddingCache implements EmbeddingStore {
     }
 
     @Override
+    public float[] getEmbeddingPrimary(int id) { return backingStore.getEmbeddingPrimary(id); }
+
+    @Override
     public Map<Integer, float[]> getEmbeddings(Collection<Integer> ids) {
         if (ids == null || ids.isEmpty()) return Map.of();
 

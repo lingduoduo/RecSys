@@ -2,6 +2,7 @@ package com.recsys.infrastructure.redis;
 
 import com.recsys.infrastructure.resilience.HotKeyDetector;
 import io.lettuce.core.RedisFuture;
+import io.lettuce.core.ScriptOutputType;
 import io.lettuce.core.ScoredValue;
 import io.lettuce.core.api.StatefulRedisConnection;
 import io.lettuce.core.api.async.RedisAsyncCommands;
@@ -40,6 +41,7 @@ class ShardedTopKStoreTest {
         exec = mock(RedisExecutor.class);
         when(exec.execute(any())).thenAnswer(i -> i.getArgument(0, Function.class).apply(cmd));
         when(exec.executeRead(any())).thenAnswer(i -> i.getArgument(0, Function.class).apply(cmd));
+        when(exec.executePrimaryRead(any())).thenAnswer(i -> i.getArgument(0, Function.class).apply(cmd));
 
         // Pipeline wiring: executePipelined runs the consumer against a mocked connection.
         StatefulRedisConnection<String, String> conn = mock(StatefulRedisConnection.class);
@@ -49,6 +51,70 @@ class ShardedTopKStoreTest {
         when(async.zadd(any(String.class), any(ScoredValue[].class)))
                 .thenReturn(future);
         doAnswerPipeline(conn);
+    }
+
+    @Test
+    void primaryReadBypassesHotCacheAndReplicaReadPath() {
+        when(cmd.eval(any(String.class), eq(ScriptOutputType.MULTI), any(String[].class), any(String[].class)))
+                .thenReturn(List.of("canonical", "fresh", "2"));
+        ShardedTopKStore store = new ShardedTopKStore(exec, exec, "topk:", 2, 5_000L, new HotKeyDetector());
+
+        assertThat(store.getTopKIdsPrimary("last_hour", 2)).containsExactly("fresh", "2");
+
+        verify(exec).executePrimaryRead(any());
+        verify(exec, never()).executeRead(any());
+    }
+
+    @Test
+    void canonicalMarkerBeatsPopulatedStaleShard() {
+        when(cmd.eval(any(String.class), eq(ScriptOutputType.MULTI), any(String[].class), any(String[].class)))
+                .thenReturn(List.of("canonical", "fresh"));
+        when(cmd.zrevrange(argThat((String key) -> key.matches("topk:last_hour:s[0-3]")), anyLong(), anyLong()))
+                .thenReturn(List.of("shard-stale"));
+        ShardedTopKStore store = new ShardedTopKStore(exec, exec, "topk:", 4, 0L, new HotKeyDetector());
+
+        assertThat(store.getTopKIds("last_hour", 1)).containsExactly("fresh");
+        verify(cmd, never()).zrevrange(argThat((String key) -> key.matches("topk:last_hour:s[0-3]")), anyLong(), anyLong());
+    }
+
+    @Test
+    void canonicalMarkerMakesEmptySnapshotAuthoritativeAndCacheable() {
+        when(cmd.eval(any(String.class), eq(ScriptOutputType.MULTI), any(String[].class), any(String[].class)))
+                .thenReturn(List.of("canonical"));
+        when(cmd.zrevrange(any(String.class), anyLong(), anyLong())).thenReturn(List.of("stale"));
+        ShardedTopKStore store = new ShardedTopKStore(exec, exec, "topk:", 4, 5_000L, new HotKeyDetector());
+
+        assertThat(store.getTopKIds("last_hour", 1)).isEmpty();
+        assertThat(store.getTopKIds("last_hour", 1)).isEmpty();
+
+        verify(exec, times(1)).executeRead(any());
+        verify(cmd, never()).zrevrange(any(String.class), anyLong(), anyLong());
+    }
+
+    @Test
+    void absentCanonicalMarkerFallsBackToShardBeforeLegacy() {
+        when(cmd.eval(any(String.class), eq(ScriptOutputType.MULTI), any(String[].class), any(String[].class)))
+                .thenReturn(List.of("absent"));
+        when(cmd.zrevrange(argThat((String key) -> key.matches("topk:last_hour:s[0-3]")), anyLong(), anyLong()))
+                .thenReturn(List.of("shard"));
+        when(cmd.zrevrange("topk:last_hour", 0, 99)).thenReturn(List.of("legacy"));
+
+        assertThat(new ShardedTopKStore(exec, exec, "topk:", 4, 0L, new HotKeyDetector())
+                .getTopKIds("last_hour", 1)).containsExactly("shard");
+        verify(cmd, never()).zrevrange("topk:last_hour", 0, 99);
+    }
+
+    @Test
+    void primaryReadHonorsEmptyCanonicalSnapshotWithoutLegacyFallback() {
+        when(cmd.eval(any(String.class), eq(ScriptOutputType.MULTI), any(String[].class), any(String[].class)))
+                .thenReturn(List.of("canonical"));
+        when(cmd.zrevrange("topk:last_hour", 0, 1)).thenReturn(List.of("legacy-stale"));
+        ShardedTopKStore store = new ShardedTopKStore(exec, exec, "topk:", 2, 5_000L, new HotKeyDetector());
+
+        assertThat(store.getTopKIdsPrimary("last_hour", 2)).isEmpty();
+        verify(exec).executePrimaryRead(any());
+        verify(exec, never()).executeRead(any());
+        verify(cmd, never()).zrevrange("topk:last_hour", 0, 1);
     }
 
     @SuppressWarnings("unchecked")

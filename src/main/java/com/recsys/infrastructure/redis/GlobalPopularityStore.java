@@ -46,6 +46,13 @@ public class GlobalPopularityStore {
         return List.copyOf(top.subList(0, limit));
     }
 
+    public List<String> getTopIdsPrimary(int limit) {
+        if (limit <= 0) return List.of();
+        List<String> ids = exec.executePrimaryRead(c -> c.zrevrange(KEY, 0, MAX_CACHED - 1));
+        List<String> top = ids == null ? List.of() : List.copyOf(ids);
+        return top.size() <= limit ? top : List.copyOf(top.subList(0, limit));
+    }
+
     private List<String> loadTopFromRedis() {
         List<String> ids = exec.executeRead(c -> c.zrevrange(KEY, 0, MAX_CACHED - 1));
         return ids == null ? List.of() : List.copyOf(ids);
