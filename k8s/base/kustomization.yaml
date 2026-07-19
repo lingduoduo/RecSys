@@ -12,6 +12,7 @@ resources:
   - hpa.yaml
   - network-policy.yaml
   - servicemonitor.yaml
+  - outbox-relay-deployment.yaml
   - outbox-reconciliation-cronjob.yaml
 images:
   - name: recsys-backend-service

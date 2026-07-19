@@ -90,3 +90,15 @@ data:
   RECONCILIATION_MAX_BATCH: "500"
   RECONCILIATION_REPAIR: "false"
   RECONCILIATION_LEASE_SECONDS: "300"
+  # Durable online API acceptance + consistency tokens. OFF by default; enabling requires
+  # MYSQL_ENABLED=true and the ONLINE_CONSISTENCY_TOKEN_SECRET Secret (>=32 UTF-8 bytes).
+  ONLINE_DURABLE_EVENTS_ENABLED: "false"
+  # Outbox relay Deployment tuning. OUTBOX_RELAY_POLL_MS is the claim cadence; the per-send and
+  # relay-cycle deadline is OUTBOX_DELIVERY_DEADLINE_MS above.
+  OUTBOX_RELAY_PORT: "7020"
+  OUTBOX_RELAY_BATCH_SIZE: "100"
+  OUTBOX_RELAY_MAX_CONCURRENT_SENDS: "16"
+  OUTBOX_RELAY_LEASE_SECONDS: "30"
+  OUTBOX_RELAY_POLL_MS: "500"
+  OUTBOX_RELAY_MAX_ATTEMPTS: "8"
+  OUTBOX_RELAY_READINESS_MAX_BACKLOG: "100000"
