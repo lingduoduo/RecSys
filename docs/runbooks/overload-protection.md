@@ -34,6 +34,11 @@ and how to tune it. Design: `docs/superpowers/specs/2026-07-08-overload-protecti
   requests. So under load 6010 tends to degrade to partial/empty results (per-channel
   shedding, HTTP 200) well before it starts returning 429 — operators should expect silent
   quality degradation as the first symptom, not 429s.
+- **Visibility:** silent recall degradation is now observable on 6010 via
+  `GET /health/load` (`recall.degradedRatio`, per-channel `channelDegraded`
+  counters) and the `X-Recall-Degraded` response header on `/recommendation`
+  and `/v2/recommend`. `degradedRatio` climbing above ~0 under load is the
+  early-warning signal that fires before any 429.
 
 ## Tuning
 
