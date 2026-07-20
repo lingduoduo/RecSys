@@ -29,6 +29,12 @@ data:
   GATEWAY_TIMEOUT_MS: "3000"
   # Optional API-key auth. Keep unset by default; inject via Secret in production:
   # GATEWAY_API_KEYS: "replace-with-secret"
+  # Fail-closed guard: with no GATEWAY_API_KEYS and no GATEWAY_COGNITO_ISSUER the gateway
+  # authenticates nobody, so every caller is "anonymous" and any downstream authz gap becomes
+  # unauthenticated. The gateway REFUSES to start in that state unless this flag is explicitly
+  # "true". Base/local is a dev posture, so it opts in here; EKS overlays flip this to "false"
+  # (k8s/eks-shared/configmap-patch.yaml) and supply real auth via Secret.
+  GATEWAY_ALLOW_ANONYMOUS: "true"
   # Anonymous-readable paths. The two catalog reads are edge-cached by CloudFront and MUST NOT
   # vary on Authorization — a JWT-keyed cache fragments per user and the hit ratio collapses.
   # Movie metadata and item-to-item similarity are treated as non-sensitive.

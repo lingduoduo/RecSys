@@ -22,6 +22,7 @@ replicas:
 patches:
   - path: cloud-map-service-patch.yaml       # Cloud Map registration annotations
   - path: configmap-patch.yaml               # GATEWAY_TIMEOUT_MS; in-cluster URLs use kube-DNS
+  - path: gateway-auth-patch.yaml            # GATEWAY_API_KEYS from Secret (fail-closed auth)
   - path: gateway-irsa.yaml                  # gateway Deployment -> IRSA ServiceAccount
   - path: topology-aware-routing-patch.yaml  # PreferClose same-AZ routing
   # Drop the NLB: the WAF ALB Ingress is the sole public entry, so the gateway

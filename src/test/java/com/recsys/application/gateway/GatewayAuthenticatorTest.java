@@ -83,10 +83,29 @@ class GatewayAuthenticatorTest {
     }
 
     @Test
-    void fromEnvironment_disabledWhenNothingConfigured() {
-        GatewayAuthenticator auth = GatewayAuthenticator.fromEnvironment(Map.<String, String>of()::get);
+    void fromEnvironment_failsClosedWhenNothingConfigured() {
+        // Security: with no API keys and no Cognito issuer, the gateway must NOT silently run
+        // wide open. Startup fails unless anonymous access is explicitly opted into.
+        IllegalStateException ex = assertThrows(IllegalStateException.class,
+                () -> GatewayAuthenticator.fromEnvironment(Map.<String, String>of()::get));
+        assertTrue(ex.getMessage().contains("GATEWAY_ALLOW_ANONYMOUS"));
+    }
+
+    @Test
+    void fromEnvironment_allowsAnonymousWhenExplicitlyOptedIn() {
+        // Local/dev escape hatch: an explicit opt-in disables auth (all callers anonymous).
+        GatewayAuthenticator auth = GatewayAuthenticator.fromEnvironment(
+                Map.of("GATEWAY_ALLOW_ANONYMOUS", "true")::get);
         assertFalse(auth.isEnabled());
         assertFalse(auth.check(RequestHeaders.of(HttpMethod.GET, "/model/predict"), "/model/predict").rejected());
+    }
+
+    @Test
+    void fromEnvironment_apiKeysStillEnableAuthWithoutOptIn() {
+        // The opt-in is only consulted when nothing else is configured; keys alone still enable auth.
+        GatewayAuthenticator auth = GatewayAuthenticator.fromEnvironment(
+                Map.of("GATEWAY_API_KEYS", "alpha")::get);
+        assertTrue(auth.isEnabled());
     }
 
     @Test

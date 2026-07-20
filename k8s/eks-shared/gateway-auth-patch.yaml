@@ -1,0 +1,31 @@
+# Gateway authentication (region-agnostic, EKS overlays only).
+#
+# Injects GATEWAY_API_KEYS from a Secret so the gateway authenticates callers in every cloud
+# region. Paired with GATEWAY_ALLOW_ANONYMOUS=false (configmap-patch.yaml), which makes the
+# gateway REFUSE to start without auth configured (see GatewayAuthenticator.fromEnvironment).
+#
+# optional: false is deliberate — unlike the origin secret, this is a hard requirement: the pod
+# must not schedule until the Secret exists. Create it out-of-band before rollout:
+#
+#   kubectl -n recsys create secret generic recsys-gateway-auth \
+#     --from-literal=api-keys="<comma-separated keys>"
+#
+# See docs/runbooks/gateway-auth.md. To use Cognito JWTs instead of (or in addition to) API keys,
+# set GATEWAY_COGNITO_ISSUER/_AUDIENCE in the per-region overlay (the issuer is region-specific).
+apiVersion: apps/v1
+kind: Deployment
+metadata:
+  name: recsys-api-gateway
+  namespace: recsys
+spec:
+  template:
+    spec:
+      containers:
+        - name: api-gateway
+          env:
+            - name: GATEWAY_API_KEYS
+              valueFrom:
+                secretKeyRef:
+                  name: recsys-gateway-auth
+                  key: api-keys
+                  optional: false
