@@ -204,7 +204,9 @@ public final class OnlinePredictionServer {
                               loadShedder, metricsService))
               .service("/online/ops",
                       new OnlineOpsService(metricsService, loadShedder, capacityService,
-                              redisRateLimiter, asyncEventPublisher))
+                              redisRateLimiter, asyncEventPublisher)
+                              .decorate(AdminTokenGuard.newDecorator(
+                                      new AdminTokenGuard(System.getenv("SHARD_ADMIN_TOKEN")))))
               .service("/v2/recommend", new OnlineServices.RecommendV2(blendingPipeline))
               .service(Route.builder().pathPrefix("/shards/").build(),
                       new ShardedRecordService(shardedRecordStore, topologyStore,

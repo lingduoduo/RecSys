@@ -1,6 +1,7 @@
 package com.recsys.infrastructure.store;
 
 import com.fasterxml.jackson.databind.JsonNode;
+import com.recsys.api.online.AdminTokenGuard;
 import com.recsys.api.serving.BaseApiService;
 import com.recsys.infrastructure.redis.sharding.Page;
 import com.recsys.infrastructure.redis.sharding.RecordType;
@@ -14,8 +15,6 @@ import com.linecorp.armeria.common.HttpResponse;
 import com.linecorp.armeria.common.HttpStatus;
 import com.linecorp.armeria.server.ServiceRequestContext;
 
-import java.nio.charset.StandardCharsets;
-import java.security.MessageDigest;
 import java.util.LinkedHashMap;
 import java.util.List;
 import java.util.Map;
@@ -33,7 +32,7 @@ public final class ShardedRecordService extends BaseApiService {
 
     private final ShardedRecordStore store;
     private final ShardTopologyStore topologyStore;   // null => reshard disabled
-    private final String adminToken;                  // blank/null => reshard disabled
+    private final AdminTokenGuard adminGuard;          // unconfigured => reshard + shard-read disabled
     private final long dualReadWindowMs;
     private final LongSupplier clockMs;
 
@@ -46,7 +45,7 @@ public final class ShardedRecordService extends BaseApiService {
                                 LongSupplier clockMs) {
         this.store = store;
         this.topologyStore = topologyStore;
-        this.adminToken = adminToken;
+        this.adminGuard = new AdminTokenGuard(adminToken);
         this.dualReadWindowMs = dualReadWindowMs;
         this.clockMs = clockMs;
     }
@@ -106,11 +105,10 @@ public final class ShardedRecordService extends BaseApiService {
 
     private HttpResponse handleReshard(ServiceRequestContext ctx, HttpRequest req) {
         return HttpResponse.of(req.aggregate().thenApplyAsync(agg -> {
-            if (topologyStore == null || adminToken == null || adminToken.isBlank()) {
+            if (topologyStore == null || !adminGuard.isConfigured()) {
                 return writeError(HttpStatus.FORBIDDEN, "reshard disabled");
             }
-            String token = agg.headers().get("X-Admin-Token");
-            if (token == null || !constantTimeEquals(token, adminToken)) {
+            if (!adminGuard.isAuthorized(agg.headers().get(AdminTokenGuard.HEADER))) {
                 return writeError(HttpStatus.FORBIDDEN, "invalid admin token");
             }
             try {
@@ -134,14 +132,6 @@ public final class ShardedRecordService extends BaseApiService {
         }, ctx.blockingTaskExecutor()));
     }
 
-    /** Length-independent, non-short-circuiting comparison so the admin-token check does not leak
-     *  the secret's prefix through response timing. */
-    private static boolean constantTimeEquals(String provided, String expected) {
-        return MessageDigest.isEqual(
-                provided.getBytes(StandardCharsets.UTF_8),
-                expected.getBytes(StandardCharsets.UTF_8));
-    }
-
     // ── GET /shards/device and /shards/shard ─────────────────────────────────
 
     @Override
@@ -151,6 +141,11 @@ public final class ShardedRecordService extends BaseApiService {
         if (path.equals("/shards/device")) {
             return handleReadDevice(ctx);
         } else if (path.equals("/shards/shard")) {
+            // Bulk shard dump is an operator surface, not per-entity client API: require the
+            // operator token (fail closed when unconfigured), unlike the per-device read above.
+            if (!adminGuard.isAuthorized(req.headers().get(AdminTokenGuard.HEADER))) {
+                return writeError(HttpStatus.FORBIDDEN, "operator token required");
+            }
             return handleReadShard(ctx);
         }
         return writeError(HttpStatus.NOT_FOUND, "unknown path");
