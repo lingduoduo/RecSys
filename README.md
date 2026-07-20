@@ -9,21 +9,49 @@ A compact Maven workspace demonstrating recommendation-system serving, retrieval
 | Model Serving (Spring Boot) | `8080` | Load ONNX model → encode user tower → score candidates; A/B variant management, result caching, load shedding |
 | API Gateway | `8010` | Single entry point for all three services: edge auth (API key / Cognito JWT), per-route circuit breakers, health-checked upstreams, optional registry-based discovery, token-bucket rate limiting, LLM proxy, Prometheus `/metrics` |
 
+---
+
 ## Architecture Layers
 
 | Layer | Key Components |
 |---|---|
-| API Gateway | `MicroserviceGatewayServer`, `RouteCircuitBreaker`, `GatewayRateLimiter`, `LlmProxyService` |
-| Model Serving | `ModelApplication`, `RecommendationController`, `ModelRuntimeProvider`, A/B testing, feature flags |
-| Online Serving | `OnlinePredictionServer`, `OnlineFeatureStore`, `ShardedTopKStore`, `OnlineLearner` |
-| Catalog Serving | `RecSysServer` (Armeria), embedding-based recall, `SimilarMovieService` |
-| Recommendation Service | Shared recall → rank → paginate → hydrate pipeline, `MultiChannelRecallService` |
-| Data Infrastructure | Redis embedding store, AZ-aware read-replica router, multi-level cache (L1/L2/L3), LSH vector index, consistent-hash sharded record store, sharded top-K, MySQL catalog + transactional outbox |
-| Messaging & Load Balancing | `AsyncEventPublisher` (SQS/Kafka transports), durable outbox relay + read-your-writes consistency, `ApplicationLoadBalancer` (L7), capacity-weight feedback |
+| Model Serving | `ModelApplication`, `RecommendationController`, `ModelRuntimeProvider`, A/B testing, feature flags — see [Port 8080](#port-8080--model-serving-spring-boot), [A/B Testing](#ab-testing), [Feature Flags](#feature-flags) |
+| Online Serving | `OnlinePredictionServer`, `OnlineFeatureStore`, `ShardedTopKStore`, `OnlineLearner` — see [Port 7010](#port-7010--online-prediction-server-feature-store), [Online Serving](#online-serving) |
+| Catalog Serving | `RecSysServer` (Armeria), embedding-based recall, `RecommendationService.Similar` — see [Port 6010](#port-6010--catalog--recommendation-serving) |
+| API Gateway | `MicroserviceGatewayServer` (Armeria), `MicroserviceRouteTable`, `GatewayAuthenticator` (API key / Cognito JWT), `RouteCircuitBreaker`, `GatewayRateLimiter`, `LlmProxyService` — see [Port 8010](#port-8010--api-gateway) |
+| Recommendation Service | Shared recall → rank → paginate → hydrate pipeline, `MultiChannelRecallService` — see [Shared recall core](#shared-recall-core) |
+| Data Infrastructure | Redis embedding store, AZ-aware read-replica router, multi-level cache (L1/L2/L3), LSH vector index, consistent-hash sharded record store, sharded top-K, MySQL catalog + transactional outbox — see [Sharded Record Store](#sharded-record-store), [Redis Read Replicas](#redis-read-replicas) |
+| Messaging & Load Balancing | `AsyncEventPublisher` (SQS/Kafka transports), durable outbox relay + read-your-writes consistency, `ApplicationLoadBalancer` (L7), capacity-weight feedback — see [Event Publishers](#event-publishers-message-queues), [Durable Eventual Consistency](#durable-eventual-consistency), [Load Balancing](#load-balancing) |
 | Domain Model | Shared value objects: `Movie`, `User`, `MovieCandidate`, `RecommendationQuery` |
-| Configuration | Spring `@ConfigurationProperties`, feature flag providers, JVM tuning options |
-| Infrastructure | Kubernetes base + EKS overlay, CloudFront CDN edge, Docker, Flink streaming topology |
+| Configuration | Spring `@ConfigurationProperties`, feature flag providers, JVM tuning options — see [Configuration](#configuration) |
+| Infrastructure | Kubernetes base + EKS overlay, CloudFront CDN edge, Docker, Flink streaming topology — see [Kubernetes & EKS](#kubernetes--eks), [CDN Edge](#cdn-edge) |
 | Documentation | README, architecture docs, design specs, implementation plans |
+
+---
+
+### System Design
+| Concept | Key Components |
+|---|---|
+| Load Balancing | `ApplicationLoadBalancer` (L7), capacity-weight feedback (`X-Capacity-Weight` / `suggestedWeight`), gateway health-checked upstream endpoint groups (`UpstreamEndpointGroups`) — see [Load Balancing](#load-balancing) |
+| Caching | `MultiLevelEmbeddingCache` (L1/L2/L3), `TtlSingleFlightCache`, `LogicalExpiryEmbeddingCache`, `RecommendationCache`, `LlmResponseCache`, CloudFront edge cache |
+| Database Sharding | `ShardedRecordStore`, `ShardedTopKStore`, versioned `ShardTopology` (`shard:topology`), online reshard via `POST /shards/topology` — see [Sharded Record Store](#sharded-record-store) |
+| Replication | `RedisReadReplicaRouter` + `RoutingRedisExecutor` (AZ-aware replica reads), Redis Sentinel failover — see [Redis Read Replicas](#redis-read-replicas) |
+| CAP Theorem | Read-your-writes after outbox commit, generation dual-read during a reshard window, tunable AZ-local vs primary reads (`RoutingRedisExecutor`) |
+| Consistent Hashing | `ConsistentHashRing`, `ShardTopologyProvider` (30 s topology refresh, generation dual-read on migration) |
+| Messaging Queues | `AsyncEventPublisher` (`KafkaAsyncEventPublisher` / `SqsAsyncEventPublisher`), Kafka → Flink → Redis pipeline (`OnlineFeatureStreamingJob`) — see [Event Publishers](#event-publishers-message-queues) |
+| Rate Limiting | `TokenBucket`, `GatewayRateLimiter` (per `(route, principal)`), `LlmTokenRateLimiter` (token-budget), `RedisRateLimiter` (distributed) |
+| API Gateway | `MicroserviceGatewayServer`, `MicroserviceRouteTable`, `RouteCircuitBreaker`, `GatewayRateLimiter`, `LlmProxyService` |
+| MicroService | Four independently runnable services (`6010`/`7010`/`8080`/`8010`) behind `MicroserviceGatewayServer`; clean-architecture `api`/`application`/`domain`/`infrastructure` layers |
+| Service Discovery | Redis-backed registry (`ServiceRegistrar`, `ServiceRegistryStore`, `RegistryBackedUpstreams`, `svc:registry:<name>`) with static-route fallback, Cloud Map 30 s DNS TTL — see [Service Registry](#service-registry) |
+| CDNS | CloudFront edge (`scripts/create-cdn-distribution.sh`), origin lockdown (`GatewayOriginSecret` + `x-origin-secret`), nginx local stand-in (`docker-compose.cdn.yml`) — see [CDN Edge](#cdn-edge) |
+| DB Indexing | `MillionScalePaginationSql` (covering-index / keyset / delayed-join), `FORCE INDEX` plan pinning (`MySqlIndexContractTest`), `MySqlClient` — see [MySQL Index Inventory](#mysql-index-inventory) |
+| Partitioning | Consistent-hash shard partitions (`ConsistentHashRing`), windowed top-K shards (`topk:<window>:s0..s3`), Kafka topic partitions, keyset cursor windows (`/v2/recommend`) |
+| Eventual Consistency | `OutboxRelay` + `DurableEventPublisher` (transactional outbox), `OutboxReconciler`, generation dual-read, read-your-writes — see [Durable Eventual Consistency](#durable-eventual-consistency) |
+| WebSockets | No raw WebSocket; real-time push is SSE streaming passthrough in the LLM proxy (`LlmProxyService`, `text/event-stream`) over the Kafka → Flink → Redis streaming backbone |
+| Scalability | HPA overlays (`k8s/base` + EKS), `AutoScalingGroup` / `InstanceProvisioner`, `OnlineAdmissionControl`, capacity sizing (`OnlineCapacityService`) — see [Capacity Planning](#capacity-planning) |
+| Fault Tolerance | `CircuitBreaker` / `RouteCircuitBreaker`, `WorkerBulkhead`, `LoadShedder` / `OnlineLoadShedder`, `ChannelHealthMonitor` backoff, `FaultInjector`, multi-region DR — see [Overload Protection](#overload-protection) |
+| Monitoring | `InferenceMetricsService` / `OnlineServingMetricsService` (Micrometer), Prometheus `/metrics`, health endpoints, `GcEventTracker` / `JvmMemoryMonitor`, `TraceIdAspect` |
+| AuthN and AuthZ | Edge auth `GatewayAuthenticator` (API key / `CognitoJwtVerifier` JWT) → `x-authenticated-*` propagation, `AdminTokenGuard` operator token, `GatewayOriginSecret` |
 
 ![Architecture](recsys-architecture.png)
 [Architecture Diagram (interactive)](https://htmlpreview.github.io/?https://github.com/lingduoduo/Recsys-Backend-Service/blob/main/recsys-architecture.html)
@@ -107,7 +135,8 @@ curl http://localhost:8010/health
 - [Recommendation Flow](#recommendation-flow)
 - [API Reference](#api-reference)
   - [Port 6010 — Catalog & Recommendation Serving](#port-6010--catalog--recommendation-serving)
-  - [Port 7010 — Online Prediction Server](#port-7010--online-prediction-server)
+  - [Shared recall core](#shared-recall-core)
+  - [Port 7010 — Online Prediction Server (Feature Store)](#port-7010--online-prediction-server-feature-store)
   - [Port 8080 — Model Serving (Spring Boot)](#port-8080--model-serving-spring-boot)
   - [Port 8010 — API Gateway](#port-8010--api-gateway)
 - [SQL Use Cases](#sql-use-cases)
