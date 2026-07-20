@@ -91,11 +91,19 @@ Create and rotate the Secret in **both** contexts — see the rotation and step-
    baseline (gateway 2, catalog 2, model 3, online 2) via the
    `k8s/eks-us-west-2-active` overlay; HPA + cluster-autoscaler then surge further as
    traffic arrives. Watch `kubectl --context <us-west-2-ctx> -n recsys get hpa`.
+   The pre-scale is to the **primary baseline, not peak** — it sets the floor so HPA
+   isn't starting from a half-capacity minimum, but HPA and cluster-autoscaler still
+   need to climb further under real production load; `promote` alone does not
+   guarantee headroom for a traffic spike.
 
    > While failed over, deploy the **-active** overlay to keep the standby current —
    > `kubectl --context <us-west-2-ctx> apply -k k8s/eks-us-west-2-active`. A plain
    > `apply -k k8s/eks-us-west-2` would demote it back to 1/1/2/1. Restore the
    > standby floor on failback with `scripts/dr-standby-capacity.sh demote`.
+   > That full `apply -k` is the normal deploy flow (see "Deploy the standby" above)
+   > and requires the image digest to be pinned first via
+   > `scripts/set-eks-image-digest.sh` — unlike `dr-standby-capacity.sh promote`,
+   > which touches only the four HPAs and never the Deployments or image.
 
 ## RTO / RPO
 

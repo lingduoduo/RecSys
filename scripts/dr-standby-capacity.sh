@@ -21,6 +21,9 @@ usage() {
   echo "Usage: $0 promote --context <ctx> [--dry-run]   # standby -> primary baseline" >&2
   echo "       $0 demote  --context <ctx> [--dry-run]   # restore warm-standby floor" >&2
   echo "       $0 verify                                # offline drift check vs k8s/base" >&2
+  echo "" >&2
+  echo "verify renders overlays locally via 'kubectl kustomize' and never contacts a" >&2
+  echo "cluster -- it still requires the kubectl binary on PATH, just no --context/kubeconfig." >&2
   exit 2
 }
 
@@ -33,6 +36,11 @@ usage() {
 # output exceeds the pipe buffer, since the never-read pipe gets closed). Process
 # substitution instead gives python3 the script as a file argument, leaving fd 0
 # connected to the actual pipe.
+#
+# Both this extractor and filter_hpas_only() below assume kustomize's per-document field
+# order (`kind:` near the top, `metadata.name` before `spec.minReplicas`) and key off the
+# literal `kind: HorizontalPodAutoscaler` marker -- brittle to future kustomize output
+# changes (field reordering, added name prefixes/suffixes, relabeling). Documentation only.
 extract_min_replicas() {
   python3 <(cat <<'PY'
 import sys, re
@@ -51,14 +59,36 @@ PY
 )
 }
 
+# Reads `kubectl kustomize` YAML on stdin, re-emits (joined by `---`) only the documents
+# containing `kind: HorizontalPodAutoscaler` -- everything else (Deployments, ConfigMaps,
+# Services, the image transformer's output, ...) is dropped. Same process-substitution
+# pattern as extract_min_replicas above (see the NOTE there) so fd 0 stays connected to
+# the piped kubectl output instead of being consumed by a script heredoc.
+filter_hpas_only() {
+  python3 <(cat <<'PY'
+import sys, re
+docs = re.split(r'(?m)^---\s*$', sys.stdin.read())
+hpas = [d for d in docs if 'kind: HorizontalPodAutoscaler' in d]
+sys.stdout.write('---'.join(hpas))
+PY
+)
+}
+
+# Applies ONLY the HorizontalPodAutoscaler documents rendered by an overlay -- never the
+# Deployments/ConfigMaps/Services or the image transformer's output. `kubectl apply -k
+# <overlay>` would roll the standby Deployments to whatever image digest is currently
+# committed in that overlay's kustomization.yaml, which for k8s/eks-us-west-2* is a
+# placeholder (sha256:0000...) pinned out-of-band by scripts/set-eks-image-digest.sh at
+# deploy time, not by promote/demote. Scoping to HPAs avoids an ImagePullBackOff footgun
+# during failover/failback.
 do_apply() {
   local overlay="$1" context="$2" dry_run="$3"
-  local args=(--context "$context" apply -k "$overlay")
+  local args=(--context "$context" apply -f -)
   if [ "$dry_run" = "true" ]; then
     args+=(--dry-run=server)
   fi
-  echo "+ kubectl ${args[*]}" >&2
-  kubectl "${args[@]}"
+  echo "+ kubectl kustomize $overlay | <HPA-only filter> | kubectl ${args[*]}" >&2
+  kubectl kustomize "$overlay" | filter_hpas_only | kubectl "${args[@]}"
 }
 
 verify() {
