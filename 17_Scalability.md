@@ -1,0 +1,217 @@
+# Scalability in Recsys-Backend-Service
+
+An investigation of how the system scales: the compute tier (stateless services
+behind HPA), the data tier (consistent-hash shards, read replicas, Kafka
+partitions), and the overload-protection layers that keep each instance from
+collapsing before autoscaling catches up.
+
+## The big picture
+
+Scalability here is **multi-dimensional and layered**:
+
+- the **compute tier** scales *out* — stateless services behind Kubernetes HPA;
+- the **data tier** scales *horizontally* — consistent-hash record shards,
+  windowed top-K replica shards, Redis read replicas, and Kafka partitions;
+- a stack of **overload-protection layers** keeps each instance responsive while
+  HPA reacts.
+
+The recurring philosophy: keep the request path lock-free and stateless, push
+state into shardable/replicable stores, and **reject fast rather than queue
+unbounded** when saturated.
+
+## 1. Compute-tier scaling — HPA is the real autoscaler
+
+Four `autoscaling/v2` HPAs ([k8s/base/hpa.yaml](k8s/base/hpa.yaml)), all on
+CPU/memory Resource metrics — no custom/external metrics, no KEDA, no
+Prometheus-adapter.
+
+| Service | min→max | CPU target | Mem target | Behavior |
+|---|---|---|---|---|
+| api-gateway | 2→6 | 70% | 80% | scaleDown stabilize 120s |
+| catalog-serving | 2→8 | 70% | 80% | scaleDown stabilize 120s |
+| **model-serving** | 3→6 | **60%** | 80% | scale-up 2 pods/60s (stabilize 120s); scale-in 1 pod/120s (stabilize 300s) |
+| online-serving | 2→8 | 70% | 80% | scaleDown stabilize 120s |
+
+**model-serving is the sensitive one** — heaviest pod (requests 500m/2Gi, limits
+2/3Gi; longest 180s startup budget for ONNX model load), lowest CPU target, most
+aggressive scale-out with deliberately conservative scale-in.
+
+Supporting mechanisms:
+
+- **Zonal spread** — identical `topologySpreadConstraints` on all four
+  deployments (`maxSkew:1`, `topology.kubernetes.io/zone`, `DoNotSchedule`,
+  `nodeTaintsPolicy: Honor`) force even AZ distribution.
+- **Topology-aware routing** — `PreferClose` (`trafficDistribution`) on the three
+  internal ClusterIP backends prefers same-AZ endpoints to cut inter-AZ traffic;
+  the gateway is deliberately excluded (external WAF ALB edge).
+- **PodDisruptionBudgets** — `minAvailable:1` for gateway/catalog/online;
+  model-serving uniquely uses `maxUnavailable:1` (keeps 2 of 3 up during
+  voluntary disruption).
+- **DR warm standby (us-west-2)** — a strategic-merge patch drops `minReplicas`
+  to ~50% of primary (gateway/catalog/online 2→1, model 3→2) while inheriting
+  `maxReplicas` so HPA + cluster-autoscaler can surge to full capacity on
+  failover.
+
+**Two things labeled "autoscaling" that are NOT controllers:**
+
+- `infrastructure/autoscaling/AutoScalingGroup` + `InstanceProvisioner` — an
+  AWS-ASG-style node-fleet abstraction with **clamp-only bounds and AZ balancing,
+  but no metric-driven desired-capacity computation and no cooldowns**.
+  `setDesiredCapacity(int)` takes the target as a caller-supplied argument; the
+  only guardrails are `ScalingConfig.clamp` (min/max) and least-loaded-AZ
+  placement. Externally triggered.
+- `health/OnlineCapacityService` — **observability of static sizing
+  assumptions**, not a controller. It surfaces constants (`ONLINE_TARGET_DAU`
+  2,000,000 / `ONLINE_PEAK_QPS` 8,000 / `ONLINE_PEAK_TPS` 20,000) plus live
+  `qpsUtilization` / `headroomQps` / `overloaded` for `/health`. Peak TPS ≫ QPS
+  because Kafka absorbs bursty writes and Flink compacts them into Redis
+  aggregates, while stateless (HPA-scalable) instances serve peak read QPS.
+
+## 2. Overload protection — the layers that let it scale without collapsing
+
+Documented in [docs/runbooks/overload-protection.md](docs/runbooks/overload-protection.md).
+All gates are **per-instance** (aggregate cluster capacity = per-instance ×
+replicas) and fail fast with `Retry-After`.
+
+### Admission control (concurrency gate)
+
+`loadshed/OnlineLoadShedder` — lock-free CAS loop on an `AtomicInteger` in-flight
+counter. Defaults: **64 concurrent** (`ONLINE_MAX_CONCURRENT_REQUESTS`), drain at
+**0.95** utilization (`ONLINE_DRAIN_UTILIZATION`; catalog 6010 uses **0.90** via
+`CATALOG_*`). `OnlineAdmissionControl` (Armeria decorator) returns **429** +
+`Retry-After` past the ceiling. `suggestedWeight = round((1−util)×100)` feeds ALB
+target weights so a saturated node bleeds off traffic before it hard-rejects.
+SIGTERM sets a one-way `shuttingDown` flag → `/health/ready` flips to 503 for
+graceful drain (Armeria 1s quiet / 30s timeout, under k8s
+`terminationGracePeriodSeconds: 60`).
+
+### Bulkheads + bounded queues
+
+`resilience/WorkerBulkhead` — a fixed `ThreadPoolExecutor` (`cores×2`) backed by a
+**bounded `ArrayBlockingQueue`** (`RECALL_BULKHEAD_QUEUE_CAPACITY`, default
+`pool×4`) with **no rejection handler**: overflow throws
+`RejectedExecutionException` immediately, bounding memory and tail latency.
+Per-channel `RECALL_CHANNEL_TIMEOUT_MS` (default **200ms**) via
+`CompletableFuture.orTimeout` bounds each recall channel's tail contribution
+independently; timed-out non-primary channels degrade to empty results.
+
+### Rate limiting (`ratelimit/TokenBucket` primitive)
+
+| Limiter | Scope | Notes |
+|---|---|---|
+| `GatewayRateLimiter` | per-(route, principal), per instance | bounded Caffeine cache (`GATEWAY_RL_MAX_PRINCIPALS` 100k); 429 on deny |
+| `ModelRateLimiter` | per-user, per instance | access-ordered LRU capped at max-users (10k); fairness between users |
+| `LlmTokenRateLimiter` | token-count-aware | consumes `max_tokens` per call so large-context requests can't drain the quota |
+| `RedisRateLimiter` | **global / cluster-wide** | distributed fixed-window; local fast-path skips Redis for first 70%; **fails open** on Redis error |
+
+Rule of thumb: **rate limiters fail open** (disabled at 0, allow on Redis error);
+**load shedders are always on**. The online Redis QPS limit is the only *global*
+ceiling; everything else is per-instance, so effective limits move with replica
+count.
+
+### Circuit breakers
+
+`resilience/CircuitBreaker` (CLOSED/OPEN/HALF_OPEN, CAS-based). `RouteCircuitBreaker`
+defaults: **5 consecutive failures → open 10s → single half-open probe**; the
+gateway returns **503** while open, shedding load off a failing upstream for the
+cooldown. The `RedisRateLimiter` embeds its own breaker (5 failures / 30s reset)
+so a Redis outage can't cascade into latency on every rate-limit check.
+
+### Graceful degradation
+
+The model 8080 path is uniquely graceful: on a full shedder it first tries
+**degrade-to-cache** (`tryServeFromCache` → HTTP 200 + `X-Served-From:
+degraded-cache`) and only throws `ServiceOverloadedException` (latency-derived
+`Retry-After`) on a cache miss.
+
+## 3. Data-tier scaling — horizontal everywhere
+
+### Record sharding
+
+`infrastructure/redis/sharding/ConsistentHashRing` — 150 virtual nodes per shard,
+FNV1a-64 hashing, O(log n) `TreeMap.ceilingEntry` lookup, immutable/lock-free
+after construction. Adding a shard remaps only ~1/N of keys. A runtime-swappable
+**versioned topology** (`shard:topology`, 30s refresh, last-good fallback on Redis
+error) lets an operator **reshard live (e.g. 4→8)** via an atomic Lua RMW; the
+previous generation stays readable via a bounded dual-read window
+(`previousIfActive`). Per-shard `INCR` sequence counters avoid global write
+contention. Resharding is operator-triggered, not automatic/elastic.
+
+### Hot trending keys
+
+`infrastructure/redis/ShardedTopKStore` — the few trending windows
+(`topk:last_hour`, `topk:last_day`) are read on every request across all JVMs. It
+replicates each window across **4 identical shards** (`s0..s3`) read at random →
+N× per-key read QPS headroom, with a **2s JVM cache** + inline single-flight
+absorbing the bulk so Redis sees only refreshes (60s serve-stale-on-error).
+
+### Kafka / Flink
+
+`online/flink/OnlineFeatureStreamingJob` — **24 topic partitions**, 24-way
+source/operator parallelism, `max-parallelism 128` (fixed key-group ceiling for
+later growth via savepoint restore), targeting **50,000 events/s**. Two-stage
+bucketed Top-K removes the single-task `windowAll` bottleneck (partials keyed by
+movie-bucket, final merge keyed by window-end). Partition resizes create a **new
+topic generation** (`movie_events_v3`) rather than an in-place change, to preserve
+per-user ordering; a startup validator fails fast if the partition count drifts.
+
+### Read scaling
+
+`infrastructure/redis/RedisReadReplicaRouter` + `RoutingRedisExecutor` — writes to
+primary, reads to the **same-AZ replica** (lowest latency, survives primary-AZ
+loss), each replica backed by its own 50-connection pool. `REDIS_REPLICA_NODES`
+(`host:port@az`) + `AWS_AZ` drive routing. Anti-stampede guards keep cache misses
+from limiting scale: `SingleFlight` (per-key miss dedup), `HotKeyDetector` (500
+acc/s threshold, 100k tracked keys), and `BloomFilterGuard` (skip Redis for
+definitely-absent IDs).
+
+### Pagination at scale
+
+`application/pagination/MillionScalePaginationSql` — keyset seek / covering-index
+/ delayed-join with `FORCE INDEX` and a **1000-row page cap** avoids the OFFSET
+deep-scan cliff, keeping page latency flat to 10M+ rows. `/v2/recommend` uses
+`(score, itemId)` keyset cursors (`RankedListCursor`, `CursorPaginationService`)
+that tolerate list churn without skips or duplicates; catalog cursors are
+HMAC-signed, filter-bound tokens.
+
+### Caching / CDN offload
+
+Multi-tier embedding caches (`MultiLevelEmbeddingCache` L1 heap 10k → L2 Redis →
+L3; `LocalEmbeddingCache` 100k; `LogicalExpiryEmbeddingCache` soft-expiry to
+prevent TTL stampede) plus `RecommendationCache` (RW-lock TTL-LRU with in-flight
+dedup) absorb load and offload the origin. CloudFront offloads the two shared
+catalog reads at the edge (`/api/catalog/item` s-maxage 3600, `/api/catalog/similar`
+s-maxage 300); personalized `/api/recommend` stays `no-store` (0% hit ratio, by
+design).
+
+## 4. How adding capacity raises throughput (summary)
+
+| Lever | Effect |
+|---|---|
+| More service replicas (HPA) | Linear read/serve throughput; stateless instances, per-instance gates scale with them |
+| More record shards (reshard) | Spreads keys across more Redis hash-slots/nodes; ~1/N remap; per-shard counters avoid write contention |
+| More top-K shards | N× per-key read QPS for hot trending windows |
+| More Kafka partitions + Flink parallelism | More parallel ingest up to key cardinality; 50k events/s target |
+| More Redis read replicas | Spreads read load off primary, each +50 connections, cuts cross-AZ cost |
+| Caching / CDN | Flattens origin load under spikes; edge-offloads shared catalog reads |
+| Keyset pagination | Page latency stays flat as tables grow (no OFFSET cliff) |
+
+## 5. Sharp edges worth flagging
+
+1. **The first overload symptom on catalog 6010 is not a 429 — it's silent
+   recall-quality degradation.** The recall bulkhead (~`cores×10` task ceiling)
+   saturates *before* the 64-concurrency gate rejects, so non-primary channels
+   drop to empty results (HTTP 200, fewer candidates) before any 429 appears.
+   Watch bulkhead rejection metrics, not just 429 rates.
+2. **`AutoScalingGroup` is not a real autoscaler** — no signal→capacity logic, no
+   cooldowns. Only HPA reacts to load today; anything relying on the ASG
+   abstraction to *react* needs an external controller.
+3. **All overload defaults are documented as unvalidated starting points**, not
+   load-tested knees. Tune 64-concurrency / 0.95-drain / 200ms-channel-timeout
+   per service against real latency curves.
+4. **`RedisRateLimiter` fixed-window can admit ~2× the limit across a window
+   boundary** (accepted), and it's the only global limit — every other ceiling is
+   per-instance and moves as replicas scale.
+5. **DR warm standby runs at ~50% minReplicas** (max inherited for surge), so a
+   region failover leans on HPA + cluster-autoscaler to catch up — expect a
+   cold-ish scale-out window right after cutover.
