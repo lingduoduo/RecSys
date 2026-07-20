@@ -95,6 +95,8 @@ class RedisRateLimiterSlidingWindowIntegrationTest {
 
         limiter.tryAcquire("online"); // writes rate:test:online:5, PEXPIRE 2000ms
 
+        // This asserts PTTL is set to the bounded value rather than observing actual expiry,
+        // because Redis's real-time TTL cannot be driven by the injected logical clock.
         Long pttl = exec.execute((RedisCommands<String, String> c) -> c.pttl("rate:test:online:5"));
         assertThat(pttl).isGreaterThan(0L).isLessThanOrEqualTo(2000L);
     }

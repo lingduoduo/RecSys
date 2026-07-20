@@ -23,7 +23,7 @@ and how to tune it. Design: `docs/superpowers/specs/2026-07-08-overload-protecti
   are per authenticated caller per route.
 - **Sliding-window rate limiting:** the online Redis QPS limiter uses a weighted sliding-window
   counter that consults Redis on every request, bounding a rolling window to ~1× `limit` (no
-  per-instance fast-path). Fail-open and circuit breaker behavior are unchanged.
+  per-instance fast-path). Fail-open and circuit breaker behavior are unchanged. The ~1× bound assumes reasonably NTP-synchronized instance clocks, since the window bucket is derived from each instance's wall clock (`nowMs`); skew approaching a full window loosens the bound.
 - **Concurrency gates are per instance** — aggregate cluster concurrency = perInstance × replicas.
 - **Rate limiters fail open** (disabled at 0, and allow on Redis error). **Load shedders are
   always on** and reject when the concurrency counter is full.
