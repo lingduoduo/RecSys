@@ -154,15 +154,40 @@ class GatewayAuthenticatorTest {
     }
 
     @Test
-    void check_prefixPublicPath_dangerouslyExposesUserRoute() {
-        // Documents the trap: a bare-prefix GATEWAY_PUBLIC_PATHS value (instead of exact paths)
-        // matches via the "startsWith(publicPath + \"/\")" boundary rule in isPublic(), so
-        // /api/catalog/user — the PII route — becomes anonymously accessible too.
+    void check_barePrefixPublicPath_cannotExposeProtectedUserRoute() {
+        // The never-public guard: even a mis-set bare-prefix GATEWAY_PUBLIC_PATHS=/api/catalog
+        // (which would otherwise match /api/catalog/user via the isPublic boundary rule) can NOT
+        // expose the user-data route — PROTECTED_PREFIXES overrides the public-path match.
         GatewayAuthenticator auth = GatewayAuthenticator.forTesting(
                 Set.of("key-1"), Set.of("/api/catalog"), null);
 
         RequestHeaders userRoute = RequestHeaders.of(HttpMethod.GET, "/api/catalog/user");
-        assertFalse(auth.check(userRoute, "/api/catalog/user").rejected());
+        assertTrue(auth.check(userRoute, "/api/catalog/user").rejected());
+        // A sibling read that is not protected is still exposed by the bare prefix (documents the
+        // matching rule; only the user-data prefixes are guarded).
+        RequestHeaders movieRoute = RequestHeaders.of(HttpMethod.GET, "/api/catalog/movie");
+        assertFalse(auth.check(movieRoute, "/api/catalog/movie").rejected());
+    }
+
+    @Test
+    void check_protectedPaths_rejectedEvenWhenExplicitlyPublic() {
+        // Even a direct, exact misconfiguration cannot open the user-data routes.
+        GatewayAuthenticator auth = GatewayAuthenticator.forTesting(
+                Set.of("key-1"),
+                Set.of("/api/catalog/user", "/api/users", "/api/catalog/item"),
+                null);
+
+        assertTrue(auth.check(RequestHeaders.of(HttpMethod.GET, "/api/catalog/user"),
+                "/api/catalog/user").rejected());
+        assertTrue(auth.check(RequestHeaders.of(HttpMethod.GET, "/api/users/profile"),
+                "/api/users/profile").rejected());
+        // Unrelated path sharing a textual prefix with a protected one is NOT guarded.
+        assertFalse(auth.check(RequestHeaders.of(HttpMethod.GET, "/api/catalog/item"),
+                "/api/catalog/item").rejected());
+        // An authenticated caller still reaches the protected route — it is auth-required, not blocked.
+        RequestHeaders authed = RequestHeaders.of(HttpMethod.GET, "/api/catalog/user",
+                HttpHeaderNames.of("x-api-key"), "key-1");
+        assertFalse(auth.check(authed, "/api/catalog/user").rejected());
     }
 
     private GatewayAuthenticator authenticator(KeyPair keyPair) {
