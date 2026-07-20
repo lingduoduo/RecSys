@@ -1,0 +1,35 @@
+# Restores warm-standby minReplicas to the PRIMARY baseline (source of truth:
+# k8s/base/hpa.yaml). Overrides ../eks-us-west-2's warm-standby-hpa-patch.yaml.
+# Keep these values equal to k8s/base/hpa.yaml — scripts/dr-standby-capacity.sh verify
+# enforces it.
+apiVersion: autoscaling/v2
+kind: HorizontalPodAutoscaler
+metadata:
+  name: recsys-api-gateway
+  namespace: recsys
+spec:
+  minReplicas: 2
+---
+apiVersion: autoscaling/v2
+kind: HorizontalPodAutoscaler
+metadata:
+  name: recsys-catalog-serving
+  namespace: recsys
+spec:
+  minReplicas: 2
+---
+apiVersion: autoscaling/v2
+kind: HorizontalPodAutoscaler
+metadata:
+  name: recsys-model-serving
+  namespace: recsys
+spec:
+  minReplicas: 3
+---
+apiVersion: autoscaling/v2
+kind: HorizontalPodAutoscaler
+metadata:
+  name: recsys-online-serving
+  namespace: recsys
+spec:
+  minReplicas: 2
