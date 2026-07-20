@@ -1,0 +1,15 @@
+# Failover "active" overlay: the us-west-2 warm standby promoted to full
+# PRIMARY-BASELINE capacity. Layers on ../eks-us-west-2 (warm standby, minReplicas
+# 1/1/2/1) and re-raises minReplicas to the primary baseline via
+# full-capacity-hpa-patch.yaml (kustomize last-patch-wins). maxReplicas is inherited
+# from ../base, so HPA still surges above the baseline as traffic arrives.
+#
+# Apply on regional failover:  kubectl --context <us-west-2-ctx> apply -k k8s/eks-us-west-2-active
+# Demote on failback:          kubectl --context <us-west-2-ctx> apply -k k8s/eks-us-west-2
+# Prefer scripts/dr-standby-capacity.sh {promote|demote}.
+apiVersion: kustomize.config.k8s.io/v1beta1
+kind: Kustomization
+resources:
+  - ../eks-us-west-2
+patches:
+  - path: full-capacity-hpa-patch.yaml
