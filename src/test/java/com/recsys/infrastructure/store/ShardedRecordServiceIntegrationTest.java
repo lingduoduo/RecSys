@@ -10,6 +10,7 @@ import com.recsys.infrastructure.redis.RedisExecutor;
 import com.recsys.infrastructure.redis.sharding.ConsistentHashRing;
 import com.recsys.infrastructure.redis.sharding.SequenceGenerator;
 import com.recsys.infrastructure.redis.sharding.ShardedRecordStore;
+import com.recsys.api.online.AdminTokenGuard;
 import io.lettuce.core.RedisClient;
 import io.lettuce.core.RedisURI;
 import org.apache.commons.pool2.impl.GenericObjectPoolConfig;
@@ -27,6 +28,8 @@ import static org.assertj.core.api.Assertions.assertThat;
 @Tag("docker")
 @Testcontainers
 class ShardedRecordServiceIntegrationTest {
+
+    static final String ADMIN_TOKEN = "ops-token";
 
     @Container
     static final GenericContainer<?> REDIS =
@@ -58,7 +61,8 @@ class ShardedRecordServiceIntegrationTest {
                     new SequenceGenerator(exec, "sr:"),
                     "sr:");
             sb.service(Route.builder().pathPrefix("/shards/").build(),
-                    new ShardedRecordService(store));
+                    new ShardedRecordService(store, null, ADMIN_TOKEN, 0L,
+                            System::currentTimeMillis));
         }
     };
 
@@ -210,8 +214,8 @@ class ShardedRecordServiceIntegrationTest {
                 "{\"deviceId\":\"dev-Q\",\"type\":\"EVENT\",\"eventId\":\"q1\",\"payload\":\"{}\"}");
 
         // Records may land on shard 0 or 1; read both and verify at least one is non-empty.
-        AggregatedHttpResponse s0 = server.blockingWebClient().get("/shards/shard?index=0&limit=10");
-        AggregatedHttpResponse s1 = server.blockingWebClient().get("/shards/shard?index=1&limit=10");
+        AggregatedHttpResponse s0 = getShard(0);
+        AggregatedHttpResponse s1 = getShard(1);
 
         assertThat(s0.status()).isEqualTo(HttpStatus.OK);
         assertThat(s1.status()).isEqualTo(HttpStatus.OK);
@@ -222,11 +226,26 @@ class ShardedRecordServiceIntegrationTest {
 
     @Test
     void getShard_emptyShard_returnsEmptyPage() {
-        AggregatedHttpResponse r = server.blockingWebClient().get("/shards/shard?index=0&limit=5");
+        AggregatedHttpResponse r = getShard(0);
         assertThat(r.status()).isEqualTo(HttpStatus.OK);
         assertThat(r.contentUtf8())
                 .contains("\"count\":0")
                 .contains("\"hasMore\":false");
+    }
+
+    @Test
+    void getShard_withoutAdminToken_returns403() {
+        // Bulk shard dump is operator-gated; a request without the token is rejected.
+        AggregatedHttpResponse r = server.blockingWebClient().get("/shards/shard?index=0&limit=5");
+        assertThat(r.status()).isEqualTo(HttpStatus.FORBIDDEN);
+        assertThat(r.contentUtf8()).contains("operator token required");
+    }
+
+    /** GET /shards/shard with the operator token (bulk read is admin-gated). */
+    private static AggregatedHttpResponse getShard(int index) {
+        return server.blockingWebClient()
+                .prepare().get("/shards/shard?index=" + index + "&limit=10")
+                .header(AdminTokenGuard.HEADER, ADMIN_TOKEN).execute();
     }
 
     private static int parseCount(String json) {
