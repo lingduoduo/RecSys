@@ -18,3 +18,9 @@ metadata:
   namespace: recsys
 data:
   GATEWAY_TIMEOUT_MS: "3000"
+  # Fail closed in every EKS region: never run the gateway wide open in a cloud deploy.
+  # This overrides the base dev opt-in (k8s/base/configmap.yaml GATEWAY_ALLOW_ANONYMOUS=true),
+  # so the gateway will REFUSE to start unless real auth is configured — GATEWAY_API_KEYS is
+  # injected from the recsys-gateway-auth Secret (gateway-auth-patch.yaml), and/or
+  # GATEWAY_COGNITO_ISSUER/_AUDIENCE are set per-region. See docs/runbooks/gateway-auth.md.
+  GATEWAY_ALLOW_ANONYMOUS: "false"

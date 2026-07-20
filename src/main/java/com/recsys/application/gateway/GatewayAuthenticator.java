@@ -11,6 +11,8 @@ import com.linecorp.armeria.common.HttpStatus;
 import com.linecorp.armeria.common.MediaType;
 import com.linecorp.armeria.common.RequestHeaders;
 import com.linecorp.armeria.common.ResponseHeaders;
+import org.slf4j.Logger;
+import org.slf4j.LoggerFactory;
 
 import java.nio.charset.StandardCharsets;
 import java.security.MessageDigest;
@@ -19,6 +21,7 @@ import java.util.Set;
 import java.util.stream.Collectors;
 
 public final class GatewayAuthenticator {
+    private static final Logger log = LoggerFactory.getLogger(GatewayAuthenticator.class);
     private static final GatewayAuthenticator DISABLED = new GatewayAuthenticator(Set.of(), Set.of("/health"), null);
     private static final String AUTHORIZATION_PREFIX = "Bearer ";
 
@@ -52,7 +55,19 @@ public final class GatewayAuthenticator {
                 ? new CognitoJwtVerifier(cognito, HttpClient.newHttpClient(), Clock.systemUTC())
                 : null;
         if (keys.isEmpty() && verifier == null) {
-            return disabled();
+            // Fail closed: refuse to start wide open. A gateway with no API keys and no Cognito
+            // issuer authenticates nobody, so every caller collapses to "anonymous" — which turns
+            // any downstream authorization gap into an unauthenticated one. Running that way must be
+            // a deliberate, explicit choice (local dev / tests), never the accidental default.
+            if (EnvVars.readBool(env, "GATEWAY_ALLOW_ANONYMOUS", false)) {
+                log.warn("Gateway authentication is DISABLED (GATEWAY_ALLOW_ANONYMOUS=true): all "
+                        + "requests are treated as anonymous. Never use this in production.");
+                return disabled();
+            }
+            throw new IllegalStateException(
+                    "Gateway authentication is not configured: set GATEWAY_API_KEYS and/or "
+                            + "GATEWAY_COGNITO_ISSUER, or set GATEWAY_ALLOW_ANONYMOUS=true to "
+                            + "explicitly run the gateway without authentication (dev/local only).");
         }
         Set<String> publicPaths = parseCsv(env.get("GATEWAY_PUBLIC_PATHS"));
         if (publicPaths.isEmpty()) {

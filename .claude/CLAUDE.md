@@ -64,6 +64,13 @@ rotation has no 403 window — the gateway rejects any request without a matchin
 `/health,/api/catalog/item,/api/catalog/similar` in k8s: the two catalog reads are edge-cached and
 must not vary on `Authorization`. It MUST list exact paths — `/api/catalog` would also expose
 `/api/catalog/user`. CDN operations are documented in `docs/runbooks/cdn-operations.md`.
+`GATEWAY_ALLOW_ANONYMOUS` (default unset = fail closed) — the gateway authenticates callers via
+`GATEWAY_API_KEYS` (`x-api-key`/bearer) or a Cognito JWT (`GATEWAY_COGNITO_ISSUER`/`_AUDIENCE`).
+With none of those set the gateway authenticates nobody, so `GatewayAuthenticator.fromEnvironment`
+**refuses to start** unless `GATEWAY_ALLOW_ANONYMOUS=true` explicitly opts into running wide open
+(dev/local only; logs a loud WARN). `k8s/base` opts in (`true`); the EKS overlays flip it to
+`false` and inject `GATEWAY_API_KEYS` from the `recsys-gateway-auth` Secret. See
+`docs/runbooks/gateway-auth.md`.
 
 ## Architecture
 
