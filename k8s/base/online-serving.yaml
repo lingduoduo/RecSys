@@ -49,6 +49,16 @@ spec:
               value: com.recsys.api.online.OnlinePredictionServer
             - name: ONLINE_DEMO_PORT
               value: "7010"
+            # Operator token for the introspection/bulk surfaces (POST /shards/topology,
+            # GET /shards/shard, GET /online/ops). When unset these surfaces fail closed (403).
+            # optional: true keeps the pod schedulable before the Secret is provisioned; create it
+            # out-of-band to enable the surfaces (see docs/runbooks/gateway-auth.md).
+            - name: SHARD_ADMIN_TOKEN
+              valueFrom:
+                secretKeyRef:
+                  name: recsys-online-admin
+                  key: admin-token
+                  optional: true
             - name: ONLINE_EVENTS_SQS_ENABLED
               value: "false"
             - name: ONLINE_EVENTS_SQS_QUEUE_URL

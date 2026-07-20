@@ -45,6 +45,7 @@ import static org.mockito.Mockito.when;
 
 class OnlinePredictionServerIntegrationTest {
 
+    static final String ADMIN_TOKEN = "ops-token";
     static final OnlineRecommendationService mockRec = mock(OnlineRecommendationService.class);
     static final ShardedRecordStore mockStore = mock(ShardedRecordStore.class);
 
@@ -79,9 +80,11 @@ class OnlinePredictionServerIntegrationTest {
               .service("/online/recommendation", new OnlineAdmissionControl(
                       new OnlineServices.Prediction(mockRec, metrics, shedder,
                               RedisRateLimiter.disabled(), true), shedder, metrics))
-              .service("/online/ops", new OnlineOpsService(metrics, shedder, capacity))
+              .service("/online/ops", new OnlineOpsService(metrics, shedder, capacity)
+                      .decorate(AdminTokenGuard.newDecorator(new AdminTokenGuard(ADMIN_TOKEN))))
               .service(Route.builder().pathPrefix("/shards/").build(),
-                      new ShardedRecordService(mockStore));
+                      new ShardedRecordService(mockStore, null, ADMIN_TOKEN, 0L,
+                              System::currentTimeMillis));
         }
     };
 
@@ -113,8 +116,15 @@ class OnlinePredictionServerIntegrationTest {
                 .isEqualTo(HttpStatus.OK);
     }
 
-    @Test void ops() {
-        assertThat(server.blockingWebClient().get("/online/ops").status()).isEqualTo(HttpStatus.OK);
+    @Test void opsWithAdminTokenReturns200() {
+        AggregatedHttpResponse r = server.blockingWebClient()
+                .prepare().get("/online/ops").header(AdminTokenGuard.HEADER, ADMIN_TOKEN).execute();
+        assertThat(r.status()).isEqualTo(HttpStatus.OK);
+    }
+
+    @Test void opsWithoutAdminTokenReturns403() {
+        assertThat(server.blockingWebClient().get("/online/ops").status())
+                .isEqualTo(HttpStatus.FORBIDDEN);
     }
 
     @Test void defaultAsyncEventPublisherIsLogOnlyWhenEnvIsAbsent() {
@@ -148,8 +158,15 @@ class OnlinePredictionServerIntegrationTest {
                 .isEqualTo(HttpStatus.OK);
     }
 
-    @Test void readShardByIndex() {
+    @Test void readShardByIndexWithAdminTokenReturns200() {
+        AggregatedHttpResponse r = server.blockingWebClient()
+                .prepare().get("/shards/shard?index=0")
+                .header(AdminTokenGuard.HEADER, ADMIN_TOKEN).execute();
+        assertThat(r.status()).isEqualTo(HttpStatus.OK);
+    }
+
+    @Test void readShardByIndexWithoutAdminTokenReturns403() {
         assertThat(server.blockingWebClient().get("/shards/shard?index=0").status())
-                .isEqualTo(HttpStatus.OK);
+                .isEqualTo(HttpStatus.FORBIDDEN);
     }
 }
