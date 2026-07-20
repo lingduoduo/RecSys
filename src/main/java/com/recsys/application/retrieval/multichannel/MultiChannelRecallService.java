@@ -35,6 +35,7 @@ public class MultiChannelRecallService {
     private final FaultInjector faultInjector;
     private final EmbeddingStore userEmbeddingStore;
     private final QuotaPolicy quotaPolicy;
+    private final RecallDegradationMetrics degradationMetrics;
 
     // Convenience constructor for tests. Production callers should supply a WorkerBulkhead
     // via the 5-arg constructor — ForkJoinPool.commonPool() is unsuitable for blocking I/O.
@@ -68,6 +69,18 @@ public class MultiChannelRecallService {
                                      FaultInjector faultInjector,
                                      EmbeddingStore userEmbeddingStore,
                                      QuotaPolicy quotaPolicy) {
+        this(channels, healthMonitor, executor, channelTimeoutMs, faultInjector,
+                userEmbeddingStore, quotaPolicy, new RecallDegradationMetrics());
+    }
+
+    public MultiChannelRecallService(List<RecallChannel> channels,
+                                     ChannelHealthMonitor healthMonitor,
+                                     ExecutorService executor,
+                                     long channelTimeoutMs,
+                                     FaultInjector faultInjector,
+                                     EmbeddingStore userEmbeddingStore,
+                                     QuotaPolicy quotaPolicy,
+                                     RecallDegradationMetrics degradationMetrics) {
         if (channels == null || channels.isEmpty()) {
             throw new IllegalArgumentException("at least one recall channel is required");
         }
@@ -78,6 +91,8 @@ public class MultiChannelRecallService {
         this.faultInjector       = faultInjector == null ? FaultInjector.NOOP : faultInjector;
         this.userEmbeddingStore  = userEmbeddingStore;
         this.quotaPolicy         = quotaPolicy == null ? QuotaPolicy.defaultMovie() : quotaPolicy;
+        this.degradationMetrics  = degradationMetrics == null
+                ? new RecallDegradationMetrics() : degradationMetrics;
     }
 
     /** Builds a service from a per-port {@link RecallConfig}. */
@@ -90,20 +105,30 @@ public class MultiChannelRecallService {
                 config.channelTimeoutMs(),
                 config.faultInjector(),
                 config.userEmbeddingStore(),
-                config.quotaPolicy());
+                config.quotaPolicy(),
+                config.recallMetrics());
     }
 
     public List<MovieCandidate> recall(RecommendationQuery query, int limit) {
-        return recall(query, limit, false);
+        return recall(query, limit, false).candidates();
     }
 
     public List<MovieCandidate> recallPrimary(RecommendationQuery query, int limit) {
+        return recall(query, limit, true).candidates();
+    }
+
+    public RecallResult recallDetailed(RecommendationQuery query, int limit) {
+        return recall(query, limit, false);
+    }
+
+    public RecallResult recallPrimaryDetailed(RecommendationQuery query, int limit) {
         return recall(query, limit, true);
     }
 
-    private List<MovieCandidate> recall(RecommendationQuery query, int limit, boolean primary) {
+    private RecallResult recall(RecommendationQuery query, int limit, boolean primary) {
         Objects.requireNonNull(query, "query");
-        if (limit <= 0) return List.of();
+        if (limit <= 0) return new RecallResult(List.of(), Set.of());
+        if (!primary) degradationMetrics.recordTotal();
 
         QuotaSpec quota = null;
         if (userEmbeddingStore != null) {
@@ -160,10 +185,16 @@ public class MultiChannelRecallService {
         }
 
         Map<String, List<MovieCandidate>> channelResults = new LinkedHashMap<>();
+        Set<String> degradedChannels = new LinkedHashSet<>();
         for (CompletableFuture<ChannelResult> future : futures) {
             ChannelResult result = future.join();
             if (result.error() != null) {
                 healthMonitor.recordFailure(result.channel());
+                if (!primary) {
+                    degradationMetrics.record(result.channel(),
+                            RecallDegradationMetrics.classify(result.error()));
+                    degradedChannels.add(result.channel());
+                }
                 Throwable err = result.error();
                 log.warn("Channel '{}' failed: {}", result.channel(),
                         err.getMessage() != null ? err.getMessage() : err.getClass().getSimpleName());
@@ -176,10 +207,10 @@ public class MultiChannelRecallService {
             channelResults.put(result.channel(), sorted);
         }
 
-        if (quota == null) {
-            return legacyMerge(channelResults, query, limit);
-        }
-        return quotaMerge(channelResults, quota, query, limit);
+        List<MovieCandidate> ranked = (quota == null)
+                ? legacyMerge(channelResults, query, limit)
+                : quotaMerge(channelResults, quota, query, limit);
+        return new RecallResult(ranked, degradedChannels);
     }
 
     public static final class PrimaryRecallUnavailableException extends RuntimeException {

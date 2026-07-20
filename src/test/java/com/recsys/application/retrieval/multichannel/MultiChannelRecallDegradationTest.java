@@ -1,0 +1,126 @@
+package com.recsys.application.retrieval.multichannel;
+
+import com.recsys.domain.item.MovieCandidate;
+import com.recsys.domain.recommendation.RecommendationQuery;
+import com.recsys.application.retrieval.RecallChannel;
+import com.recsys.resilience.FaultInjector;
+import org.junit.jupiter.api.Test;
+
+import java.util.List;
+import java.util.Set;
+import java.util.concurrent.RejectedExecutionException;
+import java.util.concurrent.ThreadPoolExecutor;
+import java.util.concurrent.SynchronousQueue;
+import java.util.concurrent.TimeUnit;
+
+import static org.assertj.core.api.Assertions.assertThat;
+import static org.assertj.core.api.Assertions.assertThatThrownBy;
+
+class MultiChannelRecallDegradationTest {
+
+    private static RecommendationQuery query() {
+        return new RecommendationQuery("1", 10, Set.of(), null);
+    }
+
+    /** A channel whose recall always throws — used to force a degraded non-primary channel. */
+    private static final class FailingChannel implements RecallChannel {
+        private final String name;
+        FailingChannel(String name) { this.name = name; }
+        @Override public String name() { return name; }
+        @Override public List<MovieCandidate> recall(RecommendationQuery q, int limit) {
+            throw new IllegalStateException("boom");
+        }
+        @Override public List<MovieCandidate> recallPrimary(RecommendationQuery q, int limit) {
+            throw new IllegalStateException("boom");
+        }
+    }
+
+    private static final class OkChannel implements RecallChannel {
+        @Override public String name() { return "ok"; }
+        @Override public List<MovieCandidate> recall(RecommendationQuery q, int limit) {
+            return List.of(new MovieCandidate("100", 0.9, "ok", java.util.Map.of()));
+        }
+        @Override public List<MovieCandidate> recallPrimary(RecommendationQuery q, int limit) {
+            return recall(q, limit);
+        }
+    }
+
+    @Test
+    void nonPrimaryChannelErrorIsRecordedAndReportedButStillServes() {
+        RecallDegradationMetrics metrics = new RecallDegradationMetrics();
+        MultiChannelRecallService service = new MultiChannelRecallService(
+                List.of(new OkChannel(), new FailingChannel("trending")),
+                new ChannelHealthMonitor(),
+                java.util.concurrent.Executors.newFixedThreadPool(2),
+                200L, FaultInjector.NOOP, null,
+                com.recsys.application.retrieval.coldstart.QuotaPolicy.defaultMovie(),
+                metrics);
+
+        RecallResult result = service.recallDetailed(query(), 10);
+
+        assertThat(result.degradedChannels()).contains("trending");
+        assertThat(result.candidates()).isNotEmpty(); // ok channel still served
+        RecallDegradationMetrics.Snapshot s = metrics.snapshot();
+        assertThat(s.totalRecalls()).isEqualTo(1);
+        assertThat(s.degradedRecalls()).isEqualTo(1);
+        assertThat(s.byChannel()).containsKey("trending");
+    }
+
+    @Test
+    void bulkheadRejectionIsClassifiedAsRejected() {
+        // A pool with 0 queue slots (SynchronousQueue) and one busy thread rejects the second task.
+        ThreadPoolExecutor tiny = new ThreadPoolExecutor(
+                1, 1, 0L, TimeUnit.MILLISECONDS, new SynchronousQueue<>());
+        RecallDegradationMetrics metrics = new RecallDegradationMetrics();
+        // Two channels both dispatched; one is guaranteed rejected under saturation.
+        MultiChannelRecallService service = new MultiChannelRecallService(
+                List.of(new SlowChannel(), new SlowChannel2()),
+                new ChannelHealthMonitor(), tiny, 5000L, FaultInjector.NOOP, null,
+                com.recsys.application.retrieval.coldstart.QuotaPolicy.defaultMovie(),
+                metrics);
+
+        RecallResult result = service.recallDetailed(query(), 10);
+
+        assertThat(result.degradedChannels()).isNotEmpty();
+        assertThat(metrics.snapshot().byChannel().values().stream()
+                .anyMatch(m -> m.containsKey(RecallDegradationMetrics.Reason.REJECTED)))
+                .isTrue();
+        tiny.shutdownNow();
+    }
+
+    @Test
+    void primaryChannelFailureThrowsAndIsNotCountedAsDegradation() {
+        RecallDegradationMetrics metrics = new RecallDegradationMetrics();
+        MultiChannelRecallService service = new MultiChannelRecallService(
+                List.of(new FailingChannel("primary")),
+                new ChannelHealthMonitor(),
+                java.util.concurrent.Executors.newFixedThreadPool(1),
+                200L, FaultInjector.NOOP, null,
+                com.recsys.application.retrieval.coldstart.QuotaPolicy.defaultMovie(),
+                metrics);
+
+        assertThatThrownBy(() -> service.recallPrimaryDetailed(query(), 10))
+                .isInstanceOf(MultiChannelRecallService.PrimaryRecallUnavailableException.class);
+        // primary path does not touch the non-primary denominator
+        assertThat(metrics.snapshot().totalRecalls()).isEqualTo(0);
+        assertThat(metrics.snapshot().degradedRecalls()).isEqualTo(0);
+    }
+
+    private static final class SlowChannel implements RecallChannel {
+        @Override public String name() { return "slow1"; }
+        @Override public List<MovieCandidate> recall(RecommendationQuery q, int limit) {
+            try { Thread.sleep(300); } catch (InterruptedException e) { Thread.currentThread().interrupt(); }
+            return List.of(new MovieCandidate("1", 0.5, "slow1", java.util.Map.of()));
+        }
+        @Override public List<MovieCandidate> recallPrimary(RecommendationQuery q, int limit) { return recall(q, limit); }
+    }
+
+    private static final class SlowChannel2 implements RecallChannel {
+        @Override public String name() { return "slow2"; }
+        @Override public List<MovieCandidate> recall(RecommendationQuery q, int limit) {
+            try { Thread.sleep(300); } catch (InterruptedException e) { Thread.currentThread().interrupt(); }
+            return List.of(new MovieCandidate("2", 0.5, "slow2", java.util.Map.of()));
+        }
+        @Override public List<MovieCandidate> recallPrimary(RecommendationQuery q, int limit) { return recall(q, limit); }
+    }
+}
