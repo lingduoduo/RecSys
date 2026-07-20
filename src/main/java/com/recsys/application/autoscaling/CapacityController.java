@@ -5,6 +5,8 @@ import java.util.Objects;
 import java.util.concurrent.ScheduledExecutorService;
 import java.util.concurrent.TimeUnit;
 import java.util.function.LongSupplier;
+import org.slf4j.Logger;
+import org.slf4j.LoggerFactory;
 
 /**
  * Reference signal-driven capacity controller over the in-memory {@link AsgCapacityActuator}
@@ -17,6 +19,8 @@ import java.util.function.LongSupplier;
  * to close the otherwise-dangling {@code AutoScalingGroup} loop as a tested reference.
  */
 public final class CapacityController {
+    private static final Logger log = LoggerFactory.getLogger(CapacityController.class);
+
     public static final long DEFAULT_SCALE_OUT_COOLDOWN_MS = 60_000L;
     public static final long DEFAULT_SCALE_IN_COOLDOWN_MS   = 300_000L;
 
@@ -68,12 +72,24 @@ public final class CapacityController {
         return new ScalingDecision(running, desired, true, out ? "scaled-out" : "scaled-in");
     }
 
+    /**
+     * Calls {@link #tick()} inside a try/catch that swallows RuntimeExceptions and logs them.
+     * Ensures the schedule survives even if the signal source or policy throws.
+     */
+    void tickSafely() {
+        try {
+            tick();
+        } catch (RuntimeException e) {
+            log.warn("CapacityController.tick() failed; continuing schedule", e);
+        }
+    }
+
     /** Optional convenience: run {@link #tick()} on a fixed-delay schedule. Not used in production. */
     public void start(ScheduledExecutorService scheduler, Duration interval) {
         Objects.requireNonNull(scheduler, "scheduler");
         Objects.requireNonNull(interval, "interval");
         long ms = Math.max(1L, interval.toMillis());
-        scheduler.scheduleWithFixedDelay(this::tick, ms, ms, TimeUnit.MILLISECONDS);
+        scheduler.scheduleWithFixedDelay(this::tickSafely, ms, ms, TimeUnit.MILLISECONDS);
     }
 
     private static int clamp(int v, int min, int max) {

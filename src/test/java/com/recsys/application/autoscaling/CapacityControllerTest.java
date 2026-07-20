@@ -81,4 +81,25 @@ class CapacityControllerTest {
         assertThat(d.applied()).isTrue();
         assertThat(d.desired()).isEqualTo(5);               // max(1, 3+2)
     }
+
+    @Test void tickSafelySwallowsThrowingSignalSource() {
+        FakeActuator a = new FakeActuator(5, 1, 20);
+        CapacitySignalSource throwingSource = () -> { throw new RuntimeException("boom"); };
+        CapacityController c = new CapacityController(a, throwingSource,
+                new CapacityScalingPolicy(), 60_000, 300_000, () -> 0L);
+        // tickSafely() must not throw; the schedule would survive
+        c.tickSafely();
+        // If we got here without an exception, the test passes
+        assertThat(true).isTrue();
+    }
+
+    @Test void extremeUtilizationSaturationClampsToMaxSize() {
+        FakeActuator a = new FakeActuator(5, 1, 6);
+        CapacityController c = new CapacityController(a, signal(1e300, false),
+                new CapacityScalingPolicy(), 60_000, 300_000, () -> 0L);
+        CapacityController.ScalingDecision d = c.tick();
+        // Policy would compute ceil(5 * 1e300 / 0.7) = huge, but clamped to maxSize=6
+        assertThat(d.desired()).isEqualTo(6);
+        assertThat(d.applied()).isTrue();
+    }
 }
