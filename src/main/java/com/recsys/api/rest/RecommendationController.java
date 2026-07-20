@@ -72,6 +72,12 @@ public class RecommendationController {
         long startNs = System.nanoTime();
         // Per-user rate check runs before the global semaphore so a single user can't burn
         // concurrency slots that other users need.
+        //
+        // Keyed intentionally on the SERVED userId, not the authenticated caller. Callers here are
+        // trusted backends (API key / machine JWT) that legitimately request for many users; this
+        // limiter enforces fairness *between served users*, while per-caller abuse throttling is the
+        // gateway's GatewayRateLimiter (keyed on the principal). Re-keying this on the caller would
+        // collapse a high-volume backend into one bucket and throttle legitimate traffic.
         ModelRateLimiter.Decision rateDecision = modelRateLimiter.tryAcquire(request.getUserId());
         if (!rateDecision.allowed()) {
             int retryAfter = Math.max(1, (int) Math.ceil(rateDecision.retryAfter().toMillis() / 1000.0));
@@ -79,7 +85,9 @@ public class RecommendationController {
         }
         submitTokenService.validateAndConsume(submitToken);
         // Compute A/B assignment once — reused by all downstream paths so the hash is not
-        // recomputed on the failure recording path or the degraded-cache fallback.
+        // recomputed on the failure recording path or the degraded-cache fallback. Keyed on the
+        // served userId by design: the experiment subject is the user being recommended for, so
+        // exposure logging and bucketing must follow userId, never the calling principal.
         ABTestService.Assignment assignment = abTestService.getAssignmentForUser(request.getUserId());
         if (!loadShedder.tryAcquire()) {
             // Degradation: serve stale cache or cold-start popular items before failing.

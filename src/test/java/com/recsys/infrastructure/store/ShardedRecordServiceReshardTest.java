@@ -101,6 +101,26 @@ class ShardedRecordServiceReshardTest {
         verify(mockTopologyStore, never()).publishReshard(anyInt(), anyLong(), anyLong());
     }
 
+    // ── Case 2c: wrong token of the SAME length → 403 (constant-time compare) ─────
+    @Test
+    void reshard_sameLengthWrongToken_returns403_publishNeverCalled() {
+        reset(mockTopologyStore);
+        // Same length as VALID_TOKEN ("secret-token", 12 chars) so the rejection cannot depend on a
+        // length mismatch — exercises the constant-time MessageDigest.isEqual comparison.
+        String sameLengthWrong = "xxxxxxxxxxxx";
+        assertThat(sameLengthWrong.length()).isEqualTo(VALID_TOKEN.length());
+
+        AggregatedHttpResponse r = serverEnabled.blockingWebClient()
+                .prepare()
+                .post("/shards/topology")
+                .header("X-Admin-Token", sameLengthWrong)
+                .content("{\"shardCount\":4}")
+                .execute();
+
+        assertThat(r.status()).isEqualTo(HttpStatus.FORBIDDEN);
+        verify(mockTopologyStore, never()).publishReshard(anyInt(), anyLong(), anyLong());
+    }
+
     // ── Case 3a: reshard disabled — blank adminToken → 403 regardless of header ──
     @RegisterExtension
     static final ServerExtension serverBlankToken = new ServerExtension() {

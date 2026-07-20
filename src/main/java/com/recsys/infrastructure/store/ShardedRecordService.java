@@ -14,6 +14,8 @@ import com.linecorp.armeria.common.HttpResponse;
 import com.linecorp.armeria.common.HttpStatus;
 import com.linecorp.armeria.server.ServiceRequestContext;
 
+import java.nio.charset.StandardCharsets;
+import java.security.MessageDigest;
 import java.util.LinkedHashMap;
 import java.util.List;
 import java.util.Map;
@@ -108,7 +110,7 @@ public final class ShardedRecordService extends BaseApiService {
                 return writeError(HttpStatus.FORBIDDEN, "reshard disabled");
             }
             String token = agg.headers().get("X-Admin-Token");
-            if (token == null || !token.equals(adminToken)) {
+            if (token == null || !constantTimeEquals(token, adminToken)) {
                 return writeError(HttpStatus.FORBIDDEN, "invalid admin token");
             }
             try {
@@ -130,6 +132,14 @@ public final class ShardedRecordService extends BaseApiService {
                 return writeError(HttpStatus.INTERNAL_SERVER_ERROR, "internal server error");
             }
         }, ctx.blockingTaskExecutor()));
+    }
+
+    /** Length-independent, non-short-circuiting comparison so the admin-token check does not leak
+     *  the secret's prefix through response timing. */
+    private static boolean constantTimeEquals(String provided, String expected) {
+        return MessageDigest.isEqual(
+                provided.getBytes(StandardCharsets.UTF_8),
+                expected.getBytes(StandardCharsets.UTF_8));
     }
 
     // ── GET /shards/device and /shards/shard ─────────────────────────────────
