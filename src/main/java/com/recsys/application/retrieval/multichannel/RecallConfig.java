@@ -21,7 +21,8 @@ public record RecallConfig(
         ExecutorService executor,
         ChannelHealthMonitor healthMonitor,
         FaultInjector faultInjector,
-        EmbeddingStore userEmbeddingStore) {
+        EmbeddingStore userEmbeddingStore,
+        RecallDegradationMetrics recallMetrics) {
 
     public static Builder builder() { return new Builder(); }
 
@@ -46,6 +47,7 @@ public record RecallConfig(
         private ChannelHealthMonitor healthMonitor = new ChannelHealthMonitor();
         private FaultInjector faultInjector = FaultInjector.NOOP;
         private EmbeddingStore userEmbeddingStore;
+        private RecallDegradationMetrics recallMetrics = new RecallDegradationMetrics();
 
         public Builder channels(List<RecallChannel> channels) { this.channels = channels; return this; }
         public Builder quotaPolicy(QuotaPolicy quotaPolicy) { this.quotaPolicy = quotaPolicy; return this; }
@@ -54,6 +56,10 @@ public record RecallConfig(
         public Builder healthMonitor(ChannelHealthMonitor m) { this.healthMonitor = m; return this; }
         public Builder faultInjector(FaultInjector fi) { this.faultInjector = fi; return this; }
         public Builder userEmbeddingStore(EmbeddingStore store) { this.userEmbeddingStore = store; return this; }
+        public Builder recallMetrics(RecallDegradationMetrics metrics) {
+            this.recallMetrics = metrics == null ? new RecallDegradationMetrics() : metrics;
+            return this;
+        }
 
         public RecallConfig build() {
             if (channels == null || channels.isEmpty()) {
@@ -68,7 +74,8 @@ public record RecallConfig(
                     quotaPolicy == null ? QuotaPolicy.defaultMovie() : quotaPolicy,
                     channelTimeoutMs, executor, healthMonitor,
                     faultInjector == null ? FaultInjector.NOOP : faultInjector,
-                    userEmbeddingStore);
+                    userEmbeddingStore,
+                    recallMetrics);
         }
     }
 }
