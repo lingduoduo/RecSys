@@ -18,6 +18,7 @@ import org.slf4j.LoggerFactory;
 import java.io.IOException;
 import java.util.Map;
 import java.util.Set;
+import java.util.stream.Collectors;
 
 public abstract class BaseApiService extends AbstractHttpService {
 
@@ -97,7 +98,7 @@ public abstract class BaseApiService extends AbstractHttpService {
         try {
             byte[] body = MAPPER.writeValueAsBytes(payload);
             String headerValue = degradedChannels.stream().sorted()
-                    .collect(java.util.stream.Collectors.joining(","));
+                    .collect(Collectors.joining(","));
             ResponseHeaders headers = ResponseHeaders.builder(status)
                     .contentType(MediaType.JSON_UTF_8)
                     .set(HttpHeaderNames.of("x-recall-degraded"), headerValue)

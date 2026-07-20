@@ -38,7 +38,6 @@ class RecSysServerRegressionTest {
         when(mockData.getWatchedMovieIds(anyInt())).thenReturn(java.util.Set.of());
         when(mockData.getTopRatedMovies(anyInt())).thenReturn(List.of());
         when(mockData.getMoviesByGenre(any(), anyInt())).thenReturn(List.of());
-        when(mockRecall.recall(any(), anyInt())).thenReturn(List.of());
         when(mockRecall.recallDetailed(any(), anyInt()))
                 .thenReturn(new RecallResult(List.of(), Set.of()));
     }

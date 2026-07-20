@@ -27,6 +27,7 @@ class RecSysServerHealthLoadRouteTest {
         // Simulate the recall service recording into the shared instance.
         shared.recordTotal();
         shared.record("trending", RecallDegradationMetrics.Reason.REJECTED);
+        shared.recordDegradedRequest();
 
         HttpRequest req = HttpRequest.of(HttpMethod.GET, "/health/load");
         AggregatedHttpResponse res = service.serve(ServiceRequestContext.of(req), req).aggregate().join();

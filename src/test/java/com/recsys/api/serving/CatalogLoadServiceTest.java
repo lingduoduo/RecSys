@@ -22,6 +22,7 @@ class CatalogLoadServiceTest {
         metrics.recordTotal();
         metrics.recordTotal();
         metrics.record("trending", RecallDegradationMetrics.Reason.REJECTED);
+        metrics.recordDegradedRequest();
 
         CatalogLoadService service = new CatalogLoadService(bulkhead, metrics);
 

@@ -1,6 +1,5 @@
 package com.recsys.application.retrieval.multichannel;
 
-import com.recsys.domain.item.MovieCandidate;
 import org.junit.jupiter.api.Test;
 
 import java.util.List;

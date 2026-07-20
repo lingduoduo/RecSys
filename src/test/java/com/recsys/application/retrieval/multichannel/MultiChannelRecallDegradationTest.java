@@ -15,6 +15,7 @@ import java.util.concurrent.TimeUnit;
 
 import static org.assertj.core.api.Assertions.assertThat;
 import static org.assertj.core.api.Assertions.assertThatThrownBy;
+import static org.assertj.core.api.Assertions.within;
 
 class MultiChannelRecallDegradationTest {
 
@@ -64,6 +65,29 @@ class MultiChannelRecallDegradationTest {
         assertThat(s.totalRecalls()).isEqualTo(1);
         assertThat(s.degradedRecalls()).isEqualTo(1);
         assertThat(s.byChannel()).containsKey("trending");
+    }
+
+    @Test
+    void multipleDegradedChannelsInOneRequestCountAsOneDegradedRequest() {
+        // Regression for the bug where degradedRecalls incremented once per degraded
+        // *channel* instead of once per degraded *request*, letting degradedRatio exceed 1.0.
+        RecallDegradationMetrics metrics = new RecallDegradationMetrics();
+        MultiChannelRecallService service = new MultiChannelRecallService(
+                List.of(new FailingChannel("trending"), new FailingChannel("popularity")),
+                new ChannelHealthMonitor(),
+                java.util.concurrent.Executors.newFixedThreadPool(2),
+                200L, FaultInjector.NOOP, null,
+                com.recsys.application.retrieval.coldstart.QuotaPolicy.defaultMovie(),
+                metrics);
+
+        RecallResult result = service.recallDetailed(query(), 10);
+
+        assertThat(result.degradedChannels()).containsExactlyInAnyOrder("trending", "popularity");
+        RecallDegradationMetrics.Snapshot s = metrics.snapshot();
+        assertThat(s.totalRecalls()).isEqualTo(1);
+        assertThat(s.degradedRecalls()).isEqualTo(1);
+        assertThat(s.degradedRatio()).isLessThanOrEqualTo(1.0);
+        assertThat(s.degradedRatio()).isEqualTo(1.0, within(1e-9));
     }
 
     @Test

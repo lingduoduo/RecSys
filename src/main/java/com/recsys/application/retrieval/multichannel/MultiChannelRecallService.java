@@ -206,6 +206,9 @@ public class MultiChannelRecallService {
                     .toList();
             channelResults.put(result.channel(), sorted);
         }
+        if (!primary && !degradedChannels.isEmpty()) {
+            degradationMetrics.recordDegradedRequest();
+        }
 
         List<MovieCandidate> ranked = (quota == null)
                 ? legacyMerge(channelResults, query, limit)

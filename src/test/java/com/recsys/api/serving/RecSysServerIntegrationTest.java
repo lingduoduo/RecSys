@@ -62,7 +62,6 @@ class RecSysServerIntegrationTest {
                             v -> v != null && v.length != 6));
 
             MultiChannelRecallService recallService = mock(MultiChannelRecallService.class);
-            when(recallService.recall(any(), anyInt())).thenReturn(List.of());
             when(recallService.recallDetailed(any(), anyInt()))
                     .thenReturn(new RecallResult(List.of(), Set.of()));
 

@@ -65,6 +65,8 @@ public class RecommendationOrchestrator implements RecommendationPipeline {
             // Sorted alphabetically so this value stays deterministic across JVM runs and
             // matches the X-Recall-Degraded header produced by
             // BaseApiService#writeJsonWithRecallDegraded (which also sorts before joining).
+            // That second sort re-sorts an already-sorted CSV split back into a set — a
+            // harmless no-op kept for defense-in-depth/API independence, not removed here.
             trace.put("degradedChannels", recall.degradedChannels().stream()
                     .sorted()
                     .collect(java.util.stream.Collectors.joining(",")));

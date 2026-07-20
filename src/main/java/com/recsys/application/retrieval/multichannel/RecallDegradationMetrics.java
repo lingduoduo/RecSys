@@ -44,6 +44,10 @@ public final class RecallDegradationMetrics {
                 .computeIfAbsent(channel, k -> new ConcurrentHashMap<>())
                 .computeIfAbsent(reason, k -> new LongAdder())
                 .increment();
+    }
+
+    /** One non-primary recall request that degraded at all (denominator for degradedRatio). */
+    public void recordDegradedRequest() {
         degradedRecalls.incrementAndGet();
     }
 

@@ -30,13 +30,34 @@ class RecallDegradationMetricsTest {
         m.recordTotal();
         m.record("trending", RecallDegradationMetrics.Reason.REJECTED);
         m.record("trending", RecallDegradationMetrics.Reason.TIMEOUT);
+        // One request degraded (even though it hit the "trending" channel twice above via two
+        // separate record() calls in this test) — recordDegradedRequest() is the caller's
+        // once-per-request signal, independent of how many per-channel counters were bumped.
+        m.recordDegradedRequest();
 
         RecallDegradationMetrics.Snapshot s = m.snapshot();
         assertThat(s.totalRecalls()).isEqualTo(2);
-        assertThat(s.degradedRecalls()).isEqualTo(2);
+        assertThat(s.degradedRecalls()).isEqualTo(1);
         assertThat(s.byChannel().get("trending"))
                 .containsEntry(RecallDegradationMetrics.Reason.REJECTED, 1L)
                 .containsEntry(RecallDegradationMetrics.Reason.TIMEOUT, 1L);
+        assertThat(s.degradedRatio()).isEqualTo(0.5, within(1e-9));
+    }
+
+    @Test
+    void recordDegradedRequestCountsOncePerRequestNotPerChannel() {
+        // Regression for the bug where degradedRecalls tracked per-channel record() calls
+        // instead of per-request degradation, letting degradedRatio exceed 1.0.
+        RecallDegradationMetrics m = new RecallDegradationMetrics();
+        m.recordTotal();
+        m.record("trending", RecallDegradationMetrics.Reason.REJECTED);
+        m.record("popularity", RecallDegradationMetrics.Reason.TIMEOUT);
+        m.recordDegradedRequest();
+
+        RecallDegradationMetrics.Snapshot s = m.snapshot();
+        assertThat(s.totalRecalls()).isEqualTo(1);
+        assertThat(s.degradedRecalls()).isEqualTo(1);
+        assertThat(s.degradedRatio()).isLessThanOrEqualTo(1.0);
         assertThat(s.degradedRatio()).isEqualTo(1.0, within(1e-9));
     }
 

@@ -1,50 +1,180 @@
-# Kafka/Flink final-review fix report
+# Final Fix Report — catalog recall degradation visibility
 
-Status: DONE_WITH_CONCERNS
+Branch: `feat/catalog-recall-degradation-visibility` (no branch switch).
 
-## Implemented
+## IMPORTANT fix — degradedRatio counted channels, not requests
 
-- Locked the normal artifact to `movie_events_v2` / `kafka-movie-events-v2` and added explicit legacy bridge mode using `kafka-movie-events-bridge-v1` and its own default group.
-- Required nonblank checkpoint storage for all Kafka modes while retaining checkpoint-optional local file replay.
-- Replaced per-event full `MapState` scans with Flink per-entry TTL (`OnCreateAndWrite`, `NeverReturnExpired`, RocksDB compaction cleanup).
-- Unified producer and Flink user IDs on positive Java `int`, including exact exponent-number handling and rejection of fractions/overflow.
-- Pinned `topk-final-v1` max parallelism and strengthened the load guard with processed-rate, bounded-lag, failed-checkpoint, checkpoint-age, and duration assertions.
-- Added transport-neutral Kafka failure logs and a backward-compatible `deliveryFailures` snapshot field.
-- Updated producer scripts, README, and cutover runbook for bridge replay/reconciliation and bridge-savepoint-to-v2 restore.
+### Root cause
+`RecallDegradationMetrics.record(channel, reason)` incremented `degradedRecalls` on
+*every* call, but `MultiChannelRecallService` called `record(...)` once per degraded
+non-primary channel. Since `totalRecalls` is incremented once per request
+(`recordTotal()`), a single request that degraded 2+ channels inflated `degradedRecalls`
+past the number of requests, letting `degradedRatio = degradedRecalls / totalRecalls`
+exceed 1.0.
 
-## Verification evidence
+### Fix
+1. `src/main/java/com/recsys/application/retrieval/multichannel/RecallDegradationMetrics.java`
+   - Removed `degradedRecalls.incrementAndGet()` from `record(channel, reason)` — it now
+     only bumps the per-(channel,reason) `LongAdder` in `byChannel`.
+   - Added `public void recordDegradedRequest()` which does
+     `degradedRecalls.incrementAndGet()` — the once-per-request signal.
+   - `recordTotal()`, `snapshot()`, the `degradedRatio` formula, and the `byChannel` map
+     are unchanged.
 
-- `sh streaming/online-serving/scripts/test_produce_movie_events.sh`: PASS.
-- `mvn -Pstreaming-flink test-compile -DskipTests`: BUILD SUCCESS (198 test sources).
-- Initial focused run: 40 tests, 0 failures, 0 errors, 3 Docker-dependent skips, BUILD SUCCESS.
-- A later focused rerun was blocked by the local JDK's Mockito inline-agent self-attachment failure; this is an environment failure, not an assertion failure.
-- `mvn test`: progressed through the default suite with passing tests, but the captured invocation did not return a final Maven summary in the tool window and is not claimed as complete.
-- Docker/Testcontainers could not connect to the local Docker socket, so Kafka/Flink integration, restore/rescale, and 50k/s load execution remain unverified locally.
+2. `src/main/java/com/recsys/application/retrieval/multichannel/MultiChannelRecallService.java`
+   - `recall(query, limit, primary)` still calls `degradationMetrics.record(channel, reason)`
+     once per degraded non-primary channel inside the result-collection loop (unchanged).
+   - After that loop, added:
+     ```java
+     if (!primary && !degradedChannels.isEmpty()) {
+         degradationMetrics.recordDegradedRequest();
+     }
+     ```
+   - `recordTotal()` on the non-primary path is unchanged (still called before the
+     futures are dispatched).
 
-## Remaining concerns
+### Tests updated for the corrected semantics
+- `src/test/java/com/recsys/application/retrieval/multichannel/RecallDegradationMetricsTest.java`
+  — `snapshotCountsAndRatio` now calls `recordDegradedRequest()` explicitly for the
+  degraded-request count (in addition to the two `record(...)` calls that exercise the
+  per-channel counters), and asserts `degradedRatio() == 0.5` (1 degraded request / 2
+  total) instead of the old (buggy) 1.0.
+- `src/test/java/com/recsys/api/serving/CatalogLoadServiceTest.java` and
+  `src/test/java/com/recsys/api/serving/RecSysServerHealthLoadRouteTest.java` — both
+  hand-construct a `RecallDegradationMetrics` and simulate what the recall service does;
+  added the missing `recordDegradedRequest()` call so they still assert the correct
+  `degradedRatio` under the new semantics (these two were not in the task's explicit file
+  list but broke under the corrected counting and are exercised by the full suite).
 
-- Run the Docker-tagged Kafka/Flink integration and load gates in CI with Docker and durable checkpoint storage.
-- Run savepoint bridge-to-v2 restore/rescale coverage in a Flink environment; local compilation covers the graph contracts, not a real restore.
+### NEW regression tests
 
-## Follow-up safety review
+**`RecallDegradationMetricsTest.recordDegradedRequestCountsOncePerRequestNotPerChannel`**
+(metrics-level): records two per-channel degradations (`trending`, `popularity`) for a
+single simulated request, then calls `recordDegradedRequest()` once.
+Asserts: `totalRecalls() == 1`, `degradedRecalls() == 1`,
+`degradedRatio() <= 1.0` and `== 1.0` (bounded, not inflated).
 
-- Bridge mode now replaces every production Redis terminal with a no-op terminal under the same sink UID; stateful processing operators, state descriptors, max parallelism, and restore identities remain unchanged.
-- Recent-history `ListState`, user-embedding `ValueState`, and session `ValueState` now use the same per-entry/write-refresh TTL policy as dedup state, including `NeverReturnExpired` and RocksDB compaction cleanup.
-- Kafka modes accept shared durable checkpoint schemes only. Relative paths, `/tmp`, and `file:` are rejected unless `--allow-local-checkpoint-storage true` is explicitly supplied for local/Docker tests.
-- Focused bridge/config/TTL graph test: 26 tests, 0 failures, 0 errors, 3 Docker skips, BUILD SUCCESS.
-- Streaming `test-compile` and default package build both completed with BUILD SUCCESS after the follow-up.
-- A sandboxed full-suite attempt failed when Armeria test servers were denied permission to bind local ports. The approved outside-sandbox retry progressed with passing tests, but the execution capture ended before Maven's final summary; the full suite is therefore not claimed complete.
+**`MultiChannelRecallDegradationTest.multipleDegradedChannelsInOneRequestCountAsOneDegradedRequest`**
+(service-level, closer to the spec's suggested reproduction): constructs a
+`MultiChannelRecallService` with two non-primary channels that both always throw
+(`FailingChannel("trending")`, `FailingChannel("popularity")`), calls
+`recallDetailed(...)` once, and asserts:
+- `result.degradedChannels()` contains both `"trending"` and `"popularity"`
+- `metrics.snapshot().totalRecalls() == 1`
+- `metrics.snapshot().degradedRecalls() == 1`
+- `metrics.snapshot().degradedRatio() <= 1.0` (and `== 1.0` exactly, since the one
+  request that occurred was degraded)
 
-## Replay cutoff follow-up
+### RED/GREEN evidence
 
-- Bridge mode requires a positive `bridge-replay-cutoff-ms`; Kafka partition discovery starts from timestamp-derived offsets while a parsed-event filter rejects and counts missing/zero or older event timestamps. The exact cutoff boundary is accepted and normal v2 remains unaffected.
-- The runbook defines cutoff arithmetic, signed per-partition `[timestampStartOffset,fencedEndOffset)` manifests, gap checks, dormant-expired-key reconciliation, and authoritative savepoint metadata plus isolated restore dry-run compatibility checks.
-- Cutoff boundary test: 1 test, 0 failures/errors, BUILD SUCCESS. Package build: BUILD SUCCESS.
-- The broader focused class rerun reached 26 passing tests before the pre-existing Mockito inline-agent self-attachment test errored in this environment; no product assertion failed. Docker remains unavailable.
+RED: temporarily reinstated the old bug (kept `degradedRecalls.incrementAndGet()` inside
+`record()` alongside the new `recordDegradedRequest()` method so the build still
+compiled) and ran the affected classes:
 
-## Logical event-time expiry follow-up
+```
+mvn test -Dtest=RecallDegradationMetricsTest,MultiChannelRecallDegradationTest
+...
+[ERROR] MultiChannelRecallDegradationTest.multipleDegradedChannelsInOneRequestCountAsOneDegradedRequest:88
+expected: 1L
+ but was: 3L
+[ERROR] MultiChannelRecallDegradationTest.nonPrimaryChannelErrorIsRecordedAndReportedButStillServes:66
+expected: 1L
+ but was: 2L
+[ERROR] RecallDegradationMetricsTest.recordDegradedRequestCountsOncePerRequestNotPerChannel:59
+expected: 1L
+ but was: 3L
+[ERROR] RecallDegradationMetricsTest.snapshotCountsAndRatio:40
+expected: 1L
+ but was: 3L
+Tests run: 9, Failures: 4, Errors: 0, Skipped: 0
+```
 
-- Bridge mode now requires a distinct positive cutover reference. The Kafka cutoff remains the maximum-horizon read bound, while history, embedding, and session branches apply their own TTL eligibility at the reference.
-- Dedup expiry is event-time based; history uses a versioned value wrapper carrying movies, last relevant event time, and logical expiry; embedding and session states carry logical expiry. Exact expiry boundaries reset, and late events cannot regress active state.
-- Flink State TTL remains physical cleanup only and does not define replay eligibility or restored remaining lifetime.
-- Focused cutoff/eligibility tests: 2 passed, 0 failures/errors. Streaming test compilation and package build completed with BUILD SUCCESS.
+GREEN: reverted `RecallDegradationMetrics.java` to the fixed version (diffed byte-for-byte
+against the pre-RED-experiment copy to confirm exact restoration), reran the same
+classes — all 9 tests passed (see covering-test run below, which supersedes this).
+
+## MINOR fixes applied (all)
+
+**(a)** `src/test/java/com/recsys/application/retrieval/multichannel/RecallResultTest.java`
+— removed the unused `import com.recsys.domain.item.MovieCandidate;`.
+
+**(b)** `src/main/java/com/recsys/api/serving/BaseApiService.java` — added
+`import java.util.stream.Collectors;` and changed
+`writeJsonWithRecallDegraded` to use `Collectors.joining(",")` instead of the
+fully-qualified `java.util.stream.Collectors.joining(",")`. Behavior unchanged: still
+sorted, still comma-joined.
+
+**(c)** `src/main/java/com/recsys/application/recommendation/RecommendationOrchestrator.java`
+— added a one-line comment next to the `trace.put("degradedChannels", ...)` sort noting
+that `BaseApiService#writeJsonWithRecallDegraded`'s second sort (re-sorting the already
+comma-sorted string split back into a `LinkedHashSet` in `RecommendationService.V2`) is a
+harmless no-op kept for API independence/defense-in-depth. Neither sort was removed —
+both keep their respective outputs (the `trace` map value and the HTTP header value)
+deterministic independently of each other.
+
+**(d)** `src/test/java/com/recsys/api/serving/RecSysServerIntegrationTest.java` and
+`src/test/java/com/recsys/api/serving/RecSysServerRegressionTest.java` — removed the dead
+`when(recallService.recall(...))` / `when(mockRecall.recall(...))` stub lines. Verified
+first that `RecommendationService.V1` (the only service registered against these mocks
+that touches `MultiChannelRecallService`) calls only `recallDetailed(...)` — confirmed via
+`grep -n "recallService\." src/main/java/com/recsys/api/serving/RecommendationService.java`,
+which shows a single call site at `recallService.recallDetailed(query, k * RECALL_MULTIPLIER)`
+and no other method on the mock. The `recallDetailed(...)` stubs were kept unchanged.
+
+## Covering-test command + output
+
+```
+JAVA_HOME=$(/usr/libexec/java_home -v 17) mvn test -Dtest=RecallDegradationMetricsTest,MultiChannelRecallDegradationTest,RecommendationV1DegradedHeaderTest,RecommendationOrchestratorDegradedTest,CatalogLoadServiceTest,RecSysServerIntegrationTest,RecSysServerRegressionTest
+```
+
+Result (final run, after fixing `CatalogLoadServiceTest` for the corrected semantics):
+
+```
+[INFO] Running com.recsys.api.serving.RecommendationV1DegradedHeaderTest
+[INFO] Tests run: 2, Failures: 0, Errors: 0, Skipped: 0
+[INFO] Running com.recsys.api.serving.RecSysServerRegressionTest
+[INFO] Tests run: 2, Failures: 0, Errors: 0, Skipped: 0
+[INFO] Running com.recsys.api.serving.RecSysServerIntegrationTest
+[INFO] Tests run: 19, Failures: 0, Errors: 0, Skipped: 0
+[INFO] Running com.recsys.api.serving.CatalogLoadServiceTest
+[INFO] Tests run: 2, Failures: 0, Errors: 0, Skipped: 0
+[INFO] Running com.recsys.application.recommendation.RecommendationOrchestratorDegradedTest
+[INFO] Tests run: 3, Failures: 0, Errors: 0, Skipped: 0
+[INFO] Running com.recsys.application.retrieval.multichannel.RecallDegradationMetricsTest
+[INFO] Tests run: 5, Failures: 0, Errors: 0, Skipped: 0
+[INFO] Running com.recsys.application.retrieval.multichannel.MultiChannelRecallDegradationTest
+[INFO] Tests run: 4, Failures: 0, Errors: 0, Skipped: 0
+[INFO] Tests run: 37, Failures: 0, Errors: 0, Skipped: 0
+[INFO] BUILD SUCCESS
+```
+
+## Full-suite run
+
+```
+JAVA_HOME=$(/usr/libexec/java_home -v 17) mvn test
+...
+[INFO] Tests run: 1176, Failures: 0, Errors: 0, Skipped: 0
+[INFO] BUILD SUCCESS
+```
+
+Note: the first full-suite run caught one additional pre-existing test relying on the old
+(buggy) counting semantics that was *not* in the task's covering-test list —
+`src/test/java/com/recsys/api/serving/RecSysServerHealthLoadRouteTest.java`
+(`loadServiceReflectsMetricsRecordedElsewhere`). It hand-simulates the recall service
+recording into a shared `RecallDegradationMetrics` instance and asserts
+`degradedRatio == 1.0`; it needed the same `recordDegradedRequest()` call added. Fixed
+and the full suite went green (1176/1176) on the second run.
+
+## Files changed
+
+- `src/main/java/com/recsys/application/retrieval/multichannel/RecallDegradationMetrics.java`
+- `src/main/java/com/recsys/application/retrieval/multichannel/MultiChannelRecallService.java`
+- `src/main/java/com/recsys/api/serving/BaseApiService.java`
+- `src/main/java/com/recsys/application/recommendation/RecommendationOrchestrator.java`
+- `src/test/java/com/recsys/application/retrieval/multichannel/RecallDegradationMetricsTest.java`
+- `src/test/java/com/recsys/application/retrieval/multichannel/MultiChannelRecallDegradationTest.java`
+- `src/test/java/com/recsys/application/retrieval/multichannel/RecallResultTest.java`
+- `src/test/java/com/recsys/api/serving/CatalogLoadServiceTest.java`
+- `src/test/java/com/recsys/api/serving/RecSysServerHealthLoadRouteTest.java`
+- `src/test/java/com/recsys/api/serving/RecSysServerIntegrationTest.java`
+- `src/test/java/com/recsys/api/serving/RecSysServerRegressionTest.java`
