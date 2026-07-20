@@ -50,20 +50,28 @@ public class RecommendationOrchestrator implements RecommendationPipeline {
     public RecommendationResult recommend(RecommendationQuery query) {
         Objects.requireNonNull(query, "query");
         int windowLimit = query.limit() * recallMultiplier;
-        List<MovieCandidate> candidates = recallService.recall(query, windowLimit);
+        com.recsys.application.retrieval.multichannel.RecallResult recall =
+                recallService.recallDetailed(query, windowLimit);
+        List<MovieCandidate> candidates = recall.candidates();
         List<RankedMovie> ranked = ranker.rank(query, candidates, windowLimit);
         Page<RankedMovie> page = paginationService.page(
                 ranked, query.cursor(), query.limit(), RankedMovie::score, RankedMovie::itemId);
         List<RankedMovie> hydrated = hydrator.hydrate(query, page.items());
 
-        return new RecommendationResult(
-                query.userId(),
-                hydrated,
-                page.nextCursor(),
-                Map.of(
-                        "candidateCount", Integer.toString(candidates.size()),
-                        "rankedCount", Integer.toString(ranked.size())
-                )
-        );
+        Map<String, String> trace = new java.util.LinkedHashMap<>();
+        trace.put("candidateCount", Integer.toString(candidates.size()));
+        trace.put("rankedCount", Integer.toString(ranked.size()));
+        if (!recall.degradedChannels().isEmpty()) {
+            // Sorted alphabetically so this value stays deterministic across JVM runs and
+            // matches the X-Recall-Degraded header produced by
+            // BaseApiService#writeJsonWithRecallDegraded (which also sorts before joining).
+            // That second sort re-sorts an already-sorted CSV split back into a set — a
+            // harmless no-op kept for defense-in-depth/API independence, not removed here.
+            trace.put("degradedChannels", recall.degradedChannels().stream()
+                    .sorted()
+                    .collect(java.util.stream.Collectors.joining(",")));
+        }
+
+        return new RecommendationResult(query.userId(), hydrated, page.nextCursor(), trace);
     }
 }

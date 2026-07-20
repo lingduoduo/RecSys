@@ -7,10 +7,12 @@ import com.linecorp.armeria.testing.junit5.server.ServerExtension;
 import com.recsys.domain.item.Movie;
 import com.recsys.infrastructure.dataloading.DataManager;
 import com.recsys.application.retrieval.multichannel.MultiChannelRecallService;
+import com.recsys.application.retrieval.multichannel.RecallResult;
 import org.junit.jupiter.api.Test;
 import org.junit.jupiter.api.extension.RegisterExtension;
 
 import java.util.List;
+import java.util.Set;
 
 import static org.assertj.core.api.Assertions.assertThat;
 import static org.mockito.ArgumentMatchers.any;
@@ -36,7 +38,8 @@ class RecSysServerRegressionTest {
         when(mockData.getWatchedMovieIds(anyInt())).thenReturn(java.util.Set.of());
         when(mockData.getTopRatedMovies(anyInt())).thenReturn(List.of());
         when(mockData.getMoviesByGenre(any(), anyInt())).thenReturn(List.of());
-        when(mockRecall.recall(any(), anyInt())).thenReturn(List.of());
+        when(mockRecall.recallDetailed(any(), anyInt()))
+                .thenReturn(new RecallResult(List.of(), Set.of()));
     }
 
     @RegisterExtension

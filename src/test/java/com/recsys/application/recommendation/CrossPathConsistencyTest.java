@@ -20,6 +20,7 @@ import com.recsys.application.pagination.CursorPaginationService;
 import com.recsys.application.pagination.Page;
 import com.recsys.application.ranking.CandidateRanker;
 import com.recsys.application.retrieval.multichannel.MultiChannelRecallService;
+import com.recsys.application.retrieval.multichannel.RecallResult;
 import org.junit.jupiter.api.Test;
 
 import java.util.List;
@@ -43,7 +44,8 @@ class CrossPathConsistencyTest {
         CandidateRanker ranker = mock(CandidateRanker.class);
         CursorPaginationService pagination = mock(CursorPaginationService.class);
         RankedMovie rm = new RankedMovie("10", 0.9, 1, Map.of());
-        when(recall.recall(any(), anyInt())).thenReturn(List.of(mock(com.recsys.domain.item.MovieCandidate.class)));
+        when(recall.recallDetailed(any(), anyInt())).thenReturn(new RecallResult(
+                List.of(mock(com.recsys.domain.item.MovieCandidate.class)), Set.of()));
         when(ranker.rank(any(), any(), anyInt())).thenReturn(List.of(rm));
         when(pagination.page(any(), any(), anyInt(), any(), any())).thenReturn(new Page<>(List.of(rm), null));
         RecommendationPipeline path1 = new RecommendationOrchestrator(

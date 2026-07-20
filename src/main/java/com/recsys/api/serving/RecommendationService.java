@@ -11,9 +11,11 @@ import com.recsys.domain.item.Movie;
 import com.recsys.domain.item.MovieCandidate;
 import com.recsys.domain.recommendation.RecommendationQuery;
 import com.recsys.domain.recommendation.RecommendationResponse;
+import com.recsys.domain.recommendation.RecommendationResult;
 import com.recsys.domain.user.User;
 import com.recsys.application.recommendation.RecommendationPipeline;
 import com.recsys.application.retrieval.multichannel.MultiChannelRecallService;
+import com.recsys.application.retrieval.multichannel.RecallResult;
 
 import java.util.LinkedHashSet;
 import java.util.List;
@@ -61,7 +63,8 @@ public final class RecommendationService {
                     RecommendationQuery query = new RecommendationQuery(
                             String.valueOf(userId), k, excludedItemIds, null);
 
-                    List<MovieCandidate> candidates = recallService.recall(query, k * RECALL_MULTIPLIER);
+                    RecallResult recall = recallService.recallDetailed(query, k * RECALL_MULTIPLIER);
+                    List<MovieCandidate> candidates = recall.candidates();
                     List<Movie> movies = candidates.stream()
                             .map(c -> {
                                 try { return dataManager.getMovieById(Integer.parseInt(c.itemId())); }
@@ -70,7 +73,8 @@ public final class RecommendationService {
                             .filter(Objects::nonNull)
                             .toList();
 
-                    return writeJson(HttpStatus.OK, new RecommendationResponse(user, movies));
+                    return writeJsonWithRecallDegraded(HttpStatus.OK,
+                            new RecommendationResponse(user, movies), recall.degradedChannels());
 
                 } catch (BadRequestException | IllegalArgumentException e) {
                     return writeError(HttpStatus.BAD_REQUEST, e.getMessage());
@@ -96,7 +100,12 @@ public final class RecommendationService {
             return HttpResponse.of(req.aggregate().thenApplyAsync(agg -> {
                 try {
                     RecommendationQuery query = readJsonBody(agg, RecommendationQuery.class);
-                    return writeJson(HttpStatus.OK, pipeline.recommend(query));
+                    RecommendationResult result = pipeline.recommend(query);
+                    String degraded = result.trace().get("degradedChannels");
+                    Set<String> degradedSet = (degraded == null || degraded.isBlank())
+                            ? Set.of()
+                            : new LinkedHashSet<>(List.of(degraded.split(",")));
+                    return writeJsonWithRecallDegraded(HttpStatus.OK, result, degradedSet);
                 } catch (BadRequestException | IllegalArgumentException e) {
                     return writeError(HttpStatus.BAD_REQUEST, e.getMessage());
                 } catch (Exception e) {

@@ -2406,6 +2406,7 @@ Alarms to set in production:
 | `.byType.FULL_GC.events > 0` | `GET /health/gc` | Treat as an incident |
 | `allocationStalls > 0` | `GET /health/gc` | ZGC needs more heap or more GC threads |
 | `stwLongestPauseMs` > SLO | `GET /health/gc` | GC pauses exceeding request latency budget |
+| `recall.degradedRatio` rising | `GET /health/load` (6010) | Recall bulkhead saturating — non-primary channels dropping to empty results (silent quality loss); scale catalog-serving or raise `RECALL_BULKHEAD_QUEUE_CAPACITY` |
 | `overloaded: true` | `GET /online/ops` | Online serving load-shedder is active |
 | Kafka consumer lag rising | Flink metrics | Flink falling behind; online features will go stale |
 

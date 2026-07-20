@@ -34,6 +34,7 @@ import com.recsys.application.retrieval.coldstart.QuotaPolicy;
 import com.recsys.application.retrieval.multichannel.ChannelHealthMonitor;
 import com.recsys.application.retrieval.multichannel.MultiChannelRecallService;
 import com.recsys.application.retrieval.multichannel.RecallConfig;
+import com.recsys.application.retrieval.multichannel.RecallDegradationMetrics;
 import com.recsys.infrastructure.store.TrendingStore;
 import org.slf4j.Logger;
 import org.slf4j.LoggerFactory;
@@ -103,6 +104,7 @@ public class RecSysServer {
             WorkerBulkhead recallBulkhead = new WorkerBulkhead("recall-catalog", recallPoolSize,
                     EnvConfig.readInt("RECALL_BULKHEAD_QUEUE_CAPACITY", recallPoolSize * 4));
             ExecutorService executor = recallBulkhead.asExecutorService();
+            RecallDegradationMetrics recallMetrics = new RecallDegradationMetrics();
 
             MultiChannelRecallService recallService = MultiChannelRecallService.from(
                     RecallConfig.builder()
@@ -118,6 +120,7 @@ public class RecSysServer {
                             .executor(executor)
                             .faultInjector(FaultInjector.NOOP)
                             .userEmbeddingStore(userEmbCache)
+                            .recallMetrics(recallMetrics)
                             .build());
 
             RecommendationOrchestrator orchestrator = new RecommendationOrchestrator(
@@ -158,6 +161,7 @@ public class RecSysServer {
                             loadShedder.shouldDrain()
                                     ? HttpResponse.of(HttpStatus.SERVICE_UNAVAILABLE)
                                     : HttpResponse.of(HttpStatus.OK))
+                    .service("/health/load", new CatalogLoadService(recallBulkhead, recallMetrics))
                     .service(ROUTE_V2_RECOMMEND,
                             new OnlineAdmissionControl(new RecommendationService.V2(orchestrator),
                                     loadShedder, () -> {}))

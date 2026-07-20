@@ -17,6 +17,8 @@ import org.slf4j.LoggerFactory;
 
 import java.io.IOException;
 import java.util.Map;
+import java.util.Set;
+import java.util.stream.Collectors;
 
 public abstract class BaseApiService extends AbstractHttpService {
 
@@ -71,6 +73,35 @@ public abstract class BaseApiService extends AbstractHttpService {
             ResponseHeaders headers = ResponseHeaders.builder(status)
                     .contentType(MediaType.JSON_UTF_8)
                     .set(HttpHeaderNames.CACHE_CONTROL, HttpCaching.NO_STORE)
+                    .build();
+            return HttpResponse.of(headers, HttpData.wrap(body));
+        } catch (Exception e) {
+            return writeError(HttpStatus.INTERNAL_SERVER_ERROR, "serialization error");
+        }
+    }
+
+    /**
+     * Like {@link #writeJson} but adds {@code X-Recall-Degraded: <comma-joined>} when
+     * {@code degradedChannels} is non-empty. Signals silent recall-quality degradation
+     * without changing the response status or body.
+     *
+     * <p>Channel names are sorted before joining. {@code degradedChannels} typically arrives
+     * as (or backed by) {@code Set.copyOf(...)} (see {@code RecallResult}), whose iteration
+     * order is salted per-JVM-run and not stable across restarts — sorting keeps the header
+     * value deterministic for callers and tests instead of varying process to process.
+     */
+    protected static HttpResponse writeJsonWithRecallDegraded(HttpStatus status, Object payload,
+                                                              Set<String> degradedChannels) {
+        if (degradedChannels == null || degradedChannels.isEmpty()) {
+            return writeJson(status, payload);
+        }
+        try {
+            byte[] body = MAPPER.writeValueAsBytes(payload);
+            String headerValue = degradedChannels.stream().sorted()
+                    .collect(Collectors.joining(","));
+            ResponseHeaders headers = ResponseHeaders.builder(status)
+                    .contentType(MediaType.JSON_UTF_8)
+                    .set(HttpHeaderNames.of("x-recall-degraded"), headerValue)
                     .build();
             return HttpResponse.of(headers, HttpData.wrap(body));
         } catch (Exception e) {
