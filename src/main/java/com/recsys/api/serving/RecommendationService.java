@@ -11,6 +11,7 @@ import com.recsys.domain.item.Movie;
 import com.recsys.domain.item.MovieCandidate;
 import com.recsys.domain.recommendation.RecommendationQuery;
 import com.recsys.domain.recommendation.RecommendationResponse;
+import com.recsys.domain.recommendation.RecommendationResult;
 import com.recsys.domain.user.User;
 import com.recsys.application.recommendation.RecommendationPipeline;
 import com.recsys.application.retrieval.multichannel.MultiChannelRecallService;
@@ -99,7 +100,12 @@ public final class RecommendationService {
             return HttpResponse.of(req.aggregate().thenApplyAsync(agg -> {
                 try {
                     RecommendationQuery query = readJsonBody(agg, RecommendationQuery.class);
-                    return writeJson(HttpStatus.OK, pipeline.recommend(query));
+                    RecommendationResult result = pipeline.recommend(query);
+                    String degraded = result.trace().get("degradedChannels");
+                    Set<String> degradedSet = (degraded == null || degraded.isBlank())
+                            ? Set.of()
+                            : new LinkedHashSet<>(List.of(degraded.split(",")));
+                    return writeJsonWithRecallDegraded(HttpStatus.OK, result, degradedSet);
                 } catch (BadRequestException | IllegalArgumentException e) {
                     return writeError(HttpStatus.BAD_REQUEST, e.getMessage());
                 } catch (Exception e) {

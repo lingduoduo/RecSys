@@ -11,6 +11,7 @@ import com.recsys.application.pagination.CursorPaginationService;
 import com.recsys.application.pagination.Page;
 import com.recsys.application.ranking.CandidateRanker;
 import com.recsys.application.retrieval.multichannel.MultiChannelRecallService;
+import com.recsys.application.retrieval.multichannel.RecallResult;
 import org.junit.jupiter.api.Test;
 
 import java.util.List;
@@ -32,7 +33,8 @@ class RecommendationPipelineTest {
         CursorPaginationService pagination = mock(CursorPaginationService.class);
 
         RankedMovie movie = new RankedMovie("42", 0.9, 1, Map.of());
-        when(recall.recall(any(), anyInt())).thenReturn(List.of(mock(MovieCandidate.class)));
+        when(recall.recallDetailed(any(), anyInt())).thenReturn(
+                new RecallResult(List.of(mock(MovieCandidate.class)), Set.of()));
         when(ranker.rank(any(), any(), anyInt())).thenReturn(List.of(movie));
         when(pagination.page(any(), any(), anyInt(), any(), any()))
                 .thenReturn(new Page<>(List.of(movie), null));
