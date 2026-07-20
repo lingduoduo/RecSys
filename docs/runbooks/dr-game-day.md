@@ -13,7 +13,14 @@ with stakeholders notified.
 ## Procedure
 
 1. **Baseline**: record current traffic, us-west-2 replica lag, HPA replica counts.
-2. **Inject failure**: make the primary ALB health check fail (e.g. temporarily
+2. **Rehearse the standby capacity promote/demote** without mutating, and confirm the
+   overlay has not drifted from the primary baseline:
+   ```bash
+   scripts/dr-standby-capacity.sh verify
+   scripts/dr-standby-capacity.sh promote --context <us-west-2-ctx> --dry-run
+   scripts/dr-standby-capacity.sh demote  --context <us-west-2-ctx> --dry-run
+   ```
+3. **Inject failure**: make the primary ALB health check fail (e.g. temporarily
    block the health-check path at the primary, or scale the primary gateway to 0
    in a non-prod mirror). Do NOT delete data.
 3. **Observe DNS failover**: once the CDN rollout (`docs/runbooks/cdn-operations.md`) is

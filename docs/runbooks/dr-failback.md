@@ -36,3 +36,9 @@ kubectl --context <us-east-1-ctx> -n recsys rollout status deploy
 
 - Confirm us-west-2 is back to secondary (read replica) and HPA minReplicas are the
   warm-standby values (gateway 1, catalog 1, model 2, online 1).
+- Demote the standby capacity back to the warm-standby floor (it was promoted to the
+  primary baseline during failover):
+  ```bash
+  scripts/dr-standby-capacity.sh demote --context <us-west-2-ctx>
+  ```
+  This re-applies `k8s/eks-us-west-2`, restoring minReplicas 1/1/2/1.

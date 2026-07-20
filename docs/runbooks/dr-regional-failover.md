@@ -82,8 +82,20 @@ Create and rotate the Secret in **both** contexts — see the rotation and step-
    - Pre-rollout: `curl -fsS https://api.recsys.example.com/health` returns healthy.
 4. **Writes are degraded until the data tier is promoted** → run
    `docs/runbooks/dr-data-tier-promotion.md`.
-5. Scale-up is automatic (HPA + cluster autoscaler) as traffic arrives; watch
-   `kubectl --context <us-west-2-ctx> -n recsys get hpa`.
+5. **Pre-scale the standby to the primary baseline** so full traffic does not hit a
+   half-capacity region while HPA reacts:
+   ```bash
+   scripts/dr-standby-capacity.sh promote --context <us-west-2-ctx>
+   ```
+   This raises minReplicas from the warm-standby floor (1/1/2/1) to the primary
+   baseline (gateway 2, catalog 2, model 3, online 2) via the
+   `k8s/eks-us-west-2-active` overlay; HPA + cluster-autoscaler then surge further as
+   traffic arrives. Watch `kubectl --context <us-west-2-ctx> -n recsys get hpa`.
+
+   > While failed over, deploy the **-active** overlay to keep the standby current —
+   > `kubectl --context <us-west-2-ctx> apply -k k8s/eks-us-west-2-active`. A plain
+   > `apply -k k8s/eks-us-west-2` would demote it back to 1/1/2/1. Restore the
+   > standby floor on failback with `scripts/dr-standby-capacity.sh demote`.
 
 ## RTO / RPO
 
