@@ -12,10 +12,12 @@ import com.recsys.infrastructure.vectordb.CandidateGenerator;
 import com.recsys.infrastructure.vectordb.EmbeddingStore;
 import com.recsys.domain.item.Movie;
 import com.recsys.application.retrieval.multichannel.MultiChannelRecallService;
+import com.recsys.application.retrieval.multichannel.RecallResult;
 import org.junit.jupiter.api.Test;
 import org.junit.jupiter.api.extension.RegisterExtension;
 
 import java.util.List;
+import java.util.Set;
 
 import static org.assertj.core.api.Assertions.assertThat;
 import static org.mockito.ArgumentMatchers.any;
@@ -61,6 +63,8 @@ class RecSysServerIntegrationTest {
 
             MultiChannelRecallService recallService = mock(MultiChannelRecallService.class);
             when(recallService.recall(any(), anyInt())).thenReturn(List.of());
+            when(recallService.recallDetailed(any(), anyInt()))
+                    .thenReturn(new RecallResult(List.of(), Set.of()));
 
             CatalogService.Movies movie = new CatalogService.Movies(mockData);
             CatalogService.Users user = new CatalogService.Users(mockData);
