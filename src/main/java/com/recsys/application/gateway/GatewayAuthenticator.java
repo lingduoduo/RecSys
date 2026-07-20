@@ -25,6 +25,13 @@ public final class GatewayAuthenticator {
     private static final GatewayAuthenticator DISABLED = new GatewayAuthenticator(Set.of(), Set.of("/health"), null);
     private static final String AUTHORIZATION_PREFIX = "Bearer ";
 
+    // User-data read routes that must NEVER be anonymously reachable, regardless of
+    // GATEWAY_PUBLIC_PATHS. Defense-in-depth against a configmap typo (e.g. a bare "/api/catalog"
+    // public prefix that would otherwise expose "/api/catalog/user"). Matched with the same
+    // boundary rule as public paths, so "/api/users/profile" is guarded but "/api/usersettings"
+    // is not.
+    private static final Set<String> PROTECTED_PREFIXES = Set.of("/api/catalog/user", "/api/users");
+
     private final Set<String> apiKeys;
     private final Set<String> publicPaths;
     private final CognitoJwtVerifier jwtVerifier;
@@ -73,7 +80,26 @@ public final class GatewayAuthenticator {
         if (publicPaths.isEmpty()) {
             publicPaths = Set.of("/health");
         }
+        warnOnProtectedOverlap(publicPaths);
         return new GatewayAuthenticator(keys, publicPaths, verifier);
+    }
+
+    /**
+     * Surface a misconfiguration where GATEWAY_PUBLIC_PATHS would have exposed a protected
+     * user-data path (the {@link #PROTECTED_PREFIXES} guard overrides it, so this is a warning,
+     * not a failure). A configured path exposes a protected prefix when it equals it or is a
+     * bare-prefix parent of it — the same boundary rule {@link #isPublic} uses.
+     */
+    private static void warnOnProtectedOverlap(Set<String> publicPaths) {
+        for (String configured : publicPaths) {
+            for (String protectedPrefix : PROTECTED_PREFIXES) {
+                if (protectedPrefix.equals(configured) || protectedPrefix.startsWith(configured + "/")) {
+                    log.warn("GATEWAY_PUBLIC_PATHS entry \"{}\" would expose protected user-data path "
+                            + "\"{}\"; it stays auth-required (never-public guard). Fix the config to "
+                            + "list only exact non-sensitive read paths.", configured, protectedPrefix);
+                }
+            }
+        }
     }
 
     public boolean isEnabled() {
@@ -127,8 +153,16 @@ public final class GatewayAuthenticator {
     }
 
     private boolean isPublic(String path) {
-        return publicPaths.stream().anyMatch(publicPath ->
-                path.equals(publicPath) || path.startsWith(publicPath + "/"));
+        // A protected user-data path is never public, even if GATEWAY_PUBLIC_PATHS would match it.
+        if (matchesPrefix(path, PROTECTED_PREFIXES)) {
+            return false;
+        }
+        return matchesPrefix(path, publicPaths);
+    }
+
+    private static boolean matchesPrefix(String path, Set<String> prefixes) {
+        return prefixes.stream().anyMatch(prefix ->
+                path.equals(prefix) || path.startsWith(prefix + "/"));
     }
 
     private static String bearerToken(String authorization) {
