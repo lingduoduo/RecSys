@@ -68,8 +68,10 @@ learn a channel was dropped. `WorkerBulkhead` already exposes a
 ```
 public record RecallResult(List<MovieCandidate> candidates, Set<String> degradedChannels) {
     // candidates and degradedChannels are non-null; degradedChannels is an
-    // unmodifiable, insertion-ordered set of non-primary channel names that
-    // returned empty due to rejection/timeout/error.
+    // unmodifiable set of non-primary channel names that returned empty due to
+    // rejection/timeout/error. (Note: the record copies via Set.copyOf, whose
+    // iteration order is unspecified/JVM-salted; consumers that need a stable
+    // order — e.g. the response header — sort the names themselves.)
 }
 ```
 
@@ -176,9 +178,12 @@ set; primary failures still throw before any result is built.
 X-Recall-Degraded: momentum,trending
 ```
 
-Absent on full-quality responses — its presence is the per-request alert. Comma-
-joined channel names in insertion order. Not set on error responses. (The V2 path
-also surfaces the same value in the JSON `trace` map by construction.)
+Absent on full-quality responses — its presence is the per-request alert. Channel
+names are **sorted alphabetically** and comma-joined, so the header is deterministic
+and JVM-stable (the underlying `degradedChannels` set has unspecified iteration order
+after `Set.copyOf`; both the V1 helper and the V2 trace-writer sort before joining).
+Not set on error responses. (The V2 path also surfaces the same sorted value in the
+JSON `trace` map by construction.)
 
 ## `/health/load` Response
 
