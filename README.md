@@ -47,7 +47,7 @@ A compact Maven workspace demonstrating recommendation-system serving, retrieval
 | DB Indexing | `MillionScalePaginationSql` (covering-index / keyset / delayed-join), `FORCE INDEX` plan pinning (`MySqlIndexContractTest`), `MySqlClient` — see [MySQL Index Inventory](#mysql-index-inventory) |
 | Partitioning | Consistent-hash shard partitions (`ConsistentHashRing`), windowed top-K shards (`topk:<window>:s0..s3`), Kafka topic partitions, keyset cursor windows (`/v2/recommend`) — see [Sharded Record Store](#sharded-record-store), [Online Serving](#online-serving) |
 | Eventual Consistency | `OutboxRelay` + `DurableEventPublisher` (transactional outbox), `OutboxReconciler`, generation dual-read, read-your-writes — see [Durable Eventual Consistency](#durable-eventual-consistency) |
-| WebSockets | No raw WebSocket; real-time push is SSE streaming passthrough in the LLM proxy (`LlmProxyService`, `text/event-stream`) over the Kafka → Flink → Redis streaming backbone — see [LLM Gateway](#llm-gateway) |
+| SSE streaming | Real-time token streaming via Server-Sent Events (`text/event-stream`) passthrough in the LLM proxy — `LlmProxyService.forwardStreaming` reactively pipes upstream frames straight to the client over a long-lived HTTP/2 connection (`LLM_PING_INTERVAL_MS` keepalive); the streaming path skips response caching and retry-on-429 — see [LLM Gateway](#llm-gateway) |
 | Scalability | HPA overlays (`k8s/base` + EKS), `AutoScalingGroup` / `InstanceProvisioner`, `OnlineAdmissionControl`, capacity sizing (`OnlineCapacityService`) — see [Capacity Planning](#capacity-planning) |
 | Fault Tolerance | `CircuitBreaker` / `RouteCircuitBreaker`, `WorkerBulkhead`, `LoadShedder` / `OnlineLoadShedder`, `ChannelHealthMonitor` backoff, `FaultInjector`, multi-region DR — see [Overload Protection](#overload-protection) |
 | Monitoring | `InferenceMetricsService` / `OnlineServingMetricsService` (Micrometer), Prometheus `/metrics`, health endpoints, `GcEventTracker` / `JvmMemoryMonitor`, `TraceIdAspect` — see [Metrics (`/metrics`)](#metrics-metrics), [Capacity Planning](#capacity-planning) |
@@ -2501,6 +2501,15 @@ sh scripts/run-microservices-local.sh
 ```
 
 Features: SSE streaming passthrough, retry-on-429, token-count-aware rate limiting, SHA-256 response caching, circuit breaker.
+
+### Streaming (SSE) vs. buffered
+
+Every LLM request is aggregated once so the proxy can inspect its body, then forks on a single flag — `"stream":true` in the JSON body (`LlmProxyService.parseBodyMeta`):
+
+- **Streaming** (`forwardStreaming`) returns an Armeria `HttpResponseWriter` immediately and reactively subscribes to the upstream, writing each `text/event-stream` frame straight through to the client (no buffering, no size cap, first token on arrival). The streaming path **skips response caching and retry-on-429** — an upstream error is surfaced mid-stream via `writer.close(t)`. This is the only client-facing streaming path in the system.
+- **Buffered** (`forwardBuffered`) aggregates the full response, then applies SHA-256 response caching (`X-Cache: HIT/MISS`) and a single retry-on-429 that honors `Retry-After` (≤ `LLM_MAX_RETRY_WAIT_MS`).
+
+Both paths share the same auth boundary (`buildUpstreamHeaders` strips client-spoofed `x-authenticated-*` and gateway credentials, injects the authenticated principal), token-budget pre-check, and circuit breaker. Long streams stay alive on the dedicated LLM `ClientFactory`'s HTTP/2 keepalive PING (`LLM_PING_INTERVAL_MS`, kept below `LLM_IDLE_TIMEOUT_MS`) rather than any SSE-level heartbeat.
 
 ```bash
 # Non-streaming generation
