@@ -73,14 +73,29 @@ public record RecallResult(List<MovieCandidate> candidates, Set<String> degraded
 }
 ```
 
-`MultiChannelRecallService.recall(...)` and `recallPrimary(...)` return
-`RecallResult` instead of `List<MovieCandidate>`. Two callers unwrap `.candidates()`
-for ranking (behavior unchanged) and pass `.degradedChannels()` to the transport
-layer for the header.
+**Additive API (no breaking change).** The existing `recall(query, limit)` /
+`recallPrimary(query, limit)` methods keep returning `List<MovieCandidate>` — they
+have callers beyond 6010 (7010's `OnlineRecommendationService`,
+`ModelRetrievalStage`) and ~15 test files that mock them, so their signatures must
+not change. Two new methods return the richer type:
 
-Rationale: an explicit return type keeps the data flow visible and unit-testable,
-versus a request-scoped `ThreadLocal`/Armeria context attribute that would avoid the
-signature change but hide the flow and couple the application layer to transport.
+```
+public RecallResult recallDetailed(RecommendationQuery query, int limit);
+public RecallResult recallPrimaryDetailed(RecommendationQuery query, int limit);
+```
+
+The shared private `recall(query, limit, primary)` becomes `RecallResult`-producing;
+the `List`-returning public methods delegate and return `.candidates()`, the
+`*Detailed` methods return the whole `RecallResult`. Only the two header-needing
+6010 paths (`RecommendationService.V1`, `RecommendationOrchestrator`) call the
+`*Detailed` methods.
+
+Rationale: an explicit return type keeps the degraded-channel data flow visible and
+unit-testable (versus a request-scoped `ThreadLocal`/Armeria context attribute that
+would hide it), and the additive form keeps the blast radius to the two 6010 paths
+that surface the header. Metrics (component 2) are recorded inside the shared
+private method regardless of which public entry point is used, so `/health/load`
+counters cover every caller automatically.
 
 ### 2. `RecallDegradationMetrics` (`application/retrieval/multichannel`)
 
@@ -98,55 +113,79 @@ Thread-safe cumulative counters, no transport dependency:
 - `snapshot()` → `Snapshot(Map<String, Map<Reason, Long>> byChannel, long totalRecalls, long degradedRecalls, double degradedRatio)` where
   `degradedRatio = totalRecalls == 0 ? 0.0 : degradedRecalls / (double) totalRecalls`.
 
-Backed by `ConcurrentHashMap<String, EnumMap<Reason, AtomicLong>>` (or
-`LongAdder`) + `AtomicLong` totals. Injected into `MultiChannelRecallService`;
-a shared no-op default keeps existing constructors/tests unaffected.
+Backed by `ConcurrentHashMap<String, EnumMap<Reason, AtomicLong>>` + `AtomicLong`
+totals. Injected into `MultiChannelRecallService` via a new constructor parameter,
+threaded through `RecallConfig` + its builder (default: a fresh
+`RecallDegradationMetrics` instance, so existing constructors/tests are
+unaffected). Production wiring passes the **same** instance to both the recall
+service and `CatalogLoadService` so the two share state.
 
-### 3. `CatalogLoadService` (`health` or `api/serving`)
+### 3. `CatalogLoadService` (`api/serving`)
 
 An Armeria `HttpService` mirroring 7010's `OnlineOpsService` composition pattern.
-Reads `WorkerBulkhead.snapshot()` + `RecallDegradationMetrics.snapshot()` and
-serves the JSON below at `GET /health/load`. Read-only; needs only normal gateway
-auth (same as `/health`).
+Reads `WorkerBulkhead.snapshot()` + `RecallDegradationMetrics.snapshot()` and serves
+the JSON below at `GET /health/load`. Read-only; needs only normal gateway auth
+(same as `/health`).
+
+**Bulkhead-rejected caveat.** On the catalog path the recall service runs channels
+through `recallBulkhead.asExecutorService()` + `CompletableFuture.supplyAsync`, not
+`WorkerBulkhead.submit()`. `WorkerBulkhead.rejectedCount` only increments inside
+`submit()` (`WorkerBulkhead.java:51`), so the bulkhead `Snapshot.rejected` field is
+**always 0** on this path. The authoritative rejection signal is therefore the
+`RecallDegradationMetrics` `REJECTED` reason, not the bulkhead snapshot. The
+`bulkhead` section of `/health/load` exposes only the meaningful live fields
+(`active`, `queued`, `poolSize`); `rejected` is intentionally omitted to avoid a
+misleading always-zero gauge.
 
 ### 4. `RecSysServer` wiring
 
-Construct `RecallDegradationMetrics` and pass it into the recall service; construct
-`CatalogLoadService` with the existing `recallBulkhead` + the metrics; register
+Construct one `RecallDegradationMetrics`; pass it into
+`RecallConfig.builder().recallMetrics(...)` (feeding the recall service) **and** into
+`CatalogLoadService` (with the existing `recallBulkhead`); register
 `.service("/health/load", catalogLoadService)`.
 
 ## Data Flow
 
-Inside the existing per-channel loop of `recall(query, limit, primary=false)`:
+Inside the shared private `recall(query, limit, primary)`:
 
-1. `metrics.recordTotal()` once at entry.
-2. For each non-primary `ChannelResult` where the channel yielded no candidates due
-   to a captured `error`: classify `Reason`, `metrics.record(channel, reason)`, and
-   add `channel` to a local `degradedChannels` set.
+1. When `primary == false`, `metrics.recordTotal()` once (after the `limit <= 0`
+   early return).
+2. In the result-collection loop, for each `ChannelResult` with a captured `error`
+   (only non-primary results reach here — primary errors throw earlier): classify
+   `Reason`, `metrics.record(channel, reason)`, and add `channel` to a local
+   insertion-ordered `degradedChannels` set.
 3. Merge/rank candidates as today (`legacyMerge` / `quotaMerge`, unchanged).
-4. Return `new RecallResult(ranked, unmodifiable(degradedChannels))`.
+4. Return `new RecallResult(ranked, unmodifiableSet(degradedChannels))`.
 
-`recallPrimary` (primary=true) returns `RecallResult` with an empty
-`degradedChannels` set; primary failures still throw before any result is built.
+`recallPrimaryDetailed` returns a `RecallResult` with an empty `degradedChannels`
+set; primary failures still throw before any result is built.
 
 ## Response Header
 
-Set by `RecommendationService.V1` and the `/v2/recommend` handler when
-`result.degradedChannels()` is non-empty:
+`X-Recall-Degraded` is set when the recall degraded ≥1 non-primary channel:
+
+- **V1** (`RecommendationService.V1`) reads `RecallResult.degradedChannels()` from
+  `recallService.recallDetailed(...)`.
+- **V2** (`RecommendationService.V2` → `RecommendationOrchestrator`): the orchestrator
+  calls `recallDetailed(...)`, and writes the comma-joined degraded set into the
+  existing `RecommendationResult.trace()` map under key `degradedChannels` (alongside
+  `candidateCount`/`rankedCount`). The V2 handler reads
+  `result.trace().get("degradedChannels")` and sets the header.
 
 ```
 X-Recall-Degraded: momentum,trending
 ```
 
 Absent on full-quality responses — its presence is the per-request alert. Comma-
-joined channel names in insertion order. Not set on error responses.
+joined channel names in insertion order. Not set on error responses. (The V2 path
+also surfaces the same value in the JSON `trace` map by construction.)
 
 ## `/health/load` Response
 
 ```json
 {
   "recall": {
-    "bulkhead": { "poolSize": 16, "active": 16, "queued": 812, "rejected": 1240 },
+    "bulkhead": { "poolSize": 16, "active": 16, "queued": 812 },
     "channelDegraded": {
       "momentum": { "rejected": 90, "timeout": 12 },
       "trending": { "rejected": 45 }
@@ -157,7 +196,8 @@ joined channel names in insertion order. Not set on error responses.
 ```
 
 `degradedRatio` is the primary alerting signal (degraded requests ÷ total recall
-requests). `bulkhead.rejected` is monotonic since process start; `queued`/`active`
+requests). `channelDegraded[*].rejected` is the authoritative bulkhead-rejection
+count for this path (see the caveat under component 3); `queued`/`active`
 are instantaneous. Zero traffic yields `degradedRatio: 0.0` (never `NaN`).
 
 ## Testing
