@@ -33,25 +33,25 @@ A compact Maven workspace demonstrating recommendation-system serving, retrieval
 | Concept | Key Components |
 |---|---|
 | Load Balancing | `ApplicationLoadBalancer` (L7), capacity-weight feedback (`X-Capacity-Weight` / `suggestedWeight`), gateway health-checked upstream endpoint groups (`UpstreamEndpointGroups`) — see [Load Balancing](#load-balancing) |
-| Caching | `MultiLevelEmbeddingCache` (L1/L2/L3), `TtlSingleFlightCache`, `LogicalExpiryEmbeddingCache`, `RecommendationCache`, `LlmResponseCache`, CloudFront edge cache |
+| Caching | `MultiLevelEmbeddingCache` (L1/L2/L3), `TtlSingleFlightCache`, `LogicalExpiryEmbeddingCache`, `RecommendationCache`, `LlmResponseCache`, CloudFront edge cache — see [Hot-key and cache controls](#hot-key-and-cache-controls), [Pipeline Optimizations](#pipeline-optimizations) |
 | Database Sharding | `ShardedRecordStore`, `ShardedTopKStore`, versioned `ShardTopology` (`shard:topology`), online reshard via `POST /shards/topology` — see [Sharded Record Store](#sharded-record-store) |
 | Replication | `RedisReadReplicaRouter` + `RoutingRedisExecutor` (AZ-aware replica reads), Redis Sentinel failover — see [Redis Read Replicas](#redis-read-replicas) |
-| CAP Theorem | Read-your-writes after outbox commit, generation dual-read during a reshard window, tunable AZ-local vs primary reads (`RoutingRedisExecutor`) |
-| Consistent Hashing | `ConsistentHashRing`, `ShardTopologyProvider` (30 s topology refresh, generation dual-read on migration) |
+| CAP Theorem | Read-your-writes after outbox commit, generation dual-read during a reshard window, tunable AZ-local vs primary reads (`RoutingRedisExecutor`) — see [Durable Eventual Consistency](#durable-eventual-consistency) |
+| Consistent Hashing | `ConsistentHashRing`, `ShardTopologyProvider` (30 s topology refresh, generation dual-read on migration) — see [Sharded Record Store](#sharded-record-store) |
 | Messaging Queues | `AsyncEventPublisher` (`KafkaAsyncEventPublisher` / `SqsAsyncEventPublisher`), Kafka → Flink → Redis pipeline (`OnlineFeatureStreamingJob`) — see [Event Publishers](#event-publishers-message-queues) |
-| Rate Limiting | `TokenBucket`, `GatewayRateLimiter` (per `(route, principal)`), `LlmTokenRateLimiter` (token-budget), `RedisRateLimiter` (distributed) |
-| API Gateway | `MicroserviceGatewayServer`, `MicroserviceRouteTable`, `RouteCircuitBreaker`, `GatewayRateLimiter`, `LlmProxyService` |
-| MicroService | Four independently runnable services (`6010`/`7010`/`8080`/`8010`) behind `MicroserviceGatewayServer`; clean-architecture `api`/`application`/`domain`/`infrastructure` layers |
+| Rate Limiting | `TokenBucket`, `GatewayRateLimiter` (per `(route, principal)`), `LlmTokenRateLimiter` (token-budget), `RedisRateLimiter` (distributed) — see [Gateway rate limiting](#rate-limiting-gatewayratelimiter), [Model Rate Limiting](#model-rate-limiting) |
+| API Gateway | `MicroserviceGatewayServer`, `MicroserviceRouteTable`, `RouteCircuitBreaker`, `GatewayRateLimiter`, `LlmProxyService` — see [Microservice Gateway](#microservice-gateway) |
+| MicroService | Four independently runnable services (`6010`/`7010`/`8080`/`8010`) behind `MicroserviceGatewayServer`; clean-architecture `api`/`application`/`domain`/`infrastructure` layers — see [Microservice Gateway](#microservice-gateway), [Project Layout](#project-layout) |
 | Service Discovery | Redis-backed registry (`ServiceRegistrar`, `ServiceRegistryStore`, `RegistryBackedUpstreams`, `svc:registry:<name>`) with static-route fallback, Cloud Map 30 s DNS TTL — see [Service Registry](#service-registry) |
 | CDNS | CloudFront edge (`scripts/create-cdn-distribution.sh`), origin lockdown (`GatewayOriginSecret` + `x-origin-secret`), nginx local stand-in (`docker-compose.cdn.yml`) — see [CDN Edge](#cdn-edge) |
 | DB Indexing | `MillionScalePaginationSql` (covering-index / keyset / delayed-join), `FORCE INDEX` plan pinning (`MySqlIndexContractTest`), `MySqlClient` — see [MySQL Index Inventory](#mysql-index-inventory) |
-| Partitioning | Consistent-hash shard partitions (`ConsistentHashRing`), windowed top-K shards (`topk:<window>:s0..s3`), Kafka topic partitions, keyset cursor windows (`/v2/recommend`) |
+| Partitioning | Consistent-hash shard partitions (`ConsistentHashRing`), windowed top-K shards (`topk:<window>:s0..s3`), Kafka topic partitions, keyset cursor windows (`/v2/recommend`) — see [Sharded Record Store](#sharded-record-store), [Online Serving](#online-serving) |
 | Eventual Consistency | `OutboxRelay` + `DurableEventPublisher` (transactional outbox), `OutboxReconciler`, generation dual-read, read-your-writes — see [Durable Eventual Consistency](#durable-eventual-consistency) |
-| WebSockets | No raw WebSocket; real-time push is SSE streaming passthrough in the LLM proxy (`LlmProxyService`, `text/event-stream`) over the Kafka → Flink → Redis streaming backbone |
+| WebSockets | No raw WebSocket; real-time push is SSE streaming passthrough in the LLM proxy (`LlmProxyService`, `text/event-stream`) over the Kafka → Flink → Redis streaming backbone — see [LLM Gateway](#llm-gateway) |
 | Scalability | HPA overlays (`k8s/base` + EKS), `AutoScalingGroup` / `InstanceProvisioner`, `OnlineAdmissionControl`, capacity sizing (`OnlineCapacityService`) — see [Capacity Planning](#capacity-planning) |
 | Fault Tolerance | `CircuitBreaker` / `RouteCircuitBreaker`, `WorkerBulkhead`, `LoadShedder` / `OnlineLoadShedder`, `ChannelHealthMonitor` backoff, `FaultInjector`, multi-region DR — see [Overload Protection](#overload-protection) |
-| Monitoring | `InferenceMetricsService` / `OnlineServingMetricsService` (Micrometer), Prometheus `/metrics`, health endpoints, `GcEventTracker` / `JvmMemoryMonitor`, `TraceIdAspect` |
-| AuthN and AuthZ | Edge auth `GatewayAuthenticator` (API key / `CognitoJwtVerifier` JWT) → `x-authenticated-*` propagation, `AdminTokenGuard` operator token, `GatewayOriginSecret` |
+| Monitoring | `InferenceMetricsService` / `OnlineServingMetricsService` (Micrometer), Prometheus `/metrics`, health endpoints, `GcEventTracker` / `JvmMemoryMonitor`, `TraceIdAspect` — see [Metrics (`/metrics`)](#metrics-metrics), [Capacity Planning](#capacity-planning) |
+| AuthN and AuthZ | Edge auth `GatewayAuthenticator` (API key / `CognitoJwtVerifier` JWT) → `x-authenticated-*` propagation, `AdminTokenGuard` operator token, `GatewayOriginSecret` — see [Authentication](#authentication-gatewayauthenticator) |
 
 ![Architecture](recsys-architecture.png)
 [Architecture Diagram (interactive)](https://htmlpreview.github.io/?https://github.com/lingduoduo/Recsys-Backend-Service/blob/main/recsys-architecture.html)
@@ -896,9 +896,11 @@ curl -X POST "http://localhost:8010/api/llm/api/generate" \
 
 ---
 
+# System Design
+
 ## SQL Use Cases
 
-SQL support is opt-in and intentionally small. The serving hot paths use Redis/ONNX by default, while MySQL is available for product-style views that need durable relational data, deep pagination, counts, and ad hoc filtering. The relevant backend pieces are:
+This section is an exercise in **polyglot persistence with keyset pagination**: the serving hot paths stay on Redis/ONNX, while an opt-in, intentionally small MySQL read model backs product-style views that need durable relational data, deep pagination, counts, and ad hoc filtering — trading a second datastore for relational query power kept off the latency-critical path. The relevant backend pieces are:
 
 - `MillionScalePaginationSql` — emits MySQL-friendly covering-index, keyset, delayed-join, and count queries.
 - `MySqlClient` — read-only JDBC helper backed by a lazily-created HikariCP pool.
@@ -1163,7 +1165,7 @@ Keep SQL reads off latency-critical recommendation paths unless the data is inde
 
 ## Microservice Gateway
 
-`MicroserviceGatewayServer` is the single public edge for the local microservice topology. It strips the route prefix and proxies to the right backend, while adding circuit breaking, per-`(route, principal)` token-bucket rate limiting, edge auth (API key or Cognito JWT) with identity propagation and credential stripping, and a dedicated LLM proxy with token budgets and response caching. All four services sit behind it — clients only need to know one hostname and port.
+This section implements the **API Gateway** pattern: `MicroserviceGatewayServer` is the single public edge that concentrates cross-cutting concerns — route prefix-strip and proxy, per-route circuit breaking, per-`(route, principal)` token-bucket rate limiting, edge auth (API key or Cognito JWT) with identity propagation and credential stripping, and a dedicated LLM proxy with token budgets and response caching. The tradeoff is one shared choke point (mitigated by health-checked upstreams and per-route breakers) in exchange for backends that stay simple and clients that learn just one hostname and port. All four services sit behind it.
 
 ### Route table
 
@@ -1396,7 +1398,7 @@ curl -v -X POST http://localhost:8010/api/llm/api/generate \
 
 ## CDN Edge
 
-An optional CloudFront distribution sits in front of the API Gateway ALB to terminate viewer TLS at the edge, drop attack traffic before it reaches the region, accelerate the uncacheable-but-dominant `POST /api/recommend` path over the AWS backbone, and cache the two genuinely shared read routes. It is created out-of-band by an idempotent script, matching how the WAF WebACL and Route53 records are already managed — this repo has no IaC toolchain.
+This section applies **edge caching and edge termination (CDN)**: an optional CloudFront distribution fronts the API Gateway ALB to terminate viewer TLS at the edge, drop attack traffic before it reaches the region, accelerate the uncacheable-but-dominant `POST /api/recommend` path over the AWS backbone, and cache the two genuinely shared read routes. The tradeoff is added edge infrastructure and cache-invalidation discipline in exchange for lower viewer latency and origin offload. It is created out-of-band by an idempotent script, matching how the WAF WebACL and Route53 records are already managed — this repo has no IaC toolchain.
 
 **The primary route earns nothing from caching.** `POST /api/recommend` is POST-only and personalized per `userId`, so CloudFront forwards 100% of those requests to the origin — the cache hit ratio there is zero, by design. The CDN's value on that path is edge TLS termination, WAF enforcement, and AWS-backbone acceleration, not caching. Caching is real but narrow: only the two catalog reads below.
 
@@ -1480,7 +1482,7 @@ Full rollout order (reversing the last two steps locks all traffic out of the or
 
 ## Service Registry
 
-Opt-in, Redis-backed service discovery for the gateway → backend hop. It is **off by default** (`SERVICE_REGISTRY_ENABLED=false`): the gateway opens no Redis connection and resolves every upstream from its static route address (env var / configmap), exactly as documented under [Microservice Gateway](#microservice-gateway). Turn it on to let backends advertise their own address and the gateway follow them without a redeploy.
+This section implements **service discovery** (registry-based, with static fallback): opt-in, Redis-backed resolution for the gateway → backend hop. It is **off by default** (`SERVICE_REGISTRY_ENABLED=false`) — the gateway opens no Redis connection and resolves every upstream from its static route address (env var / configmap), exactly as documented under [Microservice Gateway](#microservice-gateway). Turning it on lets backends advertise their own address and the gateway follow them without a redeploy — trading a Redis dependency for dynamic membership, and degrading to the static addresses (never failing) if the registry is unavailable.
 
 When `SERVICE_REGISTRY_ENABLED=true`:
 
@@ -1533,7 +1535,7 @@ The Prometheus [`/metrics`](#metrics-metrics) endpoint publishes registry meters
 
 ## Overload Protection
 
-Layered admission control keeps the serving paths responsive under load instead of collapsing — a request that can't be served promptly is rejected fast (`429`/`503` with `Retry-After`) rather than queued unbounded. The full set of layers (per-service concurrency caps, bounded recall queues, load shedders, circuit breakers, and graceful drain) is documented in [docs/runbooks/overload-protection.md](docs/runbooks/overload-protection.md).
+This section implements **load shedding and admission control** for fault tolerance: layered gates keep the serving paths responsive under load instead of collapsing — a request that can't be served promptly is rejected fast (`429`/`503` with `Retry-After`) rather than queued unbounded, trading a few rejected requests for bounded latency and protected capacity for the rest. The full set of layers (per-service concurrency caps, bounded recall queues, load shedders, circuit breakers, and graceful drain) is documented in [docs/runbooks/overload-protection.md](docs/runbooks/overload-protection.md).
 
 **Catalog / Recommendation Serving (6010)** — an admission gate caps in-flight `/getrecommendation` work and drains via `/health` past a utilization threshold:
 
@@ -1795,7 +1797,7 @@ Options: `--vector-size=16`, `--window-size=5`, `--min-count=1`, `--max-iter=10`
 
 ## A/B Testing
 
-`ABTestService` assigns users to variants deterministically by hashing `userId:layerName` modulo `trafficSplitNumber`. The assigned variant is returned in every response so experiment outcomes can be attributed to the right bucket.
+This section implements **online experimentation (A/B testing) with deterministic, stateless bucketing**: `ABTestService` assigns users to variants by hashing `userId:layerName` modulo `trafficSplitNumber`, so assignment is stable across requests with no per-user store — trading a fixed hash-based split for zero assignment state — and the variant is returned in every response for attribution.
 
 **Bucketing:**
 
@@ -1848,7 +1850,7 @@ curl http://localhost:8080/health/ab-tests
 
 ## Feature Flags
 
-`FeatureFlagService` provides boolean feature flags with safe per-flag defaults. Providers are evaluated in order:
+This section implements **feature flagging for progressive delivery**: `FeatureFlagService` provides boolean flags with safe per-flag defaults, so behavior can be toggled without a redeploy and any provider failure falls back to the declared default — trading a runtime lookup for decoupled release and safe degradation. Providers are evaluated in order:
 
 1. Environment overrides.
 2. PostHog, when enabled and configured.
@@ -1969,7 +1971,7 @@ Redis key conventions:
 
 ## Online Serving
 
-The Kafka/Flink/Redis pipeline provides the real-time signals consumed by port `7010`. See [streaming/online-serving/README.md](streaming/online-serving/README.md) for full setup.
+This section is the **streaming / real-time data pipeline**: a partitioned Kafka → Flink → Redis flow provides the low-latency signals consumed by port `7010` — trading batch simplicity for fresh per-user history and windowed trending, with per-user ordering preserved by partition-keyed events. See [streaming/online-serving/README.md](streaming/online-serving/README.md) for full setup.
 
 Quick start (loads sample features without Flink):
 
@@ -2010,7 +2012,7 @@ The production partition contract is `movie_events_v2` with **24 partitions**, s
 
 ## Sharded Record Store
 
-`ShardedRecordStore` distributes event, feature, and log records across N Redis shards using consistent hashing. `ConsistentHashRing` places each shard on a 64-bit ring with **150 virtual nodes per shard** (keyed by the shared `Hashing.fnv1a64` FNV-1a primitive, also reused by `StableBucketer` for A/B bucketing) so device IDs spread uniformly and a resize moves only ~1/N of keys. Each write fans out to an HSET (full record) + ZADD (device index for per-device reads) + XADD (shard stream for ordered replay). `SHARDED_RECORD_SHARD_COUNT` (default `2`) is the **bootstrap** shard count for a *versioned topology* that can be resharded at runtime without a redeploy — see [Reshard at runtime](#reshard-at-runtime-versioned-topology) below.
+This section implements **horizontal sharding via consistent hashing**, trading a single hot node for rebalance cost on resize: `ShardedRecordStore` distributes event, feature, and log records across N Redis shards. `ConsistentHashRing` places each shard on a 64-bit ring with **150 virtual nodes per shard** (keyed by the shared `Hashing.fnv1a64` FNV-1a primitive, also reused by `StableBucketer` for A/B bucketing) so device IDs spread uniformly and a resize moves only ~1/N of keys. Each write fans out to an HSET (full record) + ZADD (device index for per-device reads) + XADD (shard stream for ordered replay). `SHARDED_RECORD_SHARD_COUNT` (default `2`) is the **bootstrap** shard count for a *versioned topology* that can be resharded at runtime without a redeploy — see [Reshard at runtime](#reshard-at-runtime-versioned-topology) below.
 
 The HTTP façade is mounted at `/shards/` on port `7010`.
 
@@ -2090,7 +2092,7 @@ curl -X POST http://localhost:7010/shards/topology \
 
 ## Redis Read Replicas
 
-`RedisReadReplicaRouter` splits the Redis traffic so writes stay on the primary while reads spread across AZ-local replicas — keeping the hot read path cheap and available even if the primary's AZ is briefly unreachable.
+This section implements **read replication with AZ-aware read routing**: `RedisReadReplicaRouter` splits Redis traffic so writes stay on the single primary while reads spread across AZ-local replicas — trading read-after-write immediacy on replicas for a cheaper, more available hot read path that survives the primary's AZ being briefly unreachable.
 
 - **Writes** always go to the primary pool (`writablePool()`), the single write leader.
 - **Reads** prefer the replica in the same Availability Zone as the calling instance (`AWS_AZ`), fall back to a random replica, and fall back again to the primary when no replicas are configured.
@@ -2109,7 +2111,7 @@ When `REDIS_REPLICA_NODES` is unset the router transparently routes every read t
 
 ## Event Publishers (Message Queues)
 
-Behavioral and experiment events leave the serving path through a bounded, **fire-and-forget** `AsyncEventPublisher`: requests enqueue onto an in-memory ring buffer and a background thread drains it in batches to a broker. A broker outage or backpressure never blocks or fails a request — the default (log-only) publisher is used until a transport is configured, so local dev, tests, and the demo need no broker. Three transports are wired:
+This section applies **asynchronous messaging with a bounded producer queue**: behavioral and experiment events leave the serving path through a **fire-and-forget** `AsyncEventPublisher` — requests enqueue onto an in-memory ring buffer and a background thread drains it in batches to a broker. The tradeoff is at-most-once delivery (a broker outage or backpressure drops events but never blocks or fails a request); for stronger guarantees see [Durable Eventual Consistency](#durable-eventual-consistency). The default log-only publisher is used until a transport is configured, so local dev, tests, and the demo need no broker. Three transports are wired:
 
 | Producer | Default (no broker) | SQS | Kafka |
 |---|---|---|---|
@@ -2153,7 +2155,7 @@ recsys:
 
 ## Durable Eventual Consistency
 
-The `AsyncEventPublisher` above is deliberately fire-and-forget: a broker outage silently drops events. That is the right default for the demo path, but some callers need stronger guarantees. This subsystem adds them — and is **opt-in and off by default** (`ONLINE_DURABLE_EVENTS_ENABLED=false`, `MYSQL_ENABLED=false`). Ordinary online-serving reads stay on the existing replica-and-cache path (see [Redis Read Replicas](#redis-read-replicas)); nothing here changes their behavior. When enabled it provides:
+This subsystem trades the fire-and-forget default for **eventual consistency with delivery guarantees**, built from three canonical mechanisms — a **transactional outbox**, **bounded read-your-writes** session consistency, and **automated reconciliation** — at the cost of extra MySQL writes and operational surface. The `AsyncEventPublisher` above is deliberately fire-and-forget: a broker outage silently drops events, which is the right default for the demo path but not for callers that need stronger guarantees. It is **opt-in and off by default** (`ONLINE_DURABLE_EVENTS_ENABLED=false`, `MYSQL_ENABLED=false`). Ordinary online-serving reads stay on the existing replica-and-cache path (see [Redis Read Replicas](#redis-read-replicas)); nothing here changes their behavior. When enabled it provides:
 
 1. a **MySQL transactional outbox** so accepted online events and saga transitions cannot be lost by a broker or process crash;
 2. **bounded read-your-writes** — a signed consistency token a caller presents on a follow-up recommendation read to wait (up to 2s) for their own write to become visible; and
@@ -2267,7 +2269,7 @@ MySQL connection settings (`MYSQL_URL`, `MYSQL_USER`, `MYSQL_PASSWORD`, pool siz
 
 ## Load Balancing
 
-Two layers cooperate to keep traffic on healthy, non-overloaded instances:
+This section implements **load balancing with capacity-aware feedback** — two layers cooperate to keep traffic on healthy, non-overloaded instances, trading a little per-response signaling for real-time avoidance of saturated nodes:
 
 **Capacity-weight feedback (in-process).** Every Model-Serving response carries an `X-Capacity-Weight: <0–100>` header, and `GET /health/load` / `GET /online/ops` expose the same `suggestedWeight`. The weight drops as in-flight concurrency approaches the cap, letting an external load balancer (ALB target-group weights, Envoy, or a service mesh) shift traffic away from a saturated instance in real time, and `/health/ready` returns `503` past `ONLINE_DRAIN_UTILIZATION` so the LB drains the node. See [Health probes](#health-probes).
 
@@ -2322,7 +2324,7 @@ curl -X POST http://localhost:8080/api/v1/recommend \
 
 ## Kubernetes & EKS
 
-The same image runs every service by setting `RECSYS_MAIN_CLASS`.
+This section covers **horizontal scalability and multi-AZ / multi-region fault tolerance** on Kubernetes: the same image runs every service by setting `RECSYS_MAIN_CLASS`, scaled by HPA and spread across AZs and regions so no single zone or region failure takes the service down — trading orchestration complexity for elasticity and resilience.
 
 ```bash
 # Build image
@@ -2378,7 +2380,7 @@ The overlay manifests live under [k8s/eks/](k8s/eks/); the WAF WebACL wiring is 
 
 ## Capacity Planning
 
-Each architectural decision in this repo was made with a specific production scale in mind. The table below maps that target to the design choice it drives — useful context when adapting the system to a different load profile.
+This section is the **capacity model** behind the scalability choices: each architectural decision was made with a specific production scale in mind, and the table below maps that target to the design choice it drives — trading provisioned headroom for cost, and useful context when adapting the system to a different load profile.
 
 | Dimension | Target | Design decision |
 |---|---:|---|
@@ -2469,7 +2471,7 @@ MAT_PARSE_HEAP_DUMP=/path/to/ParseHeapDump \
 
 ## Pipeline Optimizations
 
-A log of specific fixes applied to the serving path, targeting OOM, Full GC, thread blocking, and CPU spikes.
+This section is a **latency and throughput optimization log** for the request path — the concrete fixes that keep it allocation-light and lock-free at the capacity targets, targeting OOM, Full GC, thread blocking, and CPU spikes.
 
 | Component | Problem | Fix |
 |---|---|---|
@@ -2491,7 +2493,7 @@ A log of specific fixes applied to the serving path, targeting OOM, Full GC, thr
 
 ## LLM Gateway
 
-The gateway includes an LLM-optimized proxy at `/api/llm/*`. Enable it by setting `LLM_SERVICE_URL`:
+This section extends the **API Gateway** with an LLM-optimized reverse proxy at `/api/llm/*` — layering **SSE streaming passthrough**, token-aware **rate limiting**, response **caching**, and a circuit breaker around a slow, expensive upstream, trading proxy complexity for cost control and resilience. Enable it by setting `LLM_SERVICE_URL`:
 
 ```bash
 export LLM_SERVICE_URL=http://localhost:11434   # Ollama
@@ -2531,7 +2533,7 @@ curl http://localhost:8010/health | jq '.services | with_entries(select(.key | t
 
 ## Model Rate Limiting
 
-`ModelRateLimiter` applies a per-user token-bucket limit to `POST /api/v1/recommend` before the global concurrency semaphore — preventing one high-traffic user from monopolising ONNX inference slots.
+This section implements **per-user rate limiting (token bucket)**: `ModelRateLimiter` caps `POST /api/v1/recommend` per user before the global concurrency semaphore — trading a hard per-user ceiling for fair access, so one high-traffic user can't monopolise scarce ONNX inference slots.
 
 ```bash
 # Enable: 5 req/s per user, burst 10
@@ -2565,7 +2567,7 @@ done
 
 ## AWS Saga Orchestration
 
-`com.recsys.application.saga` provides durable multi-step orchestration for eventual-consistency workflows, backed by AWS Step Functions.
+This section implements the **Saga pattern** for distributed transactions: `com.recsys.application.saga` provides durable multi-step orchestration with compensating rollback (or Try/Confirm/Cancel) for eventual-consistency workflows — trading atomic ACID commits for cross-service coordination — backed by AWS Step Functions.
 
 | Class | Pattern | Use when |
 |---|---|---|
