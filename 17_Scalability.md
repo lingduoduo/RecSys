@@ -50,7 +50,13 @@ Supporting mechanisms:
 - **DR warm standby (us-west-2)** — a strategic-merge patch drops `minReplicas`
   to ~50% of primary (gateway/catalog/online 2→1, model 3→2) while inheriting
   `maxReplicas` so HPA + cluster-autoscaler can surge to full capacity on
-  failover.
+  failover. On cutover an operator **pre-scales** the standby back to the primary
+  baseline via `scripts/dr-standby-capacity.sh promote`, which applies the
+  `k8s/eks-us-west-2-active` overlay **HPA-documents-only** (`kubectl kustomize |
+  filter HorizontalPodAutoscaler docs | apply -f -`, deliberately *not* `apply -k`,
+  so it never rolls Deployments to the out-of-band placeholder image digest);
+  `demote` restores the warm floor and `verify` is an offline drift guard against
+  `k8s/base`.
 
 **Two things labeled "autoscaling" that are NOT controllers:**
 
@@ -59,7 +65,13 @@ Supporting mechanisms:
   but no metric-driven desired-capacity computation and no cooldowns**.
   `setDesiredCapacity(int)` takes the target as a caller-supplied argument; the
   only guardrails are `ScalingConfig.clamp` (min/max) and least-loaded-AZ
-  placement. Externally triggered.
+  placement. Externally triggered. The missing signal→capacity "brain" now exists
+  as a **tested reference** — `application/autoscaling/CapacityController` does
+  target-tracking (`desired = ⌈running × util ÷ 0.7⌉`) with a surge step and
+  **asymmetric cooldowns** (60s scale-out / 300s scale-in); `AsgCapacityActuator`
+  drives this `AutoScalingGroup` and `OnlineCapacitySignalSource` maps an
+  `OnlineCapacityService` snapshot to a `(qpsUtilization, overloaded)` signal — but
+  **no server schedules it**, so HPA is still the only autoscaler in production.
 - `health/OnlineCapacityService` — **observability of static sizing
   assumptions**, not a controller. It surfaces constants (`ONLINE_TARGET_DAU`
   2,000,000 / `ONLINE_PEAK_QPS` 8,000 / `ONLINE_PEAK_TPS` 20,000) plus live
@@ -93,7 +105,13 @@ graceful drain (Armeria 1s quiet / 30s timeout, under k8s
 `RejectedExecutionException` immediately, bounding memory and tail latency.
 Per-channel `RECALL_CHANNEL_TIMEOUT_MS` (default **200ms**) via
 `CompletableFuture.orTimeout` bounds each recall channel's tail contribution
-independently; timed-out non-primary channels degrade to empty results.
+independently; timed-out non-primary channels degrade to empty results. That
+degradation is **observable** on catalog 6010: `GET /health/load` (`CatalogLoadService`)
+reports `recall.degradedRatio` (fraction of non-primary recall *requests* that
+degraded), a per-channel `recall.channelDegraded` breakdown
+(`REJECTED`/`TIMEOUT`/`ERROR`), and live bulkhead `active`/`queued`; degraded
+responses also carry an `X-Recall-Degraded` header on `/getrecommendation`,
+`/recommendation`, and `/v2/recommend` (observe-only, request outcomes unchanged).
 
 ### Rate limiting (`ratelimit/TokenBucket` primitive)
 
@@ -102,7 +120,7 @@ independently; timed-out non-primary channels degrade to empty results.
 | `GatewayRateLimiter` | per-(route, principal), per instance | bounded Caffeine cache (`GATEWAY_RL_MAX_PRINCIPALS` 100k); 429 on deny |
 | `ModelRateLimiter` | per-user, per instance | access-ordered LRU capped at max-users (10k); fairness between users |
 | `LlmTokenRateLimiter` | token-count-aware | consumes `max_tokens` per call so large-context requests can't drain the quota |
-| `RedisRateLimiter` | **global / cluster-wide** | distributed fixed-window; local fast-path skips Redis for first 70%; **fails open** on Redis error |
+| `RedisRateLimiter` | **global / cluster-wide** | distributed **weighted sliding-window** (rolling rate ≈1× the limit, not the ~2× a fixed window admits across a boundary); **no local fast-path** — every request consults Redis; **fails open** on Redis error (embeds a 5-fail/30s circuit breaker) |
 
 Rule of thumb: **rate limiters fail open** (disabled at 0, allow on Redis error);
 **load shedders are always on**. The online Redis QPS limit is the only *global*
@@ -196,22 +214,47 @@ design).
 | Caching / CDN | Flattens origin load under spikes; edge-offloads shared catalog reads |
 | Keyset pagination | Page latency stays flat as tables grow (no OFFSET cliff) |
 
-## 5. Sharp edges worth flagging
+## 5. Sharp edges — status after the 2026-07-20 hardening pass
 
-1. **The first overload symptom on catalog 6010 is not a 429 — it's silent
-   recall-quality degradation.** The recall bulkhead (~`cores×10` task ceiling)
-   saturates *before* the 64-concurrency gate rejects, so non-primary channels
-   drop to empty results (HTTP 200, fewer candidates) before any 429 appears.
-   Watch bulkhead rejection metrics, not just 429 rates.
-2. **`AutoScalingGroup` is not a real autoscaler** — no signal→capacity logic, no
-   cooldowns. Only HPA reacts to load today; anything relying on the ASG
-   abstraction to *react* needs an external controller.
-3. **All overload defaults are documented as unvalidated starting points**, not
-   load-tested knees. Tune 64-concurrency / 0.95-drain / 200ms-channel-timeout
-   per service against real latency curves.
-4. **`RedisRateLimiter` fixed-window can admit ~2× the limit across a window
-   boundary** (accepted), and it's the only global limit — every other ceiling is
-   per-instance and moves as replicas scale.
-5. **DR warm standby runs at ~50% minReplicas** (max inherited for surge), so a
-   region failover leans on HPA + cluster-autoscaler to catch up — expect a
-   cold-ish scale-out window right after cutover.
+The original investigation flagged five sharp edges; four have since been
+instrumented or fixed (each as its own spec→plan→build cycle), leaving two
+genuinely deferred assumptions. Current status:
+
+1. **Silent recall-quality degradation now has a signal — fixed (PR #202).** On
+   catalog 6010 the recall bulkhead (~`cores×10` task ceiling) can still saturate
+   *before* the 64-concurrency gate rejects — on **≤6-core** boxes non-primary
+   channels drop to empty results (HTTP 200, fewer candidates) before any 429. That
+   ordering is now **observable** via `GET /health/load` (`recall.degradedRatio`,
+   per-channel `recall.channelDegraded`, live bulkhead `active`/`queued`) plus the
+   `X-Recall-Degraded` response header — watch those, not just 429 rates. The
+   ordering itself is pinned by a characterization harness (edge #3 below).
+2. **`AutoScalingGroup` still isn't a live autoscaler, but the loop is now closed
+   by a tested reference — partially addressed.** `application/autoscaling/CapacityController`
+   supplies the missing signal→capacity brain (target-tracking `⌈running × util ÷
+   0.7⌉`, surge step, asymmetric 60s/300s cooldowns) over the existing ASG via
+   `AsgCapacityActuator`. **It is a reference — no server schedules it**, so HPA is
+   still the only production autoscaler and anything relying on the ASG to *react*
+   needs an external trigger.
+3. **Overload defaults are now characterized, not yet prod-tuned — mechanism
+   addressed (PR #206).** Three opt-in `@Tag("load")` harnesses lock in each gate's
+   invariants and give a repeatable way to find its knee (shedder never exceeds
+   `max` and drains at `⌈0.95×64⌉ = 61`; bulkhead accepts exactly `pool+queue` then
+   rejects immediately; the smaller of {64 gate, `cores×10` ceiling} trips first).
+   See [docs/runbooks/overload-characterization.md](docs/runbooks/overload-characterization.md).
+   They characterize the *mechanism* on the box that runs them — tuning
+   64-concurrency / 0.95-drain / 200ms-timeout against real latency curves in a
+   prod-like environment remains deferred.
+4. **`RedisRateLimiter` no longer admits ~2× at the window boundary — fixed
+   (PR #203).** It is now a weighted **sliding-window** counter (rolling rate ≈1×
+   the limit) and the per-instance local fast-path was **removed** (it leaked
+   `N × fraction × limit` before the global limit engaged), so every request
+   consults Redis. Fail-open + embedded circuit breaker kept. Caveat: the window
+   bucket is stamped from each instance's wall clock, so the ≈1× bound assumes
+   NTP-synced clocks (proven by a `@Tag("docker")` boundary test with an injected
+   clock). It's still the only *global* ceiling — every other limit is per-instance
+   and moves with replica count.
+5. **DR warm standby can now be pre-scaled on failover — fixed (PR #204).** The
+   standby still *sits* at ~50% minReplicas to save cost, but an operator promotes
+   it to the primary baseline in one step (`dr-standby-capacity.sh promote`, HPA-docs
+   only). It remains a **manual** step, so expect a brief scale-out window if a
+   cutover lands before promote runs.
