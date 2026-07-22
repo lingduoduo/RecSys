@@ -3,6 +3,10 @@
 The system sheds overload in layers. This documents what each layer protects, its shape,
 and how to tune it. Design: `docs/superpowers/specs/2026-07-08-overload-protection-design.md`.
 
+> Overload protection is one facet of the system's fault tolerance — see the
+> [Fault Tolerance investigation](../../18_Fault_Tolerance.md) for how these gates fit
+> alongside circuit breakers, graceful degradation, and multi-region survival.
+
 ## Layers
 
 | Layer | Mechanism | Scope | Config | Response |

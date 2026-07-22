@@ -49,7 +49,7 @@ A compact Maven workspace demonstrating recommendation-system serving, retrieval
 | Eventual Consistency | `OutboxRelay` + `DurableEventPublisher` (transactional outbox), `OutboxReconciler`, generation dual-read, read-your-writes — see [Durable Eventual Consistency](#durable-eventual-consistency) |
 | SSE streaming | Real-time token streaming via Server-Sent Events (`text/event-stream`) passthrough in the LLM proxy — `LlmProxyService.forwardStreaming` reactively pipes upstream frames straight to the client over a long-lived HTTP/2 connection (`LLM_PING_INTERVAL_MS` keepalive); the streaming path skips response caching and retry-on-429 — see [LLM Gateway](#llm-gateway) |
 | Scalability | Compute scales out via 4 CPU/mem HPAs (`k8s/base/hpa.yaml`, model-serving tuned most aggressively); data tier scales horizontally (consistent-hash record shards + live reshard, 4× replicated top-K shards, 24-partition Kafka/Flink @ 50k evt/s, AZ-local Redis read replicas); per-instance overload gates (`OnlineLoadShedder` / `OnlineAdmissionControl`, `WorkerBulkhead`) fail fast so HPA can react, with recall degradation observable via `GET /health/load` (`recall.degradedRatio`) and the gate knees pinned by `@Tag("load")` characterization harnesses ([overload-characterization.md](docs/runbooks/overload-characterization.md)). `AutoScalingGroup` / `InstanceProvisioner` are bounds + AZ-balancing and `OnlineCapacityService` is sizing observability — neither is a metric-driven controller in production (the signal-driven `application/autoscaling/CapacityController` closes that loop as a tested reference, but no server schedules it); DR standby is pre-scaled on failover via `scripts/dr-standby-capacity.sh promote` — see [Capacity Planning](#capacity-planning), [Scalability investigation](17_Scalability.md) |
-| Fault Tolerance | `CircuitBreaker` / `RouteCircuitBreaker`, `WorkerBulkhead`, `LoadShedder` / `OnlineLoadShedder`, `ChannelHealthMonitor` backoff, `FaultInjector`, multi-region DR — see [Overload Protection](#overload-protection) |
+| Fault Tolerance | `CircuitBreaker` / `RouteCircuitBreaker`, `WorkerBulkhead`, `LoadShedder` / `OnlineLoadShedder`, `ChannelHealthMonitor` backoff, `FaultInjector`, fail-open Redis/rate-limiter, graceful drain, multi-region DR — see [Fault Tolerance investigation](18_Fault_Tolerance.md) |
 | Monitoring | `InferenceMetricsService` / `OnlineServingMetricsService` (Micrometer), Prometheus `/metrics`, health endpoints, `GcEventTracker` / `JvmMemoryMonitor`, `TraceIdAspect` — see [Metrics (`/metrics`)](#metrics-metrics), [Capacity Planning](#capacity-planning) |
 | AuthN and AuthZ | Edge auth `GatewayAuthenticator` (API key / `CognitoJwtVerifier` JWT) → `x-authenticated-*` propagation, `AdminTokenGuard` operator token, `GatewayOriginSecret` — see [Authentication](#authentication-gatewayauthenticator) |
 
@@ -143,7 +143,7 @@ curl http://localhost:8010/health
 - [Microservice Gateway](#microservice-gateway)
 - [CDN Edge](#cdn-edge)
 - [Service Registry](#service-registry)
-- [Overload Protection](#overload-protection)
+- [Fault Tolerance](#fault-tolerance)
 - [Configuration](#configuration)
 - [Project Layout](#project-layout)
 - [Model Serving Demo](#model-serving-demo)
@@ -1081,7 +1081,9 @@ mvn test -DexcludedGroups=load -Dgroups=docker -Dtest=MovieCatalogMySqlIntegrati
 `MYSQL_QUERY_TIMEOUT_SECONDS` is the per-statement JDBC deadline (1–30 seconds).
 `MYSQL_READ_MAX_ATTEMPTS` permits one or two total attempts, and
 `MYSQL_READ_RETRY_BACKOFF_MS` sets the 0–1000 ms pause before the single retry. Only transient
-connection failures are retried; timeouts and non-transient failures are propagated without retry.
+connection failures are retried; timeouts and non-transient failures are propagated without retry —
+the classifier and how this maps to the `503`/`504` status contract are covered in the
+[Fault Tolerance investigation](18_Fault_Tolerance.md#4-dependency-resilience--surviving-a-sick-downstream).
 
 The generic `MillionScalePaginationSql` helpers below remain available for other bounded SQL read
 paths. The catalog endpoint uses its dedicated repository and the migrated indexes above.
@@ -1217,7 +1219,7 @@ Opt-in routes (registered only when the env var is set):
 
 ### Upstream health checking
 
-By default the gateway data path wraps every upstream in a health-checked Armeria endpoint group: each backend is probed on an interval and a down backend is dropped from selection, so a request to a dead upstream **fast-fails with `503`** instead of hanging until the timeout. Host resolution and the 30 s Cloud Map DNS cache are unchanged.
+By default the gateway data path wraps every upstream in a health-checked Armeria endpoint group: each backend is probed on an interval and a down backend is dropped from selection, so a request to a dead upstream **fast-fails with `503`** instead of hanging until the timeout (mechanism and all-unhealthy behavior in the [Fault Tolerance investigation](18_Fault_Tolerance.md#4-dependency-resilience--surviving-a-sick-downstream)). Host resolution and the 30 s Cloud Map DNS cache are unchanged.
 
 ```bash
 # Disable probing (e.g. local dev without all backends running)
@@ -1299,15 +1301,7 @@ curl http://localhost:8010/health | jq '{status, services: (.services | to_entri
 
 ### Circuit breaker (`RouteCircuitBreaker`)
 
-Each route has an independent circuit breaker. After `GATEWAY_CB_FAILURE_THRESHOLD` consecutive failures the circuit opens and fast-fails with `503` during the cooldown window — protecting downstream services from traffic during an outage.
-
-```bash
-# Circuit state is visible in each service's health entry
-curl http://localhost:8010/health | jq '.services["model"].circuitState'
-# "CLOSED"   ← healthy
-# "OPEN"     ← tripped; fast-failing
-# "HALF_OPEN"← testing recovery
-```
+Each route has an independent circuit breaker. After `GATEWAY_CB_FAILURE_THRESHOLD` consecutive failures the circuit opens and fast-fails with `503` during the cooldown window — protecting downstream services from traffic during an outage. Circuit state is visible per route at `curl http://localhost:8010/health | jq '.services["model"].circuitState'` (`CLOSED` / `OPEN` / `HALF_OPEN`). The state machine, thresholds, and how the same primitive backs the LLM proxy and the Redis rate limiter are covered in the [Fault Tolerance investigation](18_Fault_Tolerance.md#1-request-tier-resilience--circuit-breakers-bulkheads-fault-injection).
 
 ### Rate limiting (`GatewayRateLimiter`)
 
@@ -1533,24 +1527,22 @@ The Prometheus [`/metrics`](#metrics-metrics) endpoint publishes registry meters
 
 ---
 
-## Overload Protection
+## Fault Tolerance
 
-This section implements **load shedding and admission control** for fault tolerance: layered gates keep the serving paths responsive under load instead of collapsing — a request that can't be served promptly is rejected fast (`429`/`503` with `Retry-After`) rather than queued unbounded, trading a few rejected requests for bounded latency and protected capacity for the rest. The full set of layers (per-service concurrency caps, bounded recall queues, load shedders, circuit breakers, and graceful drain) is documented in [docs/runbooks/overload-protection.md](docs/runbooks/overload-protection.md).
+How the system stays up when things break — circuit breakers, bulkheads, load
+shedding and admission control, channel-health backoff, fail-open Redis and rate
+limiters, graceful drain, and multi-AZ / multi-region survival — is covered in
+depth in the **[Fault Tolerance investigation](18_Fault_Tolerance.md)**, with the
+overload layers' operational tables in
+[docs/runbooks/overload-protection.md](docs/runbooks/overload-protection.md) and
+the gate-characterization harnesses in
+[docs/runbooks/overload-characterization.md](docs/runbooks/overload-characterization.md).
 
-**Catalog / Recommendation Serving (6010)** — an admission gate caps in-flight `/getrecommendation` work and drains via `/health` past a utilization threshold:
-
-| Env var | Default | Purpose |
-|---|---:|---|
-| `CATALOG_MAX_CONCURRENT_REQUESTS` | `64` | In-flight cap before requests are shed |
-| `CATALOG_DRAIN_UTILIZATION` | `0.90` | Utilization where the service reports drain for the load balancer |
-
-**Bounded recall queue (6010 + 7010)** — the shared multi-channel recall fan-out runs on a bounded work queue so a slow Redis or a channel backlog can't grow memory without limit:
-
-| Env var | Default | Purpose |
-|---|---:|---|
-| `RECALL_BULKHEAD_QUEUE_CAPACITY` | `4 × recall pool size` | Max queued recall tasks before overflow is rejected |
-
-The online server (7010) adds its own `ONLINE_MAX_CONCURRENT_REQUESTS` / `ONLINE_DRAIN_UTILIZATION` load shedder, and the model server (8080) its `recsys.health.max-concurrent-requests` cap — see [Configuration](#configuration). All four services share a consistent graceful-shutdown baseline: on `SIGTERM` every server waits for in-flight requests to drain before stopping. The load-shedding services (7010, 8080) additionally flip readiness to `503` and stop admitting new work during the drain; the catalog (6010) and gateway (8010) rely on Kubernetes Endpoint removal to stop new routing and just serve out the drain window.
+The overload-protection env vars (`CATALOG_MAX_CONCURRENT_REQUESTS`,
+`CATALOG_DRAIN_UTILIZATION`, `ONLINE_MAX_CONCURRENT_REQUESTS`,
+`ONLINE_DRAIN_UTILIZATION`, `RECALL_BULKHEAD_QUEUE_CAPACITY`,
+`recsys.health.max-concurrent-requests`) are listed under
+[Configuration](#configuration).
 
 ---
 
@@ -1566,7 +1558,7 @@ The online server (7010) adds its own `ONLINE_MAX_CONCURRENT_REQUESTS` / `ONLINE
 | `LOCAL_EMBEDDING_CACHE_MAX_ENTRIES` | `100000` | Max embeddings in JVM LRU cache |
 | `RECSYS_VECTOR_BACKEND` | `lsh` | `lsh` (approximate) or `exact` |
 | `RECALL_CHANNEL_TIMEOUT_MS` | `200` | Per-channel recall timeout (shared by both serving ports) |
-| `CATALOG_MAX_CONCURRENT_REQUESTS` | `64` | Admission-control in-flight cap ([Overload Protection](#overload-protection)) |
+| `CATALOG_MAX_CONCURRENT_REQUESTS` | `64` | Admission-control in-flight cap ([Fault Tolerance](#fault-tolerance)) |
 | `CATALOG_DRAIN_UTILIZATION` | `0.90` | Utilization where the service reports drain |
 | `RECALL_BULKHEAD_QUEUE_CAPACITY` | `4 × recall pool` | Bounded recall work queue (also on 7010) |
 | `MYSQL_ENABLED` | `false` | Enable the MySQL-backed `/v1/catalog/movies` browse route |
@@ -1594,7 +1586,7 @@ The online server (7010) adds its own `ONLINE_MAX_CONCURRENT_REQUESTS` / `ONLINE
 | `ONLINE_TOPK_CACHE_TTL_MS` | `2000` | Local hot-key cache TTL for the sharded trending store |
 | `ONLINE_MAX_CONCURRENT_REQUESTS` | `64` | Pre-queue in-flight cap before `429`; tune against Redis pool and load tests |
 | `ONLINE_DRAIN_UTILIZATION` | `0.90` | Utilization where `/health/ready` → `503` for drain |
-| `RECALL_BULKHEAD_QUEUE_CAPACITY` | `4 × recall pool` | Bounded recall work queue ([Overload Protection](#overload-protection)) |
+| `RECALL_BULKHEAD_QUEUE_CAPACITY` | `4 × recall pool` | Bounded recall work queue ([Fault Tolerance](#fault-tolerance)) |
 | `ONLINE_REDIS_RATE_LIMIT_QPS` | `0` | Cross-instance Redis rate limit; `0` = disabled |
 | `ONLINE_FEATURE_CACHE_MAX_USERS` | `10000` | Max Redis feature keys in JVM cache |
 | `ONLINE_DURABLE_EVENTS_ENABLED` | `false` | Durably accept `/online/features` feature-view events only when callers provide a stable UUID `eventId` |
@@ -2105,7 +2097,7 @@ export AWS_AZ=us-east-1b
 export REDIS_REPLICA_NODES="redis-b.internal:6379@us-east-1b,redis-c.internal:6379@us-east-1c"
 ```
 
-When `REDIS_REPLICA_NODES` is unset the router transparently routes every read to the primary, so local dev needs no extra config. This complements Redis Sentinel (primary failover) — the router handles read fan-out, Sentinel handles leader election.
+When `REDIS_REPLICA_NODES` is unset the router transparently routes every read to the primary, so local dev needs no extra config. This complements Redis Sentinel (primary failover) — the router handles read fan-out, Sentinel handles leader election. How replica routing, Sentinel, single-flight, and fail-open stores fit the broader failure model is covered in the [Fault Tolerance investigation](18_Fault_Tolerance.md#redis-resilience).
 
 ---
 
@@ -2372,9 +2364,7 @@ The overlay manifests live under [k8s/eks/](k8s/eks/); the WAF WebACL wiring is 
 
 **Immutable image digests.** Deploys pin an image by content digest (`@sha256:…`), not a mutable tag, so a rollout is reproducible and can't drift when a tag is re-pushed. `scripts/set-eks-image-digest.sh` writes the identical digest into both region overlays (ECR replicates the image cross-region) — see [docs/runbooks/deploy-image-digest.md](docs/runbooks/deploy-image-digest.md).
 
-**Multi-region DR.** `k8s/eks-us-west-2/` is a warm-standby overlay for a second region (us-west-2, reduced HPA minReplicas, us-west-2 ECR/ElastiCache/WAF). Each region overlay composes `../base` + the `k8s/eks-shared/` component (region-agnostic EKS patches) and overrides only region-specific values. On failover an operator **pre-scales** the standby to the primary baseline with `scripts/dr-standby-capacity.sh promote`, which applies the `k8s/eks-us-west-2-active` overlay **HPA-documents-only** (never `apply -k`, so it can't roll Deployments to the out-of-band placeholder image digest); `demote` restores the warm floor and `verify` is an offline drift guard against `k8s/base`. The failover design is [docs/superpowers/specs/2026-07-08-multi-region-dr-failover-design.md](docs/superpowers/specs/2026-07-08-multi-region-dr-failover-design.md); operations are in the DR runbooks — [dr-regional-failover.md](docs/runbooks/dr-regional-failover.md), [dr-failback.md](docs/runbooks/dr-failback.md), [dr-data-tier-promotion.md](docs/runbooks/dr-data-tier-promotion.md), and [dr-game-day.md](docs/runbooks/dr-game-day.md).
-
-**Single-AZ resilience.** Pod spread, AZ-aware Redis reads ([Redis Read Replicas](#redis-read-replicas)), and PDB tuning keep a zone failure from taking the service down — see [docs/runbooks/zonal-resilience.md](docs/runbooks/zonal-resilience.md).
+**Multi-region DR & single-AZ resilience.** `k8s/eks-us-west-2/` is a warm-standby overlay for a second region, and pod spread, AZ-aware Redis reads, and PDB tuning keep a zone failure from taking the service down. Both — the failover overlays, the `scripts/dr-standby-capacity.sh promote` pre-scale step, and the zonal-resilience wiring — are covered in the [Fault Tolerance investigation](18_Fault_Tolerance.md#6-multi-az-and-multi-region-survival), the DR runbooks ([dr-regional-failover.md](docs/runbooks/dr-regional-failover.md), [dr-failback.md](docs/runbooks/dr-failback.md), [dr-data-tier-promotion.md](docs/runbooks/dr-data-tier-promotion.md), [dr-game-day.md](docs/runbooks/dr-game-day.md)), [zonal-resilience.md](docs/runbooks/zonal-resilience.md), and the design specs ([multi-region DR failover](docs/superpowers/specs/2026-07-08-multi-region-dr-failover-design.md), [zonal failure hardening](docs/superpowers/specs/2026-07-08-zonal-failure-hardening-design.md)).
 
 ---
 

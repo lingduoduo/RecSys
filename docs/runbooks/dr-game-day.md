@@ -1,7 +1,8 @@
 # Runbook: DR Game Day
 
 Periodic drill (quarterly) to prove the DR path works. Run in a maintenance window
-with stakeholders notified.
+with stakeholders notified. For how DR fits the broader resilience model see the
+[Fault Tolerance investigation](../../18_Fault_Tolerance.md).
 
 ## Objectives
 

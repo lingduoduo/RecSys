@@ -1,7 +1,8 @@
 # Runbook: DR Data-Tier Promotion (us-west-2)
 
 Run this after DNS has failed over (see `dr-regional-failover.md`) to restore the
-**write** path. Reads already work from the replicas.
+**write** path. Reads already work from the replicas. For how DR fits the broader
+resilience model see the [Fault Tolerance investigation](../../18_Fault_Tolerance.md).
 
 ## 1. Promote Aurora Global Database
 
