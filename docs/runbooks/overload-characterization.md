@@ -3,6 +3,10 @@
 `@Tag("load")` harnesses that characterize the in-memory overload gates and lock in
 their invariants. They are **excluded from the default `mvn test`** and opt-in:
 
+> These harnesses prove the gate knees described in the
+> [Fault Tolerance investigation](../../18_Fault_Tolerance.md).
+
+
 ```bash
 mvn test -DexcludedGroups="" -Dgroups=load -Dtest=OnlineLoadShedderCharacterizationTest,WorkerBulkheadCharacterizationTest,OverloadGateOrderingCharacterizationTest
 ```

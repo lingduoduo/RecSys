@@ -2,7 +2,9 @@
 
 How the us-east-1 deployment survives the loss of one Availability Zone, and the
 out-of-band infrastructure it assumes. This is intra-region AZ resilience — for a
-full-region outage see the multi-region DR runbooks (`dr-*.md`).
+full-region outage see the multi-region DR runbooks (`dr-*.md`), and for how zonal
+resilience fits the whole fault-tolerance model see the
+[Fault Tolerance investigation](../../18_Fault_Tolerance.md).
 
 ## Required infrastructure (provision out-of-band)
 
