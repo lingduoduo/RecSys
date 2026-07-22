@@ -42,7 +42,7 @@ A compact Maven workspace demonstrating recommendation-system serving, retrieval
 | Rate Limiting | `TokenBucket`, `GatewayRateLimiter` (per `(route, principal)`), `LlmTokenRateLimiter` (token-budget), `RedisRateLimiter` (distributed, global; **weighted sliding-window** ≈1× the limit with no local fast-path, fail-open + circuit breaker) — see [Gateway rate limiting](#rate-limiting-gatewayratelimiter), [Model Rate Limiting](#model-rate-limiting) |
 | API Gateway | `MicroserviceGatewayServer`, `MicroserviceRouteTable`, `RouteCircuitBreaker`, `GatewayRateLimiter`, `LlmProxyService` — see [Microservice Gateway](#microservice-gateway) |
 | MicroService | Four independently runnable services (`6010`/`7010`/`8080`/`8010`) behind `MicroserviceGatewayServer`; clean-architecture `api`/`application`/`domain`/`infrastructure` layers — see [Microservice Gateway](#microservice-gateway), [Project Layout](#project-layout) |
-| Service Discovery | Redis-backed registry (`ServiceRegistrar`, `ServiceRegistryStore`, `RegistryBackedUpstreams`, `svc:registry:<name>`) with static-route fallback, Cloud Map 30 s DNS TTL — see [Service Registry](#service-registry) |
+| Service Discovery | Three-layer resolution — static route table (`MicroserviceRoute`) → opt-in Redis registry (`ServiceRegistrar` / `RegistryBackedUpstreams`, `svc:registry:<name>`, static-route fallback) → Cloud Map 30 s DNS TTL → health-checked endpoint groups (`UpstreamEndpointGroups`) — see [Service Discovery investigation](11_Service_Discovery.md) |
 | CDNS | CloudFront edge (`scripts/create-cdn-distribution.sh`), narrow cache of the two catalog reads (`recsys-item`/`recsys-similar` policies), origin lockdown (`GatewayOriginSecret` + `x-origin-secret`, rotation set), `GATEWAY_PUBLIC_PATHS` exact-path discipline, nginx local stand-in (`docker-compose.cdn.yml`) — see [CDN Edge investigation](12_CDNS.md) |
 | DB Indexing | Two composite `movies` seek indexes + 5 outbox/saga indexes, `FORCE INDEX` plan pinning with static contract tests + Docker `EXPLAIN` (`MovieCatalogRepository`, `MySqlIndexContractTest`), covering-index / keyset / delayed-join access patterns (`MillionScalePaginationSql`) — see [DB Indexing investigation](13_DB_Indexing.md), [MySQL Index Inventory](#mysql-index-inventory) |
 | Partitioning | Consistent-hash record shards (`ConsistentHashRing`, versioned topology + online reshard), windowed top-K replica shards (`topk:<window>:s0..s3`), `userId`-keyed Kafka/Flink partitions (24 @ 50k evt/s), and `(score, id)` keyset cursor windows (`/v2/recommend`, HMAC catalog cursors) — see [Partitioning investigation](14_Partitioning.md), [Sharded Record Store](#sharded-record-store) |
@@ -1407,54 +1407,21 @@ mechanics are shared with edge auth (see
 
 ## Service Registry
 
-This section implements **service discovery** (registry-based, with static fallback): opt-in, Redis-backed resolution for the gateway → backend hop. It is **off by default** (`SERVICE_REGISTRY_ENABLED=false`) — the gateway opens no Redis connection and resolves every upstream from its static route address (env var / configmap), exactly as documented under [Microservice Gateway](#microservice-gateway). Turning it on lets backends advertise their own address and the gateway follow them without a redeploy — trading a Redis dependency for dynamic membership, and degrading to the static addresses (never failing) if the registry is unavailable.
+Service discovery for the gateway → backend hop is **opt-in and off by default**
+(`SERVICE_REGISTRY_ENABLED=false`): the gateway resolves every upstream from its
+static route address (env var / configmap). Turning it on lets backends self-register
+their advertised address in Redis (`svc:registry:<name>`, TTL-renewed on a heartbeat)
+and the gateway resolve from it, **falling back to the static address** whenever a
+service is unregistered or Redis is unavailable — degrade, never fail.
 
-When `SERVICE_REGISTRY_ENABLED=true`:
-
-- **Backends self-register.** Each service writes its advertised address to `svc:registry:<serviceName>` and renews the key on a heartbeat (`SERVICE_REGISTRY_HEARTBEAT_MS`, default `10000`). The key carries a TTL (`SERVICE_REGISTRY_TTL_MS`, default `30000`) so a crashed instance's registration expires on its own. All four services register — the three Armeria services directly, the Spring model service via `ServiceRegistryConfig`.
-- **The gateway resolves from the registry.** It polls every `SERVICE_REGISTRY_REFRESH_MS` (default `10000`), `MGET`s the known services, and routes to the advertised address. Liveness = key present; whenever a service is unregistered or Redis is unavailable it **falls back to the static route address**, so a registry outage degrades to the default static behavior rather than failing.
-
-Configure per service (each backend sets its own name + advertised URL):
-
-```bash
-export SERVICE_REGISTRY_ENABLED=true
-export SERVICE_REGISTRY_SERVICE_NAME=recsys-catalog-serving
-export SERVICE_REGISTRY_ADVERTISE_URL=http://10.0.1.5:6010
-```
-
-| Env var | Default | Purpose |
-|---|---:|---|
-| `SERVICE_REGISTRY_ENABLED` | `false` | Master switch (gateway + backends). Off → no Redis connection, static routing |
-| `SERVICE_REGISTRY_SERVICE_NAME` | _(per service)_ | Name a backend registers under (`svc:registry:<name>`) |
-| `SERVICE_REGISTRY_ADVERTISE_URL` | _(per service)_ | Address a backend advertises to callers |
-| `SERVICE_REGISTRY_HEARTBEAT_MS` | `10000` | Backend re-registration interval |
-| `SERVICE_REGISTRY_TTL_MS` | `30000` | Registration key TTL (expires a dead instance) |
-| `SERVICE_REGISTRY_REFRESH_MS` | `10000` | Gateway registry poll interval |
-
-### Observability
-
-When the registry is enabled the gateway `/health` response gains a `registry` section reporting each service's resolution `source` (`registry` vs `static` fallback) and the snapshot age:
-
-```json
-"registry": {
-  "enabled": true,
-  "snapshotAgeMs": 1200,
-  "services": {
-    "recsys-catalog-serving": {"source": "registry", "address": "http://10.0.1.5:6010"},
-    "recsys-model-serving":   {"source": "static",   "address": null}
-  }
-}
-```
-
-The Prometheus [`/metrics`](#metrics-metrics) endpoint publishes registry meters (consumed via `GatewayRegistryMetrics`):
-
-| Meter | Meaning |
-|---|---|
-| `gateway_registry_services_total` | Services the gateway tracks |
-| `gateway_registry_services_resolved` | Services currently resolved from the registry (not static fallback) |
-| `gateway_registry_snapshot_age_seconds` | Age of the last successful registry snapshot |
-| `gateway_registry_refresh_total` | Registry refresh attempts |
-| `gateway_registry_refresh_failures_total` | Refresh attempts that fell back to the last-good snapshot |
+The full picture — the three resolution layers (static route → Redis registry →
+Cloud Map DNS → health-checked endpoint groups), backend self-registration
+(`ServiceRegistrar`), gateway resolution (`RegistryBackedUpstreams`), the
+`SERVICE_REGISTRY_*` env vars, the `/health` `registry` section, and the
+`gateway_registry_*` Prometheus meters — is covered in the
+**[Service Discovery investigation](11_Service_Discovery.md)**. Static addressing and
+upstream health checking are documented under
+[Microservice Gateway](#microservice-gateway).
 
 ---
 
