@@ -256,7 +256,11 @@ when MySQL is enabled. The generic SQL toolkit
 ([`MillionScalePaginationSql`](src/main/java/com/recsys/application/pagination/MillionScalePaginationSql.java))
 emits the covering-index, keyset (`(sort > ? OR (sort = ? AND id > ?))`), and
 delayed-join (index-only key walk + outer join for deep offset) variants that back
-these reads — see [MySQL Index Inventory](README.md#mysql-index-inventory).
+these reads — the *index-access* angle (which B-tree each pattern rides, plan
+pinning, contract tests) is covered in the
+[DB Indexing investigation](13_DB_Indexing.md#3-index-access-patterns-via-millionscalepaginationsql),
+and the catalog index inventory is in the
+[README](README.md#mysql-index-inventory).
 
 ## 5. Testing partitioning
 
