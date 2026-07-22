@@ -141,6 +141,15 @@ The behavioral event stream is partitioned so that **all events for a user land
 on one partition** (strict per-user ordering) while different users spread across
 24 partitions for throughput.
 
+Of the three event transports only Kafka partitions. The SQS transport
+([`SqsAsyncEventPublisher`](src/main/java/com/recsys/infrastructure/messaging/SqsAsyncEventPublisher.java))
+writes JSON bodies to a **single standard queue** (`SendMessageBatch`, no
+`MessageGroupId`/FIFO), which exposes no user-controlled partition key and gives
+no ordering guarantee, and the default log-only publisher is a no-op — so
+partitioning is a Kafka-specific, load-bearing decision, and the Flink feature
+pipeline consumes only from `movie_events_v2`. SQS is an alternative
+fire-and-forget sink, not a source for the keyed streaming job.
+
 - **Producer key = `userId`** —
   [`MovieEventKafkaKeyExtractor`](src/main/java/com/recsys/infrastructure/messaging/MovieEventKafkaKeyExtractor.java)
   pulls `userId` from each event, and
