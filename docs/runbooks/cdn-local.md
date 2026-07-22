@@ -1,7 +1,8 @@
 # Local CDN
 
 An nginx stand-in for the CloudFront distribution, so the caching semantics can be run and
-observed with no AWS account.
+observed with no AWS account. For the full edge design see the
+[CDN Edge investigation](../../12_CDNS.md#5-local-cdn-stand-in).
 
 Design: `docs/superpowers/specs/2026-07-14-local-cdn-and-origin-secret-hardening-design.md`
 
