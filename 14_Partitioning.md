@@ -33,6 +33,27 @@ Two principles recur:
   with a bounded dual-read window makes the resize online. Kafka partition
   increases are a planned cutover, not a config flip.
 
+### Where the shards physically live — Redis and MySQL
+
+The Redis partitioning (dimensions 1 and 2) is **logical, client-side keyspace
+partitioning on a single primary**, not server-side sharding. Redis is deployed in
+**Sentinel** mode (`REDIS_MODE=sentinel`, one `mymaster` primary + 3 sentinels for
+failover, plus AZ-aware read replicas — see the
+[Fault Tolerance investigation](18_Fault_Tolerance.md#redis-resilience)), **not
+Redis Cluster**, and `ShardedRecordStore` / `ShardedTopKStore` each hold a single
+`RedisExecutor`. So the N shards are **key-prefixes on the same primary**
+(`sr:g{v}:rec:{shard}:…`, `topk:<window>:s{n}`), not separate nodes and not
+server-side hash slots. The consistent-hash ring partitions the *keyspace* — even
+distribution, hot-key contention spreading, and an online reshard — and makes it
+**ready** to map those logical shards onto separate Redis nodes (or a cluster)
+without a data migration, but today the win is contention-spreading and
+reshardability, not multi-node capacity.
+
+**MySQL is not partitioned.** It is one intentionally-small, opt-in relational read
+model that scales *within* a single table via covering indexes and keyset
+pagination (dimension 4) rather than by table partitioning or cross-DB sharding.
+Native MySQL table partitioning is deferred — see the sharp edges below.
+
 ## 1. Consistent-hash record sharding
 
 `ShardedRecordStore`
@@ -117,7 +138,9 @@ partitions each window's sorted set into **N identical replica keys**
 (`topk:<window>:s0..s3`, default shard count **4**) purely to spread read QPS.
 Unlike record sharding, every shard holds the *same* data; the win is that a read
 picks one at random (`fetchFromRandomShard` via `ThreadLocalRandom`), giving an
-N-fold per-key QPS reduction and spreading load across hash slots.
+N-fold per-key QPS reduction — one hot sorted set becomes N, so no single key
+takes the full read fan-out (see the deployment note below on why this is
+per-key, not per-node, spreading).
 
 Two more layers sit in front of Redis: a per-window local JVM `hotCache`
 (`ONLINE_TOPK_CACHE_TTL_MS`, default 2000) and a **single-flight** guard so that
