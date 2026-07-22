@@ -45,7 +45,7 @@ A compact Maven workspace demonstrating recommendation-system serving, retrieval
 | Service Discovery | Redis-backed registry (`ServiceRegistrar`, `ServiceRegistryStore`, `RegistryBackedUpstreams`, `svc:registry:<name>`) with static-route fallback, Cloud Map 30 s DNS TTL — see [Service Registry](#service-registry) |
 | CDNS | CloudFront edge (`scripts/create-cdn-distribution.sh`), origin lockdown (`GatewayOriginSecret` + `x-origin-secret`), nginx local stand-in (`docker-compose.cdn.yml`) — see [CDN Edge](#cdn-edge) |
 | DB Indexing | `MillionScalePaginationSql` (covering-index / keyset / delayed-join), `FORCE INDEX` plan pinning (`MySqlIndexContractTest`), `MySqlClient` — see [MySQL Index Inventory](#mysql-index-inventory) |
-| Partitioning | Consistent-hash shard partitions (`ConsistentHashRing`), windowed top-K shards (`topk:<window>:s0..s3`), Kafka topic partitions, keyset cursor windows (`/v2/recommend`) — see [Sharded Record Store](#sharded-record-store), [Online Serving](#online-serving) |
+| Partitioning | Consistent-hash record shards (`ConsistentHashRing`, versioned topology + online reshard), windowed top-K replica shards (`topk:<window>:s0..s3`), `userId`-keyed Kafka/Flink partitions (24 @ 50k evt/s), and `(score, id)` keyset cursor windows (`/v2/recommend`, HMAC catalog cursors) — see [Partitioning investigation](14_Partitioning.md), [Sharded Record Store](#sharded-record-store) |
 | Eventual Consistency | `OutboxRelay` + `DurableEventPublisher` (transactional outbox), `OutboxReconciler`, generation dual-read, read-your-writes — see [Durable Eventual Consistency](#durable-eventual-consistency) |
 | SSE streaming | Real-time token streaming via Server-Sent Events (`text/event-stream`) passthrough in the LLM proxy — `LlmProxyService.forwardStreaming` reactively pipes upstream frames straight to the client over a long-lived HTTP/2 connection (`LLM_PING_INTERVAL_MS` keepalive); the streaming path skips response caching and retry-on-429 — see [LLM Gateway](#llm-gateway) |
 | Scalability | Compute scales out via 4 CPU/mem HPAs (`k8s/base/hpa.yaml`, model-serving tuned most aggressively); data tier scales horizontally (consistent-hash record shards + live reshard, 4× replicated top-K shards, 24-partition Kafka/Flink @ 50k evt/s, AZ-local Redis read replicas); per-instance overload gates (`OnlineLoadShedder` / `OnlineAdmissionControl`, `WorkerBulkhead`) fail fast so HPA can react, with recall degradation observable via `GET /health/load` (`recall.degradedRatio`) and the gate knees pinned by `@Tag("load")` characterization harnesses ([overload-characterization.md](docs/runbooks/overload-characterization.md)). `AutoScalingGroup` / `InstanceProvisioner` are bounds + AZ-balancing and `OnlineCapacityService` is sizing observability — neither is a metric-driven controller in production (the signal-driven `application/autoscaling/CapacityController` closes that loop as a tested reference, but no server schedules it); DR standby is pre-scaled on failover via `scripts/dr-standby-capacity.sh promote` — see [Capacity Planning](#capacity-planning), [Scalability investigation](17_Scalability.md) |
@@ -375,14 +375,7 @@ curl -s -X POST http://localhost:6010/v2/recommend \
 
 `limit` must be 1–100; a blank `userId` returns `400`. Unlike `/getrecommendation`, this pipeline does **not** look up the user in the catalog, so an unknown (non-blank) `userId` does not 404 — it runs recall directly (cold quota if it has no embedding). When there are no more results `nextCursor` is `null`. The `trace` map reports `candidateCount` (recalled) and `rankedCount` for debugging.
 
-**Cursor vs. exclusion paging — pick one model, don't mix them:**
-
-| | Use the cursor for | How |
-|---|---|---|
-| **Stable pagination** | a fixed result set (catalog-style browse) | keep `excludedItemIds` constant across pages; advance `cursor` until `nextCursor` is `null` |
-| **Dynamic feed** | an ever-fresh "For You" feed | **omit `cursor`**; accumulate seen IDs into `excludedItemIds` and re-request — each call re-recalls and excludes what's seen, picking up live trending / learner changes |
-
-The seek cursor tolerates a *changing* `excludedItemIds` without skipping, but mixing a saved cursor with a growing exclusion set conflates the two models — for a dynamic feed, drop the cursor and page by exclusion alone.
+**Cursor vs. exclusion paging — pick one model, don't mix them.** Use the cursor for a fixed result set (keep `excludedItemIds` constant, advance the cursor until `nextCursor` is `null`); omit the cursor and page by a growing `excludedItemIds` for an ever-fresh feed. Why the seek cursor stays stable and why mixing the two models conflates them is explained in the [Partitioning investigation](14_Partitioning.md#in-memory-ranked-list--v2recommend).
 
 #### Similar movies
 
@@ -900,7 +893,7 @@ curl -X POST "http://localhost:8010/api/llm/api/generate" \
 
 ## SQL Use Cases
 
-This section is an exercise in **polyglot persistence with keyset pagination**: the serving hot paths stay on Redis/ONNX, while an opt-in, intentionally small MySQL read model backs product-style views that need durable relational data, deep pagination, counts, and ad hoc filtering — trading a second datastore for relational query power kept off the latency-critical path. The relevant backend pieces are:
+This section is an exercise in **polyglot persistence with keyset pagination**: the serving hot paths stay on Redis/ONNX, while an opt-in, intentionally small MySQL read model backs product-style views that need durable relational data, deep pagination, counts, and ad hoc filtering — trading a second datastore for relational query power kept off the latency-critical path. Keyset pagination as a result-set partitioning strategy — the seek-cursor model, HMAC-signed filter-bound catalog cursors, and how it relates to the other partition dimensions — is covered in the [Partitioning investigation](14_Partitioning.md#4-keyset--cursor-pagination--partitioning-a-result-set). The relevant backend pieces are:
 
 - `MillionScalePaginationSql` — emits MySQL-friendly covering-index, keyset, delayed-join, and count queries.
 - `MySqlClient` — read-only JDBC helper backed by a lazily-created HikariCP pool.
@@ -1963,7 +1956,7 @@ Redis key conventions:
 
 ## Online Serving
 
-This section is the **streaming / real-time data pipeline**: a partitioned Kafka → Flink → Redis flow provides the low-latency signals consumed by port `7010` — trading batch simplicity for fresh per-user history and windowed trending, with per-user ordering preserved by partition-keyed events. See [streaming/online-serving/README.md](streaming/online-serving/README.md) for full setup.
+This section is the **streaming / real-time data pipeline**: a partitioned Kafka → Flink → Redis flow provides the low-latency signals consumed by port `7010` — trading batch simplicity for fresh per-user history and windowed trending, with per-user ordering preserved by partition-keyed events. See [streaming/online-serving/README.md](streaming/online-serving/README.md) for full setup. Windowed trending is served from `ShardedTopKStore`, which shards each window's sorted set into N identical replica keys (`topk:<window>:s0..s3`) to spread read QPS — see the [Partitioning investigation](14_Partitioning.md#2-windowed-top-k-replica-sharding).
 
 Quick start (loads sample features without Flink):
 
@@ -2004,7 +1997,7 @@ The production partition contract is `movie_events_v2` with **24 partitions**, s
 
 ## Sharded Record Store
 
-This section implements **horizontal sharding via consistent hashing**, trading a single hot node for rebalance cost on resize: `ShardedRecordStore` distributes event, feature, and log records across N Redis shards. `ConsistentHashRing` places each shard on a 64-bit ring with **150 virtual nodes per shard** (keyed by the shared `Hashing.fnv1a64` FNV-1a primitive, also reused by `StableBucketer` for A/B bucketing) so device IDs spread uniformly and a resize moves only ~1/N of keys. Each write fans out to an HSET (full record) + ZADD (device index for per-device reads) + XADD (shard stream for ordered replay). `SHARDED_RECORD_SHARD_COUNT` (default `2`) is the **bootstrap** shard count for a *versioned topology* that can be resharded at runtime without a redeploy — see [Reshard at runtime](#reshard-at-runtime-versioned-topology) below.
+This section implements **horizontal sharding via consistent hashing**, trading a single hot node for rebalance cost on resize: `ShardedRecordStore` distributes event, feature, and log records across N Redis shards, and each write fans out to an HSET (full record) + ZADD (device index for per-device reads) + XADD (shard stream for ordered replay). `SHARDED_RECORD_SHARD_COUNT` (default `2`) is the **bootstrap** shard count for a *versioned topology* that can be resharded at runtime without a redeploy — see [Reshard at runtime](#reshard-at-runtime-versioned-topology) below. The ring internals (`ConsistentHashRing`, 150 virtual nodes per shard, the shared FNV-1a primitive) and how record sharding relates to the other four partition dimensions are covered in the [Partitioning investigation](14_Partitioning.md#1-consistent-hash-record-sharding).
 
 The HTTP façade is mounted at `/shards/` on port `7010`.
 
@@ -2080,6 +2073,8 @@ curl -X POST http://localhost:7010/shards/topology \
 - **Generation-scoped keys:** generation 1 uses the original unversioned keys (`sr:rec:{shard}:{seq}`); generation ≥2 prepends `g{version}:` (`sr:g2:rec:…`). Because the mapping is consistent hashing, a resize moves only ~1/N of keys.
 - **No data loss for in-flight records:** for `SHARDED_RECORD_MAX_TTL_SECONDS` after a reshard, per-device reads **dual-read** the previous generation and merge it (current wins), so records written before the change are still served until they TTL out. Shard-level scans (`/shards/shard`, read-all) are generation-current and do not dual-read.
 
+Why generation-scoped keys and a bounded dual-read window make this safe is walked through in the [Partitioning investigation](14_Partitioning.md#versioned-topology-and-online-reshard).
+
 ---
 
 ## Redis Read Replicas
@@ -2103,7 +2098,7 @@ When `REDIS_REPLICA_NODES` is unset the router transparently routes every read t
 
 ## Event Publishers (Message Queues)
 
-This section applies **asynchronous messaging with a bounded producer queue**: behavioral and experiment events leave the serving path through a **fire-and-forget** `AsyncEventPublisher` — requests enqueue onto an in-memory ring buffer and a background thread drains it in batches to a broker. The tradeoff is at-most-once delivery (a broker outage or backpressure drops events but never blocks or fails a request); for stronger guarantees see [Durable Eventual Consistency](#durable-eventual-consistency). The default log-only publisher is used until a transport is configured, so local dev, tests, and the demo need no broker. Three transports are wired:
+This section applies **asynchronous messaging with a bounded producer queue**: behavioral and experiment events leave the serving path through a **fire-and-forget** `AsyncEventPublisher` — requests enqueue onto an in-memory ring buffer and a background thread drains it in batches to a broker. The tradeoff is at-most-once delivery (a broker outage or backpressure drops events but never blocks or fails a request); for stronger guarantees see [Durable Eventual Consistency](#durable-eventual-consistency). The default log-only publisher is used until a transport is configured, so local dev, tests, and the demo need no broker. The Kafka transport keys every record by `userId` so all of a user's events land on one partition (per-user ordering) while users spread across the 24-partition `movie_events_v2` topic — the topic's partitioning and the Flink source's partition contract are covered in the [Partitioning investigation](14_Partitioning.md#3-kafka-topic-partitioning--flink-keyed-pipeline). Three transports are wired:
 
 | Producer | Default (no broker) | SQS | Kafka |
 |---|---|---|---|
