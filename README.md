@@ -44,7 +44,7 @@ A compact Maven workspace demonstrating recommendation-system serving, retrieval
 | MicroService | Four independently runnable services (`6010`/`7010`/`8080`/`8010`) behind `MicroserviceGatewayServer`; clean-architecture `api`/`application`/`domain`/`infrastructure` layers — see [Microservice Gateway](#microservice-gateway), [Project Layout](#project-layout) |
 | Service Discovery | Redis-backed registry (`ServiceRegistrar`, `ServiceRegistryStore`, `RegistryBackedUpstreams`, `svc:registry:<name>`) with static-route fallback, Cloud Map 30 s DNS TTL — see [Service Registry](#service-registry) |
 | CDNS | CloudFront edge (`scripts/create-cdn-distribution.sh`), origin lockdown (`GatewayOriginSecret` + `x-origin-secret`), nginx local stand-in (`docker-compose.cdn.yml`) — see [CDN Edge](#cdn-edge) |
-| DB Indexing | `MillionScalePaginationSql` (covering-index / keyset / delayed-join), `FORCE INDEX` plan pinning (`MySqlIndexContractTest`), `MySqlClient` — see [MySQL Index Inventory](#mysql-index-inventory) |
+| DB Indexing | Two composite `movies` seek indexes + 5 outbox/saga indexes, `FORCE INDEX` plan pinning with static contract tests + Docker `EXPLAIN` (`MovieCatalogRepository`, `MySqlIndexContractTest`), covering-index / keyset / delayed-join access patterns (`MillionScalePaginationSql`) — see [DB Indexing investigation](13_DB_Indexing.md), [MySQL Index Inventory](#mysql-index-inventory) |
 | Partitioning | Consistent-hash record shards (`ConsistentHashRing`, versioned topology + online reshard), windowed top-K replica shards (`topk:<window>:s0..s3`), `userId`-keyed Kafka/Flink partitions (24 @ 50k evt/s), and `(score, id)` keyset cursor windows (`/v2/recommend`, HMAC catalog cursors) — see [Partitioning investigation](14_Partitioning.md), [Sharded Record Store](#sharded-record-store) |
 | Eventual Consistency | `OutboxRelay` + `DurableEventPublisher` (transactional outbox), `OutboxReconciler`, generation dual-read, read-your-writes — see [Durable Eventual Consistency](#durable-eventual-consistency) |
 | SSE streaming | Real-time token streaming via Server-Sent Events (`text/event-stream`) passthrough in the LLM proxy — `LlmProxyService.forwardStreaming` reactively pipes upstream frames straight to the client over a long-lived HTTP/2 connection (`LLM_PING_INTERVAL_MS` keepalive); the streaming path skips response caching and retry-on-429 — see [LLM Gateway](#llm-gateway) |
@@ -908,9 +908,7 @@ The production MySQL catalog currently has two query shapes and two justified se
 | Genre-filtered catalog page | `genre = ?`, seek on `(popularity_score, id)`, order `DESC` | `idx_movies_genre_popularity_id (genre, popularity_score DESC, id DESC)` |
 | Global catalog page | seek on `(popularity_score, id)`, order `DESC` | `idx_movies_popularity_id (popularity_score DESC, id DESC)` |
 
-Both indexes are required because the genre-leading B-tree cannot efficiently provide a global popularity order. The indexes deliberately omit projected payload columns such as `title`, `year`, and `updated_at`; widen them only when `EXPLAIN ANALYZE`, slow-query evidence, or representative benchmarks show clustered-row lookup is the bottleneck.
-
-Both fixed query shapes pin their plan with `FORCE INDEX (...)` rather than trusting the optimizer; `MySqlIndexContractTest` / `MySqlIndexContractAssertions` assert the hint and column order statically, and `MovieCatalogMySqlIntegrationTest` (`@Tag("docker")`) confirms the same index in a real `EXPLAIN`.
+Both indexes are required because the genre-leading B-tree cannot efficiently provide a global popularity order, and both pin their plan with `FORCE INDEX (...)` — asserted statically by `MySqlIndexContractTest` and confirmed in a real `EXPLAIN` by `MovieCatalogMySqlIntegrationTest` (`@Tag("docker")`). Why both indexes exist, why payload columns are deliberately omitted, the full 7-index inventory (incl. outbox/saga), the plan-pinning + contract-test discipline, and the covering / keyset / delayed-join access patterns are covered in the [DB Indexing investigation](13_DB_Indexing.md).
 
 Every new production MySQL query must ship with a query-to-index contract test and a Docker-tagged MySQL `EXPLAIN` assertion. Verify the current inventory with:
 
@@ -1079,7 +1077,10 @@ the classifier and how this maps to the `503`/`504` status contract are covered 
 [Fault Tolerance investigation](18_Fault_Tolerance.md#4-dependency-resilience--surviving-a-sick-downstream).
 
 The generic `MillionScalePaginationSql` helpers below remain available for other bounded SQL read
-paths. The catalog endpoint uses its dedicated repository and the migrated indexes above.
+paths. The catalog endpoint uses its dedicated repository and the migrated indexes above. How each
+helper maps to an index-access pattern — covering-index count, keyset seek (index range-scan, no
+`OFFSET`), and delayed-join deep-offset (index-only key walk + outer join) — is covered in the
+[DB Indexing investigation](13_DB_Indexing.md#3-index-access-patterns-via-millionscalepaginationsql).
 
 Use `MillionScalePaginationSql` to generate safe SQL templates with bind parameters:
 
