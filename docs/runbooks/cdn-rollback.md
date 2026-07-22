@@ -1,7 +1,8 @@
 # CDN Rollback
 
 Reverse of `docs/runbooks/cdn-operations.md`. Roll back in this order — it is the rollout order
-reversed, and skipping ahead strands traffic.
+reversed, and skipping ahead strands traffic. Edge design context is in the
+[CDN Edge investigation](../../12_CDNS.md).
 
 ## 1. Restore direct ALB reachability (do this FIRST)
 

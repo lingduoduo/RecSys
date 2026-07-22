@@ -24,7 +24,7 @@ A compact Maven workspace demonstrating recommendation-system serving, retrieval
 | Messaging & Load Balancing | `AsyncEventPublisher` (SQS/Kafka transports), durable outbox relay + read-your-writes consistency, `ApplicationLoadBalancer` (L7), capacity-weight feedback — see [Event Publishers](#event-publishers-message-queues), [Durable Eventual Consistency](#durable-eventual-consistency), [Load Balancing](#load-balancing) |
 | Domain Model | Shared value objects: `Movie`, `User`, `MovieCandidate`, `RecommendationQuery` |
 | Configuration | Spring `@ConfigurationProperties`, feature flag providers, JVM tuning options — see [Configuration](#configuration) |
-| Infrastructure | Kubernetes base + EKS overlay, CloudFront CDN edge, Docker, Flink streaming topology — see [Kubernetes & EKS](#kubernetes--eks), [CDN Edge](#cdn-edge) |
+| Infrastructure | Kubernetes base + EKS overlay, CloudFront CDN edge, Docker, Flink streaming topology — see [Kubernetes & EKS](#kubernetes--eks), [CDN Edge investigation](12_CDNS.md) |
 | Documentation | README, architecture docs, design specs, implementation plans |
 
 ---
@@ -33,7 +33,7 @@ A compact Maven workspace demonstrating recommendation-system serving, retrieval
 | Concept | Key Components |
 |---|---|
 | Load Balancing | `ApplicationLoadBalancer` (L7), capacity-weight feedback (`X-Capacity-Weight` / `suggestedWeight`), gateway health-checked upstream endpoint groups (`UpstreamEndpointGroups`) — see [Load Balancing](#load-balancing) |
-| Caching | `MultiLevelEmbeddingCache` (L1/L2/L3), `TtlSingleFlightCache`, `LogicalExpiryEmbeddingCache`, `RecommendationCache`, `LlmResponseCache`, CloudFront edge cache — see [Hot-key and cache controls](#hot-key-and-cache-controls), [Pipeline Optimizations](#pipeline-optimizations) |
+| Caching | `MultiLevelEmbeddingCache` (L1/L2/L3), `TtlSingleFlightCache`, `LogicalExpiryEmbeddingCache`, `RecommendationCache`, `LlmResponseCache`, CloudFront edge cache — see [Hot-key and cache controls](#hot-key-and-cache-controls), [Pipeline Optimizations](#pipeline-optimizations), [CDN Edge investigation](12_CDNS.md) |
 | Database Sharding | `ShardedRecordStore`, `ShardedTopKStore`, versioned `ShardTopology` (`shard:topology`), online reshard via `POST /shards/topology` — see [Sharded Record Store](#sharded-record-store) |
 | Replication | `RedisReadReplicaRouter` + `RoutingRedisExecutor` (AZ-aware replica reads), Redis Sentinel failover — see [Redis Read Replicas](#redis-read-replicas) |
 | CAP Theorem | Read-your-writes after outbox commit, generation dual-read during a reshard window, tunable AZ-local vs primary reads (`RoutingRedisExecutor`) — see [Durable Eventual Consistency](#durable-eventual-consistency) |
@@ -43,7 +43,7 @@ A compact Maven workspace demonstrating recommendation-system serving, retrieval
 | API Gateway | `MicroserviceGatewayServer`, `MicroserviceRouteTable`, `RouteCircuitBreaker`, `GatewayRateLimiter`, `LlmProxyService` — see [Microservice Gateway](#microservice-gateway) |
 | MicroService | Four independently runnable services (`6010`/`7010`/`8080`/`8010`) behind `MicroserviceGatewayServer`; clean-architecture `api`/`application`/`domain`/`infrastructure` layers — see [Microservice Gateway](#microservice-gateway), [Project Layout](#project-layout) |
 | Service Discovery | Redis-backed registry (`ServiceRegistrar`, `ServiceRegistryStore`, `RegistryBackedUpstreams`, `svc:registry:<name>`) with static-route fallback, Cloud Map 30 s DNS TTL — see [Service Registry](#service-registry) |
-| CDNS | CloudFront edge (`scripts/create-cdn-distribution.sh`), origin lockdown (`GatewayOriginSecret` + `x-origin-secret`), nginx local stand-in (`docker-compose.cdn.yml`) — see [CDN Edge](#cdn-edge) |
+| CDNS | CloudFront edge (`scripts/create-cdn-distribution.sh`), narrow cache of the two catalog reads (`recsys-item`/`recsys-similar` policies), origin lockdown (`GatewayOriginSecret` + `x-origin-secret`, rotation set), `GATEWAY_PUBLIC_PATHS` exact-path discipline, nginx local stand-in (`docker-compose.cdn.yml`) — see [CDN Edge investigation](12_CDNS.md) |
 | DB Indexing | Two composite `movies` seek indexes + 5 outbox/saga indexes, `FORCE INDEX` plan pinning with static contract tests + Docker `EXPLAIN` (`MovieCatalogRepository`, `MySqlIndexContractTest`), covering-index / keyset / delayed-join access patterns (`MillionScalePaginationSql`) — see [DB Indexing investigation](13_DB_Indexing.md), [MySQL Index Inventory](#mysql-index-inventory) |
 | Partitioning | Consistent-hash record shards (`ConsistentHashRing`, versioned topology + online reshard), windowed top-K replica shards (`topk:<window>:s0..s3`), `userId`-keyed Kafka/Flink partitions (24 @ 50k evt/s), and `(score, id)` keyset cursor windows (`/v2/recommend`, HMAC catalog cursors) — see [Partitioning investigation](14_Partitioning.md), [Sharded Record Store](#sharded-record-store) |
 | Eventual Consistency | `OutboxRelay` + `DurableEventPublisher` (transactional outbox), `OutboxReconciler`, generation dual-read, read-your-writes — see [Durable Eventual Consistency](#durable-eventual-consistency) |
@@ -1386,85 +1386,22 @@ curl -v -X POST http://localhost:8010/api/llm/api/generate \
 
 ## CDN Edge
 
-This section applies **edge caching and edge termination (CDN)**: an optional CloudFront distribution fronts the API Gateway ALB to terminate viewer TLS at the edge, drop attack traffic before it reaches the region, accelerate the uncacheable-but-dominant `POST /api/recommend` path over the AWS backbone, and cache the two genuinely shared read routes. The tradeoff is added edge infrastructure and cache-invalidation discipline in exchange for lower viewer latency and origin offload. It is created out-of-band by an idempotent script, matching how the WAF WebACL and Route53 records are already managed — this repo has no IaC toolchain.
+An optional CloudFront distribution fronts the API Gateway ALB for edge TLS
+termination, WAF filtering, AWS-backbone acceleration of the uncacheable-but-dominant
+`POST /api/recommend` path, and narrow caching of the two shared catalog reads
+(`GET /api/catalog/item`, `GET /api/catalog/similar`). It is created out-of-band by
+an idempotent script (no IaC), locked to our distribution by an `x-origin-secret`
+header (`GatewayOriginSecret`), and reproduced locally by an nginx stand-in on
+`:8090` (`docker-compose.cdn.yml`).
 
-**The primary route earns nothing from caching.** `POST /api/recommend` is POST-only and personalized per `userId`, so CloudFront forwards 100% of those requests to the origin — the cache hit ratio there is zero, by design. The CDN's value on that path is edge TLS termination, WAF enforcement, and AWS-backbone acceleration, not caching. Caching is real but narrow: only the two catalog reads below.
-
-Design: `docs/superpowers/specs/2026-07-14-cdn-edge-acceleration-design.md` and `docs/superpowers/specs/2026-07-14-local-cdn-and-origin-secret-hardening-design.md`. Operations: `docs/runbooks/cdn-operations.md`, `docs/runbooks/cdn-local.md`.
-
-### What is cached
-
-| Path pattern | Policy | Fresh (`s-maxage`) | `stale-while-revalidate` / `stale-if-error` | Cache key |
-|---|---|---:|---:|---|
-| `/api/catalog/item*` | Cache | 3600s (1h) | 86400s (24h) | `id` |
-| `/api/catalog/similar*` | Cache | 300s (5min) | 3600s (1h) | `movieId`, `k` |
-| everything else, including `POST /api/recommend` and `/api/catalog/user` | **CachingDisabled** | — | — | — |
-
-Cache keys whitelist only the listed query params — forwarding the full query string would let `?id=1&cachebuster=<n>` fragment the cache arbitrarily and act as an origin-DoS amplifier. `stale-while-revalidate` and `stale-if-error` share the same window (`HttpCaching.publicCache`, `src/main/java/com/recsys/api/serving/HttpCaching.java`), so a total origin outage still serves cached `/item` for up to 24h and `/similar` for up to 1h. `GET /getuser`, `GET /api/v1/token`, and not-found responses are `Cache-Control: no-store` so a miss or a single-use token can never get pinned at the edge.
-
-For the edge to hit at a useful ratio these two routes must not vary on `Authorization`, so they are marked public via `GATEWAY_PUBLIC_PATHS` (see [Authentication](#authentication-gatewayauthenticator)) and CloudFront does not forward `Authorization` on those two behaviors. This is an explicit trust decision: movie catalog metadata and item-to-item similarity are treated as non-sensitive and world-readable. `GATEWAY_PUBLIC_PATHS` **must be the exact paths**, never the `/api/catalog` prefix — public-path matching is prefix-with-boundary, so the bare prefix would also expose `/api/catalog/user?userId=1`.
-
-```bash
-GATEWAY_PUBLIC_PATHS=/health,/api/catalog/item,/api/catalog/similar
-```
-
-### Origin lockdown
-
-The ALB security group is pinned to CloudFront's origin-facing managed prefix list, but that list covers *every* AWS account's distributions — so it alone doesn't prove a request came from *our* distribution. `GatewayOriginSecret` closes that gap: CloudFront injects a custom `x-origin-secret` header on every origin request, and the gateway rejects anything missing or mismatched with `403`.
-
-`GATEWAY_ORIGIN_SECRET` defaults to unset (disabled — local dev and the test suite are unaffected). It accepts a **comma-separated set** of secrets so rotation has no 403 window: add the new secret alongside the old, roll the pods, flip the distribution to the new value, then drop the old one.
-
-```bash
-# Zero-downtime rotation
-GATEWAY_ORIGIN_SECRET="old-secret,new-secret"   # 1. pods accept either
-# ... flip the distribution's custom header to new-secret ...
-GATEWAY_ORIGIN_SECRET="new-secret"              # 2. old retired
-```
-
-`/health` and `/metrics` are exempt (boundary-matched, not prefix — `/healthcheck` does not inherit `/health`'s exemption), since the ALB health check, kubelet probes, and the Prometheus scrape all reach the pod directly and can't carry the secret. Every rejection increments `gateway_origin_secret_rejected_total` on the gateway's `/metrics`, and the first rejection also logs one WARN (subsequent ones are counted, not logged, to avoid flooding under a scan or a botched rotation).
-
-```bash
-curl http://localhost:8010/metrics | grep gateway_origin_secret_rejected_total
-```
-
-`scripts/create-cdn-distribution.sh` defaults `ORIGIN_PROTOCOL_POLICY` to `https-only`, which encrypts the secret across the CloudFront→ALB hop (requires an ALB `:443` listener and a regional ACM cert). `http-only` remains available as an explicit, loudly-warned opt-out for environments without that listener yet — under it the secret crosses the hop in cleartext and is replayable if observed.
-
-### Local CDN stand-in
-
-`docker-compose.cdn.yml` runs an nginx 1.27-alpine container on `:8090` that mirrors the CloudFront cache behaviors one-for-one, so the caching semantics can be run and observed with no AWS account.
-
-```bash
-# 1. Gateway + backends on the host (gateway listens on :8010)
-sh scripts/run-microservices-local.sh
-
-# 2. The CDN in front of it, on :8090
-docker compose -f docker-compose.cdn.yml up
-
-# 3. See it work
-curl -sI 'localhost:8090/api/catalog/item?id=1' | grep -i x-cache            # X-Cache: MISS
-curl -sI 'localhost:8090/api/catalog/item?id=1' | grep -i x-cache            # X-Cache: HIT
-curl -sI 'localhost:8090/api/catalog/item?id=1&cachebuster=99' | grep -i x-cache  # HIT — key whitelist holds
-curl -sI -X POST localhost:8090/api/recommend | grep -i x-cache              # X-Cache: BYPASS — default-deny holds
-```
-
-If the gateway has `GATEWAY_ORIGIN_SECRET` set, `CDN_ORIGIN_SECRET` must match it or every request 403s. Purge with `./scripts/invalidate-local-cdn.sh` (purges the whole cache — nginx OSS has no path-scoped invalidation).
-
-This is a **semantics harness, not a CloudFront emulator** — it demonstrates caching behavior only: no WAF, no Shield, no edge TLS, no geographic distribution (one nginx container, not 400+ POPs), and coarser whole-cache invalidation.
-
-### Deployment
-
-The distribution is created out-of-band, matching the existing convention for the WAF WebACL and Route53 records:
-
-```bash
-ORIGIN_DOMAIN=origin.recsys.example.com \
-ALIAS_DOMAIN=app.recsys.example.com \
-ACM_CERT_ARN=arn:aws:acm:us-east-1:<acct>:certificate/<id> \
-WEB_ACL_ARN=arn:aws:wafv2:us-east-1:<acct>:global/webacl/recsys-edge/<id> \
-ORIGIN_SECRET="$(openssl rand -hex 32)" \
-./scripts/create-cdn-distribution.sh
-```
-
-Full rollout order (reversing the last two steps locks all traffic out of the origin) is in `docs/runbooks/cdn-operations.md`.
+The full deep-dive — cache behaviors and TTLs, `GATEWAY_PUBLIC_PATHS` exact-path
+discipline, origin-secret lockdown and rotation, the provisioning script, and the
+local stand-in — is in the **[CDN Edge investigation](12_CDNS.md)**. Operations are
+in [cdn-operations.md](docs/runbooks/cdn-operations.md),
+[cdn-local.md](docs/runbooks/cdn-local.md), and
+[cdn-rollback.md](docs/runbooks/cdn-rollback.md); the public-path / origin-secret
+mechanics are shared with edge auth (see
+[Authentication](#authentication-gatewayauthenticator)).
 
 ---
 
