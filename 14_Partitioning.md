@@ -1,9 +1,11 @@
 # Partitioning in Recsys-Backend-Service
 
 An investigation of how the system splits data and traffic so no single key,
-node, or task owns everything: consistent-hash record shards, windowed top-K
+partition, or task owns everything: consistent-hash record shards, windowed top-K
 replica shards, a userId-partitioned Kafka/Flink pipeline, and keyset cursor
-windows over large result sets. This is the partitioning counterpart to the
+windows over large result sets. (The Redis shards are *logical* — key partitions
+on a single Sentinel primary, not separate nodes; see "Where the shards
+physically live" below.) This is the partitioning counterpart to the
 [Scalability investigation](17_Scalability.md) — where that doc asks *how does
 throughput grow*, this one asks *along which key is each dataset divided, and
 why*.
@@ -58,8 +60,9 @@ Native MySQL table partitioning is deferred — see the sharp edges below.
 
 `ShardedRecordStore`
 ([src/…/sharding/ShardedRecordStore.java](src/main/java/com/recsys/infrastructure/redis/sharding/ShardedRecordStore.java))
-distributes per-device event, feature, and log records across N Redis shards so
-no single key owns all of a device's data.
+distributes per-device event, feature, and log records across N **logical** Redis
+shards (key partitions on one primary — see "Where the shards physically live"
+above) so no single key owns all of a device's data.
 
 ### The ring
 
