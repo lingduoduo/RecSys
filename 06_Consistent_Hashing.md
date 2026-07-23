@@ -133,6 +133,34 @@ storm) **and** shift **every user's A/B bucket** (contaminating in-flight experi
 in a single edit. That is why the freeze note lives in the primitive's Javadoc, not
 just in a design doc.
 
+## Hashing elsewhere in the system — and why it isn't consistent hashing
+
+IDs are hashed all over the stack, but *consistent hashing* is a narrow thing: the
+FNV-1a ring for shard placement (and its A/B twin). The other hashing serves entirely
+different jobs — integrity, cache-keying, credential comparison, membership, or
+approximate similarity — and is documented in the subsystem that owns it:
+
+| Where | Algorithm | Job | Covered in |
+|---|---|---|---|
+| Record shards, A/B buckets | **FNV-1a ring / keyspace** | even distribution + minimal remap | **this doc** |
+| Catalog keyset cursor (`CatalogCursorCodec`) | HMAC-SHA256 | tamper-proof, filter-bound pagination cursor | [13_DB_Indexing](13_DB_Indexing.md), [14_Partitioning](14_Partitioning.md#4-keyset--cursor-pagination--partitioning-a-result-set) |
+| Consistency token (`ConsistencyTokenCodec`) | HMAC-SHA256 | signed read-your-writes token | [15_Eventual_Consistency](15_Eventual_Consistency.md) |
+| LLM response cache (`LlmResponseCache`) | SHA-256 of the request body | cache key | [API Gateway](09_API_Gateway.md), [SSE Streaming](16_SSE_Streaming.md) |
+| API-key identity (`GatewayPrincipal`) | SHA-256 prefix | a non-reversible principal id for rate-limit keys / logs | [09_API_Gateway §3](09_API_Gateway.md#3-authentication) |
+| API keys / origin secret / admin token | constant-time compare (`MessageDigest.isEqual`) | credential authentication | [09](09_API_Gateway.md#3-authentication), [12_CDNS §3](12_CDNS.md#3-origin-lockdown--proving-a-request-came-from-our-distribution) |
+| Cache-penetration guard (`BloomFilterGuard`) | Bloom filter | membership — skip a Redis lookup for a known-absent id | [18_Fault_Tolerance](18_Fault_Tolerance.md#redis-resilience) |
+| Embedding recall (`EmbeddingLSH`) | LSH random-hyperplane | approximate nearest neighbor | [13_DB_Indexing §5](13_DB_Indexing.md#5-other-index-types-for-context) |
+| Kafka partitioning | `userId` key → Kafka's internal murmur2 partitioner | per-user ordering across partitions | [14_Partitioning §3](14_Partitioning.md#3-kafka-topic-partitioning--flink-keyed-pipeline) |
+| Top-K replica shards | *no hash* — `ThreadLocalRandom` shard pick | spread read QPS over identical replicas | [14_Partitioning §2](14_Partitioning.md#2-windowed-top-k-replica-sharding) |
+
+The distinction that matters: **consistent hashing answers "which node/shard owns this
+key, and how little moves when the set of shards changes?"** The others answer "is this
+value authentic?" (HMAC), "have I computed this before?" (cache-key SHA-256), "does this
+credential match?" (constant-time compare), "might this id exist?" (Bloom), or "what is
+this vector near?" (LSH). Only the first is consistent hashing — which is why only the
+FNV-1a ring and `StableBucketer` share the frozen `Hashing` primitive, and none of the
+others do.
+
 ## 6. Testing
 
 The frozen behavior is pinned by **golden-value** tests, not just properties:
