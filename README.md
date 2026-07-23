@@ -21,7 +21,7 @@ A compact Maven workspace demonstrating recommendation-system serving, retrieval
 | API Gateway | `MicroserviceGatewayServer` (Armeria), `MicroserviceRouteTable`, `GatewayAuthenticator` (API key / Cognito JWT), `RouteCircuitBreaker`, `GatewayRateLimiter`, `LlmProxyService` — see [Port 8010](#port-8010--api-gateway) |
 | Recommendation Service | Shared recall → rank → paginate → hydrate pipeline, `MultiChannelRecallService` — see [Shared recall core](#shared-recall-core) |
 | Data Infrastructure | Redis embedding store, AZ-aware read-replica router, multi-level cache (L1/L2/L3), LSH vector index, consistent-hash sharded record store, sharded top-K, MySQL catalog + transactional outbox — see [Sharded Record Store](#sharded-record-store), [Redis Read Replicas](#redis-read-replicas) |
-| Messaging & Load Balancing | `AsyncEventPublisher` (SQS/Kafka transports), durable outbox relay + read-your-writes consistency, `ApplicationLoadBalancer` (L7), capacity-weight feedback — see [Message Queues](07_Message_Queue.md), [Durable Eventual Consistency](#durable-eventual-consistency), [Load Balancing](#load-balancing) |
+| Messaging & Load Balancing | `AsyncEventPublisher` (SQS/Kafka transports), durable outbox relay + read-your-writes consistency, `ApplicationLoadBalancer` (L7), capacity-weight feedback — see [Message Queues](07_Message_Queue.md), [Durable Eventual Consistency](#durable-eventual-consistency), [Load Balancing](01_Load_Balancing.md) |
 | Domain Model | Shared value objects: `Movie`, `User`, `MovieCandidate`, `RecommendationQuery` |
 | Configuration | Spring `@ConfigurationProperties`, feature flag providers, JVM tuning options — see [Configuration](#configuration) |
 | Infrastructure | Kubernetes base + EKS overlay, CloudFront CDN edge, Docker, Flink streaming topology — see [Kubernetes & EKS](#kubernetes--eks), [CDN Edge investigation](12_CDNS.md) |
@@ -32,7 +32,7 @@ A compact Maven workspace demonstrating recommendation-system serving, retrieval
 ### System Design
 | Concept | Key Components |
 |---|---|
-| Load Balancing | `ApplicationLoadBalancer` (L7), capacity-weight feedback (`X-Capacity-Weight` / `suggestedWeight`), gateway health-checked upstream endpoint groups (`UpstreamEndpointGroups`) — see [Load Balancing](#load-balancing) |
+| Load Balancing | Production stack (AWS ALB Ingress → kube-proxy / topology-aware routing → Armeria health-checked `UpstreamEndpointGroups`), **capacity-weight feedback** (`X-Capacity-Weight` / `suggestedWeight = (1−util)×100`), and the in-memory L7 `ApplicationLoadBalancer` model — see [Load Balancing investigation](01_Load_Balancing.md) |
 | Caching | Embedding caches (`LocalEmbeddingCache` Caffeine+Bloom+null-sentinel, `MultiLevelEmbeddingCache` L1/L2/L3, `LogicalExpiryEmbeddingCache` soft-TTL serve-stale), `TtlSingleFlightCache`, `RecommendationCache` (version-keyed), `LlmResponseCache` (SHA-256), CloudFront edge cache — all bounded, single-flight, serve-stale-on-error — see [Caching investigation](02_Caching.md), [CDN Edge](12_CDNS.md) |
 | Database Sharding | Two sharded Redis stores — `ShardedRecordStore` (consistent-hash record partitions, `sr:g{v}:rec/dev/stream` keys, HSET/ZADD/XADD write fan-out) and `ShardedTopKStore` (replica-sharded trending) — over a versioned `ShardTopology` (`shard:topology`) with online reshard via `POST /shards/topology` — see [Database Sharding investigation](03_DB_Sharding.md), [Sharded Record Store](#sharded-record-store) |
 | Replication | Single-primary Redis with AZ-aware read replicas (`RedisReadReplicaRouter` / `RoutingRedisExecutor` / `ReplicaConfig`), Sentinel primary failover, `RedisReplicaLagProbe` lag measurement, and async cross-region replication for DR (ElastiCache/Aurora Global) — see [Replication investigation](04_Replication.md) |
@@ -1943,9 +1943,14 @@ MySQL connection settings (`MYSQL_URL`, `MYSQL_USER`, `MYSQL_PASSWORD`, pool siz
 
 ## Load Balancing
 
-This section implements **load balancing with capacity-aware feedback** — two layers cooperate to keep traffic on healthy, non-overloaded instances, trading a little per-response signaling for real-time avoidance of saturated nodes:
-
-**Capacity-weight feedback (in-process).** Every Model-Serving response carries an `X-Capacity-Weight: <0–100>` header, and `GET /health/load` / `GET /online/ops` expose the same `suggestedWeight`. The weight drops as in-flight concurrency approaches the cap, letting an external load balancer (ALB target-group weights, Envoy, or a service mesh) shift traffic away from a saturated instance in real time, and `/health/ready` returns `503` past `ONLINE_DRAIN_UTILIZATION` so the LB drains the node. See [Health probes](#health-probes).
+Load balancing here is **capacity-aware**: alongside the production stack (AWS ALB
+Ingress → kube-proxy / topology-aware routing → Armeria health-checked upstream groups),
+every model-serving response carries an `X-Capacity-Weight: <0–100>` header
+(`suggestedWeight = (1 − utilization) × 100`) so a balancer can shift traffic away from a
+saturated instance *before* it fails health checks, and `/health/ready` returns `503`
+past the drain threshold to remove the node. `infrastructure/alb/ApplicationLoadBalancer`
+is an in-memory L7 model (listener → rule → target-group → health-aware round-robin) used
+as a routing reference/test, not the production data path.
 
 ```bash
 curl -s -D - -o /dev/null -X POST http://localhost:8080/api/v1/recommend \
@@ -1953,7 +1958,9 @@ curl -s -D - -o /dev/null -X POST http://localhost:8080/api/v1/recommend \
 # X-Capacity-Weight: 89
 ```
 
-**L7 routing model (`ApplicationLoadBalancer`).** `infrastructure/alb/` models an ALB-style Layer-7 balancer: it evaluates listener rules by priority and round-robins across healthy targets in the matched target group — the same shape used by the EKS ALB ingress, and the unit under test for the gateway's routing and health-aware target selection.
+The full stack — production ALB/kube-proxy/Armeria layers, the capacity-weight feedback
+loop, and the `ApplicationLoadBalancer` L7 model — is in the
+**[Load Balancing investigation](01_Load_Balancing.md)**.
 
 ---
 
