@@ -3,7 +3,7 @@
 This runbook moves online movie events to `movie_events_v2` with exactly 24 partitions. The Flink job refuses to start when `--expected-topic-partitions` differs from the broker, and the producer rejects missing, zero, or negative user IDs instead of publishing an unkeyed record. Use a new consumer group during cutover so the old deployment remains available for rollback.
 
 > Kafka topic partitioning is one of the system's five partition dimensions — see the
-> [Partitioning investigation](../../14_Partitioning.md) for how the `userId` key contract,
+> [Partitioning investigation](../system_design/14_Partitioning.md) for how the `userId` key contract,
 > the Flink source parallelism, and the two-stage Top-K fit together.
 
 Set deployment-specific values before running the commands:

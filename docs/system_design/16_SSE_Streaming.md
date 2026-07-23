@@ -22,16 +22,16 @@ socket.
 
 ## 1. Where SSE lives
 
-- **Service:** [LlmProxyService.java](src/main/java/com/recsys/application/gateway/LlmProxyService.java)
+- **Service:** [LlmProxyService.java](../../src/main/java/com/recsys/application/gateway/LlmProxyService.java)
   — an Armeria `HttpService` that reverse-proxies the LLM route(s).
 - **Routes** (opt-in; only registered when the env var is set —
-  [MicroserviceRoute.java:40-41](src/main/java/com/recsys/application/gateway/MicroserviceRoute.java#L40-L41)):
+  [MicroserviceRoute.java:40-41](../../src/main/java/com/recsys/application/gateway/MicroserviceRoute.java#L40-L41)):
   - `llm-explanation` → prefix `/api/explanations`, `LLM_EXPLANATION_SERVICE_URL`
   - `llm` → prefix `/api/llm`, `LLM_SERVICE_URL`
 - **Wiring:** the gateway splits LLM routes out from regular routes
   (`LLM_ROUTE_NAMES = {"llm", "llm-explanation"}`) and gives them a **dedicated,
   tuned `ClientFactory` and longer timeouts** so slow inference does not block
-  the shared proxy pool ([MicroserviceGatewayServer.java:67-72, 148-162](src/main/java/com/recsys/api/gateway/MicroserviceGatewayServer.java#L67-L72)).
+  the shared proxy pool ([MicroserviceGatewayServer.java:67-72, 148-162](../../src/main/java/com/recsys/api/gateway/MicroserviceGatewayServer.java#L67-L72)).
   LLM routes are registered **before** the catch-all proxy so Armeria's
   longest-prefix match picks them first.
 
@@ -39,20 +39,20 @@ socket.
 
 Every LLM request is aggregated once so the proxy can inspect the body, then
 dispatched down one of two paths based on a single flag
-([LlmProxyService.java:148-203](src/main/java/com/recsys/application/gateway/LlmProxyService.java#L148-L203)):
+([LlmProxyService.java:148-203](../../src/main/java/com/recsys/application/gateway/LlmProxyService.java#L148-L203)):
 
 ```
 stream:true  in JSON body  → forwardStreaming()   (SSE passthrough)
 stream:false / absent      → forwardBuffered()    (aggregate + cache + retry)
 ```
 
-`parseBodyMeta` ([LlmProxyService.java:400-413](src/main/java/com/recsys/application/gateway/LlmProxyService.java#L400-L413))
+`parseBodyMeta` ([LlmProxyService.java:400-413](../../src/main/java/com/recsys/application/gateway/LlmProxyService.java#L400-L413))
 reads `"stream"` (boolean) and `"max_tokens"` (int) from the request JSON; a
 malformed body falls back to non-streaming with a default token estimate.
 
 ## 3. The SSE streaming lifecycle
 
-`forwardStreaming` ([LlmProxyService.java:209-245](src/main/java/com/recsys/application/gateway/LlmProxyService.java#L209-L245))
+`forwardStreaming` ([LlmProxyService.java:209-245](../../src/main/java/com/recsys/application/gateway/LlmProxyService.java#L209-L245))
 is a **reactive-streams passthrough** — it never buffers the body:
 
 1. Create an Armeria `HttpResponseWriter` via `HttpResponse.streaming()` and
@@ -91,14 +91,14 @@ streaming is surfaced immediately)"* and *"caches non-streaming 200 responses."*
 ## 5. Cross-cutting concerns applied to SSE
 
 **Security / identity.** `buildUpstreamHeaders`
-([LlmProxyService.java:308-334](src/main/java/com/recsys/application/gateway/LlmProxyService.java#L308-L334))
+([LlmProxyService.java:308-334](../../src/main/java/com/recsys/application/gateway/LlmProxyService.java#L308-L334))
 runs on both paths: it strips client-spoofed `x-authenticated-*` identity
 headers, strips gateway-consumed credentials (`authorization`, `x-api-key`, the
 CloudFront `x-origin-secret`), injects the authenticated `GatewayPrincipal`'s
 identity headers, and adds `x-forwarded-for/-host/-proto`. The gateway is the
 sole identity authority; none of its credentials reach the LLM upstream. This is
 the only behavior with dedicated tests
-([LlmProxyServiceTest.java](src/test/java/com/recsys/application/gateway/LlmProxyServiceTest.java)).
+([LlmProxyServiceTest.java](../../src/test/java/com/recsys/application/gateway/LlmProxyServiceTest.java)).
 
 **Token budget.** Before forwarding (streaming or not), `LlmTokenRateLimiter`
 pre-checks the `max_tokens` budget and rejects with `429` +
@@ -110,7 +110,7 @@ On the streaming path it observes the upstream *response headers* and any
 mid-stream `onError`.
 
 **Edge caching.** The gateway proxy path forces `Cache-Control: no-store`
-([GatewayProxyService.java:68-73](src/main/java/com/recsys/application/gateway/GatewayProxyService.java#L68-L73))
+([GatewayProxyService.java:68-73](../../src/main/java/com/recsys/application/gateway/GatewayProxyService.java#L68-L73))
 so CloudFront never pins LLM responses (its 10 s default error-cache TTL would
 otherwise cache a transient failure). LLM routes are POST-only and are not in
 the CDN cache behaviors.
@@ -118,7 +118,7 @@ the CDN cache behaviors.
 ## 6. Connection tuning (why SSE stays alive)
 
 The dedicated LLM `ClientFactory`
-([MicroserviceGatewayServer.java:213-222](src/main/java/com/recsys/api/gateway/MicroserviceGatewayServer.java#L213-L222))
+([MicroserviceGatewayServer.java:213-222](../../src/main/java/com/recsys/api/gateway/MicroserviceGatewayServer.java#L213-L222))
 is what keeps a long, slow token stream healthy:
 
 | Env var | Default | Purpose |

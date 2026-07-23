@@ -38,7 +38,7 @@ The caches:
 
 Embeddings are read on every recall, so they get the most cache machinery.
 
-**`MultiLevelEmbeddingCache`** ([infrastructure/cache/MultiLevelEmbeddingCache.java](src/main/java/com/recsys/infrastructure/cache/MultiLevelEmbeddingCache.java))
+**`MultiLevelEmbeddingCache`** ([infrastructure/cache/MultiLevelEmbeddingCache.java](../../src/main/java/com/recsys/infrastructure/cache/MultiLevelEmbeddingCache.java))
 is an explicit three-tier cache:
 
 - **L1** — a JVM `ConcurrentHashMap` bounded at `DEFAULT_L1_CAPACITY = 10_000`, **no TTL**
@@ -55,7 +55,7 @@ A **null sentinel** (30 s TTL) absorbs repeated misses for genuinely-absent IDs 
 don't re-hit L2/L3 every request, and per-tier hit counters (`l1Hits`/`l2Hits`/`l3Hits`/
 `misses`) make abnormal L3 traffic (a Redis problem) observable.
 
-**`LocalEmbeddingCache`** ([infrastructure/cache/LocalEmbeddingCache.java](src/main/java/com/recsys/infrastructure/cache/LocalEmbeddingCache.java))
+**`LocalEmbeddingCache`** ([infrastructure/cache/LocalEmbeddingCache.java](../../src/main/java/com/recsys/infrastructure/cache/LocalEmbeddingCache.java))
 is the cache actually wired in production — a Caffeine JVM-heap cache in front of Redis
 (`maximumSize = LOCAL_EMBEDDING_CACHE_MAX_ENTRIES`, default 100,000). It layers three
 cache-penetration defenses: a **Bloom filter** guard (after warm-up, `mightContain==false`
@@ -65,7 +65,7 @@ from Redis and `preload()` seeds from the classpath. (`MultiLevelEmbeddingCache`
 the *explicit-tier* design; in production the "multi-level" shape is realized by
 `LocalEmbeddingCache` → Redis.)
 
-**`LogicalExpiryEmbeddingCache`** ([infrastructure/cache/LogicalExpiryEmbeddingCache.java](src/main/java/com/recsys/infrastructure/cache/LogicalExpiryEmbeddingCache.java))
+**`LogicalExpiryEmbeddingCache`** ([infrastructure/cache/LogicalExpiryEmbeddingCache.java](../../src/main/java/com/recsys/infrastructure/cache/LogicalExpiryEmbeddingCache.java))
 solves the hot-key TTL stampede a different way: it embeds a **soft (logical) expiry**
 inside each entry and gives the backing-store key a much longer **hard** TTL (2× soft).
 On a read *before* soft expiry it's a plain hit; *past* soft expiry it **returns the
@@ -76,7 +76,7 @@ map. Used for user embeddings (`u2vEmb`, ~30 s soft TTL — see the staleness ta
 
 ## 2. `TtlSingleFlightCache` — the generic serve-stale primitive
 
-[`TtlSingleFlightCache<V>`](src/main/java/com/recsys/infrastructure/cache/TtlSingleFlightCache.java)
+[`TtlSingleFlightCache<V>`](../../src/main/java/com/recsys/infrastructure/cache/TtlSingleFlightCache.java)
 generalizes the fresh/stale lifecycle the infra stores use inline. Each key has a
 **fresh** window (`DEFAULT_FRESH_TTL_MS = 1_000`) and a **stale** window
 (`DEFAULT_STALE_TTL_MS = 60_000`), and reads take one of three paths:
@@ -89,14 +89,14 @@ generalizes the fresh/stale lifecycle the infra stores use inline. Each key has 
    `refreshing` key set.
 
 Its concrete user is
-[`GlobalPopularityStore`](src/main/java/com/recsys/infrastructure/redis/GlobalPopularityStore.java)
+[`GlobalPopularityStore`](../../src/main/java/com/recsys/infrastructure/redis/GlobalPopularityStore.java)
 (a 100-item popularity snapshot that fails open to an empty list when Redis is down and
 no snapshot exists). It is the reusable form of the same pattern `OnlineFeatureStore`
 (5 s / 60 s) and `ShardedTopKStore` (2 s / 60 s) implement inline.
 
 ## 3. `RecommendationCache` — result and cold-start caching
 
-[`RecommendationCache`](src/main/java/com/recsys/application/recommendation/RecommendationCache.java)
+[`RecommendationCache`](../../src/main/java/com/recsys/application/recommendation/RecommendationCache.java)
 caches finished recommendation results and the pre-scored cold-start pools on the model
 service. It is **keyed by A/B variant + model version**, so a new model or variant deploy
 sidesteps stale results with no explicit invalidation. TTLs are ~**300 s** for
@@ -107,20 +107,20 @@ a `synchronized` + access-order map (which serialized every read) to a
 
 ## 4. `LlmResponseCache` — buffered LLM responses
 
-[`LlmResponseCache`](src/main/java/com/recsys/infrastructure/cache/LlmResponseCache.java)
+[`LlmResponseCache`](../../src/main/java/com/recsys/infrastructure/cache/LlmResponseCache.java)
 caches non-streaming LLM proxy responses keyed by a **SHA-256 of the request body**
 (bounded at `LLM_CACHE_MAX_SIZE`, default **500**; TTL `LLM_CACHE_TTL_SECONDS`, default
 **300 s**), returning `X-Cache: HIT/MISS`. It applies **only to the buffered path** — the
 SSE streaming path skips caching entirely (a stream can't be replayed from a cache). The
 justification for caching a nondeterministic model is that the demo runs at
-temperature 0. It sits inside the [LLM Gateway](README.md#llm-gateway) proxy.
+temperature 0. It sits inside the [LLM Gateway](../../README.md#llm-gateway) proxy.
 
 ## 5. Supporting machinery
 
 - **`HotKeyDetector`** — a lock-free two-bucket, alpha-weighted sliding window that
   decides which IDs are hot enough to promote into L1 (and gates eviction). It's the
   promotion policy for `MultiLevelEmbeddingCache`.
-- **`SingleFlight`** ([infrastructure/resilience/SingleFlight.java](src/main/java/com/recsys/infrastructure/resilience/SingleFlight.java))
+- **`SingleFlight`** ([infrastructure/resilience/SingleFlight.java](../../src/main/java/com/recsys/infrastructure/resilience/SingleFlight.java))
   — the general dedup primitive behind the caches; on a wait timeout it fails open to an
   independent compute rather than blocking ([18_Fault_Tolerance](18_Fault_Tolerance.md#redis-resilience)).
 - **Infra serve-stale caches** — `OnlineFeatureStore` (5 s fresh / 60 s stale) and

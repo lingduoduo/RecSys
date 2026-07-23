@@ -33,10 +33,10 @@ Boot:
 
 | Service | Main class | Framework | Port | Responsibility |
 |---|---|---|---:|---|
-| **Catalog / Recommendation Serving** | [`RecSysServer`](src/main/java/com/recsys/api/serving/RecSysServer.java) | Armeria | 6010 | Movie/user reads, similar-items, `/v2/recommend`, embeddings, opt-in MySQL catalog |
-| **Online Prediction** | [`OnlinePredictionServer`](src/main/java/com/recsys/api/online/OnlinePredictionServer.java) | Armeria | 7010 | Real-time feature-store reads, online recommendation, `OnlineLearner`, sharded record store, `/online/ops` |
-| **Model Serving** | [`ModelApplication`](src/main/java/com/recsys/api/rest/ModelApplication.java) | Spring Boot | 8080 | ONNX two-tower model, REST controllers (retrieval/ranking/knowledge/sequential) |
-| **API Gateway** | [`MicroserviceGatewayServer`](src/main/java/com/recsys/api/gateway/MicroserviceGatewayServer.java) | Armeria | 8010 | Front-door reverse proxy fanning `/api/*` to the three backends |
+| **Catalog / Recommendation Serving** | [`RecSysServer`](../../src/main/java/com/recsys/api/serving/RecSysServer.java) | Armeria | 6010 | Movie/user reads, similar-items, `/v2/recommend`, embeddings, opt-in MySQL catalog |
+| **Online Prediction** | [`OnlinePredictionServer`](../../src/main/java/com/recsys/api/online/OnlinePredictionServer.java) | Armeria | 7010 | Real-time feature-store reads, online recommendation, `OnlineLearner`, sharded record store, `/online/ops` |
+| **Model Serving** | [`ModelApplication`](../../src/main/java/com/recsys/api/rest/ModelApplication.java) | Spring Boot | 8080 | ONNX two-tower model, REST controllers (retrieval/ranking/knowledge/sequential) |
+| **API Gateway** | [`MicroserviceGatewayServer`](../../src/main/java/com/recsys/api/gateway/MicroserviceGatewayServer.java) | Armeria | 8010 | Front-door reverse proxy fanning `/api/*` to the three backends |
 
 The three Armeria servers build their routes and register health/metrics
 programmatically in `main` (each exposes a slightly different health surface — see
@@ -50,32 +50,32 @@ internals are the [API Gateway investigation](09_API_Gateway.md).
 There is **one Maven artifact** (`com.recsys:recsys-api`, no sub-modules) and the
 service is chosen at runtime:
 
-- **`RECSYS_MAIN_CLASS`** — the [`Dockerfile`](Dockerfile) ENTRYPOINT execs
+- **`RECSYS_MAIN_CLASS`** — the [`Dockerfile`](../../Dockerfile) ENTRYPOINT execs
   `java … $RECSYS_MAIN_CLASS`; the comment says outright *"this single image runs all
   four services, selected at runtime via `RECSYS_MAIN_CLASS`"* and `EXPOSE 6010 7010
   8010 8080`. There is **no launcher/dispatch class** — the JVM invokes whichever
   `main` the env var names.
-- **k8s per-service override** — every Deployment in [k8s/base/](k8s/base/) sets
+- **k8s per-service override** — every Deployment in [k8s/base/](../../k8s/base/) sets
   `RECSYS_MAIN_CLASS` to its class (`catalog-serving.yaml`, `online-serving.yaml`,
   `model-serving.yaml`, `api-gateway.yaml`), and the same trick runs the outbox
   relay and reconciliation jobs.
-- **Local run** — [`scripts/run-microservices-local.sh`](scripts/run-microservices-local.sh)
+- **Local run** — [`scripts/run-microservices-local.sh`](../../scripts/run-microservices-local.sh)
   starts all four on one machine (three via `exec:java -Dexec.mainClass=…`, the model
   service via `spring-boot:run`) and wires the inter-service URLs to localhost.
 - **JVM tuning by profile** —
-  [`scripts/run-with-jvm-tuning.sh`](scripts/run-with-jvm-tuning.sh) maps a
+  [`scripts/run-with-jvm-tuning.sh`](../../scripts/run-with-jvm-tuning.sh) maps a
   service-name profile (`recsys-serving` / `online-serving` / `model-serving` /
   `api-gateway`, plus `-zgc` variants) to a `config/jvm/<profile>.jvmopts` file.
 - **Shared AppCDS** — the Dockerfile dumps a class-data-sharing archive (`app.jsa`)
   once using the gateway main and reuses it across all four services at runtime
   (`-XX:SharedArchiveFile`), so start-up cost is shared. Design:
-  [docker image optimization](docs/superpowers/specs/2026-06-30-docker-image-optimization-design.md).
+  [docker image optimization](../superpowers/specs/2026-06-30-docker-image-optimization-design.md).
 
 ## 3. Clean-architecture layering
 
 The package tree under `com.recsys` is layered by **role, not service** (the
 authoritative map is the CLAUDE.md Package Map, mirrored in the README
-[Project Layout](README.md#project-layout)):
+[Project Layout](../../README.md#project-layout)):
 
 | Layer | Responsibility |
 |---|---|
@@ -88,10 +88,10 @@ authoritative map is the CLAUDE.md Package Map, mirrored in the README
 **Dependency direction is `api → application → domain`, with `infrastructure`
 implementing ports.** It is visible in the imports: `RecSysServer` (api) pulls in
 application services and infrastructure adapters;
-[`RecommendationOrchestrator`](src/main/java/com/recsys/application/recommendation/RecommendationOrchestrator.java)
+[`RecommendationOrchestrator`](../../src/main/java/com/recsys/application/recommendation/RecommendationOrchestrator.java)
 (application) depends only on `MultiChannelRecallService` and domain types, never on
 `api`; the port it implements
-([`RecommendationPipeline`](src/main/java/com/recsys/application/recommendation/RecommendationPipeline.java))
+([`RecommendationPipeline`](../../src/main/java/com/recsys/application/recommendation/RecommendationPipeline.java))
 returns a domain type. Note that this direction is **enforced by convention** (the
 Package Map + the Maven compile-excludes), *not* by an ArchUnit test — there is no
 automated layering guard.
@@ -101,18 +101,18 @@ automated layering guard.
 The economy of one codebase shows up as genuinely shared building blocks:
 
 - **The recall pipeline is shared by 6010 and 7010.** Both build
-  [`MultiChannelRecallService`](src/main/java/com/recsys/application/retrieval/multichannel/MultiChannelRecallService.java)
+  [`MultiChannelRecallService`](../../src/main/java/com/recsys/application/retrieval/multichannel/MultiChannelRecallService.java)
   and drive it through the same recall → rank → hydrate → paginate
   `RecommendationOrchestrator`; they differ only in quota policy and feature source
   (see [17_Scalability](17_Scalability.md) for how this shared core scales). Design:
-  [shared recall core](docs/superpowers/specs/2026-06-18-shared-recall-core-design.md).
+  [shared recall core](../superpowers/specs/2026-06-18-shared-recall-core-design.md).
 - **Domain value objects are service-agnostic** — `Movie`, `MovieCandidate`, `User`,
   `RecommendationQuery` under `com.recsys.domain`, imported by any layer.
 - **Infrastructure adapters are shared** — `RedisEmbeddingStore`,
   `LettuceClientFactory`, `ShardedTopKStore`, the caches — reused across servers,
   with only the concrete cache class differing (serving vs online).
 - **Excluded from the compile** — `online/flink/**` and `training/rulebased/**` need
-  Spark/Flink classpaths, so [`pom.xml`](pom.xml) excludes them from the default
+  Spark/Flink classpaths, so [`pom.xml`](../../pom.xml) excludes them from the default
   `maven-compiler-plugin` run (re-included only via the `streaming-flink` / Spark
   profiles). They live outside the layer scheme deliberately.
 
@@ -122,7 +122,7 @@ The economy of one codebase shows up as genuinely shared building blocks:
   `/api/*` prefix to a backend (`/api/users`+`/api/movies`→6010, `/api/features`→7010,
   `/api/model`+`/api/knowledge`→8080, the `/api/recommend/*` strategy routes, opt-in
   `/api/llm`). Details in the [API Gateway investigation](09_API_Gateway.md).
-- **Inter-service addresses come from config** — [k8s/base/configmap.yaml](k8s/base/configmap.yaml)
+- **Inter-service addresses come from config** — [k8s/base/configmap.yaml](../../k8s/base/configmap.yaml)
   sets `CATALOG_SERVICE_URL` / `MODEL_SERVICE_URL` / `ONLINE_SERVICE_URL` (the same
   env vars `MicroserviceRoute` reads); the opt-in
   [Service Registry](11_Service_Discovery.md) can resolve them dynamically instead.

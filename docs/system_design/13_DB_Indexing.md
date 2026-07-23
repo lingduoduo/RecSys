@@ -42,7 +42,7 @@ An allowlist test (`MySqlIndexContractTest`) asserts the migrations define
 ## 1. The catalog secondary indexes
 
 `V1__create_movies_catalog.sql`
-([src/main/resources/db/migration/V1__create_movies_catalog.sql](src/main/resources/db/migration/V1__create_movies_catalog.sql))
+([src/main/resources/db/migration/V1__create_movies_catalog.sql](../../src/main/resources/db/migration/V1__create_movies_catalog.sql))
 creates `movies` (`id`, `title`, `year`, `genre`, `popularity_score DECIMAL(12,6)`,
 `updated_at`) and two composite indexes:
 
@@ -71,15 +71,15 @@ would make either index *covering* (the query answered entirely from the index,
 no clustered-row lookup), but it would unconditionally grow the B-tree, add
 buffer-pool pressure, and amplify writes. With no repository-level evidence that
 the clustered lookup is the bottleneck, covering is deliberately deferred — see
-the [MySQL index audit](docs/superpowers/specs/2026-07-18-mysql-index-audit-design.md)
-and [robust catalog querying](docs/superpowers/specs/2026-07-15-robust-mysql-catalog-querying-design.md)
-designs. The README [MySQL Index Inventory](README.md#mysql-index-inventory) keeps
+the [MySQL index audit](../superpowers/specs/2026-07-18-mysql-index-audit-design.md)
+and [robust catalog querying](../superpowers/specs/2026-07-15-robust-mysql-catalog-querying-design.md)
+designs. The README [MySQL Index Inventory](../../README.md#mysql-index-inventory) keeps
 the operational verify commands.
 
 ## 2. Plan pinning and query-to-index contracts
 
 The two catalog queries are not hand-tuned per call — they live as fixed plans in
-[`MovieCatalogRepository`](src/main/java/com/recsys/infrastructure/persistence/MovieCatalogRepository.java),
+[`MovieCatalogRepository`](../../src/main/java/com/recsys/infrastructure/persistence/MovieCatalogRepository.java),
 each carrying a `FORCE INDEX` hint so the optimizer can't drift to a worse plan:
 
 ```sql
@@ -102,16 +102,16 @@ That pinning is enforced at two levels — both required for **every** new
 production query:
 
 - **Static contract** —
-  [`MySqlIndexContractTest`](src/test/java/com/recsys/infrastructure/persistence/MySqlIndexContractTest.java)
+  [`MySqlIndexContractTest`](../../src/test/java/com/recsys/infrastructure/persistence/MySqlIndexContractTest.java)
   via
-  [`MySqlIndexContractAssertions`](src/test/java/com/recsys/infrastructure/persistence/MySqlIndexContractAssertions.java)
+  [`MySqlIndexContractAssertions`](../../src/test/java/com/recsys/infrastructure/persistence/MySqlIndexContractAssertions.java)
   checks, with no database, that (a) the migration declares the index *exactly
   once*, (b) with the exact ordered column list (inline or standalone form), and
   (c) the repository plan contains `FORCE INDEX (<name>)`, the expected equality
   predicate, and the expected `ORDER BY`. A separate allowlist test asserts the
   migration set defines only the seven workload-required indexes.
 - **Real `EXPLAIN`** —
-  [`MovieCatalogMySqlIntegrationTest`](src/test/java/com/recsys/infrastructure/persistence/MovieCatalogMySqlIntegrationTest.java)
+  [`MovieCatalogMySqlIntegrationTest`](../../src/test/java/com/recsys/infrastructure/persistence/MovieCatalogMySqlIntegrationTest.java)
   (`@Tag("docker")`, Testcontainers `mysql:8.4`) runs the real Flyway migration,
   seeds rows with score ties (to exercise the `id` tiebreaker), and asserts the
   optimizer's chosen `key` equals the expected index. This is the authoritative
@@ -120,16 +120,16 @@ production query:
 
 So a new catalog query ships three things together: a Flyway-managed index, a
 static FORCE-INDEX/column-order contract, and a Docker-tagged `EXPLAIN` assertion
-([index audit design](docs/superpowers/specs/2026-07-18-mysql-index-audit-design.md)).
+([index audit design](../superpowers/specs/2026-07-18-mysql-index-audit-design.md)).
 Plans execute through
-[`MySqlClient`](src/main/java/com/recsys/infrastructure/persistence/MySqlClient.java) —
+[`MySqlClient`](../../src/main/java/com/recsys/infrastructure/persistence/MySqlClient.java) —
 a **read-only** HikariCP pool (`setReadOnly(true)`, max 5) that applies a
 per-statement `setQueryTimeout` (`MYSQL_QUERY_TIMEOUT_SECONDS`, default 2) and
 binds every request value as a positional parameter.
 
 ## 3. Index-access patterns via `MillionScalePaginationSql`
 
-[`MillionScalePaginationSql`](src/main/java/com/recsys/application/pagination/MillionScalePaginationSql.java)
+[`MillionScalePaginationSql`](../../src/main/java/com/recsys/application/pagination/MillionScalePaginationSql.java)
 is the reusable builder that turns a table + index into MySQL-friendly SQL. Every
 request value is a bind parameter; only identifiers are validated (regex-checked),
 predicates rejecting blank/`;` fragments, page size bounded 1–1000, and a `SqlPlan`
@@ -161,7 +161,7 @@ patterns, each mapped to how it rides an index:
   columns`, so a covering index (when justified by evidence) is generated the same
   way the queries expect it.
 
-The README [SQL Backend Patterns](README.md#sql-backend-patterns) keeps the runnable
+The README [SQL Backend Patterns](../../README.md#sql-backend-patterns) keeps the runnable
 Java examples for these three helpers.
 
 ## 4. Indexes beyond the catalog — the outbox and saga workload
@@ -185,10 +185,10 @@ progress columns only, no indexes.
 Relational B-trees are one of several "indexes" in the system:
 
 - **LSH ANN vector index** —
-  [`EmbeddingLSH`](src/main/java/com/recsys/infrastructure/vectordb/EmbeddingLSH.java)
+  [`EmbeddingLSH`](../../src/main/java/com/recsys/infrastructure/vectordb/EmbeddingLSH.java)
   (random-hyperplane buckets with Hamming-1 probing) and the exact/flat fallback
   both implement `VectorIndex`;
-  [`CandidateGenerator`](src/main/java/com/recsys/infrastructure/vectordb/CandidateGenerator.java)
+  [`CandidateGenerator`](../../src/main/java/com/recsys/infrastructure/vectordb/CandidateGenerator.java)
   picks `lsh`/`ann` vs `exact`/`flat` for embedding recall. This indexes vectors by
   approximate cosine neighborhood, not by a sort key.
 - **Redis ZSET-as-index** — `ShardedRecordStore` maintains a per-device sorted-set
@@ -196,7 +196,7 @@ Relational B-trees are one of several "indexes" in the system:
   page in order — a Redis-side ordered index, discussed in
   [14_Partitioning §1](14_Partitioning.md#1-consistent-hash-record-sharding).
 - **In-memory inverted index** —
-  [`DataManager`](src/main/java/com/recsys/infrastructure/dataloading/DataManager.java)
+  [`DataManager`](../../src/main/java/com/recsys/infrastructure/dataloading/DataManager.java)
   holds `moviesByGenre` (`Map<String, List<Movie>>`), an in-memory genre index for
   the non-SQL serving path.
 

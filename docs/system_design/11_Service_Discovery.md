@@ -27,7 +27,7 @@ connection at all).
 ## 1. Static addressing — the default
 
 The gateway's authority is the static route table
-([`MicroserviceRoute`](src/main/java/com/recsys/application/gateway/MicroserviceRoute.java)):
+([`MicroserviceRoute`](../../src/main/java/com/recsys/application/gateway/MicroserviceRoute.java)):
 each route is `(name, prefix, envVar, defaultBaseUri, healthPath, serviceName)`, and
 the three backend authorities are `recsys-catalog-serving` (6010, `/health`),
 `recsys-model-serving` (8080, `/health/ready`), and `recsys-online-serving` (7010,
@@ -35,7 +35,7 @@ the three backend authorities are `recsys-catalog-serving` (6010, `/health`),
 default), and `serviceName` is the key the registry overlay resolves against
 (`null` for LLM/unmapped routes, which never use the registry). With the registry
 off, this table *is* the resolution — exactly as documented under the README
-[Microservice Gateway](README.md#microservice-gateway).
+[Microservice Gateway](../../README.md#microservice-gateway).
 
 ## 2. The opt-in Redis registry
 
@@ -46,7 +46,7 @@ registry is unavailable.
 
 ### Backends self-register
 
-[`ServiceRegistrar`](src/main/java/com/recsys/infrastructure/registry/ServiceRegistrar.java)
+[`ServiceRegistrar`](../../src/main/java/com/recsys/infrastructure/registry/ServiceRegistrar.java)
 writes a service's advertised address to Redis and renews it on a daemon heartbeat.
 `fromEnvironment` returns `null` (a no-op) unless the registry is enabled *and* both
 `SERVICE_REGISTRY_SERVICE_NAME` and `SERVICE_REGISTRY_ADVERTISE_URL` are set. On
@@ -54,7 +54,7 @@ writes a service's advertised address to Redis and renews it on a daemon heartbe
 (default 10000) on the `svc-registry-heartbeat` thread; all store I/O is best-effort
 (logged, never breaks serving).
 
-[`ServiceRegistryStore`](src/main/java/com/recsys/infrastructure/registry/ServiceRegistryStore.java)
+[`ServiceRegistryStore`](../../src/main/java/com/recsys/infrastructure/registry/ServiceRegistryStore.java)
 does the Redis I/O over `RedisExecutor`: `register` is a `SET svc:registry:<name>
 <address> PX <ttlMs>` (`SERVICE_REGISTRY_TTL_MS`, default 30000) so a crashed
 instance's key **expires on its own**; `lookup(names)` is an `MGET` of the prefixed
@@ -63,12 +63,12 @@ keys that keeps only present values. Liveness is simply "key present."
 All four services register:
 
 - The three Armeria services register directly —
-  [`RecSysServer`](src/main/java/com/recsys/api/serving/RecSysServer.java) (6010) and
-  [`OnlinePredictionServer`](src/main/java/com/recsys/api/online/OnlinePredictionServer.java)
+  [`RecSysServer`](../../src/main/java/com/recsys/api/serving/RecSysServer.java) (6010) and
+  [`OnlinePredictionServer`](../../src/main/java/com/recsys/api/online/OnlinePredictionServer.java)
   (7010) build a `ServiceRegistrar.fromEnvironment(...)` and `start()` it (closed on
   shutdown).
 - The Spring model service (8080) registers via
-  [`ServiceRegistryConfig`](src/main/java/com/recsys/config/ServiceRegistryConfig.java) —
+  [`ServiceRegistryConfig`](../../src/main/java/com/recsys/config/ServiceRegistryConfig.java) —
   an `@Bean(initMethod="start", destroyMethod="close")` that wraps the registrar in
   a null-safe `ServiceRegistrarLifecycle`, so a non-Armeria service joins the same
   registry and stays an inert no-op when the registry is off.
@@ -76,7 +76,7 @@ All four services register:
 
 ### The gateway resolves
 
-[`ServiceRegistryProvider`](src/main/java/com/recsys/infrastructure/registry/ServiceRegistryProvider.java)
+[`ServiceRegistryProvider`](../../src/main/java/com/recsys/infrastructure/registry/ServiceRegistryProvider.java)
 holds a **lock-free, periodically-refreshed** view: a single volatile immutable map
 swapped atomically per refresh. It refreshes immediately, then every
 `SERVICE_REGISTRY_REFRESH_MS` (default 10000) on the `svc-registry-refresh` thread,
@@ -84,14 +84,14 @@ swapped atomically per refresh. It refreshes immediately, then every
 the last-good snapshot and bumps a failure counter rather than dropping resolutions.
 `resolve(name)` returns the advertised address if the key is present.
 
-[`RegistryBackedUpstreams`](src/main/java/com/recsys/application/gateway/RegistryBackedUpstreams.java)
+[`RegistryBackedUpstreams`](../../src/main/java/com/recsys/application/gateway/RegistryBackedUpstreams.java)
 overlays those resolved addresses onto the static route table: `resolveAddresses()`
 is `provider.resolve(route.serviceName()).orElse(route.baseUri())` — **static-route
 fallback per route** when a service is unregistered or Redis is down. When the
 provider's refresh callback fires, `rebuildIfChanged()` recomputes the resolved map
 and, only if it changed, builds a fresh set of upstream groups and atomically swaps
 them in (the same swap pattern the shard-topology provider uses). The
-[`GatewayRequestForwarder`](src/main/java/com/recsys/application/gateway/GatewayRequestForwarder.java)
+[`GatewayRequestForwarder`](../../src/main/java/com/recsys/application/gateway/GatewayRequestForwarder.java)
 holds mutually exclusive `staticUpstreams` vs `registryUpstreams` and picks per
 request — so the disabled path never touches registry code.
 
@@ -116,12 +116,12 @@ Whatever host the route table or registry resolves to still has to become an IP 
 prove it's alive:
 
 - **Cloud Map DNS (30 s TTL)** —
-  [`MicroserviceGatewayServer`](src/main/java/com/recsys/api/gateway/MicroserviceGatewayServer.java)
+  [`MicroserviceGatewayServer`](../../src/main/java/com/recsys/api/gateway/MicroserviceGatewayServer.java)
   sets the JVM `networkaddress.cache.ttl=30` (only if unset), so EKS blue/green
   Cloud Map endpoint changes actually propagate — otherwise the JVM caches DNS
   lookups indefinitely and would pin traffic to retired pods.
 - **Health-checked endpoint groups** —
-  [`UpstreamEndpointGroups`](src/main/java/com/recsys/application/gateway/UpstreamEndpointGroups.java)
+  [`UpstreamEndpointGroups`](../../src/main/java/com/recsys/application/gateway/UpstreamEndpointGroups.java)
   builds one Armeria `EndpointGroup` per unique `(protocol, host, port, healthPath)`
   (deduped, so pollers scale with backends not routes). With
   `GATEWAY_UPSTREAM_HEALTHCHECK_ENABLED` (default true,
@@ -138,7 +138,7 @@ cache, and the health check decides whether that endpoint is eligible.
 ## 4. Observability
 
 When the registry is enabled, the gateway `/health` gains a `registry` section
-([`GatewayHealthService.registrySection`](src/main/java/com/recsys/application/gateway/GatewayHealthService.java),
+([`GatewayHealthService.registrySection`](../../src/main/java/com/recsys/application/gateway/GatewayHealthService.java),
 null when no provider) reporting each service's resolution `source` (`registry` vs
 `static` fallback), its resolved `address`, and the snapshot age:
 
@@ -154,7 +154,7 @@ null when no provider) reporting each service's resolution `source` (`registry` 
 ```
 
 The Prometheus `/metrics` endpoint publishes five pull-based meters
-([`GatewayRegistryMetrics`](src/main/java/com/recsys/metrics/GatewayRegistryMetrics.java),
+([`GatewayRegistryMetrics`](../../src/main/java/com/recsys/metrics/GatewayRegistryMetrics.java),
 sampled at scrape time — no background thread, no Redis on scrape):
 
 | Meter | Meaning |
@@ -211,8 +211,8 @@ Testcontainers — there is no `@Tag("docker")` registry test.
    liveness signal.
 5. **Built in stacked PRs, feature-flagged throughout.** Core registry, Spring
    registration, observability, and metrics landed as separate designs
-   ([registry](docs/superpowers/specs/2026-07-10-redis-service-registry-design.md),
-   [PR2](docs/superpowers/specs/2026-07-10-redis-service-registry-pr2-design.md),
-   [metrics](docs/superpowers/specs/2026-07-10-registry-prometheus-metrics-design.md),
-   [upstream discovery](docs/superpowers/specs/2026-07-10-gateway-upstream-endpoint-discovery-design.md)),
+   ([registry](../superpowers/specs/2026-07-10-redis-service-registry-design.md),
+   [PR2](../superpowers/specs/2026-07-10-redis-service-registry-pr2-design.md),
+   [metrics](../superpowers/specs/2026-07-10-registry-prometheus-metrics-design.md),
+   [upstream discovery](../superpowers/specs/2026-07-10-gateway-upstream-endpoint-discovery-design.md)),
    all off by default.

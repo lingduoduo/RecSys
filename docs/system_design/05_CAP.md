@@ -60,7 +60,7 @@ and [15_Eventual_Consistency §3a](15_Eventual_Consistency.md).
 The read path optimizes for availability. `RoutingRedisExecutor` sends reads to the
 AZ-local replica, then a random replica, then the primary — so a briefly-unreachable
 primary AZ degrades read latency, not availability (see the README
-[Redis Read Replicas](README.md#redis-read-replicas)). On top of that, nearly every
+[Redis Read Replicas](../../README.md#redis-read-replicas)). On top of that, nearly every
 view **fails open / serves stale**: the feature store and top-K store serve their
 last-good snapshot within a 60 s stale-if-error window, the CDN serves cached catalog
 reads for up to 24 h on origin error, the Redis rate limiter admits when its breaker
@@ -86,7 +86,7 @@ the server polls the **primary** for the event's lineage marker (up to 2 s) and:
 That last line is the CAP choice made explicit: this specific read prefers
 *unavailable* over *inconsistent*, the opposite of the default path. The full flow is
 [15_Eventual_Consistency §1](15_Eventual_Consistency.md) and the README
-[Durable Eventual Consistency](README.md#durable-eventual-consistency).
+[Durable Eventual Consistency](../../README.md#durable-eventual-consistency).
 
 ## 4. The tunable dial
 
@@ -139,26 +139,26 @@ consistency as the opt-in exception on both sides.
 The CAP choices are not implicit — each corner has an explicit design spec (with a
 paired implementation plan) under `docs/superpowers/`:
 
-- **The CP escape hatch** — [Durable Eventual Consistency](docs/superpowers/specs/2026-07-18-durable-eventual-consistency-design.md)
-  ([plan](docs/superpowers/plans/2026-07-18-durable-eventual-consistency.md)): the
+- **The CP escape hatch** — [Durable Eventual Consistency](../superpowers/specs/2026-07-18-durable-eventual-consistency-design.md)
+  ([plan](../superpowers/plans/2026-07-18-durable-eventual-consistency.md)): the
   transactional outbox, bounded read-your-writes token, deterministic Redis updates, and
   reconciliation (§3). It builds on
-  [Data Lineage / Event-ID propagation](docs/superpowers/specs/2026-06-15-data-lineage-event-id-propagation-design.md)
+  [Data Lineage / Event-ID propagation](../superpowers/specs/2026-06-15-data-lineage-event-id-propagation-design.md)
   — the `lineage:event:<id>` marker the read-your-writes wait polls.
-- **The AP read dial (and PACELC latency)** — [Cross-AZ Traffic Reduction](docs/superpowers/specs/2026-07-02-cross-az-traffic-reduction-design.md)
-  ([reduction plan](docs/superpowers/plans/2026-07-02-cross-az-traffic-reduction.md),
-  [AZ-aware reads plan](docs/superpowers/plans/2026-07-08-az-aware-redis-reads.md)): AZ-local
+- **The AP read dial (and PACELC latency)** — [Cross-AZ Traffic Reduction](../superpowers/specs/2026-07-02-cross-az-traffic-reduction-design.md)
+  ([reduction plan](../superpowers/plans/2026-07-02-cross-az-traffic-reduction.md),
+  [AZ-aware reads plan](../superpowers/plans/2026-07-08-az-aware-redis-reads.md)): AZ-local
   replica reads that trade consistency/latency for availability and cross-AZ cost (§4).
-- **Partition tolerance at the AZ boundary** — [Zonal Failure Hardening](docs/superpowers/specs/2026-07-08-zonal-failure-hardening-design.md)
-  ([plan](docs/superpowers/plans/2026-07-08-zonal-failure-hardening.md)): pod spread,
+- **Partition tolerance at the AZ boundary** — [Zonal Failure Hardening](../superpowers/specs/2026-07-08-zonal-failure-hardening-design.md)
+  ([plan](../superpowers/plans/2026-07-08-zonal-failure-hardening.md)): pod spread,
   AZ-aware reads, PDB tuning so one AZ partition doesn't take the service down (§5).
-- **Partition tolerance at the region boundary** — [Multi-Region DR Failover](docs/superpowers/specs/2026-07-08-multi-region-dr-failover-design.md)
-  ([plan](docs/superpowers/plans/2026-07-08-multi-region-dr-failover.md)) and
-  [DR Standby Capacity Pre-scale](docs/superpowers/specs/2026-07-20-dr-standby-capacity-prescale-design.md)
-  ([plan](docs/superpowers/plans/2026-07-20-dr-standby-capacity-prescale.md)): active-passive
+- **Partition tolerance at the region boundary** — [Multi-Region DR Failover](../superpowers/specs/2026-07-08-multi-region-dr-failover-design.md)
+  ([plan](../superpowers/plans/2026-07-08-multi-region-dr-failover.md)) and
+  [DR Standby Capacity Pre-scale](../superpowers/specs/2026-07-20-dr-standby-capacity-prescale-design.md)
+  ([plan](../superpowers/plans/2026-07-20-dr-standby-capacity-prescale.md)): active-passive
   failover with an accepted RPO (§5).
-- **Partition tolerance for sharding** — [Dynamic Shard Topology](docs/superpowers/specs/2026-06-24-dynamic-shard-topology-design.md)
-  ([plan](docs/superpowers/plans/2026-06-24-dynamic-shard-topology.md)): the generation
+- **Partition tolerance for sharding** — [Dynamic Shard Topology](../superpowers/specs/2026-06-24-dynamic-shard-topology-design.md)
+  ([plan](../superpowers/plans/2026-06-24-dynamic-shard-topology.md)): the generation
   dual-read window that keeps a reshard lossless (§5).
 
 ## Sharp edges — notes

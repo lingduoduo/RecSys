@@ -3,7 +3,7 @@
 Active-passive DR. `us-east-1` is primary; `us-west-2` is a warm standby running
 the `k8s/eks-us-west-2` overlay. See the design at
 `docs/superpowers/specs/2026-07-08-multi-region-dr-failover-design.md`, and the
-[Fault Tolerance investigation](../../18_Fault_Tolerance.md) for how regional
+[Fault Tolerance investigation](../system_design/18_Fault_Tolerance.md) for how regional
 failover fits the broader resilience model.
 
 ## One-time AWS setup (out-of-band, no IaC)

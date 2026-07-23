@@ -26,7 +26,7 @@ deliberately chosen partition key:
 Two principles recur:
 
 - **The partition key is a contract.** The FNV-1a hash
-  ([`Hashing`](src/main/java/com/recsys/infrastructure/redis/sharding/Hashing.java))
+  ([`Hashing`](../../src/main/java/com/recsys/infrastructure/redis/sharding/Hashing.java))
   is shared by the record ring *and* A/B bucketing, and its constants are
   documented as un-changeable without a remapping migration; the Kafka partition
   key (`userId`) is a contract between the producer and the Flink source.
@@ -59,17 +59,17 @@ Native MySQL table partitioning is deferred — see the sharp edges below.
 ## 1. Consistent-hash record sharding
 
 `ShardedRecordStore`
-([src/…/sharding/ShardedRecordStore.java](src/main/java/com/recsys/infrastructure/redis/sharding/ShardedRecordStore.java))
+([src/…/sharding/ShardedRecordStore.java](../../src/main/java/com/recsys/infrastructure/redis/sharding/ShardedRecordStore.java))
 distributes per-device event, feature, and log records across N **logical** Redis
 shards (key partitions on one primary — see "Where the shards physically live"
 above) so no single key owns all of a device's data.
 
 ### The ring
 
-[`ConsistentHashRing`](src/main/java/com/recsys/infrastructure/redis/sharding/ConsistentHashRing.java)
+[`ConsistentHashRing`](../../src/main/java/com/recsys/infrastructure/redis/sharding/ConsistentHashRing.java)
 is an immutable 64-bit ring (`TreeMap` ceiling lookup) that places each shard at
 **150 virtual nodes** (`"v{i}:{shard}"` hashed by
-[`Hashing.fnv1a64`](src/main/java/com/recsys/infrastructure/redis/sharding/Hashing.java)),
+[`Hashing.fnv1a64`](../../src/main/java/com/recsys/infrastructure/redis/sharding/Hashing.java)),
 so device IDs spread uniformly and a resize remaps only the keys between adjacent
 vnodes — roughly `1/N`. `shardFor(deviceId)` resolves a device to its shard;
 `distribution()` exposes per-shard load for hot-shard diagnosis. The FNV-1a
@@ -86,18 +86,18 @@ per-shard stream for ordered replay (approx-trimmed at `STREAM_MAXLEN =
 1_000_000`). A `ZADD NX` that returns 0 is a duplicate `eventId` → `DUPLICATE`
 status, so writes are idempotent and safe to retry. Sequence numbers come from a
 per-`(version, shard)` `INCR`
-([`SequenceGenerator`](src/main/java/com/recsys/infrastructure/redis/sharding/SequenceGenerator.java)) —
+([`SequenceGenerator`](../../src/main/java/com/recsys/infrastructure/redis/sharding/SequenceGenerator.java)) —
 shard-scoped, not globally unique.
 
 ### Versioned topology and online reshard
 
 The live topology is an authoritative versioned snapshot in Redis
 (`shard:topology`,
-[`ShardTopologyStore`](src/main/java/com/recsys/infrastructure/redis/sharding/ShardTopologyStore.java)):
+[`ShardTopologyStore`](../../src/main/java/com/recsys/infrastructure/redis/sharding/ShardTopologyStore.java)):
 `bootstrap` is a `SETNX` of version 1 (first-writer-wins from
 `SHARDED_RECORD_SHARD_COUNT`), and `publishReshard` is an atomic Lua read-modify-
 write that bumps `version + 1` and records the previous generation's expiry.
-[`ShardTopologyProvider`](src/main/java/com/recsys/infrastructure/redis/sharding/ShardTopologyProvider.java)
+[`ShardTopologyProvider`](../../src/main/java/com/recsys/infrastructure/redis/sharding/ShardTopologyProvider.java)
 refreshes every `SHARD_TOPOLOGY_REFRESH_SECONDS` (default 30) into a **lock-free
 volatile snapshot** on a daemon thread, retaining the last-good view if Redis is
 briefly unreachable — topology lookups never block the request path.
@@ -105,7 +105,7 @@ briefly unreachable — topology lookups never block the request path.
 A reshard is online because of two mechanisms:
 
 - **Generation-scoped keys** —
-  [`Generations.keyPrefix`](src/main/java/com/recsys/infrastructure/redis/sharding/Generations.java)
+  [`Generations.keyPrefix`](../../src/main/java/com/recsys/infrastructure/redis/sharding/Generations.java)
   returns `""` for generation 1 (legacy unversioned keys, `sr:rec:{shard}:{seq}`)
   and `"g{version}:"` for generation ≥2 (`sr:g2:rec:…`), so a new topology writes
   into a disjoint keyspace rather than colliding with in-flight data.
@@ -118,12 +118,12 @@ A reshard is online because of two mechanisms:
   are generation-current and do **not** dual-read.
 
 The HTTP façade
-([`ShardedRecordService`](src/main/java/com/recsys/infrastructure/store/ShardedRecordService.java))
+([`ShardedRecordService`](../../src/main/java/com/recsys/infrastructure/store/ShardedRecordService.java))
 mounts `/shards/` on 7010; the reshard endpoint `POST /shards/topology` is
 `AdminTokenGuard`-gated and **fails closed** (`403`) unless `SHARD_ADMIN_TOKEN` is
 set and the `X-Admin-Token` header matches. Operational usage — write/read curl
 and the reshard call — stays in the README
-[Sharded Record Store](README.md#sharded-record-store) section.
+[Sharded Record Store](../../README.md#sharded-record-store) section.
 
 | Env var | Default | Partitions |
 |---|---:|---|
@@ -136,7 +136,7 @@ and the reshard call — stays in the README
 ## 2. Windowed Top-K replica sharding
 
 Trending is a read hot spot — every request wants the same few window keys — so
-[`ShardedTopKStore`](src/main/java/com/recsys/infrastructure/redis/ShardedTopKStore.java)
+[`ShardedTopKStore`](../../src/main/java/com/recsys/infrastructure/redis/ShardedTopKStore.java)
 partitions each window's sorted set into **N identical replica keys**
 (`topk:<window>:s0..s3`, default shard count **4**) purely to spread read QPS.
 Unlike record sharding, every shard holds the *same* data; the win is that a read
@@ -168,7 +168,7 @@ on one partition** (strict per-user ordering) while different users spread acros
 24 partitions for throughput.
 
 Of the three event transports only Kafka partitions. The SQS transport
-([`SqsAsyncEventPublisher`](src/main/java/com/recsys/infrastructure/messaging/SqsAsyncEventPublisher.java))
+([`SqsAsyncEventPublisher`](../../src/main/java/com/recsys/infrastructure/messaging/SqsAsyncEventPublisher.java))
 writes JSON bodies to a **single standard queue** (`SendMessageBatch`, no
 `MessageGroupId`/FIFO), which exposes no user-controlled partition key and gives
 no ordering guarantee, and the default log-only publisher is a no-op — so
@@ -177,18 +177,18 @@ pipeline consumes only from `movie_events_v2`. SQS is an alternative
 fire-and-forget sink, not a source for the keyed streaming job.
 
 - **Producer key = `userId`** —
-  [`MovieEventKafkaKeyExtractor`](src/main/java/com/recsys/infrastructure/messaging/MovieEventKafkaKeyExtractor.java)
+  [`MovieEventKafkaKeyExtractor`](../../src/main/java/com/recsys/infrastructure/messaging/MovieEventKafkaKeyExtractor.java)
   pulls `userId` from each event, and
-  [`KafkaAsyncEventPublisher`](src/main/java/com/recsys/infrastructure/messaging/KafkaAsyncEventPublisher.java)
+  [`KafkaAsyncEventPublisher`](../../src/main/java/com/recsys/infrastructure/messaging/KafkaAsyncEventPublisher.java)
   emits `ProducerRecord(topic, key=userId, value)` with an idempotent producer
   (`enable.idempotence=true`, `acks=all`, `max.in.flight=5`). An event with no
   valid key is rejected rather than sent to an arbitrary partition. The topic is
   `ONLINE_EVENTS_KAFKA_TOPIC` (default `movie_events_v2`).
 - **Flink honors the same key** —
-  [`OnlineFeatureStreamingJob`](src/main/java/com/recsys/online/flink/OnlineFeatureStreamingJob.java)
+  [`OnlineFeatureStreamingJob`](../../src/main/java/com/recsys/online/flink/OnlineFeatureStreamingJob.java)
   defaults `expected-topic-partitions = source-parallelism = operator-parallelism
   = 24` and `max-parallelism = 128` (key groups), validated at startup by
-  [`KafkaTopicPartitionValidator`](src/main/java/com/recsys/online/flink/KafkaTopicPartitionValidator.java)
+  [`KafkaTopicPartitionValidator`](../../src/main/java/com/recsys/online/flink/KafkaTopicPartitionValidator.java)
   (actual partition count must equal expected, or the job fails fast). All
   stateful operators `keyBy(userId)` (idempotency dedup, recent-movies,
   user-embedding), so per-user ordering carries end to end.
@@ -201,8 +201,8 @@ fire-and-forget sink, not a source for the keyed streaming job.
 Because the partition key is a producer↔consumer contract, changing the partition
 count is a planned cutover (bridge-mode replay, savepoint/UID discipline, a fresh
 consumer group for rollback) — documented in
-[kafka-partition-cutover.md](docs/runbooks/kafka-partition-cutover.md) and the
-[Kafka/Flink partition optimization design](docs/superpowers/specs/2026-07-18-kafka-flink-partition-optimization-design.md).
+[kafka-partition-cutover.md](../runbooks/kafka-partition-cutover.md) and the
+[Kafka/Flink partition optimization design](../superpowers/specs/2026-07-18-kafka-flink-partition-optimization-design.md).
 The `@Tag("load")` `KafkaFlinkPartitionLoadTest` pins the 24-partition / **50k
 events/sec** target.
 
@@ -216,16 +216,16 @@ anchors in three places.
 ### In-memory ranked list — `/v2/recommend`
 
 `POST /v2/recommend` (on 6010 via
-[`RecommendationOrchestrator`](src/main/java/com/recsys/application/recommendation/RecommendationOrchestrator.java))
+[`RecommendationOrchestrator`](../../src/main/java/com/recsys/application/recommendation/RecommendationOrchestrator.java))
 returns an opaque **seek cursor** anchored on the last item's `(score, itemId)` —
 *not* an absolute offset.
-[`CursorPaginationService`](src/main/java/com/recsys/application/pagination/CursorPaginationService.java)
+[`CursorPaginationService`](../../src/main/java/com/recsys/application/pagination/CursorPaginationService.java)
 resumes after the anchor item if it is still present, else seeks by the
 `(score desc, itemId asc)` predicate, so a shifting ranked list or a changing
 `excludedItemIds` never silently skips. Recall is bounded to a fresh window of
 `limit × recallMultiplier` (default 5) candidates recomputed each request — this
 paginates within a fresh recall window, not over a frozen snapshot. The
-[`RankedListCursor`](src/main/java/com/recsys/application/pagination/RankedListCursor.java)
+[`RankedListCursor`](../../src/main/java/com/recsys/application/pagination/RankedListCursor.java)
 wire format is `base64url("v2:<score>:<itemId>")`.
 
 > **Cursor vs. exclusion — two models, don't mix them.** For a *fixed* result set
@@ -235,32 +235,32 @@ wire format is `base64url("v2:<score>:<itemId>")`.
 > excludes what's seen, picking up live trending/learner changes. The seek cursor
 > tolerates a changing exclusion set, but a saved cursor *plus* a growing
 > exclusion set conflates the two. The endpoint request/response contract stays in
-> the README [`/v2/recommend`](README.md#recommendations-v2--cursor-pagination-v2recommend)
+> the README [`/v2/recommend`](../../README.md#recommendations-v2--cursor-pagination-v2recommend)
 > reference.
 
 Note the two `/v2/recommend` implementations differ: the 6010 route
 (`RecommendationOrchestrator`) does real keyset paging; the 7010 route
-([`OnlineBlendingPipeline`](src/main/java/com/recsys/application/online/OnlineBlendingPipeline.java))
+([`OnlineBlendingPipeline`](../../src/main/java/com/recsys/application/online/OnlineBlendingPipeline.java))
 assigns positional scores and returns a `null` next cursor.
 
 ### Relational catalog — HMAC-signed, filter-bound cursors
 
 The MySQL catalog browse
-([`CatalogCursorCodec`](src/main/java/com/recsys/application/catalog/CatalogCursorCodec.java))
+([`CatalogCursorCodec`](../../src/main/java/com/recsys/application/catalog/CatalogCursorCodec.java))
 uses a keyset position on `(popularity_score, movieId)` that is **HMAC-SHA256
 signed and bound to the genre filter**: the wire format is
 `base64(payload).base64(HMAC(payload))`, verified with a constant-time compare and
 rebound to the expected genre on decode, so a tampered cursor or a filter change
 returns `400`. The signing key `MYSQL_CURSOR_SIGNING_KEY` must be ≥32 UTF-8 bytes
 when MySQL is enabled. The generic SQL toolkit
-([`MillionScalePaginationSql`](src/main/java/com/recsys/application/pagination/MillionScalePaginationSql.java))
+([`MillionScalePaginationSql`](../../src/main/java/com/recsys/application/pagination/MillionScalePaginationSql.java))
 emits the covering-index, keyset (`(sort > ? OR (sort = ? AND id > ?))`), and
 delayed-join (index-only key walk + outer join for deep offset) variants that back
 these reads — the *index-access* angle (which B-tree each pattern rides, plan
 pinning, contract tests) is covered in the
 [DB Indexing investigation](13_DB_Indexing.md#3-index-access-patterns-via-millionscalepaginationsql),
 and the catalog index inventory is in the
-[README](README.md#mysql-index-inventory).
+[README](../../README.md#mysql-index-inventory).
 
 ## 5. Testing partitioning
 
@@ -290,13 +290,13 @@ The partition invariants are exercised, not just asserted:
 1. **The hash and the partition keys are frozen contracts.** The FNV-1a constants
    (record ring + A/B bucketing) and the Kafka `userId` key can't change without a
    remapping migration or a topic cutover; the code comments and the
-   [consistent-hashing consolidation design](docs/superpowers/specs/2026-06-24-consistent-hashing-consolidation-design.md)
+   [consistent-hashing consolidation design](../superpowers/specs/2026-06-24-consistent-hashing-consolidation-design.md)
    spell this out.
 2. **Record resize is online; Kafka resize is not.** A record-shard reshard is a
    guarded runtime call with a bounded dual-read window
-   ([dynamic shard topology design](docs/superpowers/specs/2026-06-24-dynamic-shard-topology-design.md));
+   ([dynamic shard topology design](../superpowers/specs/2026-06-24-dynamic-shard-topology-design.md));
    a Kafka partition increase is a planned cutover
-   ([kafka-partition-cutover.md](docs/runbooks/kafka-partition-cutover.md)).
+   ([kafka-partition-cutover.md](../runbooks/kafka-partition-cutover.md)).
 3. **Shard-level scans don't dual-read.** During a reshard window, per-device
    reads merge both generations but `GET /shards/shard` / `readAllShards` are
    generation-current — an operator scanning shards mid-migration sees only the
@@ -307,4 +307,4 @@ The partition invariants are exercised, not just asserted:
 5. **MySQL table partitioning is not yet done.** Sharding covers Redis records,
    Redis Top-K, and Kafka today; native MySQL table partitioning is called out as
    a separate later cycle in the
-   [Kafka/Flink partition optimization design](docs/superpowers/specs/2026-07-18-kafka-flink-partition-optimization-design.md).
+   [Kafka/Flink partition optimization design](../superpowers/specs/2026-07-18-kafka-flink-partition-optimization-design.md).

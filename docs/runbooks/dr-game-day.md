@@ -2,7 +2,7 @@
 
 Periodic drill (quarterly) to prove the DR path works. Run in a maintenance window
 with stakeholders notified. For how DR fits the broader resilience model see the
-[Fault Tolerance investigation](../../18_Fault_Tolerance.md).
+[Fault Tolerance investigation](../system_design/18_Fault_Tolerance.md).
 
 ## Objectives
 

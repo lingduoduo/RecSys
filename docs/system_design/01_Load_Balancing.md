@@ -29,7 +29,7 @@ Real traffic is balanced by infrastructure, in three nested tiers:
 
 - **AWS ALB Ingress (edge).** A WAF-protected ALB is the sole public entry to the
   gateway (the EKS overlay drops the NLB and patches the gateway Service to
-  `ClusterIP`); see the README [Kubernetes & EKS](README.md#kubernetes--eks) and the
+  `ClusterIP`); see the README [Kubernetes & EKS](../../README.md#kubernetes--eks) and the
   [CDN Edge investigation](12_CDNS.md) for the CloudFront→ALB edge.
 - **kube-proxy + topology-aware routing (in-cluster).** Service-to-service calls resolve
   through ClusterIP names, and `trafficDistribution: PreferClose` prefers same-AZ
@@ -53,13 +53,13 @@ load shedders compute a weight that falls as the instance fills up:
 suggestedWeight = shuttingDown ? 0 : max(0, round((1 - utilization) * 100))
 ```
 
-([`LoadShedder`](src/main/java/com/recsys/loadshed/LoadShedder.java) on model-serving,
-[`OnlineLoadShedder`](src/main/java/com/recsys/loadshed/OnlineLoadShedder.java) on 7010).
+([`LoadShedder`](../../src/main/java/com/recsys/loadshed/LoadShedder.java) on model-serving,
+[`OnlineLoadShedder`](../../src/main/java/com/recsys/loadshed/OnlineLoadShedder.java) on 7010).
 That weight is surfaced two ways:
 
 - **As a response header** — every model-serving response carries
   `X-Capacity-Weight: <0–100>`
-  ([`RecommendationController`](src/main/java/com/recsys/api/rest/RecommendationController.java)
+  ([`RecommendationController`](../../src/main/java/com/recsys/api/rest/RecommendationController.java)
   sets it from `loadShedder.snapshot().suggestedWeight()`), so an inline balancer can
   weight-shift per response.
 - **On the health surface** — `GET /health/load` and `GET /online/ops` expose the same
@@ -80,12 +80,12 @@ investigation](18_Fault_Tolerance.md#2-overload-protection--shed-fast-never-queu
 
 ## 3. The `ApplicationLoadBalancer` L7 model
 
-[`ApplicationLoadBalancer`](src/main/java/com/recsys/infrastructure/alb/ApplicationLoadBalancer.java)
+[`ApplicationLoadBalancer`](../../src/main/java/com/recsys/infrastructure/alb/ApplicationLoadBalancer.java)
 and the `infrastructure/alb/` package model an ALB-style Layer-7 balancer in memory:
 a `route(port, path, host, method)` call resolves the `AlbListener` for the port,
 evaluates its `ListenerRule`s (path-pattern conditions) in priority order to pick a
 target-group name, and then asks the
-[`AlbTargetGroup`](src/main/java/com/recsys/infrastructure/alb/AlbTargetGroup.java) for
+[`AlbTargetGroup`](../../src/main/java/com/recsys/infrastructure/alb/AlbTargetGroup.java) for
 the next target. Target selection is **round-robin over healthy targets only**:
 `nextTarget()` filters to routable targets and advances an `AtomicInteger` counter
 (`counter.getAndIncrement() % healthy.size()`), so an unhealthy target is skipped and
@@ -124,18 +124,18 @@ Each production load-balancing layer has an explicit design spec (with a paired
 implementation plan) under `docs/superpowers/`; the in-memory `ApplicationLoadBalancer`
 model has none (it is a reference/test artifact, not a shipped feature).
 
-- **Client-side health-aware LB** — [Health-Aware Upstream Discovery (Option A1)](docs/superpowers/specs/2026-07-10-gateway-upstream-endpoint-discovery-design.md)
-  ([plan](docs/superpowers/plans/2026-07-10-gateway-upstream-endpoint-discovery.md)): the
+- **Client-side health-aware LB** — [Health-Aware Upstream Discovery (Option A1)](../superpowers/specs/2026-07-10-gateway-upstream-endpoint-discovery-design.md)
+  ([plan](../superpowers/plans/2026-07-10-gateway-upstream-endpoint-discovery.md)): the
   Armeria `HealthCheckedEndpointGroup` per backend that drops unhealthy replicas (§1).
-- **Same-AZ routing** — [Cross-AZ Traffic Reduction](docs/superpowers/specs/2026-07-02-cross-az-traffic-reduction-design.md)
-  ([reduction plan](docs/superpowers/plans/2026-07-02-cross-az-traffic-reduction.md),
-  [AZ-aware reads plan](docs/superpowers/plans/2026-07-08-az-aware-redis-reads.md)):
+- **Same-AZ routing** — [Cross-AZ Traffic Reduction](../superpowers/specs/2026-07-02-cross-az-traffic-reduction-design.md)
+  ([reduction plan](../superpowers/plans/2026-07-02-cross-az-traffic-reduction.md),
+  [AZ-aware reads plan](../superpowers/plans/2026-07-08-az-aware-redis-reads.md)):
   `trafficDistribution: PreferClose` and AZ-aware Redis reads (§1).
-- **The edge ALB** — [Gateway WAF Ingress](docs/superpowers/specs/2026-07-02-gateway-waf-ingress-design.md)
-  ([plan](docs/superpowers/plans/2026-07-02-gateway-waf-ingress.md)): the WAF-protected
+- **The edge ALB** — [Gateway WAF Ingress](../superpowers/specs/2026-07-02-gateway-waf-ingress-design.md)
+  ([plan](../superpowers/plans/2026-07-02-gateway-waf-ingress.md)): the WAF-protected
   ALB Ingress that replaces the NLB as the sole public entry (§1).
-- **Capacity-weight feedback** — [Overload Protection Hardening](docs/superpowers/specs/2026-07-08-overload-protection-design.md)
-  ([plan](docs/superpowers/plans/2026-07-08-overload-protection.md)): the load shedders
+- **Capacity-weight feedback** — [Overload Protection Hardening](../superpowers/specs/2026-07-08-overload-protection-design.md)
+  ([plan](../superpowers/plans/2026-07-08-overload-protection.md)): the load shedders
   that compute `suggestedWeight` and emit `X-Capacity-Weight` (§2).
 
 ## Sharp edges — notes

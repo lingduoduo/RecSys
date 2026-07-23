@@ -21,10 +21,10 @@ A compact Maven workspace demonstrating recommendation-system serving, retrieval
 | API Gateway | `MicroserviceGatewayServer` (Armeria), `MicroserviceRouteTable`, `GatewayAuthenticator` (API key / Cognito JWT), `RouteCircuitBreaker`, `GatewayRateLimiter`, `LlmProxyService` — see [Port 8010](#port-8010--api-gateway) |
 | Recommendation Service | Shared recall → rank → paginate → hydrate pipeline, `MultiChannelRecallService` — see [Shared recall core](#shared-recall-core) |
 | Data Infrastructure | Redis embedding store, AZ-aware read-replica router, multi-level cache (L1/L2/L3), LSH vector index, consistent-hash sharded record store, sharded top-K, MySQL catalog + transactional outbox — see [Sharded Record Store](#sharded-record-store), [Redis Read Replicas](#redis-read-replicas) |
-| Messaging & Load Balancing | `AsyncEventPublisher` (SQS/Kafka transports), durable outbox relay + read-your-writes consistency, `ApplicationLoadBalancer` (L7), capacity-weight feedback — see [Message Queues](07_Message_Queue.md), [Durable Eventual Consistency](#durable-eventual-consistency), [Load Balancing](01_Load_Balancing.md) |
+| Messaging & Load Balancing | `AsyncEventPublisher` (SQS/Kafka transports), durable outbox relay + read-your-writes consistency, `ApplicationLoadBalancer` (L7), capacity-weight feedback — see [Message Queues](docs/system_design/07_Message_Queue.md), [Durable Eventual Consistency](#durable-eventual-consistency), [Load Balancing](docs/system_design/01_Load_Balancing.md) |
 | Domain Model | Shared value objects: `Movie`, `User`, `MovieCandidate`, `RecommendationQuery` |
 | Configuration | Spring `@ConfigurationProperties`, feature flag providers, JVM tuning options — see [Configuration](#configuration) |
-| Infrastructure | Kubernetes base + EKS overlay, CloudFront CDN edge, Docker, Flink streaming topology — see [Kubernetes & EKS](#kubernetes--eks), [CDN Edge investigation](12_CDNS.md) |
+| Infrastructure | Kubernetes base + EKS overlay, CloudFront CDN edge, Docker, Flink streaming topology — see [Kubernetes & EKS](#kubernetes--eks), [CDN Edge investigation](docs/system_design/12_CDNS.md) |
 | Documentation | README, architecture docs, design specs, implementation plans |
 
 ---
@@ -32,26 +32,26 @@ A compact Maven workspace demonstrating recommendation-system serving, retrieval
 ### System Design
 | Concept | Key Components |
 |---|---|
-| Load Balancing | Production stack (AWS ALB Ingress → kube-proxy / topology-aware routing → Armeria health-checked `UpstreamEndpointGroups`), **capacity-weight feedback** (`X-Capacity-Weight` / `suggestedWeight = (1−util)×100`), and the in-memory L7 `ApplicationLoadBalancer` model — see [Load Balancing investigation](01_Load_Balancing.md) |
-| Caching | Embedding caches (`LocalEmbeddingCache` Caffeine+Bloom+null-sentinel, `MultiLevelEmbeddingCache` L1/L2/L3, `LogicalExpiryEmbeddingCache` soft-TTL serve-stale), `TtlSingleFlightCache`, `RecommendationCache` (version-keyed), `LlmResponseCache` (SHA-256), CloudFront edge cache — all bounded, single-flight, serve-stale-on-error — see [Caching investigation](02_Caching.md), [CDN Edge](12_CDNS.md) |
-| Database Sharding | Two sharded Redis stores — `ShardedRecordStore` (consistent-hash record partitions, `sr:g{v}:rec/dev/stream` keys, HSET/ZADD/XADD write fan-out) and `ShardedTopKStore` (replica-sharded trending) — over a versioned `ShardTopology` (`shard:topology`) with online reshard via `POST /shards/topology` — see [Database Sharding investigation](03_DB_Sharding.md), [Sharded Record Store](#sharded-record-store) |
-| Replication | Single-primary Redis with AZ-aware read replicas (`RedisReadReplicaRouter` / `RoutingRedisExecutor` / `ReplicaConfig`), Sentinel primary failover, `RedisReplicaLagProbe` lag measurement, and async cross-region replication for DR (ElastiCache/Aurora Global) — see [Replication investigation](04_Replication.md) |
-| CAP Theorem | **AP by default, opt-in CP, CP writes**: fail-open replica reads + serve-stale caches (AP) vs. fail-closed read-your-writes token (`503`, never stale) and single-primary atomic writes (CP); tunable AZ-local vs primary reads (`RoutingRedisExecutor`) as the per-read dial; generation dual-read + DR failover handle partitions — see [CAP investigation](05_CAP.md) |
-| Consistent Hashing | One shared FNV-1a `Hashing` primitive → two consumers: `ConsistentHashRing` (150 virtual nodes, `TreeMap` ceiling lookup, ~1/N remap) for record sharding and `StableBucketer` for A/B bucketing; versioned `ShardTopologyProvider` (30 s refresh, generation dual-read) — see [Consistent Hashing investigation](06_Consistent_Hashing.md) |
-| Messaging Queues | Fire-and-forget `AsyncEventPublisher` (bounded queue + batched drain, at-most-once) with log-only / `KafkaAsyncEventPublisher` (keyed, idempotent) / `SqsAsyncEventPublisher` (standard queue) transports; feeds the Kafka → Flink → Redis pipeline (`OnlineFeatureStreamingJob`) — see [Message Queues investigation](07_Message_Queue.md) |
-| Rate Limiting | `TokenBucket`, `GatewayRateLimiter` (per `(route, principal)`), `LlmTokenRateLimiter` (token-budget), `RedisRateLimiter` (distributed, global; **weighted sliding-window** ≈1× the limit with no local fast-path, fail-open + circuit breaker) — see [Rate Limiting investigation](08_Rate_Limits.md) |
-| API Gateway | `MicroserviceGatewayServer` (single edge: routing/prefix-strip, identity propagation + credential stripping, per-route breakers, rate limiting, health aggregation), `MicroserviceRouteTable`, `RouteCircuitBreaker`, `GatewayRateLimiter`, `LlmProxyService` — see [API Gateway investigation](09_API_Gateway.md) |
-| MicroService | Four independently runnable services (`6010`/`7010`/`8080`/`8010`) from **one codebase + one image** (`RECSYS_MAIN_CLASS`) behind `MicroserviceGatewayServer`; clean-architecture `api`/`application`/`domain`/`infrastructure` layers (role-not-service) — see [Microservices investigation](10_MicroServices.md), [Project Layout](#project-layout) |
-| Service Discovery | Three-layer resolution — static route table (`MicroserviceRoute`) → opt-in Redis registry (`ServiceRegistrar` / `RegistryBackedUpstreams`, `svc:registry:<name>`, static-route fallback) → Cloud Map 30 s DNS TTL → health-checked endpoint groups (`UpstreamEndpointGroups`) — see [Service Discovery investigation](11_Service_Discovery.md) |
-| CDNS | CloudFront edge (`scripts/create-cdn-distribution.sh`), narrow cache of the two catalog reads (`recsys-item`/`recsys-similar` policies), origin lockdown (`GatewayOriginSecret` + `x-origin-secret`, rotation set), `GATEWAY_PUBLIC_PATHS` exact-path discipline, nginx local stand-in (`docker-compose.cdn.yml`) — see [CDN Edge investigation](12_CDNS.md) |
-| DB Indexing | Two composite `movies` seek indexes + 5 outbox/saga indexes, `FORCE INDEX` plan pinning with static contract tests + Docker `EXPLAIN` (`MovieCatalogRepository`, `MySqlIndexContractTest`), covering-index / keyset / delayed-join access patterns (`MillionScalePaginationSql`) — see [DB Indexing investigation](13_DB_Indexing.md), [MySQL Index Inventory](#mysql-index-inventory) |
-| Partitioning | Consistent-hash record shards (`ConsistentHashRing`, versioned topology + online reshard), windowed top-K replica shards (`topk:<window>:s0..s3`), `userId`-keyed Kafka/Flink partitions (24 @ 50k evt/s), and `(score, id)` keyset cursor windows (`/v2/recommend`, HMAC catalog cursors) — see [Partitioning investigation](14_Partitioning.md), [Sharded Record Store](#sharded-record-store) |
-| Eventual Consistency | `OutboxRelay` + `DurableEventPublisher` (transactional outbox), `OutboxReconciler`, generation dual-read, read-your-writes — see [Eventual Consistency investigation](15_Eventual_Consistency.md), [Durable Eventual Consistency](#durable-eventual-consistency) |
-| SSE streaming | Real-time token streaming via Server-Sent Events (`text/event-stream`) passthrough in the LLM proxy — `LlmProxyService.forwardStreaming` reactively pipes upstream frames straight to the client over a long-lived HTTP/2 connection (`LLM_PING_INTERVAL_MS` keepalive); the streaming path skips response caching and retry-on-429 — see [SSE Streaming investigation](16_SSE_Streaming.md), [LLM Gateway](#llm-gateway) |
-| Scalability | Compute scales out via 4 CPU/mem HPAs (`k8s/base/hpa.yaml`, model-serving tuned most aggressively); data tier scales horizontally (consistent-hash record shards + live reshard, 4× replicated top-K shards, 24-partition Kafka/Flink @ 50k evt/s, AZ-local Redis read replicas); per-instance overload gates (`OnlineLoadShedder` / `OnlineAdmissionControl`, `WorkerBulkhead`) fail fast so HPA can react, with recall degradation observable via `GET /health/load` (`recall.degradedRatio`) and the gate knees pinned by `@Tag("load")` characterization harnesses ([overload-characterization.md](docs/runbooks/overload-characterization.md)). `AutoScalingGroup` / `InstanceProvisioner` are bounds + AZ-balancing and `OnlineCapacityService` is sizing observability — neither is a metric-driven controller in production (the signal-driven `application/autoscaling/CapacityController` closes that loop as a tested reference, but no server schedules it); DR standby is pre-scaled on failover via `scripts/dr-standby-capacity.sh promote` — see [Capacity Planning](#capacity-planning), [Scalability investigation](17_Scalability.md) |
-| Fault Tolerance | `CircuitBreaker` / `RouteCircuitBreaker`, `WorkerBulkhead`, `LoadShedder` / `OnlineLoadShedder`, `ChannelHealthMonitor` backoff, `FaultInjector`, fail-open Redis/rate-limiter, graceful drain, multi-region DR — see [Fault Tolerance investigation](18_Fault_Tolerance.md) |
-| Monitoring | `InferenceMetricsService` / `OnlineServingMetricsService` (Micrometer), Prometheus `/metrics`, health endpoints, `GcEventTracker` / `JvmMemoryMonitor`, `TraceIdAspect` — see [API Gateway metrics](09_API_Gateway.md#7-metrics), [Capacity Planning](#capacity-planning) |
-| AuthN and AuthZ | Edge auth `GatewayAuthenticator` (API key / `CognitoJwtVerifier` JWT) → `x-authenticated-*` propagation, `AdminTokenGuard` operator token, `GatewayOriginSecret` — see [Authentication](09_API_Gateway.md#3-authentication) |
+| Load Balancing | Production stack (AWS ALB Ingress → kube-proxy / topology-aware routing → Armeria health-checked `UpstreamEndpointGroups`), **capacity-weight feedback** (`X-Capacity-Weight` / `suggestedWeight = (1−util)×100`), and the in-memory L7 `ApplicationLoadBalancer` model — see [Load Balancing investigation](docs/system_design/01_Load_Balancing.md) |
+| Caching | Embedding caches (`LocalEmbeddingCache` Caffeine+Bloom+null-sentinel, `MultiLevelEmbeddingCache` L1/L2/L3, `LogicalExpiryEmbeddingCache` soft-TTL serve-stale), `TtlSingleFlightCache`, `RecommendationCache` (version-keyed), `LlmResponseCache` (SHA-256), CloudFront edge cache — all bounded, single-flight, serve-stale-on-error — see [Caching investigation](docs/system_design/02_Caching.md), [CDN Edge](docs/system_design/12_CDNS.md) |
+| Database Sharding | Two sharded Redis stores — `ShardedRecordStore` (consistent-hash record partitions, `sr:g{v}:rec/dev/stream` keys, HSET/ZADD/XADD write fan-out) and `ShardedTopKStore` (replica-sharded trending) — over a versioned `ShardTopology` (`shard:topology`) with online reshard via `POST /shards/topology` — see [Database Sharding investigation](docs/system_design/03_DB_Sharding.md), [Sharded Record Store](#sharded-record-store) |
+| Replication | Single-primary Redis with AZ-aware read replicas (`RedisReadReplicaRouter` / `RoutingRedisExecutor` / `ReplicaConfig`), Sentinel primary failover, `RedisReplicaLagProbe` lag measurement, and async cross-region replication for DR (ElastiCache/Aurora Global) — see [Replication investigation](docs/system_design/04_Replication.md) |
+| CAP Theorem | **AP by default, opt-in CP, CP writes**: fail-open replica reads + serve-stale caches (AP) vs. fail-closed read-your-writes token (`503`, never stale) and single-primary atomic writes (CP); tunable AZ-local vs primary reads (`RoutingRedisExecutor`) as the per-read dial; generation dual-read + DR failover handle partitions — see [CAP investigation](docs/system_design/05_CAP.md) |
+| Consistent Hashing | One shared FNV-1a `Hashing` primitive → two consumers: `ConsistentHashRing` (150 virtual nodes, `TreeMap` ceiling lookup, ~1/N remap) for record sharding and `StableBucketer` for A/B bucketing; versioned `ShardTopologyProvider` (30 s refresh, generation dual-read) — see [Consistent Hashing investigation](docs/system_design/06_Consistent_Hashing.md) |
+| Messaging Queues | Fire-and-forget `AsyncEventPublisher` (bounded queue + batched drain, at-most-once) with log-only / `KafkaAsyncEventPublisher` (keyed, idempotent) / `SqsAsyncEventPublisher` (standard queue) transports; feeds the Kafka → Flink → Redis pipeline (`OnlineFeatureStreamingJob`) — see [Message Queues investigation](docs/system_design/07_Message_Queue.md) |
+| Rate Limiting | `TokenBucket`, `GatewayRateLimiter` (per `(route, principal)`), `LlmTokenRateLimiter` (token-budget), `RedisRateLimiter` (distributed, global; **weighted sliding-window** ≈1× the limit with no local fast-path, fail-open + circuit breaker) — see [Rate Limiting investigation](docs/system_design/08_Rate_Limits.md) |
+| API Gateway | `MicroserviceGatewayServer` (single edge: routing/prefix-strip, identity propagation + credential stripping, per-route breakers, rate limiting, health aggregation), `MicroserviceRouteTable`, `RouteCircuitBreaker`, `GatewayRateLimiter`, `LlmProxyService` — see [API Gateway investigation](docs/system_design/09_API_Gateway.md) |
+| MicroService | Four independently runnable services (`6010`/`7010`/`8080`/`8010`) from **one codebase + one image** (`RECSYS_MAIN_CLASS`) behind `MicroserviceGatewayServer`; clean-architecture `api`/`application`/`domain`/`infrastructure` layers (role-not-service) — see [Microservices investigation](docs/system_design/10_MicroServices.md), [Project Layout](#project-layout) |
+| Service Discovery | Three-layer resolution — static route table (`MicroserviceRoute`) → opt-in Redis registry (`ServiceRegistrar` / `RegistryBackedUpstreams`, `svc:registry:<name>`, static-route fallback) → Cloud Map 30 s DNS TTL → health-checked endpoint groups (`UpstreamEndpointGroups`) — see [Service Discovery investigation](docs/system_design/11_Service_Discovery.md) |
+| CDNS | CloudFront edge (`scripts/create-cdn-distribution.sh`), narrow cache of the two catalog reads (`recsys-item`/`recsys-similar` policies), origin lockdown (`GatewayOriginSecret` + `x-origin-secret`, rotation set), `GATEWAY_PUBLIC_PATHS` exact-path discipline, nginx local stand-in (`docker-compose.cdn.yml`) — see [CDN Edge investigation](docs/system_design/12_CDNS.md) |
+| DB Indexing | Two composite `movies` seek indexes + 5 outbox/saga indexes, `FORCE INDEX` plan pinning with static contract tests + Docker `EXPLAIN` (`MovieCatalogRepository`, `MySqlIndexContractTest`), covering-index / keyset / delayed-join access patterns (`MillionScalePaginationSql`) — see [DB Indexing investigation](docs/system_design/13_DB_Indexing.md), [MySQL Index Inventory](#mysql-index-inventory) |
+| Partitioning | Consistent-hash record shards (`ConsistentHashRing`, versioned topology + online reshard), windowed top-K replica shards (`topk:<window>:s0..s3`), `userId`-keyed Kafka/Flink partitions (24 @ 50k evt/s), and `(score, id)` keyset cursor windows (`/v2/recommend`, HMAC catalog cursors) — see [Partitioning investigation](docs/system_design/14_Partitioning.md), [Sharded Record Store](#sharded-record-store) |
+| Eventual Consistency | `OutboxRelay` + `DurableEventPublisher` (transactional outbox), `OutboxReconciler`, generation dual-read, read-your-writes — see [Eventual Consistency investigation](docs/system_design/15_Eventual_Consistency.md), [Durable Eventual Consistency](#durable-eventual-consistency) |
+| SSE streaming | Real-time token streaming via Server-Sent Events (`text/event-stream`) passthrough in the LLM proxy — `LlmProxyService.forwardStreaming` reactively pipes upstream frames straight to the client over a long-lived HTTP/2 connection (`LLM_PING_INTERVAL_MS` keepalive); the streaming path skips response caching and retry-on-429 — see [SSE Streaming investigation](docs/system_design/16_SSE_Streaming.md), [LLM Gateway](#llm-gateway) |
+| Scalability | Compute scales out via 4 CPU/mem HPAs (`k8s/base/hpa.yaml`, model-serving tuned most aggressively); data tier scales horizontally (consistent-hash record shards + live reshard, 4× replicated top-K shards, 24-partition Kafka/Flink @ 50k evt/s, AZ-local Redis read replicas); per-instance overload gates (`OnlineLoadShedder` / `OnlineAdmissionControl`, `WorkerBulkhead`) fail fast so HPA can react, with recall degradation observable via `GET /health/load` (`recall.degradedRatio`) and the gate knees pinned by `@Tag("load")` characterization harnesses ([overload-characterization.md](docs/runbooks/overload-characterization.md)). `AutoScalingGroup` / `InstanceProvisioner` are bounds + AZ-balancing and `OnlineCapacityService` is sizing observability — neither is a metric-driven controller in production (the signal-driven `application/autoscaling/CapacityController` closes that loop as a tested reference, but no server schedules it); DR standby is pre-scaled on failover via `scripts/dr-standby-capacity.sh promote` — see [Capacity Planning](#capacity-planning), [Scalability investigation](docs/system_design/17_Scalability.md) |
+| Fault Tolerance | `CircuitBreaker` / `RouteCircuitBreaker`, `WorkerBulkhead`, `LoadShedder` / `OnlineLoadShedder`, `ChannelHealthMonitor` backoff, `FaultInjector`, fail-open Redis/rate-limiter, graceful drain, multi-region DR — see [Fault Tolerance investigation](docs/system_design/18_Fault_Tolerance.md) |
+| Monitoring | `InferenceMetricsService` / `OnlineServingMetricsService` (Micrometer), Prometheus `/metrics`, health endpoints, `GcEventTracker` / `JvmMemoryMonitor`, `TraceIdAspect` — see [API Gateway metrics](docs/system_design/09_API_Gateway.md#7-metrics), [Capacity Planning](#capacity-planning) |
+| AuthN and AuthZ | Edge auth `GatewayAuthenticator` (API key / `CognitoJwtVerifier` JWT) → `x-authenticated-*` propagation, `AdminTokenGuard` operator token, `GatewayOriginSecret` — see [Authentication](docs/system_design/09_API_Gateway.md#3-authentication) |
 
 ![Architecture](recsys-architecture.png)
 [Architecture Diagram (interactive)](https://htmlpreview.github.io/?https://github.com/lingduoduo/Recsys-Backend-Service/blob/main/recsys-architecture.html)
@@ -95,7 +95,7 @@ curl http://localhost:8010/health
 }
 ```
 
-The `ports` block is a deduped per-port rollup (backends plus the gateway's own `8010`); `services` keeps the full per-route detail. See [Health aggregation](09_API_Gateway.md#6-health-aggregation).
+The `ports` block is a deduped per-port rollup (backends plus the gateway's own `8010`); `services` keeps the full per-route detail. See [Health aggregation](docs/system_design/09_API_Gateway.md#6-health-aggregation).
 
 ### Start individual services
 
@@ -173,7 +173,7 @@ curl http://localhost:8010/health
 
 The four services build from **one Maven artifact and one Docker image**, selected at
 runtime by `RECSYS_MAIN_CLASS` — how that works, plus the clean-architecture layering
-and what's shared vs service-specific, is in the [Microservices investigation](10_MicroServices.md).
+and what's shared vs service-specific, is in the [Microservices investigation](docs/system_design/10_MicroServices.md).
 
 Start each service individually with JVM tuning:
 
@@ -379,7 +379,7 @@ curl -s -X POST http://localhost:6010/v2/recommend \
 
 `limit` must be 1–100; a blank `userId` returns `400`. Unlike `/getrecommendation`, this pipeline does **not** look up the user in the catalog, so an unknown (non-blank) `userId` does not 404 — it runs recall directly (cold quota if it has no embedding). When there are no more results `nextCursor` is `null`. The `trace` map reports `candidateCount` (recalled) and `rankedCount` for debugging.
 
-**Cursor vs. exclusion paging — pick one model, don't mix them.** Use the cursor for a fixed result set (keep `excludedItemIds` constant, advance the cursor until `nextCursor` is `null`); omit the cursor and page by a growing `excludedItemIds` for an ever-fresh feed. Why the seek cursor stays stable and why mixing the two models conflates them is explained in the [Partitioning investigation](14_Partitioning.md#in-memory-ranked-list--v2recommend).
+**Cursor vs. exclusion paging — pick one model, don't mix them.** Use the cursor for a fixed result set (keep `excludedItemIds` constant, advance the cursor until `nextCursor` is `null`); omit the cursor and page by a growing `excludedItemIds` for an ever-fresh feed. Why the seek cursor stays stable and why mixing the two models conflates them is explained in the [Partitioning investigation](docs/system_design/14_Partitioning.md#in-memory-ranked-list--v2recommend).
 
 #### Similar movies
 
@@ -850,7 +850,7 @@ curl -X POST "http://localhost:8010/api/recommend" \
 | `/api/llm` | `:11434` | opt-in — set `LLM_SERVICE_URL` |
 | `/api/explanations` | `:11434` | opt-in — set `LLM_EXPLANATION_SERVICE_URL` |
 
-† Deprecated aliases that remain supported for existing clients. Prefer `POST /api/recommend` for recommendations. See the [API Gateway investigation](09_API_Gateway.md#1-routing-and-prefix-strip) for full route details, env var overrides, and circuit-breaker configuration.
+† Deprecated aliases that remain supported for existing clients. Prefer `POST /api/recommend` for recommendations. See the [API Gateway investigation](docs/system_design/09_API_Gateway.md#1-routing-and-prefix-strip) for full route details, env var overrides, and circuit-breaker configuration.
 
 #### Smoke tests
 
@@ -897,7 +897,7 @@ curl -X POST "http://localhost:8010/api/llm/api/generate" \
 
 ## SQL Use Cases
 
-This section is an exercise in **polyglot persistence with keyset pagination**: the serving hot paths stay on Redis/ONNX, while an opt-in, intentionally small MySQL read model backs product-style views that need durable relational data, deep pagination, counts, and ad hoc filtering — trading a second datastore for relational query power kept off the latency-critical path. Keyset pagination as a result-set partitioning strategy — the seek-cursor model, HMAC-signed filter-bound catalog cursors, and how it relates to the other partition dimensions — is covered in the [Partitioning investigation](14_Partitioning.md#4-keyset--cursor-pagination--partitioning-a-result-set). The relevant backend pieces are:
+This section is an exercise in **polyglot persistence with keyset pagination**: the serving hot paths stay on Redis/ONNX, while an opt-in, intentionally small MySQL read model backs product-style views that need durable relational data, deep pagination, counts, and ad hoc filtering — trading a second datastore for relational query power kept off the latency-critical path. Keyset pagination as a result-set partitioning strategy — the seek-cursor model, HMAC-signed filter-bound catalog cursors, and how it relates to the other partition dimensions — is covered in the [Partitioning investigation](docs/system_design/14_Partitioning.md#4-keyset--cursor-pagination--partitioning-a-result-set). The relevant backend pieces are:
 
 - `MillionScalePaginationSql` — emits MySQL-friendly covering-index, keyset, delayed-join, and count queries.
 - `MySqlClient` — read-only JDBC helper backed by a lazily-created HikariCP pool.
@@ -912,7 +912,7 @@ The production MySQL catalog currently has two query shapes and two justified se
 | Genre-filtered catalog page | `genre = ?`, seek on `(popularity_score, id)`, order `DESC` | `idx_movies_genre_popularity_id (genre, popularity_score DESC, id DESC)` |
 | Global catalog page | seek on `(popularity_score, id)`, order `DESC` | `idx_movies_popularity_id (popularity_score DESC, id DESC)` |
 
-Both indexes are required because the genre-leading B-tree cannot efficiently provide a global popularity order, and both pin their plan with `FORCE INDEX (...)` — asserted statically by `MySqlIndexContractTest` and confirmed in a real `EXPLAIN` by `MovieCatalogMySqlIntegrationTest` (`@Tag("docker")`). Why both indexes exist, why payload columns are deliberately omitted, the full 7-index inventory (incl. outbox/saga), the plan-pinning + contract-test discipline, and the covering / keyset / delayed-join access patterns are covered in the [DB Indexing investigation](13_DB_Indexing.md).
+Both indexes are required because the genre-leading B-tree cannot efficiently provide a global popularity order, and both pin their plan with `FORCE INDEX (...)` — asserted statically by `MySqlIndexContractTest` and confirmed in a real `EXPLAIN` by `MovieCatalogMySqlIntegrationTest` (`@Tag("docker")`). Why both indexes exist, why payload columns are deliberately omitted, the full 7-index inventory (incl. outbox/saga), the plan-pinning + contract-test discipline, and the covering / keyset / delayed-join access patterns are covered in the [DB Indexing investigation](docs/system_design/13_DB_Indexing.md).
 
 Every new production MySQL query must ship with a query-to-index contract test and a Docker-tagged MySQL `EXPLAIN` assertion. Verify the current inventory with:
 
@@ -1078,13 +1078,13 @@ mvn test -DexcludedGroups=load -Dgroups=docker -Dtest=MovieCatalogMySqlIntegrati
 `MYSQL_READ_RETRY_BACKOFF_MS` sets the 0–1000 ms pause before the single retry. Only transient
 connection failures are retried; timeouts and non-transient failures are propagated without retry —
 the classifier and how this maps to the `503`/`504` status contract are covered in the
-[Fault Tolerance investigation](18_Fault_Tolerance.md#4-dependency-resilience--surviving-a-sick-downstream).
+[Fault Tolerance investigation](docs/system_design/18_Fault_Tolerance.md#4-dependency-resilience--surviving-a-sick-downstream).
 
 The generic `MillionScalePaginationSql` helpers below remain available for other bounded SQL read
 paths. The catalog endpoint uses its dedicated repository and the migrated indexes above. How each
 helper maps to an index-access pattern — covering-index count, keyset seek (index range-scan, no
 `OFFSET`), and delayed-join deep-offset (index-only key walk + outer join) — is covered in the
-[DB Indexing investigation](13_DB_Indexing.md#3-index-access-patterns-via-millionscalepaginationsql).
+[DB Indexing investigation](docs/system_design/13_DB_Indexing.md#3-index-access-patterns-via-millionscalepaginationsql).
 
 Use `MillionScalePaginationSql` to generate safe SQL templates with bind parameters:
 
@@ -1167,7 +1167,7 @@ Keep SQL reads off latency-critical recommendation paths unless the data is inde
 
 `MicroserviceGatewayServer` (Armeria, port 8010) is the single public edge fronting all four backends: it routes and prefix-strips (`POST /api/recommend` strategy dispatch, `MicroserviceRouteTable` longest-prefix), authenticates at the edge and **strips caller credentials** while propagating a trusted `x-authenticated-*` identity, applies per-route circuit breakers and per-`(route, principal)` rate limiting, aggregates downstream health at `GET /health`, and exposes Prometheus at `GET /metrics`.
 
-The full deep-dive — the request pipeline order, routing/prefix-strip, identity propagation and credential stripping, authentication (API key / Cognito JWT), rate limiting, health aggregation, and how the circuit-breaker / upstream-discovery / LLM-proxy concerns attach — is in the **[API Gateway investigation](09_API_Gateway.md)**.
+The full deep-dive — the request pipeline order, routing/prefix-strip, identity propagation and credential stripping, authentication (API key / Cognito JWT), rate limiting, health aggregation, and how the circuit-breaker / upstream-discovery / LLM-proxy concerns attach — is in the **[API Gateway investigation](docs/system_design/09_API_Gateway.md)**.
 
 ### Start
 
@@ -1200,12 +1200,12 @@ header (`GatewayOriginSecret`), and reproduced locally by an nginx stand-in on
 
 The full deep-dive — cache behaviors and TTLs, `GATEWAY_PUBLIC_PATHS` exact-path
 discipline, origin-secret lockdown and rotation, the provisioning script, and the
-local stand-in — is in the **[CDN Edge investigation](12_CDNS.md)**. Operations are
+local stand-in — is in the **[CDN Edge investigation](docs/system_design/12_CDNS.md)**. Operations are
 in [cdn-operations.md](docs/runbooks/cdn-operations.md),
 [cdn-local.md](docs/runbooks/cdn-local.md), and
 [cdn-rollback.md](docs/runbooks/cdn-rollback.md); the public-path / origin-secret
 mechanics are shared with edge auth (see
-[Authentication](09_API_Gateway.md#3-authentication)).
+[Authentication](docs/system_design/09_API_Gateway.md#3-authentication)).
 
 ---
 
@@ -1223,7 +1223,7 @@ Cloud Map DNS → health-checked endpoint groups), backend self-registration
 (`ServiceRegistrar`), gateway resolution (`RegistryBackedUpstreams`), the
 `SERVICE_REGISTRY_*` env vars, the `/health` `registry` section, and the
 `gateway_registry_*` Prometheus meters — is covered in the
-**[Service Discovery investigation](11_Service_Discovery.md)**. Static addressing and
+**[Service Discovery investigation](docs/system_design/11_Service_Discovery.md)**. Static addressing and
 upstream health checking are documented under
 [Microservice Gateway](#microservice-gateway).
 
@@ -1234,7 +1234,7 @@ upstream health checking are documented under
 How the system stays up when things break — circuit breakers, bulkheads, load
 shedding and admission control, channel-health backoff, fail-open Redis and rate
 limiters, graceful drain, and multi-AZ / multi-region survival — is covered in
-depth in the **[Fault Tolerance investigation](18_Fault_Tolerance.md)**, with the
+depth in the **[Fault Tolerance investigation](docs/system_design/18_Fault_Tolerance.md)**, with the
 overload layers' operational tables in
 [docs/runbooks/overload-protection.md](docs/runbooks/overload-protection.md) and
 the gate-characterization harnesses in
@@ -1331,7 +1331,7 @@ The overload-protection env vars (`CATALOG_MAX_CONCURRENT_REQUESTS`,
 | `GATEWAY_RATE_LIMIT_RPS` | `0` | Global token-bucket rate (per route+principal); `0` = disabled |
 | `GATEWAY_RATE_LIMIT_<ROUTE>_RPS` | _(unset)_ | Per-route override, e.g. `GATEWAY_RATE_LIMIT_MODEL_RPS` |
 | `GATEWAY_RL_MAX_PRINCIPALS` | `100000` | Max distinct rate-limit buckets held in the Caffeine cache |
-| `GATEWAY_UPSTREAM_HEALTHCHECK_ENABLED` | `true` | Health-check upstreams; drop down backends and fast-fail `503` ([Service Discovery](11_Service_Discovery.md#3-cloud-map-dns--health-checked-endpoint-groups)) |
+| `GATEWAY_UPSTREAM_HEALTHCHECK_ENABLED` | `true` | Health-check upstreams; drop down backends and fast-fail `503` ([Service Discovery](docs/system_design/11_Service_Discovery.md#3-cloud-map-dns--health-checked-endpoint-groups)) |
 | `GATEWAY_UPSTREAM_HEALTHCHECK_INTERVAL_MS` | `10000` | Upstream probe interval |
 
 > Service discovery for the gateway (`SERVICE_REGISTRY_*`) is opt-in and shared across all services — see [Service Registry](#service-registry). The dedicated LLM proxy client (`LLM_CONNECT_TIMEOUT_MS`, `LLM_IDLE_TIMEOUT_MS`, `LLM_PING_INTERVAL_MS`) is tuned under [LLM Gateway](#llm-gateway).
@@ -1365,7 +1365,7 @@ The overload-protection env vars (`CATALOG_MAX_CONCURRENT_REQUESTS`,
 
 ## Project Layout
 
-The code follows a clean-architecture layering under `com.recsys`: the package name advertises a class's *role* (transport, use-case, domain, adapter), not the service that happens to use it. Each layer has feature sub-packages. The layering, the `api → application → domain` dependency rule, and how it supports one-codebase-many-services are covered in the [Microservices investigation](10_MicroServices.md).
+The code follows a clean-architecture layering under `com.recsys`: the package name advertises a class's *role* (transport, use-case, domain, adapter), not the service that happens to use it. Each layer has feature sub-packages. The layering, the `api → application → domain` dependency rule, and how it supports one-codebase-many-services are covered in the [Microservices investigation](docs/system_design/10_MicroServices.md).
 
 ```text
 src/main/java/com/recsys/
@@ -1491,7 +1491,7 @@ Options: `--vector-size=16`, `--window-size=5`, `--min-count=1`, `--max-iter=10`
 
 ## A/B Testing
 
-This section implements **online experimentation (A/B testing) with deterministic, stateless bucketing**: `ABTestService` assigns users to variants via `StableBucketer` — a stable FNV-1a hash of `userId:layerName` into a fixed 10,000-slot keyspace — then compares the slot against contiguous percent ranges, so assignment is stable across requests with no per-user store and growing a bucket only pulls in users at the range boundary (no reshuffle). The variant is returned in every response for attribution. The hashing algorithm is the [Consistent Hashing investigation](06_Consistent_Hashing.md#3-the-second-consumer--stablebucketer-ab-bucketing).
+This section implements **online experimentation (A/B testing) with deterministic, stateless bucketing**: `ABTestService` assigns users to variants via `StableBucketer` — a stable FNV-1a hash of `userId:layerName` into a fixed 10,000-slot keyspace — then compares the slot against contiguous percent ranges, so assignment is stable across requests with no per-user store and growing a bucket only pulls in users at the range boundary (no reshuffle). The variant is returned in every response for attribution. The hashing algorithm is the [Consistent Hashing investigation](docs/system_design/06_Consistent_Hashing.md#3-the-second-consumer--stablebucketer-ab-bucketing).
 
 **Bucketing:**
 
@@ -1668,7 +1668,7 @@ Redis key conventions:
 
 ## Online Serving
 
-This section is the **streaming / real-time data pipeline**: a partitioned Kafka → Flink → Redis flow provides the low-latency signals consumed by port `7010` — trading batch simplicity for fresh per-user history and windowed trending, with per-user ordering preserved by partition-keyed events. See [streaming/online-serving/README.md](streaming/online-serving/README.md) for full setup. Windowed trending is served from `ShardedTopKStore`, which shards each window's sorted set into N identical replica keys (`topk:<window>:s0..s3`) to spread read QPS — see the [Partitioning investigation](14_Partitioning.md#2-windowed-top-k-replica-sharding).
+This section is the **streaming / real-time data pipeline**: a partitioned Kafka → Flink → Redis flow provides the low-latency signals consumed by port `7010` — trading batch simplicity for fresh per-user history and windowed trending, with per-user ordering preserved by partition-keyed events. See [streaming/online-serving/README.md](streaming/online-serving/README.md) for full setup. Windowed trending is served from `ShardedTopKStore`, which shards each window's sorted set into N identical replica keys (`topk:<window>:s0..s3`) to spread read QPS — see the [Partitioning investigation](docs/system_design/14_Partitioning.md#2-windowed-top-k-replica-sharding).
 
 Quick start (loads sample features without Flink):
 
@@ -1709,7 +1709,7 @@ The production partition contract is `movie_events_v2` with **24 partitions**, s
 
 ## Sharded Record Store
 
-This section implements **horizontal sharding via consistent hashing**, trading a single hot node for rebalance cost on resize: `ShardedRecordStore` distributes event, feature, and log records across N Redis shards, and each write fans out to an HSET (full record) + ZADD (device index for per-device reads) + XADD (shard stream for ordered replay). `SHARDED_RECORD_SHARD_COUNT` (default `2`) is the **bootstrap** shard count for a *versioned topology* that can be resharded at runtime without a redeploy — see [Reshard at runtime](#reshard-at-runtime-versioned-topology) below. The sharding subsystem as a whole — the two sharded stores' key schemas and operations, the versioned topology, and online reshard — is the [Database Sharding investigation](03_DB_Sharding.md); the ring algorithm itself (`ConsistentHashRing`, 150 virtual nodes, the shared FNV-1a `Hashing` primitive, and its reuse for A/B bucketing) is in the [Consistent Hashing investigation](06_Consistent_Hashing.md); how record sharding relates to the other four partition dimensions is in the [Partitioning investigation](14_Partitioning.md#1-consistent-hash-record-sharding).
+This section implements **horizontal sharding via consistent hashing**, trading a single hot node for rebalance cost on resize: `ShardedRecordStore` distributes event, feature, and log records across N Redis shards, and each write fans out to an HSET (full record) + ZADD (device index for per-device reads) + XADD (shard stream for ordered replay). `SHARDED_RECORD_SHARD_COUNT` (default `2`) is the **bootstrap** shard count for a *versioned topology* that can be resharded at runtime without a redeploy — see [Reshard at runtime](#reshard-at-runtime-versioned-topology) below. The sharding subsystem as a whole — the two sharded stores' key schemas and operations, the versioned topology, and online reshard — is the [Database Sharding investigation](docs/system_design/03_DB_Sharding.md); the ring algorithm itself (`ConsistentHashRing`, 150 virtual nodes, the shared FNV-1a `Hashing` primitive, and its reuse for A/B bucketing) is in the [Consistent Hashing investigation](docs/system_design/06_Consistent_Hashing.md); how record sharding relates to the other four partition dimensions is in the [Partitioning investigation](docs/system_design/14_Partitioning.md#1-consistent-hash-record-sharding).
 
 The HTTP façade is mounted at `/shards/` on port `7010`.
 
@@ -1785,13 +1785,13 @@ curl -X POST http://localhost:7010/shards/topology \
 - **Generation-scoped keys:** generation 1 uses the original unversioned keys (`sr:rec:{shard}:{seq}`); generation ≥2 prepends `g{version}:` (`sr:g2:rec:…`). Because the mapping is consistent hashing, a resize moves only ~1/N of keys.
 - **No data loss for in-flight records:** for `SHARDED_RECORD_MAX_TTL_SECONDS` after a reshard, per-device reads **dual-read** the previous generation and merge it (current wins), so records written before the change are still served until they TTL out. Shard-level scans (`/shards/shard`, read-all) are generation-current and do not dual-read.
 
-Why generation-scoped keys and a bounded dual-read window make this safe is walked through in the [Partitioning investigation](14_Partitioning.md#versioned-topology-and-online-reshard).
+Why generation-scoped keys and a bounded dual-read window make this safe is walked through in the [Partitioning investigation](docs/system_design/14_Partitioning.md#versioned-topology-and-online-reshard).
 
 ---
 
 ## Redis Read Replicas
 
-This section implements **read replication with AZ-aware read routing**: `RedisReadReplicaRouter` splits Redis traffic so writes stay on the single primary while reads spread across AZ-local replicas — trading read-after-write immediacy on replicas for a cheaper, more available hot read path that survives the primary's AZ being briefly unreachable. This split (CP writes, AP-by-default reads) is the system's core CAP dial — see the [CAP investigation](05_CAP.md#4-the-tunable-dial).
+This section implements **read replication with AZ-aware read routing**: `RedisReadReplicaRouter` splits Redis traffic so writes stay on the single primary while reads spread across AZ-local replicas — trading read-after-write immediacy on replicas for a cheaper, more available hot read path that survives the primary's AZ being briefly unreachable. This split (CP writes, AP-by-default reads) is the system's core CAP dial — see the [CAP investigation](docs/system_design/05_CAP.md#4-the-tunable-dial).
 
 - **Writes** always go to the primary pool (`writablePool()`), the single write leader.
 - **Reads** prefer the replica in the same Availability Zone as the calling instance (`AWS_AZ`), fall back to a random replica, and fall back again to the primary when no replicas are configured.
@@ -1804,7 +1804,7 @@ export AWS_AZ=us-east-1b
 export REDIS_REPLICA_NODES="redis-b.internal:6379@us-east-1b,redis-c.internal:6379@us-east-1c"
 ```
 
-When `REDIS_REPLICA_NODES` is unset the router transparently routes every read to the primary, so local dev needs no extra config. This complements Redis Sentinel (primary failover) — the router handles read fan-out, Sentinel handles leader election. The full replication story — the read/write split, Sentinel failover, `RedisReplicaLagProbe` lag measurement, and async cross-region replication for DR — is in the [Replication investigation](04_Replication.md); how replica routing, single-flight, and fail-open stores fit the broader failure model is in the [Fault Tolerance investigation](18_Fault_Tolerance.md#redis-resilience).
+When `REDIS_REPLICA_NODES` is unset the router transparently routes every read to the primary, so local dev needs no extra config. This complements Redis Sentinel (primary failover) — the router handles read fan-out, Sentinel handles leader election. The full replication story — the read/write split, Sentinel failover, `RedisReplicaLagProbe` lag measurement, and async cross-region replication for DR — is in the [Replication investigation](docs/system_design/04_Replication.md); how replica routing, single-flight, and fail-open stores fit the broader failure model is in the [Fault Tolerance investigation](docs/system_design/18_Fault_Tolerance.md#redis-resilience).
 
 ---
 
@@ -1821,15 +1821,15 @@ and three producer families (online events `ONLINE_EVENTS_*`, A/B exposures
 The full deep-dive — the bounded queue + batched drain, the three transports (incl.
 the keyed idempotent Kafka producer and the standard-SQS sink), transport selection,
 the `/online/ops` drain stats, and the contrast with the durable outbox path — is in
-the **[Message Queues investigation](07_Message_Queue.md)**. For stronger (at-least-once)
+the **[Message Queues investigation](docs/system_design/07_Message_Queue.md)**. For stronger (at-least-once)
 delivery see [Durable Eventual Consistency](#durable-eventual-consistency); the Kafka
-partition-key contract is in the [Partitioning investigation](14_Partitioning.md#3-kafka-topic-partitioning--flink-keyed-pipeline).
+partition-key contract is in the [Partitioning investigation](docs/system_design/14_Partitioning.md#3-kafka-topic-partitioning--flink-keyed-pipeline).
 
 ---
 
 ## Durable Eventual Consistency
 
-This subsystem trades the fire-and-forget default for **eventual consistency with delivery guarantees**, built from three canonical mechanisms — a **transactional outbox**, **bounded read-your-writes** session consistency, and **automated reconciliation** — at the cost of extra MySQL writes and operational surface. The read-your-writes token is the system's opt-in **CP escape hatch** on an otherwise AP read path (it fails closed with `503` rather than serve stale) — see the [CAP investigation](05_CAP.md#3-the-cp-escape-hatch--bounded-read-your-writes). The `AsyncEventPublisher` above is deliberately fire-and-forget: a broker outage silently drops events, which is the right default for the demo path but not for callers that need stronger guarantees. It is **opt-in and off by default** (`ONLINE_DURABLE_EVENTS_ENABLED=false`, `MYSQL_ENABLED=false`). Ordinary online-serving reads stay on the existing replica-and-cache path (see [Redis Read Replicas](#redis-read-replicas)); nothing here changes their behavior. When enabled it provides:
+This subsystem trades the fire-and-forget default for **eventual consistency with delivery guarantees**, built from three canonical mechanisms — a **transactional outbox**, **bounded read-your-writes** session consistency, and **automated reconciliation** — at the cost of extra MySQL writes and operational surface. The read-your-writes token is the system's opt-in **CP escape hatch** on an otherwise AP read path (it fails closed with `503` rather than serve stale) — see the [CAP investigation](docs/system_design/05_CAP.md#3-the-cp-escape-hatch--bounded-read-your-writes). The `AsyncEventPublisher` above is deliberately fire-and-forget: a broker outage silently drops events, which is the right default for the demo path but not for callers that need stronger guarantees. It is **opt-in and off by default** (`ONLINE_DURABLE_EVENTS_ENABLED=false`, `MYSQL_ENABLED=false`). Ordinary online-serving reads stay on the existing replica-and-cache path (see [Redis Read Replicas](#redis-read-replicas)); nothing here changes their behavior. When enabled it provides:
 
 1. a **MySQL transactional outbox** so accepted online events and saga transitions cannot be lost by a broker or process crash;
 2. **bounded read-your-writes** — a signed consistency token a caller presents on a follow-up recommendation read to wait (up to 2s) for their own write to become visible; and
@@ -1960,7 +1960,7 @@ curl -s -D - -o /dev/null -X POST http://localhost:8080/api/v1/recommend \
 
 The full stack — production ALB/kube-proxy/Armeria layers, the capacity-weight feedback
 loop, and the `ApplicationLoadBalancer` L7 model — is in the
-**[Load Balancing investigation](01_Load_Balancing.md)**.
+**[Load Balancing investigation](docs/system_design/01_Load_Balancing.md)**.
 
 ---
 
@@ -2053,7 +2053,7 @@ The overlay manifests live under [k8s/eks/](k8s/eks/); the WAF WebACL wiring is 
 
 **Immutable image digests.** Deploys pin an image by content digest (`@sha256:…`), not a mutable tag, so a rollout is reproducible and can't drift when a tag is re-pushed. `scripts/set-eks-image-digest.sh` writes the identical digest into both region overlays (ECR replicates the image cross-region) — see [docs/runbooks/deploy-image-digest.md](docs/runbooks/deploy-image-digest.md).
 
-**Multi-region DR & single-AZ resilience.** `k8s/eks-us-west-2/` is a warm-standby overlay for a second region, and pod spread, AZ-aware Redis reads, and PDB tuning keep a zone failure from taking the service down. Both — the failover overlays, the `scripts/dr-standby-capacity.sh promote` pre-scale step, and the zonal-resilience wiring — are covered in the [Fault Tolerance investigation](18_Fault_Tolerance.md#6-multi-az-and-multi-region-survival), the DR runbooks ([dr-regional-failover.md](docs/runbooks/dr-regional-failover.md), [dr-failback.md](docs/runbooks/dr-failback.md), [dr-data-tier-promotion.md](docs/runbooks/dr-data-tier-promotion.md), [dr-game-day.md](docs/runbooks/dr-game-day.md)), [zonal-resilience.md](docs/runbooks/zonal-resilience.md), and the design specs ([multi-region DR failover](docs/superpowers/specs/2026-07-08-multi-region-dr-failover-design.md), [zonal failure hardening](docs/superpowers/specs/2026-07-08-zonal-failure-hardening-design.md)).
+**Multi-region DR & single-AZ resilience.** `k8s/eks-us-west-2/` is a warm-standby overlay for a second region, and pod spread, AZ-aware Redis reads, and PDB tuning keep a zone failure from taking the service down. Both — the failover overlays, the `scripts/dr-standby-capacity.sh promote` pre-scale step, and the zonal-resilience wiring — are covered in the [Fault Tolerance investigation](docs/system_design/18_Fault_Tolerance.md#6-multi-az-and-multi-region-survival), the DR runbooks ([dr-regional-failover.md](docs/runbooks/dr-regional-failover.md), [dr-failback.md](docs/runbooks/dr-failback.md), [dr-data-tier-promotion.md](docs/runbooks/dr-data-tier-promotion.md), [dr-game-day.md](docs/runbooks/dr-game-day.md)), [zonal-resilience.md](docs/runbooks/zonal-resilience.md), and the design specs ([multi-region DR failover](docs/superpowers/specs/2026-07-08-multi-region-dr-failover-design.md), [zonal failure hardening](docs/superpowers/specs/2026-07-08-zonal-failure-hardening-design.md)).
 
 ---
 
@@ -2153,7 +2153,7 @@ MAT_PARSE_HEAP_DUMP=/path/to/ParseHeapDump \
 
 ## Pipeline Optimizations
 
-This section is a **latency and throughput optimization log** for the request path — the concrete fixes that keep it allocation-light and lock-free at the capacity targets, targeting OOM, Full GC, thread blocking, and CPU spikes. The cache-related fixes below (`RecommendationCache`, `LocalEmbeddingCache`, `HotKeyDetector`, `ShardedTopKStore`, `MultiLevelEmbeddingCache`) are covered in depth in the [Caching investigation](02_Caching.md).
+This section is a **latency and throughput optimization log** for the request path — the concrete fixes that keep it allocation-light and lock-free at the capacity targets, targeting OOM, Full GC, thread blocking, and CPU spikes. The cache-related fixes below (`RecommendationCache`, `LocalEmbeddingCache`, `HotKeyDetector`, `ShardedTopKStore`, `MultiLevelEmbeddingCache`) are covered in depth in the [Caching investigation](docs/system_design/02_Caching.md).
 
 | Component | Problem | Fix |
 |---|---|---|
@@ -2182,7 +2182,7 @@ export LLM_SERVICE_URL=http://localhost:11434   # Ollama
 sh scripts/run-microservices-local.sh
 ```
 
-Features: SSE streaming passthrough, retry-on-429, token-count-aware rate limiting (`LlmTokenRateLimiter` — budgets **tokens** not requests; see the [Rate Limiting investigation](08_Rate_Limits.md#4-llm-token-budget-limiting)), SHA-256 response caching, circuit breaker.
+Features: SSE streaming passthrough, retry-on-429, token-count-aware rate limiting (`LlmTokenRateLimiter` — budgets **tokens** not requests; see the [Rate Limiting investigation](docs/system_design/08_Rate_Limits.md#4-llm-token-budget-limiting)), SHA-256 response caching, circuit breaker.
 
 ### Streaming (SSE) vs. buffered
 
@@ -2228,7 +2228,7 @@ Per-user rate limiting on the model service (`ModelRateLimiter` caps
 `POST /api/v1/recommend` per served `userId`, before the concurrency semaphore, so
 one user can't monopolize scarce ONNX inference slots) is one of the system's five
 rate limiters. It, and how it relates to the gateway / LLM-token / global-Redis
-limiters, is covered in the **[Rate Limiting investigation](08_Rate_Limits.md#3-model-rate-limiting--per-user)**.
+limiters, is covered in the **[Rate Limiting investigation](docs/system_design/08_Rate_Limits.md#3-model-rate-limiting--per-user)**.
 
 ---
 
@@ -2288,7 +2288,7 @@ The key design thread running through all of it: **keep the request path allocat
 curl http://localhost:7010/online/ops | jq '.metrics'
 ```
 
-The embedding caches (`LocalEmbeddingCache`, `MultiLevelEmbeddingCache` L1/L2/L3, `LogicalExpiryEmbeddingCache`), the `ShardedTopKStore` replica-shard local cache, and the result/LLM caches are covered in the [Caching investigation](02_Caching.md).
+The embedding caches (`LocalEmbeddingCache`, `MultiLevelEmbeddingCache` L1/L2/L3, `LogicalExpiryEmbeddingCache`), the `ShardedTopKStore` replica-shard local cache, and the result/LLM caches are covered in the [Caching investigation](docs/system_design/02_Caching.md).
 
 ### Online learner
 

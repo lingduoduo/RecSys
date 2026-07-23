@@ -12,7 +12,7 @@ side by side in §5 and in the
 
 Events (a feature view, an A/B exposure, a saga transition) must never slow down or
 fail a request, so they leave the hot path through
-[`AsyncEventPublisher`](src/main/java/com/recsys/infrastructure/messaging/AsyncEventPublisher.java):
+[`AsyncEventPublisher`](../../src/main/java/com/recsys/infrastructure/messaging/AsyncEventPublisher.java):
 the request thread `offer()`s onto a bounded queue and returns in nanoseconds; a
 single background thread drains that queue in batches to a broker. Its Javadoc names
 the three classic message-queue jobs it does — **peak shaving** (absorb bursts),
@@ -68,7 +68,7 @@ curl "http://localhost:7010/online/ops" | jq '.events'
   `UserBehaviorLog` into the movie-event JSON envelope (schema `user-event-v2`,
   enforcing `userId > 0` / `movieId > 0`, generating an `eventId` UUID if absent).
 - **Kafka — keyed, idempotent** —
-  [`KafkaAsyncEventPublisher`](src/main/java/com/recsys/infrastructure/messaging/KafkaAsyncEventPublisher.java)
+  [`KafkaAsyncEventPublisher`](../../src/main/java/com/recsys/infrastructure/messaging/KafkaAsyncEventPublisher.java)
   overrides `sendEnvelopes` to emit one `ProducerRecord(topic, key, value)` per event,
   preserving the partition key, on an **idempotent producer** (`enable.idempotence`,
   `acks=all`, `retries=MAX`, `max.in.flight=5`, `linger.ms=20`, delivery timeout 120 s).
@@ -78,7 +78,7 @@ curl "http://localhost:7010/online/ops" | jq '.events'
   event before it enters the queue** — see the partition-key contract in
   [14_Partitioning §3](14_Partitioning.md#3-kafka-topic-partitioning--flink-keyed-pipeline).
 - **SQS — standard queue** —
-  [`SqsAsyncEventPublisher`](src/main/java/com/recsys/infrastructure/messaging/SqsAsyncEventPublisher.java)
+  [`SqsAsyncEventPublisher`](../../src/main/java/com/recsys/infrastructure/messaging/SqsAsyncEventPublisher.java)
   chunks each batch into `SendMessageBatch` calls of ≤ **10** and logs any failed
   entries. It writes to a **single standard queue** — no `MessageGroupId`, no FIFO —
   so it provides no partitioning or ordering (unlike the Kafka transport); it is a
@@ -86,7 +86,7 @@ curl "http://localhost:7010/online/ops" | jq '.events'
 
 ## 3. Transport selection
 
-[`AsyncEventPublisherFactory.fromEnvironment(prefix)`](src/main/java/com/recsys/infrastructure/messaging/AsyncEventPublisherFactory.java)
+[`AsyncEventPublisherFactory.fromEnvironment(prefix)`](../../src/main/java/com/recsys/infrastructure/messaging/AsyncEventPublisherFactory.java)
 picks a transport by a **fixed precedence: SQS → Kafka → log-only** —
 
 1. **SQS** if `<PREFIX>_SQS_ENABLED=true` *and* `<PREFIX>_SQS_QUEUE_URL` is non-blank
@@ -121,7 +121,7 @@ export ONLINE_EVENTS_KAFKA_BOOTSTRAP_SERVERS=localhost:9092
   SQS-only, else NOOP.
 
 The key extractor
-([`MovieEventKafkaKeyExtractor`](src/main/java/com/recsys/infrastructure/messaging/MovieEventKafkaKeyExtractor.java))
+([`MovieEventKafkaKeyExtractor`](../../src/main/java/com/recsys/infrastructure/messaging/MovieEventKafkaKeyExtractor.java))
 pulls a normalized positive `userId` (`userId`/`user_id`, numeric or `prefix_<id>`) as
 the Kafka record key; a missing/zero/negative/unparseable id is rejected before send
 and counts toward `dropped` — so a user's events keep per-user order on one partition

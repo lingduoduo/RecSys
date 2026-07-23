@@ -31,7 +31,7 @@ A request traverses a deliberate pipeline. Some stages are Armeria server decora
 | Proxy | `forward` | Prefix-strip, pick upstream, pipe, map errors |
 
 The bootstrap wiring, decorator order, and shutdown hook live in
-[`MicroserviceGatewayServer`](src/main/java/com/recsys/api/gateway/MicroserviceGatewayServer.java)
+[`MicroserviceGatewayServer`](../../src/main/java/com/recsys/api/gateway/MicroserviceGatewayServer.java)
 (LLM routes and the canonical `/api/recommend` are registered *before* the catch-all
 `prefix:/` so Armeria's more-specific match wins). Key knobs: `GATEWAY_PORT` (8010),
 `GATEWAY_TIMEOUT_MS` (3000), and `networkaddress.cache.ttl=30` for Cloud Map
@@ -40,9 +40,9 @@ blue/green.
 ## 1. Routing and prefix-strip
 
 The route table
-([`MicroserviceRoute`](src/main/java/com/recsys/application/gateway/MicroserviceRoute.java))
+([`MicroserviceRoute`](../../src/main/java/com/recsys/application/gateway/MicroserviceRoute.java))
 is a list of `(name, prefix, envVar, baseUri, healthPath, serviceName)` records;
-[`MicroserviceRouteTable`](src/main/java/com/recsys/application/gateway/MicroserviceRouteTable.java)
+[`MicroserviceRouteTable`](../../src/main/java/com/recsys/application/gateway/MicroserviceRouteTable.java)
 is a **longest-prefix router** (exact-prefix map first, then routes sorted
 longest-first). Registered routes:
 
@@ -66,7 +66,7 @@ Prefix-strip is `MicroserviceRoute.rewrite`: it validates the prefix match, take
 boundaries (`path == prefix || startsWith(prefix + "/")`), so `/api/usersettings`
 does **not** match `/api/users`.
 
-[`GatewayRequestForwarder.forward`](src/main/java/com/recsys/application/gateway/GatewayRequestForwarder.java)
+[`GatewayRequestForwarder.forward`](../../src/main/java/com/recsys/application/gateway/GatewayRequestForwarder.java)
 does the actual proxying and maps failures to a clean contract:
 
 | Condition | Status |
@@ -85,7 +85,7 @@ with `Cache-Control: no-store` so CloudFront never caches an error.
 ## 2. Identity propagation and credential stripping
 
 The gateway is the **trust boundary**, and
-[`buildUpstreamHeaders`](src/main/java/com/recsys/application/gateway/GatewayRequestForwarder.java)
+[`buildUpstreamHeaders`](../../src/main/java/com/recsys/application/gateway/GatewayRequestForwarder.java)
 is where that boundary is enforced on every proxied request:
 
 - **Credentials are consumed, never forwarded** — `Authorization`, `x-api-key`, and
@@ -95,20 +95,20 @@ is where that boundary is enforced on every proxied request:
   16-char prefix match) — an anti-spoofing defense, since backends may trust those
   headers *only* because the gateway is their sole source.
 - **The gateway re-injects the authenticated identity** as
-  [`GatewayPrincipal.identityHeaders()`](src/main/java/com/recsys/application/gateway/GatewayPrincipal.java):
+  [`GatewayPrincipal.identityHeaders()`](../../src/main/java/com/recsys/application/gateway/GatewayPrincipal.java):
   `x-authenticated-subject` / `x-authenticated-client-id` / `x-authenticated-token-use`
   (only when non-blank), plus `x-gateway-service: recsys-api-gateway` and the
   `x-forwarded-*` set. The principal comes from a Cognito JWT (claims) or an API-key
   caller (SHA-256 short-hash id), or `anonymous()` for public/disabled paths.
 
 This holds identically for the service proxy and the LLM proxy. Designs:
-[credential stripping](docs/superpowers/specs/2026-07-02-gateway-credential-stripping-design.md),
-[principal propagation](docs/superpowers/specs/2026-07-02-gateway-principal-propagation-design.md).
+[credential stripping](../superpowers/specs/2026-07-02-gateway-credential-stripping-design.md),
+[principal propagation](../superpowers/specs/2026-07-02-gateway-principal-propagation-design.md).
 
 ## 3. Authentication
 
 Edge authentication is the gateway's slice of the broader AuthN/AuthZ concern.
-[`GatewayAuthenticator`](src/main/java/com/recsys/application/gateway/GatewayAuthenticator.java)
+[`GatewayAuthenticator`](../../src/main/java/com/recsys/application/gateway/GatewayAuthenticator.java)
 accepts **either** a static API key (`GATEWAY_API_KEYS`, constant-time compare, via
 `X-API-Key` or `Authorization: Bearer`) **or** a Cognito RS256 JWT
 (`GATEWAY_COGNITO_ISSUER` / `_AUDIENCE`; a dependency-free verifier that fetches JWKS,
@@ -120,15 +120,15 @@ Two guards make the open/closed posture safe: `GatewayAuthenticator.fromEnvironm
 **fails closed** — it refuses to start wide-open unless `GATEWAY_ALLOW_ANONYMOUS=true`
 explicitly opts in — and `PROTECTED_PREFIXES` (`/api/catalog/user`, `/api/users`) can
 never be made public even if listed in `GATEWAY_PUBLIC_PATHS`
-([never-public design](docs/superpowers/specs/2026-07-19-gateway-never-public-user-paths-design.md)).
+([never-public design](../superpowers/specs/2026-07-19-gateway-never-public-user-paths-design.md)).
 Public-path matching and the CloudFront origin secret (`GatewayOriginSecret`) are
 covered from the edge-caching angle in the
 [CDN Edge investigation](12_CDNS.md#3-origin-lockdown--proving-a-request-came-from-our-distribution);
-operational auth setup is in [gateway-auth.md](docs/runbooks/gateway-auth.md).
+operational auth setup is in [gateway-auth.md](../runbooks/gateway-auth.md).
 
 ## 4. Rate limiting
 
-[`GatewayRateLimiter`](src/main/java/com/recsys/ratelimit/GatewayRateLimiter.java) is
+[`GatewayRateLimiter`](../../src/main/java/com/recsys/ratelimit/GatewayRateLimiter.java) is
 a token bucket keyed **per `(route, principal)`**, so one noisy caller can't exhaust
 another's budget. Buckets refill at `GATEWAY_RATE_LIMIT_RPS` with a
 `GATEWAY_RATE_LIMIT_BURST` burst; excess requests get `429`. The principal is the
@@ -160,7 +160,7 @@ attach:
 ## 6. Health aggregation
 
 `GET /health`
-([`GatewayHealthService`](src/main/java/com/recsys/application/gateway/GatewayHealthService.java))
+([`GatewayHealthService`](../../src/main/java/com/recsys/application/gateway/GatewayHealthService.java))
 pings every registered downstream **in parallel** (latency is max, not sum) and
 returns two views:
 
@@ -181,7 +181,7 @@ The gateway exposes Prometheus at `GET /metrics` (registered before auth, via
 `PrometheusExpositionService` on Armeria's default registry). Origin-secret
 rejections (`gateway_origin_secret_rejected_total`) and, when the registry is
 enabled, the `gateway_registry_*` meters
-([`GatewayRegistryMetrics`](src/main/java/com/recsys/metrics/GatewayRegistryMetrics.java))
+([`GatewayRegistryMetrics`](../../src/main/java/com/recsys/metrics/GatewayRegistryMetrics.java))
 publish through the same registry.
 
 ## 8. Testing
