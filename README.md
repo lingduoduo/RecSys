@@ -21,7 +21,7 @@ A compact Maven workspace demonstrating recommendation-system serving, retrieval
 | API Gateway | `MicroserviceGatewayServer` (Armeria), `MicroserviceRouteTable`, `GatewayAuthenticator` (API key / Cognito JWT), `RouteCircuitBreaker`, `GatewayRateLimiter`, `LlmProxyService` — see [Port 8010](#port-8010--api-gateway) |
 | Recommendation Service | Shared recall → rank → paginate → hydrate pipeline, `MultiChannelRecallService` — see [Shared recall core](#shared-recall-core) |
 | Data Infrastructure | Redis embedding store, AZ-aware read-replica router, multi-level cache (L1/L2/L3), LSH vector index, consistent-hash sharded record store, sharded top-K, MySQL catalog + transactional outbox — see [Sharded Record Store](#sharded-record-store), [Redis Read Replicas](#redis-read-replicas) |
-| Messaging & Load Balancing | `AsyncEventPublisher` (SQS/Kafka transports), durable outbox relay + read-your-writes consistency, `ApplicationLoadBalancer` (L7), capacity-weight feedback — see [Event Publishers](#event-publishers-message-queues), [Durable Eventual Consistency](#durable-eventual-consistency), [Load Balancing](#load-balancing) |
+| Messaging & Load Balancing | `AsyncEventPublisher` (SQS/Kafka transports), durable outbox relay + read-your-writes consistency, `ApplicationLoadBalancer` (L7), capacity-weight feedback — see [Message Queues](07_Message_Queue.md), [Durable Eventual Consistency](#durable-eventual-consistency), [Load Balancing](#load-balancing) |
 | Domain Model | Shared value objects: `Movie`, `User`, `MovieCandidate`, `RecommendationQuery` |
 | Configuration | Spring `@ConfigurationProperties`, feature flag providers, JVM tuning options — see [Configuration](#configuration) |
 | Infrastructure | Kubernetes base + EKS overlay, CloudFront CDN edge, Docker, Flink streaming topology — see [Kubernetes & EKS](#kubernetes--eks), [CDN Edge investigation](12_CDNS.md) |
@@ -38,7 +38,7 @@ A compact Maven workspace demonstrating recommendation-system serving, retrieval
 | Replication | `RedisReadReplicaRouter` + `RoutingRedisExecutor` (AZ-aware replica reads), Redis Sentinel failover — see [Redis Read Replicas](#redis-read-replicas) |
 | CAP Theorem | Read-your-writes after outbox commit, generation dual-read during a reshard window, tunable AZ-local vs primary reads (`RoutingRedisExecutor`) — see [Durable Eventual Consistency](#durable-eventual-consistency) |
 | Consistent Hashing | `ConsistentHashRing`, `ShardTopologyProvider` (30 s topology refresh, generation dual-read on migration) — see [Sharded Record Store](#sharded-record-store) |
-| Messaging Queues | `AsyncEventPublisher` (`KafkaAsyncEventPublisher` / `SqsAsyncEventPublisher`), Kafka → Flink → Redis pipeline (`OnlineFeatureStreamingJob`) — see [Event Publishers](#event-publishers-message-queues) |
+| Messaging Queues | Fire-and-forget `AsyncEventPublisher` (bounded queue + batched drain, at-most-once) with log-only / `KafkaAsyncEventPublisher` (keyed, idempotent) / `SqsAsyncEventPublisher` (standard queue) transports; feeds the Kafka → Flink → Redis pipeline (`OnlineFeatureStreamingJob`) — see [Message Queues investigation](07_Message_Queue.md) |
 | Rate Limiting | `TokenBucket`, `GatewayRateLimiter` (per `(route, principal)`), `LlmTokenRateLimiter` (token-budget), `RedisRateLimiter` (distributed, global; **weighted sliding-window** ≈1× the limit with no local fast-path, fail-open + circuit breaker) — see [Rate Limiting investigation](08_Rate_Limits.md) |
 | API Gateway | `MicroserviceGatewayServer` (single edge: routing/prefix-strip, identity propagation + credential stripping, per-route breakers, rate limiting, health aggregation), `MicroserviceRouteTable`, `RouteCircuitBreaker`, `GatewayRateLimiter`, `LlmProxyService` — see [API Gateway investigation](09_API_Gateway.md) |
 | MicroService | Four independently runnable services (`6010`/`7010`/`8080`/`8010`) from **one codebase + one image** (`RECSYS_MAIN_CLASS`) behind `MicroserviceGatewayServer`; clean-architecture `api`/`application`/`domain`/`infrastructure` layers (role-not-service) — see [Microservices investigation](10_MicroServices.md), [Project Layout](#project-layout) |
@@ -1807,45 +1807,20 @@ When `REDIS_REPLICA_NODES` is unset the router transparently routes every read t
 
 ## Event Publishers (Message Queues)
 
-This section applies **asynchronous messaging with a bounded producer queue**: behavioral and experiment events leave the serving path through a **fire-and-forget** `AsyncEventPublisher` — requests enqueue onto an in-memory ring buffer and a background thread drains it in batches to a broker. The tradeoff is at-most-once delivery (a broker outage or backpressure drops events but never blocks or fails a request); for stronger guarantees see [Durable Eventual Consistency](#durable-eventual-consistency). The default log-only publisher is used until a transport is configured, so local dev, tests, and the demo need no broker. The Kafka transport keys every record by `userId` so all of a user's events land on one partition (per-user ordering) while users spread across the 24-partition `movie_events_v2` topic — the topic's partitioning and the Flink source's partition contract are covered in the [Partitioning investigation](14_Partitioning.md#3-kafka-topic-partitioning--flink-keyed-pipeline). Three transports are wired:
+Behavioral and experiment events leave the serving path through a **fire-and-forget**
+`AsyncEventPublisher` — the request `offer()`s onto a bounded in-memory queue and a
+background thread drains it in batches to a broker, so a broker outage or backpressure
+**drops events (counted) but never blocks or fails a request** (at-most-once). The
+default log-only publisher needs no broker; three transports (log-only / SQS / Kafka)
+and three producer families (online events `ONLINE_EVENTS_*`, A/B exposures
+`recsys.events.*`, saga `SAGA_EVENTS_*`) compose behind it.
 
-| Producer | Default (no broker) | SQS | Kafka |
-|---|---|---|---|
-| Online events (`7010`) | log-only | `ONLINE_EVENTS_SQS_*` | `ONLINE_EVENTS_KAFKA_*` |
-| A/B exposures (`8080`) | log-only | `recsys.events.sqs.*` | `recsys.events.kafka.*` |
-| Saga lifecycle | NOOP | `SAGA_EVENTS_SQS_*` | — |
-
-**Online server (port 7010)** — `AsyncEventPublisherFactory.fromEnvironment("ONLINE_EVENTS")` picks SQS first (when enabled with a non-blank queue URL), then Kafka, else log-only. Drain stats surface in `/online/ops` under `events` (`queueSize`, `published`, `dropped`, `drained`, `deliveryFailures`) — `deliveryFailures` counts Kafka broker-side send failures separately from `dropped` (queue-full or invalid-key rejections).
-
-```bash
-# Ship online events to SQS
-export ONLINE_EVENTS_SQS_ENABLED=true
-export ONLINE_EVENTS_SQS_QUEUE_URL="https://sqs.us-east-1.amazonaws.com/123456789012/online-events"
-export AWS_REGION=us-east-1
-
-# …or to Kafka (topic defaults to movie_events_v2)
-export ONLINE_EVENTS_KAFKA_ENABLED=true
-export ONLINE_EVENTS_KAFKA_BOOTSTRAP_SERVERS=localhost:9092
-# ONLINE_EVENTS_KAFKA_TOPIC defaults to movie_events_v2; override only for a non-default deployment
-
-curl "http://localhost:7010/online/ops" | jq '.events'
-# {"queueSize":0,"published":128,"dropped":0,"drained":128,"deliveryFailures":0}
-```
-
-Online events targeting Kafka are **keyed**, not published unkeyed: `MovieEventKafkaKeyExtractor` pulls a normalized positive `userId` (`userId`/`user_id`, numeric or `..._<id>` string) out of each event and uses it as the Kafka record key, so a given user's events land in the same partition in order — the same per-user ordering contract the Flink job (`movie_events_v2`, 24 partitions) depends on. Events with a missing, zero, negative, or unparseable user ID are rejected before send rather than published unkeyed and count toward `dropped`. This extractor applies only to the `ONLINE_EVENTS` Kafka transport — A/B exposure events (`recsys.events.kafka.*`) are unaffected and keep publishing without a key extractor.
-
-**Model server (port 8080)** — `ModelEventConfig` ships A/B exposure events the same way, configured via Spring properties (topic defaults to `ab_exposures`):
-
-```yaml
-recsys:
-  events:
-    sqs:   { enabled: true, queue-url: "https://sqs.us-east-1.amazonaws.com/123456789012/ab-exposures", region: us-east-1 }
-    kafka: { enabled: false, bootstrap-servers: localhost:9092, exposure-topic: ab_exposures }
-```
-
-**Saga lifecycle** — `SagaEventPublishers.fromEnvironment()` emits saga state transitions to SQS when `SAGA_EVENTS_SQS_ENABLED=true` and `SAGA_EVENTS_SQS_QUEUE_URL` is set; otherwise NOOP. Set `SAGA_EVENTS_SQS_BEST_EFFORT=true` to swallow publish failures instead of surfacing them.
-
-> SQS sends in batches of ≤ 10 (`SendMessageBatch`); both transports log and swallow broker errors so the drain loop and request path never break.
+The full deep-dive — the bounded queue + batched drain, the three transports (incl.
+the keyed idempotent Kafka producer and the standard-SQS sink), transport selection,
+the `/online/ops` drain stats, and the contrast with the durable outbox path — is in
+the **[Message Queues investigation](07_Message_Queue.md)**. For stronger (at-least-once)
+delivery see [Durable Eventual Consistency](#durable-eventual-consistency); the Kafka
+partition-key contract is in the [Partitioning investigation](14_Partitioning.md#3-kafka-topic-partitioning--flink-keyed-pipeline).
 
 ---
 
