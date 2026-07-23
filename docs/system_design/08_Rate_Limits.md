@@ -33,7 +33,7 @@ admission → bulkhead — see [Fault Tolerance](18_Fault_Tolerance.md#gate-orde
 
 ## 1. `TokenBucket` — the shared primitive
 
-[`TokenBucket`](src/main/java/com/recsys/ratelimit/TokenBucket.java) is a lazy-refill
+[`TokenBucket`](../../src/main/java/com/recsys/ratelimit/TokenBucket.java) is a lazy-refill
 token bucket: `refillPerNano = ratePerSecond / 1e9`, capacity = `burst` (starts
 full), and `refill()` adds `elapsed × refillPerNano` capped at `burst` with a
 monotonic guard so a non-advancing clock is a no-op. `tryAcquire(needed)` returns a
@@ -46,7 +46,7 @@ does not use it (it computes in Lua).
 
 ## 2. Gateway rate limiting — per `(route, principal)`
 
-[`GatewayRateLimiter`](src/main/java/com/recsys/ratelimit/GatewayRateLimiter.java)
+[`GatewayRateLimiter`](../../src/main/java/com/recsys/ratelimit/GatewayRateLimiter.java)
 holds one `TokenBucket` per `route|principal` in a bounded Caffeine cache
 (`maximumSize = GATEWAY_RL_MAX_PRINCIPALS`, default 100000, `expireAfterAccess` 60
 min) so one noisy caller can't exhaust another's budget and a flood of distinct
@@ -60,14 +60,14 @@ burst (both default `0` → disabled), with per-route overrides
 
 ## 3. Model rate limiting — per-user
 
-[`ModelRateLimiter`](src/main/java/com/recsys/ratelimit/ModelRateLimiter.java) caps
+[`ModelRateLimiter`](../../src/main/java/com/recsys/ratelimit/ModelRateLimiter.java) caps
 `POST /api/v1/recommend` **per served user** so one high-traffic user can't
 monopolize scarce ONNX inference slots. It keeps one `TokenBucket` per `userId` in an
 access-ordered LRU map (`recsys.model.rate-limit.max-users`, default 10000; null/blank
 share an `_anonymous` bucket), and — importantly — it is keyed on the *served*
 `request.getUserId()`, not the calling principal, and runs **before** the
 load-shedder semaphore in
-[`RecommendationController`](src/main/java/com/recsys/api/rest/RecommendationController.java)
+[`RecommendationController`](../../src/main/java/com/recsys/api/rest/RecommendationController.java)
 so a single user can't burn shared concurrency before being limited.
 
 ```bash
@@ -83,7 +83,7 @@ done
 ```
 
 On deny it throws `RateLimitExceededException`, which
-[`GlobalExceptionHandler`](src/main/java/com/recsys/exception/GlobalExceptionHandler.java)
+[`GlobalExceptionHandler`](../../src/main/java/com/recsys/exception/GlobalExceptionHandler.java)
 maps to `429` + `Retry-After` with body
 `{"error":"request rate limit exceeded — retry after Ns","violations":[]}`.
 
@@ -95,22 +95,22 @@ maps to `429` + `Retry-After` with body
 
 ## 4. LLM token-budget limiting
 
-[`LlmTokenRateLimiter`](src/main/java/com/recsys/ratelimit/LlmTokenRateLimiter.java)
+[`LlmTokenRateLimiter`](../../src/main/java/com/recsys/ratelimit/LlmTokenRateLimiter.java)
 is the odd one out: it limits **tokens, not requests**. A single bucket refills at
 `LLM_TOKEN_RATE_LIMIT_TPS` tokens/sec with an `LLM_TOKEN_RATE_LIMIT_BURST` capacity,
 and each call costs the request's `max_tokens` (parsed from the body, with a default
 estimate fallback) rather than `1` — so a few large-context requests are throttled
 the same as many small ones, protecting a shared downstream token quota. It is a
 pre-check in
-[`LlmProxyService`](src/main/java/com/recsys/application/gateway/LlmProxyService.java)
+[`LlmProxyService`](../../src/main/java/com/recsys/application/gateway/LlmProxyService.java)
 after the cache lookup and before the circuit breaker; on limit it returns `429` with
 `Retry-After` / `x-ratelimit-*` and body `{"error":"<route> token budget exhausted …"}`.
-It sits inside the broader [LLM Gateway](README.md#llm-gateway) proxy (SSE, caching,
+It sits inside the broader [LLM Gateway](../../README.md#llm-gateway) proxy (SSE, caching,
 circuit breaker).
 
 ## 5. The global ceiling — `RedisRateLimiter`
 
-[`RedisRateLimiter`](src/main/java/com/recsys/ratelimit/RedisRateLimiter.java) is the
+[`RedisRateLimiter`](../../src/main/java/com/recsys/ratelimit/RedisRateLimiter.java) is the
 **only cluster-wide limit**: a weighted **sliding-window counter** implemented as an
 inline Lua script run on Redis, so every online-serving instance shares one ceiling
 regardless of replica count. Per fixed window it computes a rolling estimate
@@ -122,7 +122,7 @@ deliberately has **no per-instance local fast-path** (that would leak
 consults Redis.
 
 Because it adds a Redis dependency on the hot path, it is wrapped in an embedded
-[`CircuitBreaker`](src/main/java/com/recsys/resilience/CircuitBreaker.java) (5
+[`CircuitBreaker`](../../src/main/java/com/recsys/resilience/CircuitBreaker.java) (5
 consecutive failures → open for 30 s): when open it **admits without calling Redis**,
 and the disabled path, exception path, and malformed-reply path *all* return an
 `allowed(failOpen=true)` decision. A Redis outage therefore *admits* traffic rather
@@ -132,7 +132,7 @@ admission, returning `429` + `Retry-After` on deny, and its state is exposed via
 synced wall clocks) are covered in the
 [Fault Tolerance investigation](18_Fault_Tolerance.md#rate-limiters--fail-open-with-an-embedded-breaker);
 the design spec is
-[redis-rate-limiter-sliding-window](docs/superpowers/specs/2026-07-20-redis-rate-limiter-sliding-window-design.md).
+[redis-rate-limiter-sliding-window](../superpowers/specs/2026-07-20-redis-rate-limiter-sliding-window-design.md).
 
 ## 6. How they layer
 
@@ -145,7 +145,7 @@ the design spec is
   first: **rate limit → admission (concurrency) → bulkhead**, pinned by the
   `@Tag("load")` `OverloadGateOrderingCharacterizationTest` and documented in
   [Fault Tolerance](18_Fault_Tolerance.md#gate-ordering) and
-  [overload-protection.md](docs/runbooks/overload-protection.md). Note the two hosts
+  [overload-protection.md](../runbooks/overload-protection.md). Note the two hosts
   order their local gates differently: the model controller runs the per-user limiter
   *then* the load-shedder; the online path runs admission *then* the Redis global
   limiter.

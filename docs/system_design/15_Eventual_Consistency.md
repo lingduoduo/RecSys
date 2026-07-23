@@ -25,32 +25,32 @@ The `application/consistency` + `application/outbox` packages implement
 **opt-in, bounded read-your-writes** over eventually-consistent Redis replicas.
 Gated by `ONLINE_DURABLE_EVENTS_ENABLED` (default **off**; when off, the service
 uses "legacy in-memory, replica-and-cache eventual-consistency behavior" —
-[DurableConsistencyConfiguration.java:8-12](src/main/java/com/recsys/application/outbox/DurableConsistencyConfiguration.java#L8-L12)).
+[DurableConsistencyConfiguration.java:8-12](../../src/main/java/com/recsys/application/outbox/DurableConsistencyConfiguration.java#L8-L12)).
 
 **Write side (transactional outbox).** `DurableEventPublisher.publishOnline`
 synchronously commits an online event to a MySQL outbox *before* acking the API
-call ([DurableEventPublisher.java:25](src/main/java/com/recsys/application/outbox/DurableEventPublisher.java#L25)).
+call ([DurableEventPublisher.java:25](../../src/main/java/com/recsys/application/outbox/DurableEventPublisher.java#L25)).
 `OutboxRelay` then delivers to Kafka asynchronously with leases, retries, and a
 delivery deadline — classic at-least-once.
 
 **The token.** On a write, the server mints an HMAC-signed `ConsistencyToken`
 (24h lifetime, subject-bound to `userId`, carrying the `eventId`) and returns it
 in the `X-Consistency-Token` header
-([OnlineServices.java:401](src/main/java/com/recsys/application/online/OnlineServices.java#L401),
-[ConsistencyTokenCodec.java](src/main/java/com/recsys/application/consistency/ConsistencyTokenCodec.java)).
+([OnlineServices.java:401](../../src/main/java/com/recsys/application/online/OnlineServices.java#L401),
+[ConsistencyTokenCodec.java](../../src/main/java/com/recsys/application/consistency/ConsistencyTokenCodec.java)).
 
 **Read side (bounded read-your-writes).** On the next read, if the client
 presents its token, the server calls `ConsistencyWaiter.await(eventId, userId,
-2s)` ([OnlineServices.java:147](src/main/java/com/recsys/application/online/OnlineServices.java#L147)),
+2s)` ([OnlineServices.java:147](../../src/main/java/com/recsys/application/online/OnlineServices.java#L147)),
 which polls the **primary** every 50 ms for the `lineage:event:<id>` marker the
 Flink sink writes when the event materializes
-([RedisLineageReader.java:17-21](src/main/java/com/recsys/application/consistency/RedisLineageReader.java#L17-L21)).
+([RedisLineageReader.java:17-21](../../src/main/java/com/recsys/application/consistency/RedisLineageReader.java#L17-L21)).
 Three outcomes:
 
 - materialized → serve from **primary** (`recommendPrimary`), guaranteeing the
   caller sees their own write;
 - not yet after 2 s → **HTTP 202 "event materialization pending"** with
-  `Retry-After` ([OnlineServices.java:154-158](src/main/java/com/recsys/application/online/OnlineServices.java#L154-L158))
+  `Retry-After` ([OnlineServices.java:154-158](../../src/main/java/com/recsys/application/online/OnlineServices.java#L154-L158))
   — it surfaces the staleness rather than lying;
 - primary unavailable → 503.
 - **No token** → the fast, stale-tolerant path (reads may hit lagging replicas).
@@ -58,7 +58,7 @@ Three outcomes:
 **Staleness is measured, not assumed.** `RedisReplicaLagProbe` writes a sequence
 marker to the primary and reads it back through replica routing to continuously
 sample replica lag in seconds
-([RedisReplicaLagProbe.java](src/main/java/com/recsys/infrastructure/redis/RedisReplicaLagProbe.java)),
+([RedisReplicaLagProbe.java](../../src/main/java/com/recsys/infrastructure/redis/RedisReplicaLagProbe.java)),
 and `ConsistencyMetrics` records every token validation and wait outcome
 (APPLIED / TIMEOUT / UNAVAILABLE).
 
@@ -99,10 +99,10 @@ multi-step workflows — compensation instead of distributed transactions.
   HSET+ZADD+XADD to the primary).
 - **Eventually consistent:** the topology *view* across instances — each JVM
   holds a `volatile Snapshot` refreshed on a fixed 30 s delay
-  (`SHARD_TOPOLOGY_REFRESH_SECONDS`, [OnlinePredictionServer.java:163](src/main/java/com/recsys/api/online/OnlinePredictionServer.java#L163)).
+  (`SHARD_TOPOLOGY_REFRESH_SECONDS`, [OnlinePredictionServer.java:163](../../src/main/java/com/recsys/api/online/OnlinePredictionServer.java#L163)).
   After a reshard commit at T0, the fleet converges within ~30 s.
 - **Reshard dual-read window** = `SHARDED_RECORD_MAX_TTL_SECONDS`, default
-  **24 h** ([OnlinePredictionServer.java:214](src/main/java/com/recsys/api/online/OnlinePredictionServer.java#L214)).
+  **24 h** ([OnlinePredictionServer.java:214](../../src/main/java/com/recsys/api/online/OnlinePredictionServer.java#L214)).
   During it, `readDevice` reads current **and** `previousIfActive()` and merges
   (dedupe by `(deviceId, seqNum)`); new writes land only in the new generation.
   `readShard`/`readAllShards` are **current-generation only** and silently miss

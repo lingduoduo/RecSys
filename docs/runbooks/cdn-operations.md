@@ -3,7 +3,7 @@
 CloudFront fronts the API gateway. Design:
 `docs/superpowers/specs/2026-07-14-cdn-edge-acceleration-design.md`. For how the
 edge fits together — cache behaviors, origin lockdown, public paths — see the
-[CDN Edge investigation](../../12_CDNS.md).
+[CDN Edge investigation](../system_design/12_CDNS.md).
 
 Like the WAF WebACL and the Route53 records, the distribution is created out-of-band — this
 repo has no IaC. There is no state file and no drift detection.

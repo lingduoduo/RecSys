@@ -14,8 +14,8 @@ solve opposite problems:
 
 | Store | Shards *what* | Sharding kind | Purpose |
 |---|---|---|---|
-| [`ShardedRecordStore`](src/main/java/com/recsys/infrastructure/redis/sharding/ShardedRecordStore.java) | per-device event/feature/log records | **partition** — consistent-hash by `deviceId` | spread write/storage load; co-locate a device's records |
-| [`ShardedTopKStore`](src/main/java/com/recsys/infrastructure/redis/ShardedTopKStore.java) | each trending window's sorted set | **replica** — N identical copies | spread hot-key *read* QPS |
+| [`ShardedRecordStore`](../../src/main/java/com/recsys/infrastructure/redis/sharding/ShardedRecordStore.java) | per-device event/feature/log records | **partition** — consistent-hash by `deviceId` | spread write/storage load; co-locate a device's records |
+| [`ShardedTopKStore`](../../src/main/java/com/recsys/infrastructure/redis/ShardedTopKStore.java) | each trending window's sorted set | **replica** — N identical copies | spread hot-key *read* QPS |
 
 Both share three properties: keys are placed by the shared FNV-1a ring (record store) or
 a fixed shard count (top-K), the shard count is a **versioned, runtime-swappable
@@ -41,7 +41,7 @@ consistent-hash ring.
 
 **Write fan-out.** `doWrite` resolves `topology.current().shardFor(device)`, gets a
 sequence from a per-`(gen, shard)` atomic `INCR`
-([`SequenceGenerator`](src/main/java/com/recsys/infrastructure/redis/sharding/SequenceGenerator.java)),
+([`SequenceGenerator`](../../src/main/java/com/recsys/infrastructure/redis/sharding/SequenceGenerator.java)),
 and pipelines the HSET + ZADD + XADD against that one shard on the **primary**. A `ZADD
 NX` that returns 0 means a duplicate `eventId` → `DUPLICATE` status, so writes are
 idempotent and safe to retry.
@@ -56,9 +56,9 @@ idempotent and safe to retry.
   sharp edge.
 
 The HTTP façade
-([`ShardedRecordService`](src/main/java/com/recsys/infrastructure/store/ShardedRecordService.java))
+([`ShardedRecordService`](../../src/main/java/com/recsys/infrastructure/store/ShardedRecordService.java))
 mounts `/shards/` on port 7010; write/read curl lives in the README
-[Sharded Record Store](README.md#sharded-record-store) section.
+[Sharded Record Store](../../README.md#sharded-record-store) section.
 
 ## 2. `ShardedTopKStore` — sharded trending
 
@@ -82,11 +82,11 @@ not correctness. This is deep-dived from the partition angle in
 
 The shard count is not a static config — it's an authoritative **versioned snapshot** in
 Redis (`shard:topology`,
-[`ShardTopologyStore`](src/main/java/com/recsys/infrastructure/redis/sharding/ShardTopologyStore.java)):
+[`ShardTopologyStore`](../../src/main/java/com/recsys/infrastructure/redis/sharding/ShardTopologyStore.java)):
 `bootstrap` is a `SETNX` of version 1 seeded from `SHARDED_RECORD_SHARD_COUNT` (default
 **2**), and `publishReshard` is an atomic Lua read-modify-write that bumps `version + 1`
 and stamps the previous generation's expiry.
-[`ShardTopologyProvider`](src/main/java/com/recsys/infrastructure/redis/sharding/ShardTopologyProvider.java)
+[`ShardTopologyProvider`](../../src/main/java/com/recsys/infrastructure/redis/sharding/ShardTopologyProvider.java)
 refreshes every `SHARD_TOPOLOGY_REFRESH_SECONDS` (default **30**) into a lock-free
 `volatile` snapshot, keeping the last-good view on error so lookups never block the
 request path.

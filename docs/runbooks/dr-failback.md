@@ -2,7 +2,7 @@
 
 Return to us-east-1 as primary after it recovers. Do this deliberately during a
 low-traffic window — it is a planned cutover, not an emergency. For how DR fits the
-broader resilience model see the [Fault Tolerance investigation](../../18_Fault_Tolerance.md).
+broader resilience model see the [Fault Tolerance investigation](../system_design/18_Fault_Tolerance.md).
 
 ## 1. Re-establish us-east-1 as a replica
 

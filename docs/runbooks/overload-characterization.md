@@ -4,7 +4,7 @@
 their invariants. They are **excluded from the default `mvn test`** and opt-in:
 
 > These harnesses prove the gate knees described in the
-> [Fault Tolerance investigation](../../18_Fault_Tolerance.md).
+> [Fault Tolerance investigation](../system_design/18_Fault_Tolerance.md).
 
 
 ```bash

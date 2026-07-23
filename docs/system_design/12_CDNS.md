@@ -30,9 +30,9 @@ limited to the two catalog reads.
 The whole thing is created **out-of-band by an idempotent script**, matching how
 the WAF WebACL and Route53 records are already managed — this repo has no IaC
 toolchain. Design specs:
-[cdn-edge-acceleration](docs/superpowers/specs/2026-07-14-cdn-edge-acceleration-design.md)
+[cdn-edge-acceleration](../superpowers/specs/2026-07-14-cdn-edge-acceleration-design.md)
 and
-[local-cdn-and-origin-secret-hardening](docs/superpowers/specs/2026-07-14-local-cdn-and-origin-secret-hardening-design.md).
+[local-cdn-and-origin-secret-hardening](../superpowers/specs/2026-07-14-local-cdn-and-origin-secret-hardening-design.md).
 
 ## 1. What is cached (and what isn't)
 
@@ -58,7 +58,7 @@ Both cached behaviors are **GET/HEAD only**, `redirect-to-https`, `Compress: tru
 - **`CookieBehavior: none`.**
 
 TTL comes from the origin's `Cache-Control: s-maxage`
-([`HttpCaching.publicCache`](src/main/java/com/recsys/api/serving/HttpCaching.java)),
+([`HttpCaching.publicCache`](../../src/main/java/com/recsys/api/serving/HttpCaching.java)),
 and `stale-while-revalidate` / `stale-if-error` share the same window — so a total
 origin outage still serves cached `/item` for up to 24h and `/similar` for up to
 1h. Conversely, `GET /getuser`, `GET /api/v1/token`, and not-found responses are
@@ -78,7 +78,7 @@ on those behaviors. That is an explicit trust decision: movie catalog metadata a
 item-to-item similarity are treated as non-sensitive and world-readable.
 
 Public paths are configured via `GATEWAY_PUBLIC_PATHS` (default `/health`) in
-[`GatewayAuthenticator`](src/main/java/com/recsys/application/gateway/GatewayAuthenticator.java);
+[`GatewayAuthenticator`](../../src/main/java/com/recsys/application/gateway/GatewayAuthenticator.java);
 the production value is:
 
 ```
@@ -103,7 +103,7 @@ Two safety mechanisms make this hard to get wrong:
 The ALB security group is pinned to CloudFront's origin-facing managed prefix list,
 but that list covers **every** AWS account's distributions — so it alone does not
 prove a request came from *our* distribution.
-[`GatewayOriginSecret`](src/main/java/com/recsys/application/gateway/GatewayOriginSecret.java)
+[`GatewayOriginSecret`](../../src/main/java/com/recsys/application/gateway/GatewayOriginSecret.java)
 closes that gap: CloudFront injects a custom `x-origin-secret` header on every
 origin request, and the gateway rejects anything missing or mismatched with `403`
 "direct origin access is not permitted", counting it in
@@ -117,7 +117,7 @@ Design details that make it safe to operate:
 
 - **Off by default** — `GATEWAY_ORIGIN_SECRET` unset/blank → a `DISABLED` singleton,
   so local dev and the test suite are unaffected. Wired in
-  [`MicroserviceGatewayServer`](src/main/java/com/recsys/api/gateway/MicroserviceGatewayServer.java)
+  [`MicroserviceGatewayServer`](../../src/main/java/com/recsys/api/gateway/MicroserviceGatewayServer.java)
   only when enabled, and bound from the `recsys-gateway-origin-secret` Secret
   (`optional: true`, so pods stay schedulable pre-rollout / in no-CDN deploys).
 - **Comma-separated secret SET for zero-downtime rotation** — the gateway accepts
@@ -145,7 +145,7 @@ Design details that make it safe to operate:
 
 ## 4. Provisioning the distribution
 
-[`scripts/create-cdn-distribution.sh`](scripts/create-cdn-distribution.sh) is an
+[`scripts/create-cdn-distribution.sh`](../../scripts/create-cdn-distribution.sh) is an
 **idempotent create-or-update** keyed on `Comment="recsys-edge"`: re-running finds
 the existing distribution and issues `update-distribution --if-match <etag>`
 instead of creating a duplicate. Required env vars all fail-fast:
@@ -181,12 +181,12 @@ ORIGIN_SECRET="$(openssl rand -hex 32)" \
 ```
 
 Ordered rollout, rollback, and the SG/prefix-list commands are in
-[cdn-operations.md](docs/runbooks/cdn-operations.md) and
-[cdn-rollback.md](docs/runbooks/cdn-rollback.md).
+[cdn-operations.md](../runbooks/cdn-operations.md) and
+[cdn-rollback.md](../runbooks/cdn-rollback.md).
 
 ## 5. Local CDN stand-in
 
-[`docker-compose.cdn.yml`](docker-compose.cdn.yml) runs an `nginx:1.27-alpine`
+[`docker-compose.cdn.yml`](../../docker-compose.cdn.yml) runs an `nginx:1.27-alpine`
 container on **`:8090`** that mirrors the three CloudFront behaviors one-for-one, so
 the caching semantics can be run and observed with no AWS account.
 
@@ -202,7 +202,7 @@ curl -sI 'localhost:8090/api/catalog/item?id=1&cachebuster=99' | grep -i x-cache
 curl -sI -X POST localhost:8090/api/recommend | grep -i x-cache                  # BYPASS — default-deny holds
 ```
 
-The [nginx template](docker/cdn/default.conf.template) reproduces the CloudFront
+The [nginx template](../../docker/cdn/default.conf.template) reproduces the CloudFront
 semantics deliberately: `location /` is a default-deny mirror
 (`proxy_cache_bypass 1; proxy_no_cache 1;` → `X-Cache: BYPASS`); the two catalog
 locations set `proxy_cache_key "$uri|$arg_id"` and `"$uri|$arg_movieId|$arg_k"`
@@ -215,7 +215,7 @@ nginx OSS has no path-scoped invalidation).
 It is a **semantics harness, not a CloudFront emulator**: caching behavior only —
 no WAF, no Shield, no edge TLS, no geographic distribution (one container, not 400+
 POPs), and coarser whole-cache invalidation. See
-[cdn-local.md](docs/runbooks/cdn-local.md).
+[cdn-local.md](../runbooks/cdn-local.md).
 
 ## 6. Testing the edge
 

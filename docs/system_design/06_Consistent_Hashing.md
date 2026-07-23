@@ -28,13 +28,13 @@ Both consumers want the *same* two properties consistent hashing gives you:
   Neither reshuffles the whole population.
 
 Because both bottom out in one primitive
-([`Hashing`](src/main/java/com/recsys/infrastructure/redis/sharding/Hashing.java)),
+([`Hashing`](../../src/main/java/com/recsys/infrastructure/redis/sharding/Hashing.java)),
 its constants are a **frozen contract** (§5): one edit breaks sharding and A/B
 simultaneously.
 
 ## 1. The FNV-1a primitive
 
-[`Hashing`](src/main/java/com/recsys/infrastructure/redis/sharding/Hashing.java) is a
+[`Hashing`](../../src/main/java/com/recsys/infrastructure/redis/sharding/Hashing.java) is a
 tiny, dependency-free (pure JDK) hash:
 
 - `fnv1a64(byte[])` seeds with `FNV_64_OFFSET_BASIS = 0xcbf29ce484222325` and, per
@@ -52,7 +52,7 @@ remapping/bucketing migration plan."*
 
 ## 2. The ring — `ConsistentHashRing`
 
-[`ConsistentHashRing`](src/main/java/com/recsys/infrastructure/redis/sharding/ConsistentHashRing.java)
+[`ConsistentHashRing`](../../src/main/java/com/recsys/infrastructure/redis/sharding/ConsistentHashRing.java)
 is an **immutable 64-bit ring** backed by a `TreeMap<Long, Integer>` (hash position →
 shard index):
 
@@ -69,18 +69,18 @@ shard index):
 **The minimal-remap property is structural, not a resize method.** The ring has no
 in-place resize — it is immutable, so a resize *rebuilds* a new ring inside a new
 topology generation (`new ConsistentHashRing(shardCount, vnodes)` in
-[`ShardTopology`](src/main/java/com/recsys/infrastructure/redis/sharding/ShardTopology.java)).
+[`ShardTopology`](../../src/main/java/com/recsys/infrastructure/redis/sharding/ShardTopology.java)).
 The 150-vnode design means the rebuilt ring reassigns only ~1/N of keys. That ring is
 wrapped in a versioned, 30 s-refreshed
-[`ShardTopologyProvider`](src/main/java/com/recsys/infrastructure/redis/sharding/ShardTopologyProvider.java)
+[`ShardTopologyProvider`](../../src/main/java/com/recsys/infrastructure/redis/sharding/ShardTopologyProvider.java)
 with a bounded dual-read window so a live reshard is *safe* — the mechanics of the
 versioned topology, generation-scoped keys, and the record write/read paths are the
 subject of the [Partitioning investigation](14_Partitioning.md#1-consistent-hash-record-sharding)
-and the README [Sharded Record Store](README.md#sharded-record-store) section.
+and the README [Sharded Record Store](../../README.md#sharded-record-store) section.
 
 ## 3. The second consumer — `StableBucketer` (A/B bucketing)
 
-[`StableBucketer`](src/main/java/com/recsys/application/experiment/StableBucketer.java)
+[`StableBucketer`](../../src/main/java/com/recsys/application/experiment/StableBucketer.java)
 reuses the *same* FNV-1a primitive for a different shape of problem: deterministically
 assigning a user to an experiment slot.
 
@@ -88,7 +88,7 @@ assigning a user to an experiment slot.
   makes different experiment layers assign independently), then applies the `fmix64`
   finalizer and an **unsigned modulo** into a flat keyspace of `KEYSPACE = 10_000`
   slots — `slot ∈ [0, 10000)`, i.e. 0.01% granularity.
-- [`ABTestService`](src/main/java/com/recsys/application/experiment/ABTestService.java)
+- [`ABTestService`](../../src/main/java/com/recsys/application/experiment/ABTestService.java)
   turns that slot into a variant by **contiguous range comparison**:
   `aEnd = bucketAPercent × (KEYSPACE/100)`, `bEnd = aEnd + bucketBPercent × …`, then
   A / B / control by which range the slot falls in.
@@ -98,7 +98,7 @@ over a stable keyspace*, growing bucket A from 10% to 20% only pulls in the user
 slot lands in the newly-covered range — **no user is reshuffled**. This replaced
 `String.hashCode() % trafficSplitNumber`, which both clustered poorly and changed with
 JVM/value specifics — the requirement is spelled out in the
-[A/B test reliability design](docs/superpowers/specs/2026-06-19-abtest-reliability-design.md).
+[A/B test reliability design](../superpowers/specs/2026-06-19-abtest-reliability-design.md).
 
 ## 4. Why the ring and the bucket differ
 
@@ -120,7 +120,7 @@ geometries.
 ## 5. The frozen compatibility contract
 
 Because one primitive feeds both consumers, its entire surface is frozen by the
-[consistent-hashing consolidation design](docs/superpowers/specs/2026-06-24-consistent-hashing-consolidation-design.md):
+[consistent-hashing consolidation design](../superpowers/specs/2026-06-24-consistent-hashing-consolidation-design.md):
 the FNV-1a offset basis and prime, UTF-8 byte handling, the `"v{i}:{shard}"` vnode
 label, `TreeMap.ceilingEntry` + wraparound, `DEFAULT_VIRTUAL_NODES`, and
 `StableBucketer.KEYSPACE`. The contract's rule is blunt: *no device remapping is
@@ -182,20 +182,20 @@ The frozen behavior is pinned by **golden-value** tests, not just properties:
 The design requirements behind this are captured as paired design specs and
 implementation plans under `docs/superpowers/`:
 
-- **[Consistent-hashing consolidation](docs/superpowers/specs/2026-06-24-consistent-hashing-consolidation-design.md)**
-  ([plan](docs/superpowers/plans/2026-06-24-consistent-hashing-consolidation.md)) — the
+- **[Consistent-hashing consolidation](../superpowers/specs/2026-06-24-consistent-hashing-consolidation-design.md)**
+  ([plan](../superpowers/plans/2026-06-24-consistent-hashing-consolidation.md)) — the
   requirement to consolidate onto one shared FNV-1a `Hashing` primitive and the frozen
   compatibility contract (§5).
-- **[A/B test reliability](docs/superpowers/specs/2026-06-19-abtest-reliability-design.md)**
-  ([plan](docs/superpowers/plans/2026-06-19-abtest-reliability.md)) — the requirement
+- **[A/B test reliability](../superpowers/specs/2026-06-19-abtest-reliability-design.md)**
+  ([plan](../superpowers/plans/2026-06-19-abtest-reliability.md)) — the requirement
   that produced `StableBucketer`: stable, JVM-independent bucketing to replace
   `String.hashCode() % trafficSplitNumber` (§3).
-- **[Dynamic shard topology](docs/superpowers/specs/2026-06-24-dynamic-shard-topology-design.md)**
-  ([plan](docs/superpowers/plans/2026-06-24-dynamic-shard-topology.md)) — making the ring
+- **[Dynamic shard topology](../superpowers/specs/2026-06-24-dynamic-shard-topology-design.md)**
+  ([plan](../superpowers/plans/2026-06-24-dynamic-shard-topology.md)) — making the ring
   a versioned, runtime-swappable topology so a reshard needs no redeploy (§2; detailed in
   [14_Partitioning](14_Partitioning.md#versioned-topology-and-online-reshard)).
 
-Tangentially, [Redis round-trip batching](docs/superpowers/specs/2026-06-23-redis-batching-design.md)
+Tangentially, [Redis round-trip batching](../superpowers/specs/2026-06-23-redis-batching-design.md)
 optimizes the *sharded* write/seed paths (pipelined `ZADD`) but does not touch the
 hashing algorithm.
 

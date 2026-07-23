@@ -24,7 +24,7 @@ Replication here is deliberately **single-leader**:
 
 ## 1. Redis read replicas — AZ-aware read routing
 
-[`RedisReadReplicaRouter`](src/main/java/com/recsys/infrastructure/redis/RedisReadReplicaRouter.java)
+[`RedisReadReplicaRouter`](../../src/main/java/com/recsys/infrastructure/redis/RedisReadReplicaRouter.java)
 splits Redis traffic:
 
 - **Writes** always go to the primary pool (`writablePool()`) — the single write leader.
@@ -33,15 +33,15 @@ splits Redis traffic:
   replicas are configured. A separate `probeReadable()` path (used by the lag probe, §3)
   deliberately does **not** fall back to the primary, so it measures a real replica.
 
-[`RoutingRedisExecutor`](src/main/java/com/recsys/infrastructure/redis/RoutingRedisExecutor.java)
+[`RoutingRedisExecutor`](../../src/main/java/com/recsys/infrastructure/redis/RoutingRedisExecutor.java)
 is the adapter callers use: `execute(...)` (writes) targets the primary, `executeRead(...)`
 targets a replica, and it collapses to single-endpoint behavior when no replicas are
 configured — so callers pick read-vs-write intent and the routing is transparent.
 Replicas are declared by
-[`ReplicaConfig`](src/main/java/com/recsys/infrastructure/redis/ReplicaConfig.java) from
+[`ReplicaConfig`](../../src/main/java/com/recsys/infrastructure/redis/ReplicaConfig.java) from
 `REDIS_REPLICA_NODES` (comma-separated `host:port@az`; port defaults to 6379, az to
 `"unknown"` when omitted), and the pools are built by
-[`LettuceClientFactory`](src/main/java/com/recsys/infrastructure/redis/LettuceClientFactory.java)
+[`LettuceClientFactory`](../../src/main/java/com/recsys/infrastructure/redis/LettuceClientFactory.java)
 (a primary pool plus one per replica, with a latency-capped routing variant for the
 recall path).
 
@@ -53,7 +53,7 @@ export REDIS_REPLICA_NODES="redis-b.internal:6379@us-east-1b,redis-c.internal:63
 
 When `REDIS_REPLICA_NODES` is unset the router routes every read to the primary, so
 local dev needs no extra config. This is the system's core CAP dial — see the README
-[Redis Read Replicas](README.md#redis-read-replicas) section and
+[Redis Read Replicas](../../README.md#redis-read-replicas) section and
 [05_CAP §4](05_CAP.md#4-the-tunable-dial).
 
 ## 2. Primary failover — Sentinel
@@ -70,7 +70,7 @@ resilience framing (how failover composes with single-flight and fail-open store
 ## 3. Measuring replication lag
 
 Replica reads are only safe because the lag is **measured, not assumed**.
-[`RedisReplicaLagProbe`](src/main/java/com/recsys/infrastructure/redis/RedisReplicaLagProbe.java)
+[`RedisReplicaLagProbe`](../../src/main/java/com/recsys/infrastructure/redis/RedisReplicaLagProbe.java)
 periodically writes a monotonic marker to the primary and reads it back **through replica
 routing** (`probeReadable()`, no primary fallback), reporting the observed lag in
 seconds. It runs on a schedule (`REDIS_REPLICA_LAG_PROBE_SECONDS`, default 10) and feeds
@@ -94,8 +94,8 @@ Replication also spans regions, but only for disaster recovery and only asynchro
   are only as fresh as the standby's own consumer — the in-flight window is **accepted
   loss**. This is the region-boundary CAP choice in
   [05_CAP §5](05_CAP.md#5-partition-tolerance--the-p-is-real-and-bounded); designs:
-  [multi-region DR failover](docs/superpowers/specs/2026-07-08-multi-region-dr-failover-design.md),
-  [zonal failure hardening](docs/superpowers/specs/2026-07-08-zonal-failure-hardening-design.md).
+  [multi-region DR failover](../superpowers/specs/2026-07-08-multi-region-dr-failover-design.md),
+  [zonal failure hardening](../superpowers/specs/2026-07-08-zonal-failure-hardening-design.md).
 
 ## 5. What is *not* replicated in-app
 

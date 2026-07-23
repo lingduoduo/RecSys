@@ -21,7 +21,7 @@ unbounded** when saturated.
 
 ## 1. Compute-tier scaling — HPA is the real autoscaler
 
-Four `autoscaling/v2` HPAs ([k8s/base/hpa.yaml](k8s/base/hpa.yaml)), all on
+Four `autoscaling/v2` HPAs ([k8s/base/hpa.yaml](../../k8s/base/hpa.yaml)), all on
 CPU/memory Resource metrics — no custom/external metrics, no KEDA, no
 Prometheus-adapter.
 
@@ -81,7 +81,7 @@ Supporting mechanisms:
 
 ## 2. Overload protection — the layers that let it scale without collapsing
 
-Documented in [docs/runbooks/overload-protection.md](docs/runbooks/overload-protection.md).
+Documented in [docs/runbooks/overload-protection.md](../runbooks/overload-protection.md).
 All gates are **per-instance** (aggregate cluster capacity = per-instance ×
 replicas) and fail fast with `Retry-After`.
 
@@ -240,7 +240,7 @@ genuinely deferred assumptions. Current status:
    invariants and give a repeatable way to find its knee (shedder never exceeds
    `max` and drains at `⌈0.95×64⌉ = 61`; bulkhead accepts exactly `pool+queue` then
    rejects immediately; the smaller of {64 gate, `cores×10` ceiling} trips first).
-   See [docs/runbooks/overload-characterization.md](docs/runbooks/overload-characterization.md).
+   See [docs/runbooks/overload-characterization.md](../runbooks/overload-characterization.md).
    They characterize the *mechanism* on the box that runs them — tuning
    64-concurrency / 0.95-drain / 200ms-timeout against real latency curves in a
    prod-like environment remains deferred.
