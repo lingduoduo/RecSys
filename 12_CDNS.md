@@ -96,7 +96,7 @@ Two safety mechanisms make this hard to get wrong:
   is checked *first*, so even if an operator mistakenly lists a prefix that covers
   a protected route, `isPublic` still returns false and `warnOnProtectedOverlap`
   logs the misconfiguration. Public-path handling is shared with edge auth — see
-  the README [Authentication](README.md#authentication-gatewayauthenticator).
+  the [API Gateway investigation](09_API_Gateway.md#3-authentication).
 
 ## 3. Origin lockdown — proving a request came from *our* distribution
 
