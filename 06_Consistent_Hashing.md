@@ -97,7 +97,8 @@ The payoff is what the Javadoc advertises: because allocations are *contiguous r
 over a stable keyspace*, growing bucket A from 10% to 20% only pulls in the users whose
 slot lands in the newly-covered range — **no user is reshuffled**. This replaced
 `String.hashCode() % trafficSplitNumber`, which both clustered poorly and changed with
-JVM/value specifics.
+JVM/value specifics — the requirement is spelled out in the
+[A/B test reliability design](docs/superpowers/specs/2026-06-19-abtest-reliability-design.md).
 
 ## 4. Why the ring and the bucket differ
 
@@ -175,6 +176,28 @@ The frozen behavior is pinned by **golden-value** tests, not just properties:
   determinism, in-keyspace, independent slots per layer, and a spread test proving 10k
   sequential IDs hit >6000 distinct slots (the `String.hashCode` clustering weakness is
   gone).
+
+## Design specs & plans
+
+The design requirements behind this are captured as paired design specs and
+implementation plans under `docs/superpowers/`:
+
+- **[Consistent-hashing consolidation](docs/superpowers/specs/2026-06-24-consistent-hashing-consolidation-design.md)**
+  ([plan](docs/superpowers/plans/2026-06-24-consistent-hashing-consolidation.md)) — the
+  requirement to consolidate onto one shared FNV-1a `Hashing` primitive and the frozen
+  compatibility contract (§5).
+- **[A/B test reliability](docs/superpowers/specs/2026-06-19-abtest-reliability-design.md)**
+  ([plan](docs/superpowers/plans/2026-06-19-abtest-reliability.md)) — the requirement
+  that produced `StableBucketer`: stable, JVM-independent bucketing to replace
+  `String.hashCode() % trafficSplitNumber` (§3).
+- **[Dynamic shard topology](docs/superpowers/specs/2026-06-24-dynamic-shard-topology-design.md)**
+  ([plan](docs/superpowers/plans/2026-06-24-dynamic-shard-topology.md)) — making the ring
+  a versioned, runtime-swappable topology so a reshard needs no redeploy (§2; detailed in
+  [14_Partitioning](14_Partitioning.md#versioned-topology-and-online-reshard)).
+
+Tangentially, [Redis round-trip batching](docs/superpowers/specs/2026-06-23-redis-batching-design.md)
+optimizes the *sharded* write/seed paths (pipelined `ZADD`) but does not touch the
+hashing algorithm.
 
 ## Sharp edges — notes
 
