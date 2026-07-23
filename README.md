@@ -39,7 +39,7 @@ A compact Maven workspace demonstrating recommendation-system serving, retrieval
 | CAP Theorem | Read-your-writes after outbox commit, generation dual-read during a reshard window, tunable AZ-local vs primary reads (`RoutingRedisExecutor`) — see [Durable Eventual Consistency](#durable-eventual-consistency) |
 | Consistent Hashing | `ConsistentHashRing`, `ShardTopologyProvider` (30 s topology refresh, generation dual-read on migration) — see [Sharded Record Store](#sharded-record-store) |
 | Messaging Queues | `AsyncEventPublisher` (`KafkaAsyncEventPublisher` / `SqsAsyncEventPublisher`), Kafka → Flink → Redis pipeline (`OnlineFeatureStreamingJob`) — see [Event Publishers](#event-publishers-message-queues) |
-| Rate Limiting | `TokenBucket`, `GatewayRateLimiter` (per `(route, principal)`), `LlmTokenRateLimiter` (token-budget), `RedisRateLimiter` (distributed, global; **weighted sliding-window** ≈1× the limit with no local fast-path, fail-open + circuit breaker) — see [Gateway rate limiting](09_API_Gateway.md#4-rate-limiting), [Model Rate Limiting](#model-rate-limiting) |
+| Rate Limiting | `TokenBucket`, `GatewayRateLimiter` (per `(route, principal)`), `LlmTokenRateLimiter` (token-budget), `RedisRateLimiter` (distributed, global; **weighted sliding-window** ≈1× the limit with no local fast-path, fail-open + circuit breaker) — see [Rate Limiting investigation](08_Rate_Limits.md) |
 | API Gateway | `MicroserviceGatewayServer` (single edge: routing/prefix-strip, identity propagation + credential stripping, per-route breakers, rate limiting, health aggregation), `MicroserviceRouteTable`, `RouteCircuitBreaker`, `GatewayRateLimiter`, `LlmProxyService` — see [API Gateway investigation](09_API_Gateway.md) |
 | MicroService | Four independently runnable services (`6010`/`7010`/`8080`/`8010`) from **one codebase + one image** (`RECSYS_MAIN_CLASS`) behind `MicroserviceGatewayServer`; clean-architecture `api`/`application`/`domain`/`infrastructure` layers (role-not-service) — see [Microservices investigation](10_MicroServices.md), [Project Layout](#project-layout) |
 | Service Discovery | Three-layer resolution — static route table (`MicroserviceRoute`) → opt-in Redis registry (`ServiceRegistrar` / `RegistryBackedUpstreams`, `svc:registry:<name>`, static-route fallback) → Cloud Map 30 s DNS TTL → health-checked endpoint groups (`UpstreamEndpointGroups`) — see [Service Discovery investigation](11_Service_Discovery.md) |
@@ -2197,7 +2197,7 @@ export LLM_SERVICE_URL=http://localhost:11434   # Ollama
 sh scripts/run-microservices-local.sh
 ```
 
-Features: SSE streaming passthrough, retry-on-429, token-count-aware rate limiting, SHA-256 response caching, circuit breaker.
+Features: SSE streaming passthrough, retry-on-429, token-count-aware rate limiting (`LlmTokenRateLimiter` — budgets **tokens** not requests; see the [Rate Limiting investigation](08_Rate_Limits.md#4-llm-token-budget-limiting)), SHA-256 response caching, circuit breaker.
 
 ### Streaming (SSE) vs. buffered
 
@@ -2239,35 +2239,11 @@ curl http://localhost:8010/health | jq '.services | with_entries(select(.key | t
 
 ## Model Rate Limiting
 
-This section implements **per-user rate limiting (token bucket)**: `ModelRateLimiter` caps `POST /api/v1/recommend` per user before the global concurrency semaphore — trading a hard per-user ceiling for fair access, so one high-traffic user can't monopolise scarce ONNX inference slots.
-
-```bash
-# Enable: 5 req/s per user, burst 10
-RECSYS_MODEL_RATE_LIMIT_RPS=5.0 \
-RECSYS_MODEL_RATE_LIMIT_BURST=10 \
-  sh scripts/run-with-jvm-tuning.sh model-serving -- mvn spring-boot:run
-
-# Trigger the limit (run rapidly)
-for i in $(seq 1 15); do
-  curl -s -o /dev/null -w "%{http_code}\n" \
-    -X POST http://localhost:8080/api/v1/recommend \
-    -H "Content-Type: application/json" \
-    -d '{"userId":"1","k":1}'
-done
-# 200 200 200 ... 429 429 429
-```
-
-`429` response:
-
-```json
-{"error": "request rate limit exceeded — retry after 1s", "violations": []}
-```
-
-| Property | Default | Purpose |
-|---|---:|---|
-| `recsys.model.rate-limit.rps` | `0.0` | Per-user req/s (`0` = disabled) |
-| `recsys.model.rate-limit.burst` | `0` | Burst capacity |
-| `recsys.model.rate-limit.max-users` | `10000` | Max tracked users (LRU eviction) |
+Per-user rate limiting on the model service (`ModelRateLimiter` caps
+`POST /api/v1/recommend` per served `userId`, before the concurrency semaphore, so
+one user can't monopolize scarce ONNX inference slots) is one of the system's five
+rate limiters. It, and how it relates to the gateway / LLM-token / global-Redis
+limiters, is covered in the **[Rate Limiting investigation](08_Rate_Limits.md#3-model-rate-limiting--per-user)**.
 
 ---
 
