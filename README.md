@@ -39,8 +39,8 @@ A compact Maven workspace demonstrating recommendation-system serving, retrieval
 | CAP Theorem | Read-your-writes after outbox commit, generation dual-read during a reshard window, tunable AZ-local vs primary reads (`RoutingRedisExecutor`) — see [Durable Eventual Consistency](#durable-eventual-consistency) |
 | Consistent Hashing | `ConsistentHashRing`, `ShardTopologyProvider` (30 s topology refresh, generation dual-read on migration) — see [Sharded Record Store](#sharded-record-store) |
 | Messaging Queues | `AsyncEventPublisher` (`KafkaAsyncEventPublisher` / `SqsAsyncEventPublisher`), Kafka → Flink → Redis pipeline (`OnlineFeatureStreamingJob`) — see [Event Publishers](#event-publishers-message-queues) |
-| Rate Limiting | `TokenBucket`, `GatewayRateLimiter` (per `(route, principal)`), `LlmTokenRateLimiter` (token-budget), `RedisRateLimiter` (distributed, global; **weighted sliding-window** ≈1× the limit with no local fast-path, fail-open + circuit breaker) — see [Gateway rate limiting](#rate-limiting-gatewayratelimiter), [Model Rate Limiting](#model-rate-limiting) |
-| API Gateway | `MicroserviceGatewayServer`, `MicroserviceRouteTable`, `RouteCircuitBreaker`, `GatewayRateLimiter`, `LlmProxyService` — see [Microservice Gateway](#microservice-gateway) |
+| Rate Limiting | `TokenBucket`, `GatewayRateLimiter` (per `(route, principal)`), `LlmTokenRateLimiter` (token-budget), `RedisRateLimiter` (distributed, global; **weighted sliding-window** ≈1× the limit with no local fast-path, fail-open + circuit breaker) — see [Gateway rate limiting](09_API_Gateway.md#4-rate-limiting), [Model Rate Limiting](#model-rate-limiting) |
+| API Gateway | `MicroserviceGatewayServer` (single edge: routing/prefix-strip, identity propagation + credential stripping, per-route breakers, rate limiting, health aggregation), `MicroserviceRouteTable`, `RouteCircuitBreaker`, `GatewayRateLimiter`, `LlmProxyService` — see [API Gateway investigation](09_API_Gateway.md) |
 | MicroService | Four independently runnable services (`6010`/`7010`/`8080`/`8010`) behind `MicroserviceGatewayServer`; clean-architecture `api`/`application`/`domain`/`infrastructure` layers — see [Microservice Gateway](#microservice-gateway), [Project Layout](#project-layout) |
 | Service Discovery | Three-layer resolution — static route table (`MicroserviceRoute`) → opt-in Redis registry (`ServiceRegistrar` / `RegistryBackedUpstreams`, `svc:registry:<name>`, static-route fallback) → Cloud Map 30 s DNS TTL → health-checked endpoint groups (`UpstreamEndpointGroups`) — see [Service Discovery investigation](11_Service_Discovery.md) |
 | CDNS | CloudFront edge (`scripts/create-cdn-distribution.sh`), narrow cache of the two catalog reads (`recsys-item`/`recsys-similar` policies), origin lockdown (`GatewayOriginSecret` + `x-origin-secret`, rotation set), `GATEWAY_PUBLIC_PATHS` exact-path discipline, nginx local stand-in (`docker-compose.cdn.yml`) — see [CDN Edge investigation](12_CDNS.md) |
@@ -51,7 +51,7 @@ A compact Maven workspace demonstrating recommendation-system serving, retrieval
 | Scalability | Compute scales out via 4 CPU/mem HPAs (`k8s/base/hpa.yaml`, model-serving tuned most aggressively); data tier scales horizontally (consistent-hash record shards + live reshard, 4× replicated top-K shards, 24-partition Kafka/Flink @ 50k evt/s, AZ-local Redis read replicas); per-instance overload gates (`OnlineLoadShedder` / `OnlineAdmissionControl`, `WorkerBulkhead`) fail fast so HPA can react, with recall degradation observable via `GET /health/load` (`recall.degradedRatio`) and the gate knees pinned by `@Tag("load")` characterization harnesses ([overload-characterization.md](docs/runbooks/overload-characterization.md)). `AutoScalingGroup` / `InstanceProvisioner` are bounds + AZ-balancing and `OnlineCapacityService` is sizing observability — neither is a metric-driven controller in production (the signal-driven `application/autoscaling/CapacityController` closes that loop as a tested reference, but no server schedules it); DR standby is pre-scaled on failover via `scripts/dr-standby-capacity.sh promote` — see [Capacity Planning](#capacity-planning), [Scalability investigation](17_Scalability.md) |
 | Fault Tolerance | `CircuitBreaker` / `RouteCircuitBreaker`, `WorkerBulkhead`, `LoadShedder` / `OnlineLoadShedder`, `ChannelHealthMonitor` backoff, `FaultInjector`, fail-open Redis/rate-limiter, graceful drain, multi-region DR — see [Fault Tolerance investigation](18_Fault_Tolerance.md) |
 | Monitoring | `InferenceMetricsService` / `OnlineServingMetricsService` (Micrometer), Prometheus `/metrics`, health endpoints, `GcEventTracker` / `JvmMemoryMonitor`, `TraceIdAspect` — see [Metrics (`/metrics`)](#metrics-metrics), [Capacity Planning](#capacity-planning) |
-| AuthN and AuthZ | Edge auth `GatewayAuthenticator` (API key / `CognitoJwtVerifier` JWT) → `x-authenticated-*` propagation, `AdminTokenGuard` operator token, `GatewayOriginSecret` — see [Authentication](#authentication-gatewayauthenticator) |
+| AuthN and AuthZ | Edge auth `GatewayAuthenticator` (API key / `CognitoJwtVerifier` JWT) → `x-authenticated-*` propagation, `AdminTokenGuard` operator token, `GatewayOriginSecret` — see [Authentication](09_API_Gateway.md#3-authentication) |
 
 ![Architecture](recsys-architecture.png)
 [Architecture Diagram (interactive)](https://htmlpreview.github.io/?https://github.com/lingduoduo/Recsys-Backend-Service/blob/main/recsys-architecture.html)
@@ -95,7 +95,7 @@ curl http://localhost:8010/health
 }
 ```
 
-The `ports` block is a deduped per-port rollup (backends plus the gateway's own `8010`); `services` keeps the full per-route detail. See [Health aggregation](#health-aggregation).
+The `ports` block is a deduped per-port rollup (backends plus the gateway's own `8010`); `services` keeps the full per-route detail. See [Health aggregation](09_API_Gateway.md#6-health-aggregation).
 
 ### Start individual services
 
@@ -846,7 +846,7 @@ curl -X POST "http://localhost:8010/api/recommend" \
 | `/api/llm` | `:11434` | opt-in — set `LLM_SERVICE_URL` |
 | `/api/explanations` | `:11434` | opt-in — set `LLM_EXPLANATION_SERVICE_URL` |
 
-† Deprecated aliases that remain supported for existing clients. Prefer `POST /api/recommend` for recommendations. See [Microservice Gateway](#microservice-gateway) for full route details, env var overrides, and circuit-breaker configuration.
+† Deprecated aliases that remain supported for existing clients. Prefer `POST /api/recommend` for recommendations. See the [API Gateway investigation](09_API_Gateway.md#1-routing-and-prefix-strip) for full route details, env var overrides, and circuit-breaker configuration.
 
 #### Smoke tests
 
@@ -1161,80 +1161,9 @@ Keep SQL reads off latency-critical recommendation paths unless the data is inde
 
 ## Microservice Gateway
 
-This section implements the **API Gateway** pattern: `MicroserviceGatewayServer` is the single public edge that concentrates cross-cutting concerns — route prefix-strip and proxy, per-route circuit breaking, per-`(route, principal)` token-bucket rate limiting, edge auth (API key or Cognito JWT) with identity propagation and credential stripping, and a dedicated LLM proxy with token budgets and response caching. The tradeoff is one shared choke point (mitigated by health-checked upstreams and per-route breakers) in exchange for backends that stay simple and clients that learn just one hostname and port. All four services sit behind it.
+`MicroserviceGatewayServer` (Armeria, port 8010) is the single public edge fronting all four backends: it routes and prefix-strips (`POST /api/recommend` strategy dispatch, `MicroserviceRouteTable` longest-prefix), authenticates at the edge and **strips caller credentials** while propagating a trusted `x-authenticated-*` identity, applies per-route circuit breakers and per-`(route, principal)` rate limiting, aggregates downstream health at `GET /health`, and exposes Prometheus at `GET /metrics`.
 
-### Route table
-
-| Method | Canonical path | Behavior |
-|---|---|---|
-| `POST` | `/api/recommend` | Optional JSON `strategy`: `embedding`, `model`, `online`, or `sequential`; defaults to `model` |
-
-The gateway selects the corresponding recommendation backend and removes the `strategy` selector before forwarding, so upstream services receive their normal request schema.
-
-```bash
-# Default model strategy
-curl -X POST "http://localhost:8010/api/recommend" \
-  -H "Content-Type: application/json" \
-  -d '{"userId":123,"limit":10}'
-
-# Explicit online strategy
-curl -X POST "http://localhost:8010/api/recommend" \
-  -H "Content-Type: application/json" \
-  -d '{"userId":123,"limit":10,"strategy":"online"}'
-```
-
-Registered backend routes (each has its own env var and circuit breaker):
-
-| Route name | Gateway prefix | Backend port | Notes |
-|---|---|---:|---|
-| `embed-recall` | `/api/recommend/embedding` | `6010` | Deprecated direct alias; override with `EMBED_RECALL_SERVICE_URL` |
-| `model-inference` | `/api/recommend/model` | `8080` | Deprecated direct alias; override with `MODEL_INFERENCE_SERVICE_URL` |
-| `online-blend` | `/api/recommend/online` | `7010` | Deprecated direct alias; override with `ONLINE_BLEND_SERVICE_URL` |
-| `sequential` | `/api/recommend/sequential` | `8080` | Deprecated direct alias; override with `SEQUENTIAL_SERVICE_URL` |
-| `user-profile` | `/api/users` | `6010` | User profile lookup; override with `USER_PROFILE_SERVICE_URL` |
-| `movie-metadata` | `/api/movies` | `6010` | Movie metadata lookup; override with `MOVIE_METADATA_SERVICE_URL` |
-| `feature` | `/api/features` | `7010` | Online feature snapshot; override with `FEATURE_SERVICE_URL` |
-| `knowledge` | `/api/knowledge` | `8080` | Knowledge service API; override with `KNOWLEDGE_SERVICE_URL` |
-
-Deprecated aliases (kept supported for existing clients):
-
-| Route name | Gateway prefix | Backend port | Notes |
-|---|---|---:|---|
-| `catalog` | `/api/catalog` | `6010` | Deprecated catalog/service alias; override with `CATALOG_SERVICE_URL` |
-| `model` | `/api/model` | `8080` | Deprecated model/service alias; override with `MODEL_SERVICE_URL` |
-| `online` | `/api/online` | `7010` | Deprecated online/service alias; override with `ONLINE_SERVICE_URL` |
-
-Opt-in routes (registered only when the env var is set):
-
-| Route name | Gateway prefix | Env var |
-|---|---|---|
-| `llm` | `/api/llm` | `LLM_SERVICE_URL` |
-| `llm-explanation` | `/api/explanations` | `LLM_EXPLANATION_SERVICE_URL` |
-
-### Upstream health checking
-
-By default the gateway data path wraps every upstream in a health-checked Armeria endpoint group: each backend is probed on an interval and a down backend is dropped from selection, so a request to a dead upstream **fast-fails with `503`** instead of hanging until the timeout (mechanism and all-unhealthy behavior in the [Fault Tolerance investigation](18_Fault_Tolerance.md#4-dependency-resilience--surviving-a-sick-downstream)). Host resolution and the 30 s Cloud Map DNS cache are unchanged.
-
-```bash
-# Disable probing (e.g. local dev without all backends running)
-GATEWAY_UPSTREAM_HEALTHCHECK_ENABLED=false \
-  mvn exec:java -Dexec.mainClass=com.recsys.api.gateway.MicroserviceGatewayServer
-```
-
-| Env var | Default | Purpose |
-|---|---:|---|
-| `GATEWAY_UPSTREAM_HEALTHCHECK_ENABLED` | `true` | Wrap each upstream in a health-checked endpoint group |
-| `GATEWAY_UPSTREAM_HEALTHCHECK_INTERVAL_MS` | `10000` | Probe interval |
-
-Upstream *addressing* is static by default (route env var / configmap). Turn on the opt-in [Service Registry](#service-registry) to resolve upstream addresses dynamically from Redis instead.
-
-### Metrics (`/metrics`)
-
-The gateway exposes a Prometheus scrape endpoint at `GET /metrics` (Ports `7010` and `8080` expose one too). When the [Service Registry](#service-registry) is enabled it also publishes the `gateway_registry_*` meters described below.
-
-```bash
-curl http://localhost:8010/metrics | grep gateway_registry
-```
+The full deep-dive — the request pipeline order, routing/prefix-strip, identity propagation and credential stripping, authentication (API key / Cognito JWT), rate limiting, health aggregation, and how the circuit-breaker / upstream-discovery / LLM-proxy concerns attach — is in the **[API Gateway investigation](09_API_Gateway.md)**.
 
 ### Start
 
@@ -1251,135 +1180,6 @@ sh scripts/run-with-jvm-tuning.sh api-gateway -- \
 brew install ollama && ollama serve &
 export LLM_SERVICE_URL=http://localhost:11434
 sh scripts/run-microservices-local.sh
-```
-
-### Health aggregation
-
-`GET /health` pings every registered downstream service and returns an aggregated status. `DEGRADED` means at least one service is down; individual `status` fields show which. The response carries two views: a deduped **`ports` rollup** (one entry per distinct backend port plus the gateway's own port `8010` as a self-check — the same port checked by several routes collapses to a single `UP`/`DOWN`) and the full per-route **`services`** detail:
-
-```bash
-curl http://localhost:8010/health
-```
-
-```json
-{
-  "status": "UP",
-  "checkedAt": "2026-06-12T00:00:00Z",
-  "ports": {
-    "6010": "UP",
-    "8080": "UP",
-    "7010": "DOWN",
-    "8010": "UP"
-  },
-  "services": {
-    "user-profile":  {"status":"UP","prefix":"/api/users","baseUrl":"http://localhost:6010","healthUrl":"http://localhost:6010/health","statusCode":200,"latencyMs":2,"circuitState":"CLOSED"},
-    "catalog":       {"status":"UP","prefix":"/api/catalog","baseUrl":"http://localhost:6010","healthUrl":"http://localhost:6010/health","statusCode":200,"latencyMs":1,"circuitState":"CLOSED"},
-    "model":         {"status":"UP","prefix":"/api/model","baseUrl":"http://localhost:8080","healthUrl":"http://localhost:8080/health/ready","statusCode":200,"latencyMs":3,"circuitState":"CLOSED"},
-    "online":        {"status":"DOWN","prefix":"/api/online","baseUrl":"http://localhost:7010","healthUrl":"http://localhost:7010/health","statusCode":0,"latencyMs":500,"circuitState":"OPEN","error":"Connection refused"},
-    "...": "abridged; additional registered routes omitted"
-  }
-}
-```
-
-A port is `UP` only when **every** route targeting it is healthy; `8010` is always `UP` while the gateway can answer (self-check). The overall `status` is `DEGRADED` (HTTP `503`) whenever any backend is down — the gateway's own port does not mask a failing backend.
-
-```bash
-# Per-port rollup only — fastest "is every port up" check
-curl http://localhost:8010/health | jq '.ports'
-# {"6010":"UP","8080":"UP","7010":"DOWN","8010":"UP"}
-
-# Status-only summary of the per-route detail
-curl http://localhost:8010/health | jq '{status, services: (.services | to_entries | map({(.key): .value.status}) | add)}'
-# {"status":"DEGRADED","services":{"user-profile":"UP","catalog":"UP","model":"UP","online":"DOWN",...}}
-```
-
-### Circuit breaker (`RouteCircuitBreaker`)
-
-Each route has an independent circuit breaker. After `GATEWAY_CB_FAILURE_THRESHOLD` consecutive failures the circuit opens and fast-fails with `503` during the cooldown window — protecting downstream services from traffic during an outage. Circuit state is visible per route at `curl http://localhost:8010/health | jq '.services["model"].circuitState'` (`CLOSED` / `OPEN` / `HALF_OPEN`). The state machine, thresholds, and how the same primitive backs the LLM proxy and the Redis rate limiter are covered in the [Fault Tolerance investigation](18_Fault_Tolerance.md#1-request-tier-resilience--circuit-breakers-bulkheads-fault-injection).
-
-### Rate limiting (`GatewayRateLimiter`)
-
-Token-bucket rate limiting keyed **per `(route, principal)`**, so one noisy caller can't exhaust another's budget. Each bucket refills at `GATEWAY_RATE_LIMIT_RPS` tokens/second with a `GATEWAY_RATE_LIMIT_BURST` burst; excess requests get `429 Too Many Requests`. The principal is the authenticated identity (Cognito `sub` or a hashed API-key id; `anonymous` when auth is disabled). Buckets live in a bounded Caffeine cache (`GATEWAY_RL_MAX_PRINCIPALS`, default `100000`) so a flood of distinct identities can't grow memory without limit.
-
-Per-route overrides use the route name uppercased with hyphens replaced by underscores: e.g., route `model-inference` → `GATEWAY_RATE_LIMIT_MODEL_INFERENCE_RPS`.
-
-```bash
-# Enable global rate limit (5 req/s, burst 10)
-GATEWAY_RATE_LIMIT_RPS=5 GATEWAY_RATE_LIMIT_BURST=10 \
-  mvn exec:java -Dexec.mainClass=com.recsys.api.gateway.MicroserviceGatewayServer
-
-# Per-route overrides (route name → UPPER_SNAKE suffix)
-GATEWAY_RATE_LIMIT_MODEL_RPS=2 GATEWAY_RATE_LIMIT_MODEL_BURST=3 \
-  mvn exec:java -Dexec.mainClass=com.recsys.api.gateway.MicroserviceGatewayServer
-GATEWAY_RATE_LIMIT_MODEL_INFERENCE_RPS=10 GATEWAY_RATE_LIMIT_MODEL_INFERENCE_BURST=20 \
-  mvn exec:java -Dexec.mainClass=com.recsys.api.gateway.MicroserviceGatewayServer
-```
-
-### Authentication (`GatewayAuthenticator`)
-
-The gateway accepts **either** a static API key **or** an AWS Cognito JWT, whichever is configured. Auth is enabled as soon as `GATEWAY_API_KEYS` **or** `GATEWAY_COGNITO_ISSUER` is set; with neither set the gateway runs open. Public paths (default: `/health`, plus any prefix in `GATEWAY_PUBLIC_PATHS`) always bypass auth.
-
-**API key.** When `GATEWAY_API_KEYS` is set, requests must present a valid key via `X-API-Key` or `Authorization: Bearer <key>`. Keys are compared in constant time.
-
-```bash
-GATEWAY_API_KEYS=secret-key-1,secret-key-2 \
-  mvn exec:java -Dexec.mainClass=com.recsys.api.gateway.MicroserviceGatewayServer
-
-curl -H "X-API-Key: secret-key-1" http://localhost:8010/api/catalog/item?id=1
-curl -H "Authorization: Bearer secret-key-1" http://localhost:8010/api/catalog/item?id=1
-
-# Health always works without auth
-curl http://localhost:8010/health
-```
-
-**Cognito JWT** (`CognitoJwtVerifier`). Set `GATEWAY_COGNITO_ISSUER` (and the required `GATEWAY_COGNITO_AUDIENCE`) to accept RS256 JWTs from a Cognito user pool. The verifier is dependency-free (JDK + Jackson only): it fetches the pool's JWKS from `<issuer>/.well-known/jwks.json`, caches keys for 5 minutes, and validates signature, `iss`, `aud`, `exp`, and `token_use`.
-
-```bash
-GATEWAY_COGNITO_ISSUER=https://cognito-idp.us-east-1.amazonaws.com/us-east-1_ABC123 \
-GATEWAY_COGNITO_AUDIENCE=1a2b3c4d5e6f7g8h9i \
-  mvn exec:java -Dexec.mainClass=com.recsys.api.gateway.MicroserviceGatewayServer
-
-curl -H "Authorization: Bearer <cognito-access-token>" http://localhost:8010/api/catalog/item?id=1
-```
-
-A bearer token is tried as an API key first, then as a JWT; a request that matches neither gets `401` with `WWW-Authenticate: Bearer`. Hardening: an unknown `kid` triggers at most one JWKS refetch per 30 s (bounds a token-forgery flood), and if a JWKS fetch fails transiently the verifier **serves the last-good keys stale** rather than rejecting tokens whose signing key it already holds.
-
-#### Principal propagation & identity-header stripping
-
-On a successful auth the gateway derives a `GatewayPrincipal` (Cognito `sub` / `client_id` / `token_use`, or a hashed API-key id) and forwards it to the backend as trusted, gateway-authored identity headers:
-
-| Header | Source |
-|---|---|
-| `x-authenticated-subject` | JWT `sub` |
-| `x-authenticated-client-id` | JWT `client_id` (or `service` for API-key callers) |
-| `x-authenticated-token-use` | JWT `token_use` |
-| `x-gateway-service` | constant `recsys-api-gateway` (`recsys-llm-gateway` on the LLM proxy) |
-
-**Anti-spoofing:** the gateway strips **any** client-supplied `x-authenticated-*` header before proxying upstream — backends may trust `x-authenticated-*` only because the gateway is their sole source. This holds for both the service proxy and the LLM proxy.
-
-#### Credential stripping (upstream)
-
-The gateway is the trust boundary, so it removes the caller's raw credentials — `x-api-key` and `Authorization` — from the request before proxying to any backend. Upstream services never see the API key or bearer token; they receive only the derived `x-authenticated-*` identity headers. Hop-by-hop headers are dropped as well.
-
-### LLM proxy (`LlmProxyService`)
-
-LLM routes use a dedicated `HttpClient` with a longer timeout (default 120 s). The proxy handles SSE streaming passthrough, retry-on-429, token-count-aware rate limiting, and SHA-256 response caching.
-
-```bash
-# Non-streaming
-curl -X POST http://localhost:8010/api/llm/api/generate \
-  -H "Content-Type: application/json" \
-  -d '{"model":"llama3","prompt":"Summarize: Inception","max_tokens":100}'
-
-# Streaming (SSE)
-curl -X POST http://localhost:8010/api/llm/api/generate \
-  -H "Content-Type: application/json" \
-  -d '{"model":"llama3","prompt":"Summarize: Inception","stream":true}'
-
-# Cache hit on repeated request returns X-Cache: HIT
-curl -v -X POST http://localhost:8010/api/llm/api/generate \
-  -H "Content-Type: application/json" \
-  -d '{"model":"llama3","prompt":"Summarize: Inception","max_tokens":100}' 2>&1 | grep X-Cache
 ```
 
 ---
@@ -1401,7 +1201,7 @@ in [cdn-operations.md](docs/runbooks/cdn-operations.md),
 [cdn-local.md](docs/runbooks/cdn-local.md), and
 [cdn-rollback.md](docs/runbooks/cdn-rollback.md); the public-path / origin-secret
 mechanics are shared with edge auth (see
-[Authentication](#authentication-gatewayauthenticator)).
+[Authentication](09_API_Gateway.md#3-authentication)).
 
 ---
 
@@ -1527,7 +1327,7 @@ The overload-protection env vars (`CATALOG_MAX_CONCURRENT_REQUESTS`,
 | `GATEWAY_RATE_LIMIT_RPS` | `0` | Global token-bucket rate (per route+principal); `0` = disabled |
 | `GATEWAY_RATE_LIMIT_<ROUTE>_RPS` | _(unset)_ | Per-route override, e.g. `GATEWAY_RATE_LIMIT_MODEL_RPS` |
 | `GATEWAY_RL_MAX_PRINCIPALS` | `100000` | Max distinct rate-limit buckets held in the Caffeine cache |
-| `GATEWAY_UPSTREAM_HEALTHCHECK_ENABLED` | `true` | Health-check upstreams; drop down backends and fast-fail `503` ([Upstream health checking](#upstream-health-checking)) |
+| `GATEWAY_UPSTREAM_HEALTHCHECK_ENABLED` | `true` | Health-check upstreams; drop down backends and fast-fail `503` ([Service Discovery](11_Service_Discovery.md#3-cloud-map-dns--health-checked-endpoint-groups)) |
 | `GATEWAY_UPSTREAM_HEALTHCHECK_INTERVAL_MS` | `10000` | Upstream probe interval |
 
 > Service discovery for the gateway (`SERVICE_REGISTRY_*`) is opt-in and shared across all services — see [Service Registry](#service-registry). The dedicated LLM proxy client (`LLM_CONNECT_TIMEOUT_MS`, `LLM_IDLE_TIMEOUT_MS`, `LLM_PING_INTERVAL_MS`) is tuned under [LLM Gateway](#llm-gateway).
