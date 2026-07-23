@@ -41,7 +41,7 @@ A compact Maven workspace demonstrating recommendation-system serving, retrieval
 | Messaging Queues | `AsyncEventPublisher` (`KafkaAsyncEventPublisher` / `SqsAsyncEventPublisher`), Kafka → Flink → Redis pipeline (`OnlineFeatureStreamingJob`) — see [Event Publishers](#event-publishers-message-queues) |
 | Rate Limiting | `TokenBucket`, `GatewayRateLimiter` (per `(route, principal)`), `LlmTokenRateLimiter` (token-budget), `RedisRateLimiter` (distributed, global; **weighted sliding-window** ≈1× the limit with no local fast-path, fail-open + circuit breaker) — see [Gateway rate limiting](#rate-limiting-gatewayratelimiter), [Model Rate Limiting](#model-rate-limiting) |
 | API Gateway | `MicroserviceGatewayServer`, `MicroserviceRouteTable`, `RouteCircuitBreaker`, `GatewayRateLimiter`, `LlmProxyService` — see [Microservice Gateway](#microservice-gateway) |
-| MicroService | Four independently runnable services (`6010`/`7010`/`8080`/`8010`) behind `MicroserviceGatewayServer`; clean-architecture `api`/`application`/`domain`/`infrastructure` layers — see [Microservice Gateway](#microservice-gateway), [Project Layout](#project-layout) |
+| MicroService | Four independently runnable services (`6010`/`7010`/`8080`/`8010`) from **one codebase + one image** (`RECSYS_MAIN_CLASS`) behind `MicroserviceGatewayServer`; clean-architecture `api`/`application`/`domain`/`infrastructure` layers (role-not-service) — see [Microservices investigation](10_MicroServices.md), [Project Layout](#project-layout) |
 | Service Discovery | Three-layer resolution — static route table (`MicroserviceRoute`) → opt-in Redis registry (`ServiceRegistrar` / `RegistryBackedUpstreams`, `svc:registry:<name>`, static-route fallback) → Cloud Map 30 s DNS TTL → health-checked endpoint groups (`UpstreamEndpointGroups`) — see [Service Discovery investigation](11_Service_Discovery.md) |
 | CDNS | CloudFront edge (`scripts/create-cdn-distribution.sh`), narrow cache of the two catalog reads (`recsys-item`/`recsys-similar` policies), origin lockdown (`GatewayOriginSecret` + `x-origin-secret`, rotation set), `GATEWAY_PUBLIC_PATHS` exact-path discipline, nginx local stand-in (`docker-compose.cdn.yml`) — see [CDN Edge investigation](12_CDNS.md) |
 | DB Indexing | Two composite `movies` seek indexes + 5 outbox/saga indexes, `FORCE INDEX` plan pinning with static contract tests + Docker `EXPLAIN` (`MovieCatalogRepository`, `MySqlIndexContractTest`), covering-index / keyset / delayed-join access patterns (`MillionScalePaginationSql`) — see [DB Indexing investigation](13_DB_Indexing.md), [MySQL Index Inventory](#mysql-index-inventory) |
@@ -170,6 +170,10 @@ curl http://localhost:8010/health
 ---
 
 ## Services & Ports
+
+The four services build from **one Maven artifact and one Docker image**, selected at
+runtime by `RECSYS_MAIN_CLASS` — how that works, plus the clean-architecture layering
+and what's shared vs service-specific, is in the [Microservices investigation](10_MicroServices.md).
 
 Start each service individually with JVM tuning:
 
@@ -1561,7 +1565,7 @@ The overload-protection env vars (`CATALOG_MAX_CONCURRENT_REQUESTS`,
 
 ## Project Layout
 
-The code follows a clean-architecture layering under `com.recsys`: the package name advertises a class's *role* (transport, use-case, domain, adapter), not the service that happens to use it. Each layer has feature sub-packages.
+The code follows a clean-architecture layering under `com.recsys`: the package name advertises a class's *role* (transport, use-case, domain, adapter), not the service that happens to use it. Each layer has feature sub-packages. The layering, the `api → application → domain` dependency rule, and how it supports one-codebase-many-services are covered in the [Microservices investigation](10_MicroServices.md).
 
 ```text
 src/main/java/com/recsys/
