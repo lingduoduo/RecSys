@@ -118,6 +118,26 @@ as the unit under test for that routing logic.
 - **Client-side health-aware LB** — `GatewayUpstreamHealthCheckIntegrationTest` covers
   dropping an unhealthy upstream and fast-failing.
 
+## Design specs & plans
+
+Each production load-balancing layer has an explicit design spec (with a paired
+implementation plan) under `docs/superpowers/`; the in-memory `ApplicationLoadBalancer`
+model has none (it is a reference/test artifact, not a shipped feature).
+
+- **Client-side health-aware LB** — [Health-Aware Upstream Discovery (Option A1)](docs/superpowers/specs/2026-07-10-gateway-upstream-endpoint-discovery-design.md)
+  ([plan](docs/superpowers/plans/2026-07-10-gateway-upstream-endpoint-discovery.md)): the
+  Armeria `HealthCheckedEndpointGroup` per backend that drops unhealthy replicas (§1).
+- **Same-AZ routing** — [Cross-AZ Traffic Reduction](docs/superpowers/specs/2026-07-02-cross-az-traffic-reduction-design.md)
+  ([reduction plan](docs/superpowers/plans/2026-07-02-cross-az-traffic-reduction.md),
+  [AZ-aware reads plan](docs/superpowers/plans/2026-07-08-az-aware-redis-reads.md)):
+  `trafficDistribution: PreferClose` and AZ-aware Redis reads (§1).
+- **The edge ALB** — [Gateway WAF Ingress](docs/superpowers/specs/2026-07-02-gateway-waf-ingress-design.md)
+  ([plan](docs/superpowers/plans/2026-07-02-gateway-waf-ingress.md)): the WAF-protected
+  ALB Ingress that replaces the NLB as the sole public entry (§1).
+- **Capacity-weight feedback** — [Overload Protection Hardening](docs/superpowers/specs/2026-07-08-overload-protection-design.md)
+  ([plan](docs/superpowers/plans/2026-07-08-overload-protection.md)): the load shedders
+  that compute `suggestedWeight` and emit `X-Capacity-Weight` (§2).
+
 ## Sharp edges — notes
 
 1. **`ApplicationLoadBalancer` isn't in the request path.** It's a tested model of the
