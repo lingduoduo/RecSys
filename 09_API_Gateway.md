@@ -137,9 +137,9 @@ is off). Buckets live in a bounded Caffeine cache (`GATEWAY_RL_MAX_PRINCIPALS`,
 default 100000) so a flood of distinct identities can't grow memory without bound.
 Per-route overrides use the route name upper-snake-cased:
 `model-inference` → `GATEWAY_RATE_LIMIT_MODEL_INFERENCE_RPS`. This is the gateway's
-per-instance limiter; the *global* Redis limiter and the model per-user limiter are
-covered under [Fault Tolerance](18_Fault_Tolerance.md#redis-resilience) and the
-README [Model Rate Limiting](README.md#model-rate-limiting).
+per-instance limiter; how it fits alongside the model per-user, LLM token-budget, and
+global Redis limiters is covered in the
+[Rate Limiting investigation](08_Rate_Limits.md).
 
 ## 5. Resilience the gateway applies (cross-links)
 
