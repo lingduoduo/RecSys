@@ -37,7 +37,7 @@ A compact Maven workspace demonstrating recommendation-system serving, retrieval
 | Database Sharding | `ShardedRecordStore`, `ShardedTopKStore`, versioned `ShardTopology` (`shard:topology`), online reshard via `POST /shards/topology` — see [Sharded Record Store](#sharded-record-store) |
 | Replication | `RedisReadReplicaRouter` + `RoutingRedisExecutor` (AZ-aware replica reads), Redis Sentinel failover — see [Redis Read Replicas](#redis-read-replicas) |
 | CAP Theorem | Read-your-writes after outbox commit, generation dual-read during a reshard window, tunable AZ-local vs primary reads (`RoutingRedisExecutor`) — see [Durable Eventual Consistency](#durable-eventual-consistency) |
-| Consistent Hashing | `ConsistentHashRing`, `ShardTopologyProvider` (30 s topology refresh, generation dual-read on migration) — see [Sharded Record Store](#sharded-record-store) |
+| Consistent Hashing | One shared FNV-1a `Hashing` primitive → two consumers: `ConsistentHashRing` (150 virtual nodes, `TreeMap` ceiling lookup, ~1/N remap) for record sharding and `StableBucketer` for A/B bucketing; versioned `ShardTopologyProvider` (30 s refresh, generation dual-read) — see [Consistent Hashing investigation](06_Consistent_Hashing.md) |
 | Messaging Queues | Fire-and-forget `AsyncEventPublisher` (bounded queue + batched drain, at-most-once) with log-only / `KafkaAsyncEventPublisher` (keyed, idempotent) / `SqsAsyncEventPublisher` (standard queue) transports; feeds the Kafka → Flink → Redis pipeline (`OnlineFeatureStreamingJob`) — see [Message Queues investigation](07_Message_Queue.md) |
 | Rate Limiting | `TokenBucket`, `GatewayRateLimiter` (per `(route, principal)`), `LlmTokenRateLimiter` (token-budget), `RedisRateLimiter` (distributed, global; **weighted sliding-window** ≈1× the limit with no local fast-path, fail-open + circuit breaker) — see [Rate Limiting investigation](08_Rate_Limits.md) |
 | API Gateway | `MicroserviceGatewayServer` (single edge: routing/prefix-strip, identity propagation + credential stripping, per-route breakers, rate limiting, health aggregation), `MicroserviceRouteTable`, `RouteCircuitBreaker`, `GatewayRateLimiter`, `LlmProxyService` — see [API Gateway investigation](09_API_Gateway.md) |
@@ -233,7 +233,7 @@ Three independent recommendation paths share a common Redis-backed data layer wr
 1. `ModelRuntimeProvider` loads the PyTorch-exported DSSM `dssm_model.onnx` (or an A/B variant artifact) and warms it at startup.
 2. `RetrievalService` runs the user tower through ONNX to produce a user embedding.
 3. `RankingService` inner-product scores the user embedding against pre-loaded item embeddings and returns top-K.
-4. `ABTestService` deterministically assigns each user to a variant bucket (`(userId + ":" + layerName).hashCode() % split`); the active variant's artifacts are used and `abTestVariant` is returned in every response.
+4. `ABTestService` deterministically assigns each user to a variant bucket (`StableBucketer` FNV-1a hash of `userId:layerName` → a 10,000-slot keyspace, compared against percent ranges); the active variant's artifacts are used and `abTestVariant` is returned in every response.
 5. Cold-start users (not in the model's user vocabulary) are served from a shared pre-scored pool gated by a PostHog feature flag.
 
 ---
@@ -1491,15 +1491,17 @@ Options: `--vector-size=16`, `--window-size=5`, `--min-count=1`, `--max-iter=10`
 
 ## A/B Testing
 
-This section implements **online experimentation (A/B testing) with deterministic, stateless bucketing**: `ABTestService` assigns users to variants by hashing `userId:layerName` modulo `trafficSplitNumber`, so assignment is stable across requests with no per-user store — trading a fixed hash-based split for zero assignment state — and the variant is returned in every response for attribution.
+This section implements **online experimentation (A/B testing) with deterministic, stateless bucketing**: `ABTestService` assigns users to variants via `StableBucketer` — a stable FNV-1a hash of `userId:layerName` into a fixed 10,000-slot keyspace — then compares the slot against contiguous percent ranges, so assignment is stable across requests with no per-user store and growing a bucket only pulls in users at the range boundary (no reshuffle). The variant is returned in every response for attribution. The hashing algorithm is the [Consistent Hashing investigation](06_Consistent_Hashing.md#3-the-second-consumer--stablebucketer-ab-bucketing).
 
 **Bucketing:**
 
 ```
-bucket = hash(userId + ":" + layerName) % trafficSplitNumber
-bucket == 0  →  bucketAVariant  (20%)
-bucket == 1  →  bucketBVariant  (20%)
-otherwise    →  defaultVariant  (60% control)
+slot = StableBucketer.slot(userId, layerName)      # FNV-1a + fmix64 → [0, 10000)
+aEnd = bucketAPercent * 100                         # e.g. 20% → 2000
+bEnd = aEnd + bucketBPercent * 100                  # e.g. +20% → 4000
+slot <  aEnd  →  bucketAVariant   (bucketAPercent)
+slot <  bEnd  →  bucketBVariant   (bucketBPercent)
+otherwise     →  defaultVariant   (the remaining %)
 ```
 
 **Layer isolation:** within the same layer, a user is in exactly one bucket. Across different layers, assignments are independent — useful for running multiple experiments simultaneously.
@@ -1511,7 +1513,8 @@ recsys:
   ab-test:
     enabled: true
     layer-name: model-arch-test-2024q2
-    traffic-split-number: 5
+    bucket-a-percent: 20
+    bucket-b-percent: 20
     bucket-a-variant: test
     bucket-b-variant: training
     default-variant: training
@@ -1706,7 +1709,7 @@ The production partition contract is `movie_events_v2` with **24 partitions**, s
 
 ## Sharded Record Store
 
-This section implements **horizontal sharding via consistent hashing**, trading a single hot node for rebalance cost on resize: `ShardedRecordStore` distributes event, feature, and log records across N Redis shards, and each write fans out to an HSET (full record) + ZADD (device index for per-device reads) + XADD (shard stream for ordered replay). `SHARDED_RECORD_SHARD_COUNT` (default `2`) is the **bootstrap** shard count for a *versioned topology* that can be resharded at runtime without a redeploy — see [Reshard at runtime](#reshard-at-runtime-versioned-topology) below. The ring internals (`ConsistentHashRing`, 150 virtual nodes per shard, the shared FNV-1a primitive) and how record sharding relates to the other four partition dimensions are covered in the [Partitioning investigation](14_Partitioning.md#1-consistent-hash-record-sharding).
+This section implements **horizontal sharding via consistent hashing**, trading a single hot node for rebalance cost on resize: `ShardedRecordStore` distributes event, feature, and log records across N Redis shards, and each write fans out to an HSET (full record) + ZADD (device index for per-device reads) + XADD (shard stream for ordered replay). `SHARDED_RECORD_SHARD_COUNT` (default `2`) is the **bootstrap** shard count for a *versioned topology* that can be resharded at runtime without a redeploy — see [Reshard at runtime](#reshard-at-runtime-versioned-topology) below. The ring algorithm itself (`ConsistentHashRing`, 150 virtual nodes, the shared FNV-1a `Hashing` primitive, and its reuse for A/B bucketing) is covered in the [Consistent Hashing investigation](06_Consistent_Hashing.md); how record sharding relates to the other four partition dimensions is in the [Partitioning investigation](14_Partitioning.md#1-consistent-hash-record-sharding).
 
 The HTTP façade is mounted at `/shards/` on port `7010`.
 
