@@ -33,7 +33,7 @@ A compact Maven workspace demonstrating recommendation-system serving, retrieval
 | Concept | Key Components |
 |---|---|
 | Load Balancing | `ApplicationLoadBalancer` (L7), capacity-weight feedback (`X-Capacity-Weight` / `suggestedWeight`), gateway health-checked upstream endpoint groups (`UpstreamEndpointGroups`) — see [Load Balancing](#load-balancing) |
-| Caching | `MultiLevelEmbeddingCache` (L1/L2/L3), `TtlSingleFlightCache`, `LogicalExpiryEmbeddingCache`, `RecommendationCache`, `LlmResponseCache`, CloudFront edge cache — see [Hot-key and cache controls](#hot-key-and-cache-controls), [Pipeline Optimizations](#pipeline-optimizations), [CDN Edge investigation](12_CDNS.md) |
+| Caching | Embedding caches (`LocalEmbeddingCache` Caffeine+Bloom+null-sentinel, `MultiLevelEmbeddingCache` L1/L2/L3, `LogicalExpiryEmbeddingCache` soft-TTL serve-stale), `TtlSingleFlightCache`, `RecommendationCache` (version-keyed), `LlmResponseCache` (SHA-256), CloudFront edge cache — all bounded, single-flight, serve-stale-on-error — see [Caching investigation](02_Caching.md), [CDN Edge](12_CDNS.md) |
 | Database Sharding | Two sharded Redis stores — `ShardedRecordStore` (consistent-hash record partitions, `sr:g{v}:rec/dev/stream` keys, HSET/ZADD/XADD write fan-out) and `ShardedTopKStore` (replica-sharded trending) — over a versioned `ShardTopology` (`shard:topology`) with online reshard via `POST /shards/topology` — see [Database Sharding investigation](03_DB_Sharding.md), [Sharded Record Store](#sharded-record-store) |
 | Replication | Single-primary Redis with AZ-aware read replicas (`RedisReadReplicaRouter` / `RoutingRedisExecutor` / `ReplicaConfig`), Sentinel primary failover, `RedisReplicaLagProbe` lag measurement, and async cross-region replication for DR (ElastiCache/Aurora Global) — see [Replication investigation](04_Replication.md) |
 | CAP Theorem | **AP by default, opt-in CP, CP writes**: fail-open replica reads + serve-stale caches (AP) vs. fail-closed read-your-writes token (`503`, never stale) and single-primary atomic writes (CP); tunable AZ-local vs primary reads (`RoutingRedisExecutor`) as the per-read dial; generation dual-read + DR failover handle partitions — see [CAP investigation](05_CAP.md) |
@@ -2146,7 +2146,7 @@ MAT_PARSE_HEAP_DUMP=/path/to/ParseHeapDump \
 
 ## Pipeline Optimizations
 
-This section is a **latency and throughput optimization log** for the request path — the concrete fixes that keep it allocation-light and lock-free at the capacity targets, targeting OOM, Full GC, thread blocking, and CPU spikes.
+This section is a **latency and throughput optimization log** for the request path — the concrete fixes that keep it allocation-light and lock-free at the capacity targets, targeting OOM, Full GC, thread blocking, and CPU spikes. The cache-related fixes below (`RecommendationCache`, `LocalEmbeddingCache`, `HotKeyDetector`, `ShardedTopKStore`, `MultiLevelEmbeddingCache`) are covered in depth in the [Caching investigation](02_Caching.md).
 
 | Component | Problem | Fix |
 |---|---|---|
@@ -2281,9 +2281,7 @@ The key design thread running through all of it: **keep the request path allocat
 curl http://localhost:7010/online/ops | jq '.metrics'
 ```
 
-`ShardedTopKStore` — replicates each `topk:{window}` sorted set across N Redis shard keys. On local-cache TTL refresh, reads a random shard — reducing per-key Redis QPS by N. `seedAllShards()` fan-out keeps shards consistent.
-
-`MultiLevelEmbeddingCache` — L1 (JVM hot-key) → L2 (Redis) → L3 (fallback snapshot). L2/L3 hits promote to L1; null sentinels absorb repeated misses for missing IDs.
+The embedding caches (`LocalEmbeddingCache`, `MultiLevelEmbeddingCache` L1/L2/L3, `LogicalExpiryEmbeddingCache`), the `ShardedTopKStore` replica-shard local cache, and the result/LLM caches are covered in the [Caching investigation](02_Caching.md).
 
 ### Online learner
 
