@@ -134,6 +134,33 @@ there too:
 So the honest label is **PA/EL**: partition → available, else → low-latency, with
 consistency as the opt-in exception on both sides.
 
+## Design specs & plans
+
+The CAP choices are not implicit — each corner has an explicit design spec (with a
+paired implementation plan) under `docs/superpowers/`:
+
+- **The CP escape hatch** — [Durable Eventual Consistency](docs/superpowers/specs/2026-07-18-durable-eventual-consistency-design.md)
+  ([plan](docs/superpowers/plans/2026-07-18-durable-eventual-consistency.md)): the
+  transactional outbox, bounded read-your-writes token, deterministic Redis updates, and
+  reconciliation (§3). It builds on
+  [Data Lineage / Event-ID propagation](docs/superpowers/specs/2026-06-15-data-lineage-event-id-propagation-design.md)
+  — the `lineage:event:<id>` marker the read-your-writes wait polls.
+- **The AP read dial (and PACELC latency)** — [Cross-AZ Traffic Reduction](docs/superpowers/specs/2026-07-02-cross-az-traffic-reduction-design.md)
+  ([reduction plan](docs/superpowers/plans/2026-07-02-cross-az-traffic-reduction.md),
+  [AZ-aware reads plan](docs/superpowers/plans/2026-07-08-az-aware-redis-reads.md)): AZ-local
+  replica reads that trade consistency/latency for availability and cross-AZ cost (§4).
+- **Partition tolerance at the AZ boundary** — [Zonal Failure Hardening](docs/superpowers/specs/2026-07-08-zonal-failure-hardening-design.md)
+  ([plan](docs/superpowers/plans/2026-07-08-zonal-failure-hardening.md)): pod spread,
+  AZ-aware reads, PDB tuning so one AZ partition doesn't take the service down (§5).
+- **Partition tolerance at the region boundary** — [Multi-Region DR Failover](docs/superpowers/specs/2026-07-08-multi-region-dr-failover-design.md)
+  ([plan](docs/superpowers/plans/2026-07-08-multi-region-dr-failover.md)) and
+  [DR Standby Capacity Pre-scale](docs/superpowers/specs/2026-07-20-dr-standby-capacity-prescale-design.md)
+  ([plan](docs/superpowers/plans/2026-07-20-dr-standby-capacity-prescale.md)): active-passive
+  failover with an accepted RPO (§5).
+- **Partition tolerance for sharding** — [Dynamic Shard Topology](docs/superpowers/specs/2026-06-24-dynamic-shard-topology-design.md)
+  ([plan](docs/superpowers/plans/2026-06-24-dynamic-shard-topology.md)): the generation
+  dual-read window that keeps a reshard lossless (§5).
+
 ## Sharp edges — notes
 
 1. **AP-by-default means silent staleness is normal.** Without a token, a read can
