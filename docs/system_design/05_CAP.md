@@ -59,12 +59,13 @@ and [15_Eventual_Consistency §3a](15_Eventual_Consistency.md).
 
 The read path optimizes for availability. `RoutingRedisExecutor` sends reads to the
 AZ-local replica, then a random replica, then the primary — so a briefly-unreachable
-primary AZ degrades read latency, not availability (see the README
-[Redis Read Replicas](../../README.md#redis-read-replicas)). On top of that, nearly every
+primary AZ degrades read latency, not availability (see
+[Replication](04_Replication.md#1-redis-read-replicas--az-aware-read-routing)). On top of that, nearly every
 view **fails open / serves stale**: the feature store and top-K store serve their
 last-good snapshot within a 60 s stale-if-error window, the CDN serves cached catalog
-reads for up to 24 h on origin error, the Redis rate limiter admits when its breaker
-is open, the bloom/hot-key guards degrade to a Redis round-trip or an in-memory
+reads for up to 24 h on origin error, an enabled Redis rate limiter switches to its
+per-replica emergency bucket when its breaker is open, the bloom/hot-key guards
+degrade to a Redis round-trip or an in-memory
 fallback, and every periodically-refreshed view (topology, registry, DNS) keeps its
 last-good snapshot on refresh error (**fail-static**). None of these turn a partition
 into an outage; they turn it into bounded staleness. The full stale-window catalog is
@@ -85,8 +86,7 @@ the server polls the **primary** for the event's lineage marker (up to 2 s) and:
 
 That last line is the CAP choice made explicit: this specific read prefers
 *unavailable* over *inconsistent*, the opposite of the default path. The full flow is
-[15_Eventual_Consistency §1](15_Eventual_Consistency.md) and the README
-[Durable Eventual Consistency](../../README.md#durable-eventual-consistency).
+[15_Eventual_Consistency §1](15_Eventual_Consistency.md).
 
 ## 4. The tunable dial
 

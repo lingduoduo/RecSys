@@ -2,15 +2,15 @@
 
 This inventory covers every H2 and H3 from the pre-rewrite README. `KEEP` items
 remain only as concise contributor workflow material in Task 3; deep technical
-detail is owned by the destination shown here. `MERGE` records the two verified
-owner updates made with this inventory. `REMOVE` applies to volatile examples,
+detail is owned by the destination shown here. `MERGE` records a verified owner
+update made with this inventory. `REMOVE` applies to volatile examples,
 historical optimization logs, or non-contributor detail that has no current
 authoritative document to preserve it.
 
 | README section | Disposition | Destination | Verification |
 |---|---|---|---|
-| `## Architecture Layers` | LINK | `docs/system_design/` investigations | Existing topic owners reviewed; contributor README keeps only a documentation map. |
-| `### System Design` | LINK | `docs/system_design/` investigations | Existing numbered investigations own the material. |
+| `## Architecture Layers` | LINK | `docs/system_design/09_API_Gateway.md`; `10_MicroServices.md`; `03_DB_Sharding.md`; `04_Replication.md`; `15_Eventual_Consistency.md`; `17_Scalability.md`; `18_Fault_Tolerance.md` | Concrete subsystem owners reviewed; contributor README keeps only a documentation map. |
+| `### System Design` | MERGE | `docs/system_design/08_Rate_Limits.md`; `01_Load_Balancing.md`; `02_Caching.md`; `03_DB_Sharding.md`; `04_Replication.md`; `09_API_Gateway.md`; `15_Eventual_Consistency.md`; `17_Scalability.md`; `18_Fault_Tolerance.md` | The unique Redis emergency-limiter correction was merged into `08`; the remaining design concepts already have these direct owners. |
 | `## Quick Start` | KEEP | README contributor workflow | `docker-compose.streaming.yml`; `scripts/run-microservices-local.sh`; service entry points. |
 | `### Start individual services` | KEEP | README contributor workflow | `RecSysServer`, `OnlinePredictionServer`, `ModelApplication`, and `MicroserviceGatewayServer`. |
 | `## Contents` | REMOVE | — | Replaced by the concise Task 3 structure. |
@@ -88,5 +88,5 @@ authoritative document to preserve it.
 
 ## Coverage summary
 
-All 63 README H2/H3 headings are classified exactly once: 7 `KEEP`, 1 `MERGE`,
-39 `LINK`, and 16 `REMOVE`.
+All 63 README H2/H3 headings are classified exactly once: 7 `KEEP`, 2 `MERGE`,
+38 `LINK`, and 16 `REMOVE`.

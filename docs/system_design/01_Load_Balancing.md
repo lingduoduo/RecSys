@@ -29,8 +29,8 @@ Real traffic is balanced by infrastructure, in three nested tiers:
 
 - **AWS ALB Ingress (edge).** A WAF-protected ALB is the sole public entry to the
   gateway (the EKS overlay drops the NLB and patches the gateway Service to
-  `ClusterIP`); see the README [Kubernetes & EKS](../../README.md#kubernetes--eks) and the
-  [CDN Edge investigation](12_CDNS.md) for the CloudFront→ALB edge.
+  `ClusterIP`); [Scalability](17_Scalability.md#1-compute-tier-scaling--hpa-is-the-real-autoscaler)
+  owns the EKS topology and [CDN Edge](12_CDNS.md) owns the CloudFront→ALB edge.
 - **kube-proxy + topology-aware routing (in-cluster).** Service-to-service calls resolve
   through ClusterIP names, and `trafficDistribution: PreferClose` prefers same-AZ
   endpoints to cut cross-AZ cost — detailed in

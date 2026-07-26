@@ -73,8 +73,8 @@ buffer-pool pressure, and amplify writes. With no repository-level evidence that
 the clustered lookup is the bottleneck, covering is deliberately deferred — see
 the [MySQL index audit](../superpowers/specs/2026-07-18-mysql-index-audit-design.md)
 and [robust catalog querying](../superpowers/specs/2026-07-15-robust-mysql-catalog-querying-design.md)
-designs. The README [MySQL Index Inventory](../../README.md#mysql-index-inventory) keeps
-the operational verify commands.
+designs. The verification evidence is defined in [§6](#6-testing-the-indexes): the
+static index contracts and the Docker-tagged optimizer assertion are both required.
 
 ## 2. Plan pinning and query-to-index contracts
 
@@ -161,8 +161,9 @@ patterns, each mapped to how it rides an index:
   columns`, so a covering index (when justified by evidence) is generated the same
   way the queries expect it.
 
-The README [SQL Backend Patterns](../../README.md#sql-backend-patterns) keeps the runnable
-Java examples for these three helpers.
+The helper methods above are the authoritative API for these three access patterns;
+their unit tests exercise placeholder/bind parity, keyset seek semantics, and the
+delayed-join shape.
 
 ## 4. Indexes beyond the catalog — the outbox and saga workload
 

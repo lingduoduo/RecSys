@@ -122,8 +122,8 @@ The HTTP façade
 mounts `/shards/` on 7010; the reshard endpoint `POST /shards/topology` is
 `AdminTokenGuard`-gated and **fails closed** (`403`) unless `SHARD_ADMIN_TOKEN` is
 set and the `X-Admin-Token` header matches. Operational usage — write/read curl
-and the reshard call — stays in the README
-[Sharded Record Store](../../README.md#sharded-record-store) section.
+and the reshard call — is owned by [Database
+Sharding](03_DB_Sharding.md#3-versioned-topology--online-reshard).
 
 | Env var | Default | Partitions |
 |---|---:|---|
@@ -234,9 +234,9 @@ wire format is `base64url("v2:<score>:<itemId>")`.
 > cursor and accumulate seen IDs into `excludedItemIds` — each call re-recalls and
 > excludes what's seen, picking up live trending/learner changes. The seek cursor
 > tolerates a changing exclusion set, but a saved cursor *plus* a growing
-> exclusion set conflates the two. The endpoint request/response contract stays in
-> the README [`/v2/recommend`](../../README.md#recommendations-v2--cursor-pagination-v2recommend)
-> reference.
+> exclusion set conflates the two. The contract is intentionally compact: callers
+> send the normal recommendation query with an optional opaque cursor and use a
+> `null` `nextCursor` as the terminal-page signal.
 
 Note the two `/v2/recommend` implementations differ: the 6010 route
 (`RecommendationOrchestrator`) does real keyset paging; the 7010 route
@@ -259,8 +259,7 @@ delayed-join (index-only key walk + outer join for deep offset) variants that ba
 these reads — the *index-access* angle (which B-tree each pattern rides, plan
 pinning, contract tests) is covered in the
 [DB Indexing investigation](13_DB_Indexing.md#3-index-access-patterns-via-millionscalepaginationsql),
-and the catalog index inventory is in the
-[README](../../README.md#mysql-index-inventory).
+which also owns the catalog index inventory.
 
 ## 5. Testing partitioning
 
