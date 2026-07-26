@@ -54,6 +54,17 @@ The README will use this order:
 - Commands that delete/reset local state will be clearly labeled.
 - Load and Docker tests will be presented as opt-in environmental suites, not
   ordinary pre-commit checks.
+- Outdated transcript-style code/result samples will be removed. This includes
+  large response dumps with fabricated or point-in-time counters, latency,
+  utilization, failure rates, in-flight requests, thresholds, and suggested
+  weights.
+- A response example may remain only when it is short, stable, and verified
+  against current production code or tests. Volatile health and operations
+  responses will instead document the endpoint, status semantics, and stable
+  field names, then link to the authoritative test or subsystem document.
+- Commented sequences such as `// 200 — healthy` followed by several simulated
+  `503` bodies will be replaced by a compact status/reason table when those
+  states remain part of the current contract, or removed when they do not.
 
 ## Verification
 
@@ -63,6 +74,9 @@ The implementation will:
 - check all README relative Markdown links;
 - run the documented lightweight build/test or validation commands where the
   environment permits;
+- compare retained request/response examples with current endpoint
+  implementations and contract tests;
+- scan for sampled numeric results and stale multi-response transcripts;
 - scan for stale unlimited fail-open, obsolete scripts, and contradictory
   startup commands;
 - run `git diff --check`;
