@@ -17,6 +17,7 @@ import com.recsys.application.pagination.CursorPaginationService;
 import com.recsys.application.pagination.Page;
 import com.recsys.application.ranking.CandidateRanker;
 import com.recsys.application.retrieval.multichannel.MultiChannelRecallService;
+import com.recsys.application.retrieval.multichannel.RecallResult;
 import org.junit.jupiter.api.Tag;
 import org.junit.jupiter.api.Test;
 import org.junit.jupiter.api.Timeout;
@@ -67,7 +68,10 @@ class V2CrossPathLoadTest {
         MultiChannelRecallService recall = mock(MultiChannelRecallService.class);
         CandidateRanker ranker = mock(CandidateRanker.class);
         CursorPaginationService pagination = mock(CursorPaginationService.class);
-        when(recall.recall(any(), anyInt())).thenReturn(List.of());
+        // The orchestrator reads recallDetailed, not recall; an unstubbed mock
+        // returns null and every embedding-path request fails with an NPE.
+        when(recall.recallDetailed(any(), anyInt())).thenReturn(new RecallResult(
+                List.of(), java.util.Set.of(), RecallResult.DegradationOutcome.HEALTHY));
         when(ranker.rank(any(), any(), anyInt())).thenReturn(List.of());
         when(pagination.page(any(), any(), anyInt(), any(), any())).thenReturn(new Page<>(List.of(), null));
         RecommendationPipeline embedding = new RecommendationOrchestrator(
