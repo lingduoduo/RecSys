@@ -101,6 +101,36 @@ class RouteCircuitBreakerTest {
     }
 
     @Test
+    void staleCompletionDoesNotCloseRecoveryProbe() {
+        AtomicLong clock = new AtomicLong();
+        RouteCircuitBreaker cb = new RouteCircuitBreaker(1, 50L, clock::get);
+
+        RouteCircuitBreaker.Permit stale = cb.tryAcquirePermit();
+        cb.recordFailure(stale); // opens the route under the initial generation
+        clock.set(50L);
+
+        assertThat(cb.tryAcquirePermit()).isNotNull(); // recovery probe claims the new generation
+        cb.recordSuccess(stale); // completion from the prior generation must be ignored
+
+        assertThat(cb.state()).isEqualTo(HALF_OPEN);
+    }
+
+    @Test
+    void permitRejectsNullDelegate() {
+        assertThatThrownBy(() -> new RouteCircuitBreaker.Permit(null))
+                .isInstanceOf(NullPointerException.class)
+                .hasMessageContaining("delegate");
+    }
+
+    @Test
+    void completionRejectsNullPermit() {
+        RouteCircuitBreaker cb = new RouteCircuitBreaker();
+
+        assertThatThrownBy(() -> cb.recordSuccess(null))
+                .isInstanceOf(NullPointerException.class);
+    }
+
+    @Test
     void rejectsInvalidThreshold() {
         assertThatThrownBy(() -> new RouteCircuitBreaker(0, 1000L))
                 .isInstanceOf(IllegalArgumentException.class)

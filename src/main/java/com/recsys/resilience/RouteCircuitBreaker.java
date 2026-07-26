@@ -1,5 +1,6 @@
 package com.recsys.resilience;
 
+import java.util.Objects;
 import java.util.function.LongSupplier;
 
 /**
@@ -11,7 +12,11 @@ public final class RouteCircuitBreaker {
 
     public enum State { CLOSED, OPEN, HALF_OPEN }
 
-    public record Permit(CircuitBreaker.Permit delegate) {}
+    public record Permit(CircuitBreaker.Permit delegate) {
+        public Permit {
+            Objects.requireNonNull(delegate, "delegate");
+        }
+    }
 
     public static final int  DEFAULT_FAILURE_THRESHOLD = 5;
     public static final long DEFAULT_COOLDOWN_MS       = 10_000L;
@@ -44,10 +49,10 @@ public final class RouteCircuitBreaker {
     }
 
     public void recordSuccess(Permit permit) {
-        delegate.recordSuccess(permit == null ? null : permit.delegate());
+        delegate.recordSuccess(permit.delegate());
     }
 
     public void recordFailure(Permit permit) {
-        delegate.recordFailure(permit == null ? null : permit.delegate());
+        delegate.recordFailure(permit.delegate());
     }
 }
