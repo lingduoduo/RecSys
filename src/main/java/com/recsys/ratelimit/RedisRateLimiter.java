@@ -233,13 +233,18 @@ public final class RedisRateLimiter {
     }
 
     private Decision parseRedisDecision(Object raw) {
-        if (raw instanceof List<?> values && values.size() >= 3) {
+        if (raw instanceof List<?> values && values.size() == 3) {
             Long allowedValue = parseLong(values.get(0));
             Long remaining = parseLong(values.get(1));
             Long retry = parseLong(values.get(2));
-            if (allowedValue != null && (allowedValue == 0L || allowedValue == 1L)
-                    && remaining != null && remaining >= 0
-                    && retry != null && retry >= 0 && retry <= Integer.MAX_VALUE) {
+            boolean retryFitsResponse = retry != null && retry <= Integer.MAX_VALUE;
+            boolean allowedReply = allowedValue != null && allowedValue == 1L
+                    && remaining != null && remaining >= 0 && remaining < limit
+                    && retryFitsResponse && retry == 0L;
+            boolean rejectedReply = allowedValue != null && allowedValue == 0L
+                    && remaining != null && remaining == 0L
+                    && retryFitsResponse && retry > 0L;
+            if (allowedReply || rejectedReply) {
                 return new Decision(allowedValue == 1L, remaining, retry.intValue(), false, Source.REDIS);
             }
         }

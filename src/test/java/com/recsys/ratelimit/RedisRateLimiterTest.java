@@ -234,6 +234,56 @@ class RedisRateLimiterTest {
     }
 
     @Test
+    void redisReplyWithExtraFieldsUsesEmergencyBudget() {
+        RedisCommands<String, String> cmd = mockCommands();
+        when(cmd.eval(any(String.class), any(ScriptOutputType.class), any(String[].class), any(String[].class)))
+                .thenReturn(List.of(1L, 99L, 0L, 42L));
+        RedisRateLimiter limiter = limiter(execFor(cmd), 100L, 1, 1.0, 1, () -> 0L);
+
+        assertThat(limiter.tryAcquire("online").source()).isEqualTo(RedisRateLimiter.Source.EMERGENCY);
+    }
+
+    @Test
+    void allowedRedisReplyWithRetryUsesEmergencyBudget() {
+        RedisCommands<String, String> cmd = mockCommands();
+        when(cmd.eval(any(String.class), any(ScriptOutputType.class), any(String[].class), any(String[].class)))
+                .thenReturn(List.of(1L, 99L, 5L));
+        RedisRateLimiter limiter = limiter(execFor(cmd), 100L, 1, 1.0, 1, () -> 0L);
+
+        assertThat(limiter.tryAcquire("online").source()).isEqualTo(RedisRateLimiter.Source.EMERGENCY);
+    }
+
+    @Test
+    void rejectedRedisReplyWithoutRetryUsesEmergencyBudget() {
+        RedisCommands<String, String> cmd = mockCommands();
+        when(cmd.eval(any(String.class), any(ScriptOutputType.class), any(String[].class), any(String[].class)))
+                .thenReturn(List.of(0L, 0L, 0L));
+        RedisRateLimiter limiter = limiter(execFor(cmd), 100L, 1, 1.0, 1, () -> 0L);
+
+        assertThat(limiter.tryAcquire("online").source()).isEqualTo(RedisRateLimiter.Source.EMERGENCY);
+    }
+
+    @Test
+    void rejectedRedisReplyWithRemainingCapacityUsesEmergencyBudget() {
+        RedisCommands<String, String> cmd = mockCommands();
+        when(cmd.eval(any(String.class), any(ScriptOutputType.class), any(String[].class), any(String[].class)))
+                .thenReturn(List.of(0L, 1L, 1L));
+        RedisRateLimiter limiter = limiter(execFor(cmd), 100L, 1, 1.0, 1, () -> 0L);
+
+        assertThat(limiter.tryAcquire("online").source()).isEqualTo(RedisRateLimiter.Source.EMERGENCY);
+    }
+
+    @Test
+    void allowedRedisReplyWithImpossibleRemainingUsesEmergencyBudget() {
+        RedisCommands<String, String> cmd = mockCommands();
+        when(cmd.eval(any(String.class), any(ScriptOutputType.class), any(String[].class), any(String[].class)))
+                .thenReturn(List.of(1L, 100L, 0L));
+        RedisRateLimiter limiter = limiter(execFor(cmd), 100L, 1, 1.0, 1, () -> 0L);
+
+        assertThat(limiter.tryAcquire("online").source()).isEqualTo(RedisRateLimiter.Source.EMERGENCY);
+    }
+
+    @Test
     void negativeEmergencySettingsAreRejected() {
         assertThat(org.assertj.core.api.Assertions.catchThrowable(() -> new RedisRateLimiter(
                 mock(RedisExecutor.class), "rate:test:", 100L, 1,
