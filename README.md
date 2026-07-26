@@ -27,8 +27,9 @@ debugger, or restart one process without rebuilding containers. The supporting
 infrastructure stays in Docker.
 
 MySQL-backed catalog routes are optional and disabled by default. The ordinary
-quick start therefore needs no MySQL server, database migration, cloud
-credentials, API key, or external LLM service.
+quick start needs no MySQL server, database migration, cloud credentials, or
+external LLM service. It does make an explicit local-only authentication choice
+for the gateway, described below.
 
 The gateway starts after the three backends and aggregates their current
 health, so its endpoint is the single full-stack check used below.
@@ -53,11 +54,6 @@ Colima is not required on Linux, and Docker Desktop is also a valid local
 Docker provider. Start whichever Docker provider you use before running
 Compose.
 
-Optional tools:
-
-- `redis-cli` is needed only for the sample online-feature loader.
-- A local MySQL server is needed only when `MYSQL_ENABLED=true`.
-
 Run all commands from the repository root.
 
 ## Five-minute quick start
@@ -77,8 +73,13 @@ mvn package -DskipTests
 Start all four Java services:
 
 ```bash
-sh scripts/run-microservices-local.sh
+GATEWAY_ALLOW_ANONYMOUS=true sh scripts/run-microservices-local.sh
 ```
+
+> **Development only:** this setting deliberately disables gateway
+> authentication and treats every caller as anonymous. Never use it in
+> production. Configure API-key or Cognito authentication using the
+> [Configuration Guide](CONFIG_GUIDE.md).
 
 Keep that terminal open. The script owns the four child processes and writes
 their output to:
@@ -182,11 +183,13 @@ env SERVER_PORT=8080 sh scripts/run-with-jvm-tuning.sh model-serving -- \
 API gateway:
 
 ```bash
-env GATEWAY_PORT=8010 sh scripts/run-with-jvm-tuning.sh api-gateway -- \
+env GATEWAY_PORT=8010 GATEWAY_ALLOW_ANONYMOUS=true \
+  sh scripts/run-with-jvm-tuning.sh api-gateway -- \
   mvn exec:java -Dexec.mainClass=com.recsys.api.gateway.MicroserviceGatewayServer
 ```
 
-The wrapper loads the repository's checked-in JVM options. Use
+The anonymous setting in the gateway command is development-only. The wrapper
+loads the repository's checked-in JVM options. Use
 `mvn package -DskipTests` for a fast rebuild and the all-service script from the
 quick start when you do not need process-level isolation.
 
@@ -223,18 +226,6 @@ The loader replays the checked-in
 streaming and Flink workflow lives in the
 [online-serving guide](streaming/online-serving/README.md).
 
-### Run one test or test class
-
-Run a single test class while iterating:
-
-```bash
-mvn --batch-mode -Dtest=OnlineHealthServiceTest test
-```
-
-Surefire also accepts `-Dtest=ClassName#methodName`. Focused commands use the
-ordinary deterministic boundary unless the selected test carries an opt-in
-tag.
-
 ## Testing
 
 The Maven default excludes JUnit tests tagged `load` or `docker`. This keeps
@@ -262,6 +253,32 @@ mvn --batch-mode test
 
 The resilience profile is still a deterministic unit/contract suite. It does
 not opt into the load or Docker tags.
+
+### Known clean-checkout artifact limitation
+
+The pre-existing baseline does not track these fixtures:
+
+```text
+src/main/resources/artifacts/model/training/feature_config.json
+src/main/resources/artifacts/model/test/feature_config.json
+src/main/resources/artifacts/pyspark/als_model_metadata.json
+```
+
+Consequently, ordinary `mvn --batch-mode test` has fixture-related errors on a
+clean checkout, and model serving on port `8080` may fail to become ready. This
+README change does not claim that suite passes.
+
+Restore the project-specific training/test fixtures from the modeling pipeline
+under those classpath paths before running fixture-dependent tests. This
+checkout has no artifact-preparation script; the `offline-embedding` Maven
+profile only generates Word2Vec item embeddings and does not replace these
+fixtures.
+
+For model serving with already-prepared external artifacts, set
+`RECSYS_MODEL_ARTIFACTS_DIR` to a root containing `training/` and `test/`
+variant directories. Set `RECSYS_SPARK_ARTIFACTS_DIR` to the root containing
+`als_model_metadata.json` when Spark artifacts are needed. Both names are bound
+in [application.yml](src/main/resources/application.yml).
 
 ### Opt-in load suite
 
@@ -295,8 +312,6 @@ the [pull-request resilience workflow](.github/workflows/resilience-pr.yml),
 and the [scheduled resilience workflow](.github/workflows/resilience-scheduled.yml)
 for the maintained commands and artifact paths.
 
-Surefire reports are written under `target/surefire-reports/`.
-
 ## Repository layout
 
 ```text
@@ -309,7 +324,7 @@ Surefire reports are written under `target/surefire-reports/`.
 │   ├── online/flink/         opt-in Flink online-feature job
 │   ├── health/, loadshed/    health, admission, drain, and shutdown controls
 │   └── config/, metrics/     runtime parsing and serving metrics
-├── src/main/resources/       Spring config, model artifacts, and DB migrations
+├── src/main/resources/       Spring config, fallback ONNX, and DB migrations
 ├── src/test/java/com/recsys/ matching unit, contract, load, and Docker tests
 ├── streaming/online-serving/ local event data, replay scripts, and guide
 ├── scripts/                  local startup and operational helpers
@@ -322,16 +337,11 @@ Surefire reports are written under `target/surefire-reports/`.
 └── pom.xml
 ```
 
-HTTP contracts belong under `api/`, orchestration under `application/`,
-business records under `domain/`, and adapters under `infrastructure/`. Tests
-mirror the production package they verify. Put production design narratives in
-the authoritative system-design page or runbook.
-
 ## Configuration
 
-The quick start requires no environment variables. Its script supplies the
-standard service ports and local gateway upstream URLs, and Redis defaults to
-`localhost:6379`.
+The quick start explicitly sets `GATEWAY_ALLOW_ANONYMOUS=true` for local
+development. Its script supplies the standard service ports and gateway
+upstream URLs, and Redis defaults to `localhost:6379`.
 
 The local settings most often overridden are:
 
@@ -342,11 +352,15 @@ The local settings most often overridden are:
 | `SERVER_PORT` | `8080` | Spring Boot model-serving port |
 | `GATEWAY_PORT` | `8010` | API gateway port |
 | `REDIS_HOST` / `REDIS_PORT` | `localhost` / `6379` | Host Redis connection |
+| `GATEWAY_ALLOW_ANONYMOUS` | `false` | Explicit development-only opt-in used by the quick start |
 
 Do not copy service, resilience, authentication, or deployment variables into
 new README tables. The authoritative defaults, parsing behavior, Kubernetes
 overrides, and secret-handling guidance are in the
 [Configuration Guide](CONFIG_GUIDE.md).
+
+Production gateway deployments must use the documented API-key or Cognito
+settings and leave anonymous mode disabled.
 
 The shared container image selects a service with `RECSYS_MAIN_CLASS`;
 Kubernetes manifests set that value per workload. Local Maven commands invoke
