@@ -30,6 +30,7 @@ import java.util.Map;
 import java.util.Set;
 import java.util.concurrent.CompletableFuture;
 import java.util.concurrent.TimeUnit;
+import java.util.concurrent.atomic.AtomicBoolean;
 import java.util.stream.Collectors;
 
 /**
@@ -212,6 +213,9 @@ public final class LlmProxyService implements HttpService {
             RouteCircuitBreaker.Permit circuitPermit) {
         HttpResponseWriter writer = HttpResponse.streaming();
         upstream.subscribe(new org.reactivestreams.Subscriber<HttpObject>() {
+            private final AtomicBoolean breakerCompleted = new AtomicBoolean();
+            private volatile HttpStatus responseStatus;
+
             @Override
             public void onSubscribe(org.reactivestreams.Subscription s) {
                 s.request(Long.MAX_VALUE);
@@ -220,10 +224,9 @@ public final class LlmProxyService implements HttpService {
             @Override
             public void onNext(HttpObject obj) {
                 if (obj instanceof ResponseHeaders h) {
+                    responseStatus = h.status();
                     if (h.status().isServerError()) {
-                        circuitBreaker.recordFailure(circuitPermit);
-                    } else {
-                        circuitBreaker.recordSuccess(circuitPermit);
+                        recordFailureOnce();
                     }
                     // Strip hop-by-hop headers and forward downstream
                     ResponseHeaders filtered = filterResponseHeaders(h);
@@ -235,13 +238,30 @@ public final class LlmProxyService implements HttpService {
 
             @Override
             public void onError(Throwable t) {
-                circuitBreaker.recordFailure(circuitPermit);
+                recordFailureOnce();
                 writer.close(t);
             }
 
             @Override
             public void onComplete() {
+                if (responseStatus != null && !responseStatus.isServerError()) {
+                    recordSuccessOnce();
+                } else {
+                    recordFailureOnce();
+                }
                 writer.close();
+            }
+
+            private void recordSuccessOnce() {
+                if (breakerCompleted.compareAndSet(false, true)) {
+                    circuitBreaker.recordSuccess(circuitPermit);
+                }
+            }
+
+            private void recordFailureOnce() {
+                if (breakerCompleted.compareAndSet(false, true)) {
+                    circuitBreaker.recordFailure(circuitPermit);
+                }
             }
         });
         return writer;
