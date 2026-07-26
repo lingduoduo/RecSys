@@ -11,12 +11,28 @@ build, test, run, inspect, and troubleshoot it locally.
 
 ## Scope
 
-The change rewrites `README.md` and consolidates configuration reference
-material in `CONFIG_GUIDE.md`. Existing architecture, system-design, and
-runbook documents remain authoritative and are linked rather than duplicated.
+The change rewrites `README.md`, consolidates configuration reference material
+in `CONFIG_GUIDE.md`, and moves any still-useful unique README material into the
+most relevant Markdown document under `docs/`. Existing architecture,
+system-design, and runbook documents remain authoritative.
 
-The target length is approximately 400–700 lines. Clarity and correctness take
+The target length is approximately 300–500 lines. Clarity and correctness take
 priority over reaching a specific line count.
+
+The governing rule is:
+
+> README is the simple contributor entry point. Detailed explanations belong
+> in `docs/`, consolidated with the document that already owns that topic.
+
+Content is not retained in README merely because it is useful, and it is not
+deleted merely because it is duplicated. Each substantial section is triaged:
+
+1. Keep it only if a contributor needs it to build, run, test, troubleshoot, or
+   navigate the repository.
+2. Move and merge it into the relevant `docs/` Markdown file if it is useful
+   architecture, API, data, or operational reference material.
+3. Remove it if it is stale, sampled output, or already fully represented by an
+   authoritative document.
 
 The rewrite removes README copies of material already maintained in
 `docs/system_design/`, including:
@@ -80,6 +96,10 @@ The README will use this order:
   debug, or navigate the local repository. A section is removed when its main
   purpose is explaining production architecture rather than enabling one of
   those tasks.
+- When README contains useful details not yet present in the destination
+  document, those details will be merged into that existing `docs/` page before
+  the README copy is removed. The implementation will avoid creating a new
+  Markdown file when an established topic owner already exists.
 - The documentation index will link directly to the existing numbered
   `docs/system_design/` investigations, avoiding a duplicate prose summary of
   every design.
@@ -114,6 +134,9 @@ The implementation will:
 - compare README headings against `docs/system_design/` and remove duplicated
   explanatory sections, including SQL Backend Patterns and Microservice
   architecture;
+- maintain a section-by-section migration inventory recording whether each
+  removed README section was consolidated into an existing document, linked to
+  an already-complete document, or removed as stale;
 - compare README configuration tables with `CONFIG_GUIDE.md`, remove duplicate
   tables from README, and verify the retained guide entries against current
   code and Kubernetes defaults;
@@ -126,6 +149,7 @@ The implementation will:
 ## Non-Goals
 
 - Redesigning production code, configuration, APIs, or deployment behavior.
-- Rewriting the linked architecture and runbook documents.
+- Broadly rewriting linked architecture and runbook documents beyond merging
+  relevant README material and correcting contradictions exposed by that merge.
 - Adding screenshots, generated diagrams, badges, or marketing copy.
 - Providing exhaustive API or subsystem documentation in the README.
