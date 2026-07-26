@@ -69,7 +69,7 @@
 - Produces: `void recordFailure(CircuitBreaker.Permit permit)`
 - Preserves temporarily: `boolean tryAcquire()`, `void recordSuccess()`, `void recordFailure()` for source compatibility until Task 2 migrates callers.
 
-- [ ] **Step 1: Write the stale-success failing test**
+- [x] **Step 1: Write the stale-success failing test**
 
 Add a deterministic generation test to `CircuitBreakerTest`:
 
@@ -94,7 +94,7 @@ void staleClosedSuccessCannotCloseHalfOpenGeneration() {
 }
 ```
 
-- [ ] **Step 2: Run the focused test and verify RED**
+- [x] **Step 2: Run the focused test and verify RED**
 
 Run:
 
@@ -104,7 +104,7 @@ mvn test -Dtest=CircuitBreakerTest#staleClosedSuccessCannotCloseHalfOpenGenerati
 
 Expected: test compilation fails because `Permit`, `tryAcquirePermit`, and permit-aware completion do not exist.
 
-- [ ] **Step 3: Add the minimal permit/generation state**
+- [x] **Step 3: Add the minimal permit/generation state**
 
 Implement in `CircuitBreaker`:
 
@@ -146,7 +146,7 @@ public void recordFailure(Permit permit) {
 Before setting `openedAtMs`, re-check that the generation CAS succeeded. This
 makes exactly one completion own each CLOSED→OPEN or HALF_OPEN→OPEN transition.
 
-- [ ] **Step 4: Add remaining concurrency contract tests**
+- [x] **Step 4: Add remaining concurrency contract tests**
 
 Add tests proving:
 
@@ -163,7 +163,7 @@ void currentProbeSuccessClosesAndAllowsNewClosedPermit() { /* state CLOSED */ }
 
 Use only the injected `AtomicLong` clock; do not use `Thread.sleep`.
 
-- [ ] **Step 5: Run the circuit suite and verify GREEN**
+- [x] **Step 5: Run the circuit suite and verify GREEN**
 
 Run:
 
@@ -173,7 +173,7 @@ mvn test -Dtest=CircuitBreakerTest
 
 Expected: all tests pass.
 
-- [ ] **Step 6: Commit**
+- [x] **Step 6: Commit**
 
 ```bash
 git add src/main/java/com/recsys/resilience/CircuitBreaker.java \
@@ -200,7 +200,7 @@ git commit -m "fix: bind circuit recovery to probe generation"
 - Produces: `RouteCircuitBreaker.Permit`, an opaque wrapper around the shared permit.
 - Produces: `RouteCircuitBreaker.Permit tryAcquirePermit()`, `recordSuccess(Permit)`, and `recordFailure(Permit)`.
 
-- [ ] **Step 1: Write a route stale-completion characterization test**
+- [x] **Step 1: Write a route stale-completion characterization test**
 
 Add a test that obtains a route permit, opens the route, advances the injected
 clock through cooldown, admits the recovery probe, then records the stale
@@ -208,7 +208,7 @@ success and asserts the route remains HALF_OPEN. If the current route class
 lacks an injectable clock constructor, make the test fail on that missing seam
 first.
 
-- [ ] **Step 2: Verify the route test fails**
+- [x] **Step 2: Verify the route test fails**
 
 Run:
 
@@ -218,7 +218,7 @@ mvn test -Dtest=RouteCircuitBreakerTest
 
 Expected: failure because route permits and/or injected clock support are absent.
 
-- [ ] **Step 3: Add the opaque route permit API**
+- [x] **Step 3: Add the opaque route permit API**
 
 Implement:
 
@@ -238,7 +238,7 @@ public void recordFailure(Permit permit) { delegate.recordFailure(permit.delegat
 
 Add a package-private constructor accepting `LongSupplier clockMs` for tests.
 
-- [ ] **Step 4: Carry the route permit through gateway forwarding**
+- [x] **Step 4: Carry the route permit through gateway forwarding**
 
 At the existing gateway circuit gate, replace the boolean acquire/completion
 pair with:
@@ -254,7 +254,7 @@ Every terminal upstream response or failure records exactly once using that
 same permit. A `5xx` or transport failure records failure; a non-`5xx` response
 records success, preserving current classification.
 
-- [ ] **Step 5: Migrate Redis to permit-aware completion**
+- [x] **Step 5: Migrate Redis to permit-aware completion**
 
 In `RedisRateLimiter.tryAcquire`, hold:
 
@@ -265,14 +265,14 @@ CircuitBreaker.Permit permit = circuit.tryAcquirePermit();
 Pass `permit` to `recordSuccess` or `recordFailure`. Do not add emergency
 limiting yet; that is Task 3.
 
-- [ ] **Step 6: Remove the compatibility completion methods**
+- [x] **Step 6: Remove the compatibility completion methods**
 
 After `rg -n "recordSuccess\\(\\)|recordFailure\\(\\)|tryAcquire\\(\\)"` confirms
 no circuit callers use the old API, delete the no-argument compatibility
 methods from `CircuitBreaker` and boolean-only wrappers from
 `RouteCircuitBreaker`.
 
-- [ ] **Step 7: Run adjacent tests**
+- [x] **Step 7: Run adjacent tests**
 
 Run:
 
@@ -283,7 +283,7 @@ mvn test -Dtest='CircuitBreakerTest,RouteCircuitBreakerTest,GatewayRequestForwar
 Expected: all pass, with no sleep-based half-open test remaining in
 `RedisRateLimiterTest`.
 
-- [ ] **Step 8: Commit**
+- [x] **Step 8: Commit**
 
 ```bash
 git add src/main/java/com/recsys/resilience/CircuitBreaker.java \
@@ -314,7 +314,7 @@ git commit -m "refactor: carry circuit permits through callers"
 - Produces: `enum Source { DISABLED, REDIS, EMERGENCY }`
 - Produces constructor seam accepting `double emergencyRatePerSecond`, `int emergencyBurst`, `LongSupplier tickerNanos`, and circuit clock.
 
-- [ ] **Step 1: Write the emergency exhaustion test**
+- [x] **Step 1: Write the emergency exhaustion test**
 
 Use an injected monotonic clock and Redis executor that always throws:
 
@@ -336,7 +336,7 @@ void redisFailureUsesBoundedEmergencyBudget() {
 }
 ```
 
-- [ ] **Step 2: Verify RED**
+- [x] **Step 2: Verify RED**
 
 Run:
 
@@ -346,7 +346,7 @@ mvn test -Dtest=RedisRateLimiterTest#redisFailureUsesBoundedEmergencyBudget
 
 Expected: compile failure because emergency configuration and `Source` are absent.
 
-- [ ] **Step 3: Add emergency configuration and validation**
+- [x] **Step 3: Add emergency configuration and validation**
 
 Production environment variables:
 
@@ -369,7 +369,7 @@ negative rate/burst throws `IllegalArgumentException`; `0` explicitly disables
 emergency limiting for rollback. Do not use `EnvConfig`'s parse-with-default
 behavior for invalid configured values.
 
-- [ ] **Step 4: Set explicit Kubernetes defaults**
+- [x] **Step 4: Set explicit Kubernetes defaults**
 
 Add to `k8s/base/configmap.yaml` beside the global rate-limit settings:
 
@@ -383,7 +383,7 @@ The base global limit is `200`, so the emergency default is the specified
 conservative quarter-rate. Existing `envFrom` wiring supplies these values to
 online-serving without a Deployment change.
 
-- [ ] **Step 5: Add the emergency decision path**
+- [x] **Step 5: Add the emergency decision path**
 
 Add one `TokenBucket` per limiter instance. Implement:
 
@@ -400,7 +400,7 @@ private Decision emergencyDecision() {
 Use this method for executor exceptions, malformed Redis replies, an OPEN
 circuit, and callers that lose the HALF_OPEN probe race.
 
-- [ ] **Step 6: Add refill, disabled, and authoritative-path tests**
+- [x] **Step 6: Add refill, disabled, and authoritative-path tests**
 
 Tests must prove:
 
@@ -411,7 +411,7 @@ Tests must prove:
 - OPEN circuit makes no Redis call but consumes emergency tokens;
 - malformed Redis result is treated as emergency, not unlimited allowed.
 
-- [ ] **Step 7: Pin the HTTP rejection contract**
+- [x] **Step 7: Pin the HTTP rejection contract**
 
 Extend `OnlineServicesTest` so an emergency rejection returns:
 
@@ -421,7 +421,7 @@ assertThat(response.headers().get(HttpHeaderNames.RETRY_AFTER)).isEqualTo("1");
 assertThat(response.contentUtf8()).contains("online serving rate limited");
 ```
 
-- [ ] **Step 8: Run focused suites**
+- [x] **Step 8: Run focused suites**
 
 Run:
 
@@ -431,7 +431,7 @@ mvn test -Dtest='RedisRateLimiterTest,OnlineServicesTest'
 
 Expected: all pass.
 
-- [ ] **Step 9: Commit**
+- [x] **Step 9: Commit**
 
 ```bash
 git add src/main/java/com/recsys/ratelimit/RedisRateLimiter.java \
@@ -459,7 +459,7 @@ git commit -m "feat: bound Redis fail-open traffic locally"
 - Produces: `void registerMetrics(MeterRegistry registry)`
 - Extends `RedisRateLimiter.Snapshot` with emergency configuration and four cumulative outcome counters.
 
-- [ ] **Step 1: Write bounded-metric failing tests**
+- [x] **Step 1: Write bounded-metric failing tests**
 
 Use `SimpleMeterRegistry` and assert these meters:
 
@@ -473,7 +473,7 @@ recsys_online_rate_limit_decisions_total{source="emergency",result="rejected"}
 Assert the only tag keys are `source` and `result`. Assert repeated
 `registerMetrics(registry)` does not create duplicate meters.
 
-- [ ] **Step 2: Verify RED**
+- [x] **Step 2: Verify RED**
 
 Run:
 
@@ -483,7 +483,7 @@ mvn test -Dtest=RedisRateLimiterTest
 
 Expected: failure because metric registration and counters are absent.
 
-- [ ] **Step 3: Implement counters and idempotent registration**
+- [x] **Step 3: Implement counters and idempotent registration**
 
 Keep four `LongAdder` fields in the limiter and increment exactly once per
 returned decision. Register `FunctionCounter`s from those adders with the four
@@ -501,7 +501,7 @@ long emergencyAllowed,
 long emergencyRejected
 ```
 
-- [ ] **Step 4: Wire production registry**
+- [x] **Step 4: Wire production registry**
 
 Change:
 
@@ -512,13 +512,13 @@ redisRateLimiter.registerMetrics(registry);
 
 in `OnlinePredictionServer`.
 
-- [ ] **Step 5: Pin `/online/ops` JSON**
+- [x] **Step 5: Pin `/online/ops` JSON**
 
 Extend `OnlineOpsServiceTest` to assert `rateLimit` contains the emergency
 configuration, counters, and `circuitState`, and contains no bucket/principal
 map.
 
-- [ ] **Step 6: Run focused tests**
+- [x] **Step 6: Run focused tests**
 
 Run:
 
@@ -532,7 +532,7 @@ as the server wiring test.
 
 Expected: all selected tests pass.
 
-- [ ] **Step 7: Commit**
+- [x] **Step 7: Commit**
 
 ```bash
 git add src/main/java/com/recsys/ratelimit/RedisRateLimiter.java \
@@ -570,7 +570,7 @@ git commit -m "feat: expose bounded fail-open telemetry"
 - Produces: `RecallResult(..., DegradationOutcome outcome)`
 - Produces header: `X-Recall-Degradation-Reason: partial|all_channels|fallback`
 
-- [ ] **Step 1: Write `RecallResult` outcome tests**
+- [x] **Step 1: Write `RecallResult` outcome tests**
 
 Add tests for explicit outcome and constructor invariants:
 
@@ -583,7 +583,7 @@ assertThatThrownBy(() -> new RecallResult(List.of(), Set.of("x"), HEALTHY))
 Retain a two-argument compatibility constructor that derives `PARTIAL` for
 non-empty degraded channels only during migration.
 
-- [ ] **Step 2: Verify RED**
+- [x] **Step 2: Verify RED**
 
 Run:
 
@@ -593,7 +593,7 @@ mvn test -Dtest=RecallResultTest
 
 Expected: compile failure because `DegradationOutcome` and the third component are absent.
 
-- [ ] **Step 3: Derive outcomes in recall**
+- [x] **Step 3: Derive outcomes in recall**
 
 Track `attemptedChannels` and successful channel results:
 
@@ -614,14 +614,14 @@ proof of degraded recovery. The Spring overload-cache branch in
 `RecommendationController` is the component that produces the `fallback` wire
 reason because it already proves recovery through `tryServeFromCache`.
 
-- [ ] **Step 4: Add aggregate outcome metrics**
+- [x] **Step 4: Add aggregate outcome metrics**
 
 Add a fixed `EnumMap<DegradationOutcome, LongAdder>` and expose counts in
 `RecallDegradationMetrics.Snapshot`. Preserve existing per-channel operational
 snapshot data, but register Micrometer metrics only by the bounded `outcome`
 enum.
 
-- [ ] **Step 5: Extend the response helper**
+- [x] **Step 5: Extend the response helper**
 
 Change the helper signature to:
 
@@ -640,7 +640,7 @@ Rules:
 - Other values are lowercase enum names, with `ALL_CHANNELS` serialized as
   `all_channels`.
 
-- [ ] **Step 6: Carry outcome through V1 and V2**
+- [x] **Step 6: Carry outcome through V1 and V2**
 
 V1 passes `recall.outcome()` directly. The orchestrator adds:
 
@@ -651,7 +651,7 @@ trace.put("degradationOutcome", recall.outcome().wireValue());
 only when non-healthy. V2 reads that bounded value rather than re-inferring it
 from item count.
 
-- [ ] **Step 7: Mark overload-cache recovery**
+- [x] **Step 7: Mark overload-cache recovery**
 
 In the existing `tryServeFromCache` success branch, preserve:
 
@@ -668,7 +668,7 @@ X-Recall-Degradation-Reason: fallback
 Extend `RecommendationControllerTest` to assert both headers and the unchanged
 `200` body.
 
-- [ ] **Step 8: Prove healthy-empty versus degraded-empty**
+- [x] **Step 8: Prove healthy-empty versus degraded-empty**
 
 Tests must assert:
 
@@ -679,7 +679,7 @@ Tests must assert:
 - fallback-only recovery: status `200`, reason `fallback`;
 - channel names stay sorted and never appear as metric tags.
 
-- [ ] **Step 9: Run focused degradation suites**
+- [x] **Step 9: Run focused degradation suites**
 
 Run:
 
@@ -689,7 +689,7 @@ mvn test -Dtest='RecallResultTest,MultiChannelRecallDegradationTest,RecallDegrad
 
 Expected: all pass.
 
-- [ ] **Step 10: Commit**
+- [x] **Step 10: Commit**
 
 ```bash
 git add src/main/java/com/recsys/application/retrieval/multichannel \
@@ -719,7 +719,7 @@ git commit -m "feat: distinguish recall degradation outcomes"
 - Produces Maven profile: `-Presilience`
 - Produces validation gate: `maven-enforcer-plugin:enforce`
 
-- [ ] **Step 1: Capture the current Netty warning as a failing build check**
+- [x] **Step 1: Capture the current Netty warning as a failing build check**
 
 Run:
 
@@ -731,7 +731,7 @@ rg "Inconsistent Netty versions detected" /tmp/recsys-netty-before.log
 Expected: the warning is present. Save the observed versions in the commit
 message or task notes; do not commit `/tmp` output.
 
-- [ ] **Step 2: Add Enforcer convergence**
+- [x] **Step 2: Add Enforcer convergence**
 
 Add `maven-enforcer-plugin` version `3.5.0` in the `validate` phase with:
 
@@ -749,7 +749,7 @@ exclusions or dependency-management alignment. Prefer framework BOM management;
 do not add individual Netty versions until the dependency tree proves a BOM
 cannot converge them.
 
-- [ ] **Step 3: Verify warning removal**
+- [x] **Step 3: Verify warning removal**
 
 Run:
 
@@ -761,7 +761,7 @@ test -z "$(rg 'Inconsistent Netty versions detected' /tmp/recsys-netty-after.log
 
 Expected: validation succeeds and no warning matches.
 
-- [ ] **Step 4: Add the resilience Maven profile**
+- [x] **Step 4: Add the resilience Maven profile**
 
 Create a `resilience` profile that sets a Surefire include list for deterministic
 resilience packages/classes and keeps `load,docker` excluded. Include:
@@ -780,7 +780,7 @@ resilience packages/classes and keeps `load,docker` excluded. Include:
 
 Do not include integration classes requiring Docker.
 
-- [ ] **Step 5: Prove the profile**
+- [x] **Step 5: Prove the profile**
 
 Run:
 
@@ -791,7 +791,7 @@ mvn -Presilience test
 Expected: the deterministic resilience set runs with zero failures and no
 Docker startup.
 
-- [ ] **Step 6: Add the pull-request workflow**
+- [x] **Step 6: Add the pull-request workflow**
 
 Create `.github/workflows/resilience-pr.yml`:
 
@@ -822,7 +822,7 @@ jobs:
           path: target/surefire-reports/
 ```
 
-- [ ] **Step 7: Commit**
+- [x] **Step 7: Commit**
 
 ```bash
 git add pom.xml .github/workflows/resilience-pr.yml
@@ -844,7 +844,7 @@ git commit -m "ci: require deterministic resilience checks"
 - Produces: `resilience-evidence.json` schema version `1`.
 - Consumes: Surefire XML from `target/surefire-reports`.
 
-- [ ] **Step 1: Write the evidence summarizer test**
+- [x] **Step 1: Write the evidence summarizer test**
 
 Create a Java resource fixture or invoke the Python script from
 `ResilienceEvidenceSchemaTest` with a temporary Surefire directory. Assert:
@@ -861,7 +861,7 @@ Create a Java resource fixture or invoke the Python script from
 
 The production change that makes the test pass is the new summarizer script.
 
-- [ ] **Step 2: Verify RED**
+- [x] **Step 2: Verify RED**
 
 Run:
 
@@ -871,7 +871,7 @@ mvn test -Dtest=ResilienceEvidenceSchemaTest
 
 Expected: failure because `scripts/summarize-resilience-results.py` does not exist.
 
-- [ ] **Step 3: Implement the standard-library summarizer**
+- [x] **Step 3: Implement the standard-library summarizer**
 
 Use `argparse`, `json`, `platform`, and `xml.etree.ElementTree`. Required CLI:
 
@@ -887,7 +887,7 @@ version from `JAVA_VERSION`, runner OS, git SHA from `GITHUB_SHA`, and set
 `invariantsPassed` only when failures and errors are zero. Missing reports is a
 nonzero script error, not a passing empty result.
 
-- [ ] **Step 4: Verify GREEN**
+- [x] **Step 4: Verify GREEN**
 
 Run:
 
@@ -897,7 +897,7 @@ mvn test -Dtest=ResilienceEvidenceSchemaTest
 
 Expected: pass.
 
-- [ ] **Step 5: Add the scheduled/manual workflow**
+- [x] **Step 5: Add the scheduled/manual workflow**
 
 Create two bounded jobs:
 
@@ -929,7 +929,7 @@ Set `permissions: contents: read`, use `actions/upload-artifact@v4`, and set
 artifact retention to 30 days. The test commands enforce correctness; evidence
 generation remains `if: always()`.
 
-- [ ] **Step 6: Validate workflow syntax and Maven selectors locally**
+- [x] **Step 6: Validate workflow syntax and Maven selectors locally**
 
 Run:
 
@@ -944,7 +944,7 @@ If `actionlint` is installed, also run:
 actionlint .github/workflows/resilience-pr.yml .github/workflows/resilience-scheduled.yml
 ```
 
-- [ ] **Step 7: Commit**
+- [x] **Step 7: Commit**
 
 ```bash
 git add scripts/summarize-resilience-results.py \
@@ -969,7 +969,7 @@ git commit -m "ci: schedule bounded resilience verification"
 - Adds common flags: `--context NAME`, `--region us-west-2`, `--report FILE`, `--dry-run`
 - Produces JSON report schema version `1`.
 
-- [ ] **Step 1: Build a fake-kubectl shell harness**
+- [x] **Step 1: Build a fake-kubectl shell harness**
 
 Create `scripts/test-dr-standby-capacity.sh` using `mktemp -d` and a trap.
 Prepend a fake `kubectl` to `PATH`; it records argv and returns fixture output
@@ -984,7 +984,7 @@ assert_passes "already promoted" promote --context prod-us-west-2 --region us-we
 assert_no_recorded_command "apply"   # already converged is idempotent
 ```
 
-- [ ] **Step 2: Verify RED**
+- [x] **Step 2: Verify RED**
 
 Run:
 
@@ -995,7 +995,7 @@ bash scripts/test-dr-standby-capacity.sh
 Expected: failure because context/region validation, image validation, and
 idempotent state comparison are absent.
 
-- [ ] **Step 3: Refactor checks into explicit functions**
+- [x] **Step 3: Refactor checks into explicit functions**
 
 Add focused functions:
 
@@ -1017,7 +1017,7 @@ write_report
 Use task-specific variables such as `DR_REPORT_PATH`; do not repurpose `HOME`.
 All mutation remains HPA-only.
 
-- [ ] **Step 4: Implement idempotent promote/demote**
+- [x] **Step 4: Implement idempotent promote/demote**
 
 Compare desired HPA `(name,minReplicas)` pairs to live HPA values. If equal,
 skip apply and report `capacityChange: "none"`. Otherwise apply HPA documents,
@@ -1033,7 +1033,7 @@ kubectl --context "$DR_CONTEXT" wait pod --all \
 Query PDB status and reject when `disruptionsAllowed`/healthy replica evidence
 does not satisfy the target posture.
 
-- [ ] **Step 5: Add the JSON report**
+- [x] **Step 5: Add the JSON report**
 
 Write through Python 3 stdlib so escaping is correct:
 
@@ -1060,7 +1060,7 @@ Write through Python 3 stdlib so escaping is correct:
 Write reports atomically via a temporary file in the report's parent directory,
 then `mv`.
 
-- [ ] **Step 6: Implement read-only cutover/failback checks**
+- [x] **Step 6: Implement read-only cutover/failback checks**
 
 `cutover-check` and `failback-check` must not call `kubectl apply`, AWS mutation,
 DNS mutation, or database promotion. They accept evidence through explicit
@@ -1078,7 +1078,7 @@ failover-global-cluster
 promote-read-replica
 ```
 
-- [ ] **Step 7: Add remaining hermetic cases**
+- [x] **Step 7: Add remaining hermetic cases**
 
 Cover:
 
@@ -1091,7 +1091,7 @@ Cover:
 - `verify` remains offline and checks active/base drift;
 - demote restores only standby HPA floors.
 
-- [ ] **Step 8: Run shell verification**
+- [x] **Step 8: Run shell verification**
 
 Run:
 
@@ -1104,7 +1104,7 @@ scripts/dr-standby-capacity.sh verify
 Expected: tests pass, shellcheck has no findings when installed, and overlay
 drift verification passes.
 
-- [ ] **Step 9: Commit**
+- [x] **Step 9: Commit**
 
 ```bash
 git add scripts/dr-standby-capacity.sh scripts/test-dr-standby-capacity.sh
@@ -1128,7 +1128,7 @@ git commit -m "feat: make DR capacity promotion auditable"
 - Documents the exact environment variables, response headers, metrics, CI
   commands, DR report, and operator boundaries introduced above.
 
-- [ ] **Step 1: Update runtime configuration**
+- [x] **Step 1: Update runtime configuration**
 
 Document:
 
@@ -1141,7 +1141,7 @@ ONLINE_REDIS_EMERGENCY_BURST
 Include defaults, invalid-value startup behavior, rollback behavior, and the
 fact that settings apply per replica only during Redis fail-open.
 
-- [ ] **Step 2: Update the fault-tolerance investigation**
+- [x] **Step 2: Update the fault-tolerance investigation**
 
 Replace the unlimited fail-open description with the emergency-limiter flow.
 Document generation-bound half-open ownership and:
@@ -1153,7 +1153,7 @@ X-Recall-Degradation-Reason
 
 Document the four bounded outcomes and the PR/scheduled Maven commands.
 
-- [ ] **Step 3: Update DR runbooks**
+- [x] **Step 3: Update DR runbooks**
 
 The failover sequence becomes:
 
@@ -1176,7 +1176,7 @@ scripts/dr-standby-capacity.sh cutover-check \
 Failback uses `failback-check` before explicit traffic/data changes and `demote`
 only after traffic has left the standby. Game-day instructions archive reports.
 
-- [ ] **Step 4: Run documentation consistency checks**
+- [x] **Step 4: Run documentation consistency checks**
 
 Run:
 
@@ -1189,7 +1189,7 @@ git diff --check
 Inspect every stale claim returned and update only statements contradicted by
 the implemented behavior.
 
-- [ ] **Step 5: Run complete deterministic verification**
+- [x] **Step 5: Run complete deterministic verification**
 
 Run:
 
@@ -1215,7 +1215,7 @@ Expected:
 - Evidence JSON reports `schemaVersion: 1` and `invariantsPassed: true`.
 - No whitespace errors or unrelated working-tree changes.
 
-- [ ] **Step 6: Run optional environmental verification**
+- [x] **Step 6: Run optional environmental verification**
 
 When Docker is available:
 
@@ -1231,7 +1231,7 @@ mvn --batch-mode test -DexcludedGroups=docker -Dgroups=load
 
 Record if either optional group was not run; do not claim it passed.
 
-- [ ] **Step 7: Commit**
+- [x] **Step 7: Commit**
 
 ```bash
 git add CONFIG_GUIDE.md docs/system_design/18_Fault_Tolerance.md \
@@ -1260,3 +1260,75 @@ git commit -m "docs: operationalize fault tolerance hardening"
   failing tests.
 - **No placeholders:** All implementation interfaces, file targets, commands,
   accepted wire values, and example Kubernetes contexts are specified.
+
+---
+
+## Execution Record (2026-07-26)
+
+All nine tasks are implemented. Three deviations from the plan as written, and
+one gap the plan did not anticipate, are recorded here.
+
+### Deviations
+
+1. **Environmental evidence is a dedicated probe, not a Surefire-only summary.**
+   Task 7 as written derived evidence from Surefire XML alone, which cannot
+   report offered/accepted concurrency, rejection counts, degraded ratio,
+   timeout recovery, Redis boundary behavior, or drain completion — the
+   artifacts the design requires. Surefire counts alone would have produced
+   evidence that looked authoritative while measuring none of it. Two dedicated
+   probes now exercise those invariants and emit a validated JSON sidecar per
+   scheduled job: `LoadResilienceEvidenceTest` (`@Tag("load")`) and
+   `DockerRedisResilienceEvidenceTest` (`@Tag("docker")`). The summarizer
+   requires `--measurements`, validates the sidecar's schema, cross-checks each
+   named invariant against the measured values, and refuses to pass when they
+   disagree. Each sidecar declares `applicability`, so neither suite can appear
+   to cover the other's invariants.
+
+2. **There is no `deterministic` evidence suite.** Task 9 Step 5 ran the
+   summarizer with `--suite deterministic`; the summarizer rejects that suite
+   because no environmental probe backs it. The deterministic gate is enforced
+   by `mvn -Presilience test` itself, which is the honest signal.
+
+3. **`manifest-digest` was added to the DR script.** Task 8 and the runbooks
+   require operators to embed a canonical HPA manifest digest in the approved
+   evidence files, and every mutating command validates evidence against the
+   digest it renders — but nothing produced that value, so it had to be derived
+   by hand. `manifest-digest --target promote|demote|cutover-check|failback-check`
+   renders the matching overlay offline, prints the digest, and writes the same
+   schema-1 audit report. It refuses `--context`, `--region`, and `--dry-run`.
+
+### Defects found by the new gates
+
+- `RecallDegradationMetrics` became a `@Component` (Task 5) while still
+  `final`. `TraceIdAspect` advises every `com.recsys` bean outside
+  `infrastructure`, so Spring could not generate a CGLIB subclass and every
+  `ModelApplication` context failed to load — 14 errors. The resilience profile
+  does not cover the Spring integration tests; only the full suite caught it.
+- `EmbeddingRecallLoadTest` and `V2CrossPathLoadTest` stubbed
+  `MultiChannelRecallService.recall` while `RecommendationOrchestrator` reads
+  `recallDetailed`, so the unstubbed mock returned null and the embedding path
+  failed every request (0% and 67% success). Pre-existing on `main` and
+  invisible because the `load` group is excluded by default; promoting that
+  group to a release-evidence gate surfaced it.
+
+### Verification performed
+
+| Check | Result |
+|---|---|
+| `mvn --batch-mode validate` | pass (Java 17 + dependency convergence) |
+| `mvn --batch-mode -Presilience test` | 147 tests, 0 failures |
+| `mvn --batch-mode test` | 1242 tests, 0 failures |
+| `mvn test -DexcludedGroups=docker -Dgroups=load` | 12 tests, 0 failures |
+| Load evidence sidecar + summarizer | `schemaVersion 1`, `invariantsPassed: true` |
+| `bash scripts/test-dr-standby-capacity.sh` | 98 passed, 0 failed |
+| `shellcheck` on both DR scripts | no findings |
+| `scripts/dr-standby-capacity.sh verify` | pass (active overlay matches baseline) |
+| `manifest-digest` against real overlays | distinct active/standby digests |
+| `git diff --check` | clean |
+
+**Not run:** the `docker` group (`-Dgroups=docker`), because no Docker daemon is
+available in this environment. `DockerRedisResilienceEvidenceTest` and the
+Redis-boundary invariant are therefore unverified here and remain to be proven
+by the scheduled workflow's `docker` job or a local run with Docker up. The
+GitHub workflows have not executed; they are validated by syntax and by running
+their exact Maven and summarizer commands locally.
