@@ -1,115 +1,146 @@
 # Runbook: Regional DR Failover (us-east-1 → us-west-2)
 
-Active-passive DR. `us-east-1` is primary; `us-west-2` is a warm standby running
-the `k8s/eks-us-west-2` overlay. See the design at
-`docs/superpowers/specs/2026-07-08-multi-region-dr-failover-design.md`, and the
-[Fault Tolerance investigation](../system_design/18_Fault_Tolerance.md) for how regional
-failover fits the broader resilience model.
+This is an operator-controlled active/passive failover. The capacity script may
+change only the four `autoscaling/v2` HPAs in namespace `recsys`; it never
+promotes Aurora/ElastiCache, changes DNS, or switches traffic.
 
-## One-time AWS setup (out-of-band, no IaC)
+The environment must already have the west EKS warm standby, cross-region ECR
+replication, Aurora Global Database, ElastiCache Global Datastore, and the
+reviewed Route53/origin failover records. Keep the standby deployed at the same
+immutable release as the primary. After the CDN rollout, the failover record is
+`origin.recsys.example.com` behind the CloudFront public alias; before it, the
+record is the public API hostname. Keep `recsys-gateway-origin-secret` created
+and rotated in both contexts per [cdn-operations.md](cdn-operations.md); a
+missing standby secret disables origin enforcement instead of failing startup.
 
-1. **Second EKS cluster** in us-west-2 running the four services:
-   `kubectl apply -k k8s/eks-us-west-2` (after pinning the digest — see below).
-2. **ECR cross-region replication**: add a registry replication rule copying
-   `recsys-backend-service` from us-east-1 to us-west-2 so the pinned digest exists
-   in both regions.
-3. **Aurora Global Database**: primary writer cluster in us-east-1, secondary
-   read-replica cluster in us-west-2.
-4. **ElastiCache Global Datastore**: primary in us-east-1, secondary (readable) in
-   us-west-2.
-5. **Route53 health check + failover records** (see below).
+## Preconditions and evidence
 
-## Route53 automatic failover
+Before any cluster-facing command:
 
-> **Hostname topology changed once the CDN rollout (`docs/runbooks/cdn-operations.md`) is
-> complete.** The public hostname (e.g. `app.recsys.example.com`) is now a CloudFront alias, not
-> a Route53 failover record set. The two failover records described below moved to the
-> `origin.*` hostname (e.g. `origin.recsys.example.com`), which CloudFront treats as its single
-> origin. The failover **logic** is unchanged — only the name it lives on moved. See
-> `docs/superpowers/specs/2026-07-14-cdn-edge-acceleration-design.md` ("Origin and failover").
-> Before that rollout, or if it's ever rolled back, the failover records live directly on the
-> public hostname as described below.
+1. Pin the same approved immutable image digest in the primary, standby, and
+   active-standby overlays. The checked-in placeholder digest intentionally
+   makes the command fail closed.
+2. Select the exact standby context and make it current. The requested context,
+   region, current context, and authoritative HTTPS cluster endpoint must all
+   agree.
+3. Create a protected context identity file:
 
-- Health check: HTTPS/HTTP on the **primary** API Gateway ALB, path `/health`,
-  interval 30s, failure threshold 3.
-- Two failover records on the failover hostname — `origin.recsys.example.com` post-rollout,
-  or the public hostname (e.g. `api.recsys.example.com`) pre-rollout — TTL 30s:
-  - PRIMARY → us-east-1 gateway ALB, associated with the health check.
-  - SECONDARY → us-west-2 gateway ALB.
-- When the health check goes unhealthy, Route53 serves the SECONDARY record
-  automatically. No human action restores the **read** path.
-- Post-rollout, CloudFront still resolves the public hostname's traffic to whichever ALB
-  `origin.*` currently points at — the DNS failover this section describes still runs, just one
-  hop further from the public hostname, bounded by the same 30s TTL.
+   ```json
+   {
+     "contexts": {
+       "prod-us-west-2": {
+         "region": "us-west-2",
+         "server": "https://authoritative-eks-endpoint.example"
+       }
+     }
+   }
+   ```
 
-## Deploy the standby (keep it current)
+4. Produce fresh dependency evidence using approved read-only probes. It is
+   valid for 15 minutes and must contain the canonical HPA manifest digest used
+   by this operation:
 
-Every primary deploy must also deploy the standby so it stays warm and current:
+   ```json
+   {
+     "schemaVersion": 1,
+     "source": "recsys-dependency-observer/v1",
+     "provenance": "approved-read-only-dependency-probes",
+     "observedAt": "2026-07-26T12:00:00Z",
+     "status": "healthy",
+     "manifestDigests": ["<canonical-hpa-manifest-digest>"]
+   }
+   ```
+
+   ```bash
+   export DR_CONTEXT_IDENTITY_FILE=/secure/change/context-identity.json
+   export DR_DEPENDENCY_EVIDENCE_FILE=/secure/change/dependencies.json
+   ```
+
+The script also validates exact workload/HPA/PDB sets, image identity,
+topology constraints, current/live HPA min and max values, rollout and ready
+replicas, cross-zone pod placement, service readiness endpoints, and dependency
+evidence. Unknown, partial, contradictory, stale, or changing state fails
+closed.
+
+## Prepare standby application capacity
+
+Use a new report path for every invocation:
+
 ```bash
-scripts/set-eks-image-digest.sh --tag <release-tag>   # pins BOTH overlays
-kubectl --context <us-east-1-ctx>  apply -k k8s/eks
-kubectl --context <us-west-2-ctx>  apply -k k8s/eks-us-west-2
+scripts/dr-standby-capacity.sh promote \
+  --context prod-us-west-2 \
+  --region us-west-2 \
+  --report artifacts/dr-promote-<change-id>.json
 ```
 
-### Origin secret is required standby state (post-CDN-rollout)
+`promote` sends only the canonical four-HPA JSON payload to Kubernetes. It
+converges the live min/max values to the active overlay, waits for rollout and
+readiness, and rechecks exact HPA state at the final gate. Re-running against
+already-converged capacity records `capacityChange: "none"`. Reports are
+schema version 1, written atomically under locks, and never overwrite an
+existing path; archive both failed (`ready: false`) and successful reports.
 
-Once the CloudFront rollout in `docs/runbooks/cdn-operations.md` is complete, the
-`recsys-gateway-origin-secret` k8s Secret is part of the standby's required state, not just the
-primary's. `GATEWAY_ORIGIN_SECRET` is templated from `k8s/base`, so both regions expect it, and
-CloudFront's origin is the `origin.*` failover hostname — it sends the same header value
-regardless of which region's ALB answers.
+Review `checks`, `manifestDigest`, `capacityChange`, `ready`, and
+`remainingOperatorActions`. Do not proceed unless `ready` is `true`.
 
-**If the standby is missing the Secret, it does not fail loud.**
-`GatewayOriginSecret.fromEnvironment` returns `disabled()` when the env var is absent, so a
-us-west-2 gateway with no Secret simply stops enforcing the origin-lockdown check — the origin
-secret decorator is never registered. A failover in that state silently drops the origin
-lockdown entirely rather than rejecting anything, which is easy to miss because nothing errors
-and probes still pass.
+## Promote the data tier
 
-Create and rotate the Secret in **both** contexts — see the rotation and step-4 procedures in
-`docs/runbooks/cdn-operations.md`, which use the same `--context <us-east-1-ctx>` /
-`--context <us-west-2-ctx>` two-context form as this runbook.
+The operator now performs the separately approved Aurora, ElastiCache, and
+streaming promotion steps in
+[dr-data-tier-promotion.md](dr-data-tier-promotion.md). The capacity script
+does not perform or authorize these actions.
 
-## On a us-east-1 outage
+Afterward, create fresh operator evidence (valid for 15 minutes):
 
-1. Confirm the outage (AWS Health Dashboard, primary ALB 5xx / failed health check).
-2. Route53 has already cut DNS to us-west-2 — verify:
-   - Post-CDN-rollout: `dig +short origin.recsys.example.com` resolves to the us-west-2 ALB.
-     The public hostname (`app.recsys.example.com`) keeps resolving to CloudFront throughout —
-     it never repoints, since the failover now lives one hop behind it.
-   - Pre-rollout: `dig +short api.recsys.example.com` resolves to the us-west-2 ALB directly.
-3. Verify the standby serves reads:
-   - Post-CDN-rollout: `curl -fsS https://app.recsys.example.com/health` returns healthy (routed
-     through CloudFront to whichever ALB `origin.*` now points at).
-   - Pre-rollout: `curl -fsS https://api.recsys.example.com/health` returns healthy.
-4. **Writes are degraded until the data tier is promoted** → run
-   `docs/runbooks/dr-data-tier-promotion.md`.
-5. **Pre-scale the standby to the primary baseline** so full traffic does not hit a
-   half-capacity region while HPA reacts:
-   ```bash
-   scripts/dr-standby-capacity.sh promote --context <us-west-2-ctx>
-   ```
-   This raises minReplicas from the warm-standby floor (1/1/2/1) to the primary
-   baseline (gateway 2, catalog 2, model 3, online 2) via the
-   `k8s/eks-us-west-2-active` overlay; HPA + cluster-autoscaler then surge further as
-   traffic arrives. Watch `kubectl --context <us-west-2-ctx> -n recsys get hpa`.
-   The pre-scale is to the **primary baseline, not peak** — it sets the floor so HPA
-   isn't starting from a half-capacity minimum, but HPA and cluster-autoscaler still
-   need to climb further under real production load; `promote` alone does not
-   guarantee headroom for a traffic spike.
+```json
+{
+  "source": "approved-change-record/<change-id>",
+  "observedAt": "2026-07-26T12:05:00Z",
+  "writerIdentity": "us-west-2",
+  "replicationDirection": "west-to-east",
+  "lagStatus": "accepted",
+  "rpoAccepted": true,
+  "trafficTarget": "us-west-2",
+  "health": "healthy",
+  "manifestDigest": "<canonical-hpa-manifest-digest>"
+}
+```
 
-   > While failed over, deploy the **-active** overlay to keep the standby current —
-   > `kubectl --context <us-west-2-ctx> apply -k k8s/eks-us-west-2-active`. A plain
-   > `apply -k k8s/eks-us-west-2` would demote it back to 1/1/2/1. Restore the
-   > standby floor on failback with `scripts/dr-standby-capacity.sh demote`.
-   > That full `apply -k` is the normal deploy flow (see "Deploy the standby" above)
-   > and requires the image digest to be pinned first via
-   > `scripts/set-eks-image-digest.sh` — unlike `dr-standby-capacity.sh promote`,
-   > which touches only the four HPAs and never the Deployments or image.
+The source must be nonempty and the values must come from approved operator
+observations. Do not copy illustrative timestamps or digests.
+
+## Prove cutover prerequisites
+
+```bash
+scripts/dr-standby-capacity.sh cutover-check \
+  --context prod-us-west-2 \
+  --region us-west-2 \
+  --evidence /secure/change/cutover-evidence.json \
+  --report artifacts/dr-cutover-check-<change-id>.json
+```
+
+This command is read-only. In addition to validating the evidence, it
+independently re-observes exact active HPA capacity, topology, services, and
+dependencies, with the live HPA state checked again as the final gate.
+
+Only after a `ready: true` report does the authorized operator explicitly
+change the Route53/origin traffic target. CloudFront deployments use
+`origin.recsys.example.com`; pre-CDN deployments use the public API hostname.
+Verify the selected hostname and a real recommendation request, then archive
+the promote, data-tier, cutover-check, and traffic-change evidence together.
+
+## Safety and rollback
+
+- Never use `kubectl apply -k` as a substitute for this capacity step.
+- Do not reuse report filenames; an existing report is deliberately preserved.
+- Concurrent operations for the same context/namespace serialize, including
+  after wrapper termination while the real child remains alive.
+- A failed check is not authority to bypass the gate. Correct the observation,
+  produce fresh evidence, and use a new report path.
+- If traffic has not moved, `demote` may restore only the warm HPA floor. After
+  traffic has moved, follow the failback runbook before demotion.
 
 ## RTO / RPO
 
-- Reads: seconds (DNS TTL + health-check interval).
-- Writes: minutes (data-tier promotion).
-- RPO: ~seconds for MySQL/Redis; streaming = in-flight events on the failed
-  region's queue.
+Record observed read RTO, write RTO, accepted RPO, and every operator action in
+the change record. No fixed RPO is inferred by the script.

@@ -47,9 +47,12 @@ A single CAS-based state machine backs every breaker in the system:
 [`CircuitBreaker`](../../src/main/java/com/recsys/resilience/CircuitBreaker.java) is
 lock-free with an injectable clock. It is **CLOSED** while consecutive failures
 stay below the threshold; once tripped it is **OPEN** until `cooldownMs` elapses,
-then **HALF_OPEN**, where `tryAcquire()` admits exactly one probe
-(`probing.compareAndSet`). A success resets the counter; a failure re-stamps the
-open timestamp.
+then **HALF_OPEN**, where `tryAcquirePermit()` admits exactly one probe. Every
+admission returns a permit bound to the breaker generation and completion must
+present that same permit. Opening or successfully recovering advances the
+generation, so a late completion from an older request cannot mutate the
+current recovery attempt. State and probe ownership move together in one
+immutable CAS snapshot.
 
 [`RouteCircuitBreaker`](../../src/main/java/com/recsys/resilience/RouteCircuitBreaker.java)
 wraps one breaker per gateway route (default threshold **5**, cooldown **10 s**;
@@ -157,10 +160,23 @@ error, or bulkhead rejection returns an empty channel result — the two-phase
 quota merge gap-fills the shortfall from the remaining channels.
 
 [`RecallDegradationMetrics`](../../src/main/java/com/recsys/application/retrieval/multichannel/RecallDegradationMetrics.java)
-classifies failures (REJECTED / TIMEOUT / ERROR) and tracks
-`degradedRatio = degradedRecalls / totalRecalls`, surfaced at `GET /health/load`
-and via the `X-Recall-Degraded` response header — so partial degradation is
-observable rather than silent.
+classifies failures (REJECTED / TIMEOUT / ERROR), tracks
+`degradedRatio = degradedRecalls / totalRecalls`, and records four bounded
+outcomes. `GET /health/load` retains per-channel operational detail;
+Prometheus exposes `recsys_recall_degradation_outcomes_total` with only the
+bounded `outcome` tag:
+
+| Outcome | `X-Recall-Degradation-Reason` | Meaning |
+|---|---|---|
+| healthy | absent | All attempted channels succeeded, including a naturally empty result. |
+| partial | `partial` | At least one channel degraded and at least one attempted channel succeeded. |
+| all channels | `all_channels` | Every attempted channel degraded; candidate count is not used to infer this. |
+| fallback | `fallback` | The Spring overload path recovered the response from cache. |
+
+For partial/all-channel outcomes, `X-Recall-Degraded` remains the sorted,
+comma-separated degraded-channel list. Healthy status codes and response
+bodies are unchanged; non-healthy recommendation responses retain their
+successful status and add the bounded reason header.
 
 ### Non-personalized floors and degrade-to-cache
 
@@ -226,14 +242,26 @@ Redis is the hot dependency, so its failure paths are the most developed:
   [`HotKeyDetector`](../../src/main/java/com/recsys/infrastructure/resilience/HotKeyDetector.java)
   flags keys exceeding a per-second threshold for local caching.
 
-### Rate limiters — fail-open with an embedded breaker
+### Rate limiters — bounded fail-open with an embedded breaker
 
 [`RedisRateLimiter`](../../src/main/java/com/recsys/ratelimit/RedisRateLimiter.java) is
-the only *global* ceiling (a weighted sliding-window counter in Lua). It embeds a
-`CircuitBreaker` (threshold 5, reset 30 s): after repeated Redis failures it
-opens and **fails open without calling Redis**, and every failure path returns an
-`allowed` decision flagged `failOpen=true`. A rate-limit dependency outage
-therefore *admits* traffic rather than dropping it. The per-`(route, principal)`
+the only *global* ceiling while Redis is healthy (a weighted sliding-window
+counter in Lua). It embeds a `CircuitBreaker` (threshold 5, reset 30 s). A valid
+Redis decision is authoritative. On an exception, malformed Redis reply, OPEN
+circuit, or lost HALF_OPEN probe race, the request consults one conservative
+local emergency token bucket. An emergency allowance is flagged
+`failOpen=true`; emergency exhaustion uses the existing `429` with a positive
+`Retry-After`.
+
+The emergency budget is per online-serving replica and is inactive on healthy
+Redis decisions. Kubernetes defaults it to 50 requests/s with burst 50; absent
+values derive one quarter of global QPS (minimum one). Invalid boolean,
+negative/non-finite rate, or invalid/negative burst values fail startup.
+`ONLINE_REDIS_EMERGENCY_LIMIT_ENABLED=false` or a zero rate/burst restores the
+former unlimited fail-open behavior for rollback. Metrics expose only bounded
+`source=redis|emergency` and `result=allowed|rejected` tags; `/online/ops`
+reports circuit state, emergency configuration, and cumulative counts without
+bucket/principal dimensions. The per-`(route, principal)`
 [`GatewayRateLimiter`](../../src/main/java/com/recsys/ratelimit/GatewayRateLimiter.java),
 per-user [`ModelRateLimiter`](../../src/main/java/com/recsys/ratelimit/ModelRateLimiter.java),
 and token-budget [`LlmTokenRateLimiter`](../../src/main/java/com/recsys/ratelimit/LlmTokenRateLimiter.java)
@@ -310,12 +338,15 @@ best-effort with a cluster-wide fallback. See
 overlay composes `../base` + the `k8s/eks-shared/` component and overrides only
 region-specific values (us-west-2 ECR/ElastiCache/WAF). On failover an operator
 **pre-scales** the standby to the primary baseline with
-`scripts/dr-standby-capacity.sh promote`, which applies the
-`k8s/eks-us-west-2-active` overlay **HPA-documents-only** (never `apply -k`, so a
-cutover can't roll Deployments to the out-of-band placeholder image digest);
-`demote` restores the warm floor and `verify` is an offline drift guard against
-`k8s/base`. It remains a **manual** step, so expect a brief scale-out window if a
-cutover lands before `promote` runs. The design is
+`scripts/dr-standby-capacity.sh promote`, which validates every rendered
+workload but applies one canonical payload containing **only the four HPAs**.
+It refuses placeholder/inconsistent images, a wrong context/region/endpoint,
+ambiguous HPA state, unhealthy rollout/PDB/topology/services, or missing fresh
+dependency evidence. `demote` restores only the warm HPA floor; `verify` is an
+offline drift guard; `cutover-check` and `failback-check` are read-only
+evidence gates. Reports are schema-v1, locked, atomic, and never overwrite an
+existing path. Data roles, DNS, and traffic remain explicit operator actions.
+The design is
 [2026-07-08-multi-region-dr-failover-design.md](../superpowers/specs/2026-07-08-multi-region-dr-failover-design.md);
 operations are in [dr-regional-failover.md](../runbooks/dr-regional-failover.md),
 [dr-failback.md](../runbooks/dr-failback.md),
@@ -326,6 +357,17 @@ operations are in [dr-regional-failover.md](../runbooks/dr-regional-failover.md)
 
 The failure paths are exercised, not just asserted in prose.
 
+The pull-request gate runs:
+
+```bash
+mvn --batch-mode validate
+mvn --batch-mode -Presilience test
+```
+
+Validation enforces Java 17 and dependency convergence. The deterministic
+profile excludes `load,docker` and covers breakers, admission, bulkheads,
+limiting, degradation, drain, outbox, Saga, and TCC behavior.
+
 **Chaos / fault-exercising unit + integration tests** (run in the default suite):
 `CircuitBreakerTest`, `RouteCircuitBreakerTest`, `FaultInjectorTest`,
 `WorkerBulkheadTest`, `LoadShedderTest`, `OnlineLoadShedderTest`,
@@ -334,8 +376,26 @@ The failure paths are exercised, not just asserted in prose.
 `WorkerIsolationFailureTest`, `RedisRateLimiterTest` (fail-open + embedded
 breaker), and `GatewayUpstreamHealthCheckIntegrationTest`.
 
-**Load / characterization harnesses** (`@Tag("load")`, excluded from
-`mvn test`; run with `-Dgroups=load`) pin the gate knees:
+**Scheduled/manual environmental suites** use isolated report directories/jobs
+and the exact selectors:
+
+```bash
+mvn --batch-mode test -DexcludedGroups=docker -Dgroups=load \
+  -Dresilience.evidence.suite=load \
+  -Dresilience.evidence.output=target/resilience-measurements-load.json
+mvn --batch-mode test -DexcludedGroups=load -Dgroups=docker \
+  -Dresilience.evidence.suite=docker \
+  -Dresilience.evidence.output=target/resilience-measurements-docker.json
+```
+
+The load sidecar proves serving admission, bulkhead rejection, bounded recall
+degradation/recovery, timeout recovery, and graceful drain. The Docker sidecar
+proves the real Testcontainers Redis/Lua boundary. The schema-v1 summarizer
+requires matching suite applicability and fresh Surefire XML and fails on
+malformed/empty evidence or false invariants. Shared-runner latency and
+throughput remain report-only.
+
+The load / characterization harnesses pin the gate knees:
 `OnlineLoadShedderCharacterizationTest`,
 `OverloadGateOrderingCharacterizationTest`,
 `WorkerBulkheadCharacterizationTest`, plus the per-path load tests
@@ -355,14 +415,15 @@ breaker), and `GatewayUpstreamHealthCheckIntegrationTest`.
    harnesses pin the mechanism (64-concurrency / 0.95-drain / 200 ms-timeout)
    against the box that runs them; tuning those constants against real prod-like
    latency curves remains deferred.
-3. **DR promote is manual.** The warm standby sits at ~50% `minReplicas` to save
-   cost; an operator must run `dr-standby-capacity.sh promote` on cutover, so a
-   failover that lands before promote runs has a brief scale-out window.
+3. **DR authority remains manual.** The script can mutate only the four HPAs
+   and can prove cutover/failback prerequisites. Operators own data-tier roles,
+   DNS, and traffic. A checked-in placeholder image intentionally blocks real
+   cluster commands until all overlays use one approved immutable digest.
 4. **`RedisRateLimiter` global bound assumes NTP-synced clocks.** The weighted
    sliding window is stamped from each instance's wall clock, so the ≈1×-the-limit
-   bound holds only under synced clocks (proven by a `@Tag("docker")` boundary
-   test with an injected clock). It is the only global ceiling; every other limit
-   is per-instance and moves with replica count.
+   bound holds only under synced clocks (proven by the Docker Redis/Lua boundary
+   probe). It is the only global ceiling while Redis is healthy; the emergency
+   fail-open ceiling is per-instance and moves with replica count.
 5. **`CapacityController` is a reference, not a production controller.**
    [`application/autoscaling/CapacityController`](../../src/main/java/com/recsys/application/autoscaling/CapacityController.java)
    and the `infrastructure/autoscaling` ASG model are tested simulations — real

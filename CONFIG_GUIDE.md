@@ -4,12 +4,10 @@ This document describes the configuration-file organization and the
 build / test / deployment workflows for **recsys-api** (the Recsys Backend
 Service).
 
-> **Reality check up front:** this repository has **no GitHub Actions CI
-> pipeline**. `.github/` contains only local Java-upgrade tooling, not
-> workflows. "CI/CD" here means a local Maven build + test cycle, a
-> multi-stage Docker image, and Kustomize deploy overlays — all run by hand
-> or from your own automation. Where the toolchain is deliberately manual,
-> this guide says so rather than implying an automated gate exists.
+> **Reality check up front:** pull requests run a deterministic resilience
+> gate, while environmental load and Docker suites run on a schedule or by
+> manual dispatch. Deployment remains an operator-controlled Kustomize
+> workflow; neither CI workflow deploys or changes production traffic.
 
 ## Table of Contents
 
@@ -33,8 +31,9 @@ by the `RECSYS_MAIN_CLASS` env var. Configuration is split by tool convention.
 
 - [`pom.xml`](pom.xml) — **the single source of truth** for the build: Java 17
   release target, dependency versions (Spring Boot 3.3.4, ONNX Runtime 1.18.0,
-  Armeria 1.28.4, AWS SDK 2.25.70), the Surefire test configuration, and the
-  `offline-embedding` / `streaming-flink` opt-in profiles.
+  Armeria 1.28.4, AWS SDK 2.25.70), dependency convergence enforcement, the
+  Surefire test configuration, and the `resilience`, `offline-embedding`, and
+  `streaming-flink` opt-in profiles.
 - [`Dockerfile`](Dockerfile) — multi-stage image build (Maven/Corretto build
   stage → jlink glibc JRE on `debian:12-slim` runtime stage). One image, all
   four services.
@@ -80,6 +79,11 @@ by the `RECSYS_MAIN_CLASS` env var. Configuration is split by tool convention.
   with its `config/jvm/<profile>.jvmopts` applied.
 - [`retire-backend.sh`](scripts/retire-backend.sh) — ordered, irreversible
   backend decommission orchestrator.
+- [`summarize-resilience-results.py`](scripts/summarize-resilience-results.py) —
+  validates Surefire XML plus a suite-specific measurement sidecar and writes
+  schema-v1 resilience evidence.
+- [`dr-standby-capacity.sh`](scripts/dr-standby-capacity.sh) — HPA-only,
+  evidence-gated standby preparation and read-only cutover/failback checks.
 - `load-test/`, `arthas-diagnostics.sh`, `mat-heap-analysis.sh`,
   `summarize-gc-logs.sh` — performance / diagnostics helpers.
 
@@ -104,13 +108,22 @@ by the `RECSYS_MAIN_CLASS` env var. Configuration is split by tool convention.
 | Orchestration / deploy | Kubernetes + Kustomize | [`k8s/base/`](k8s/base/), [`k8s/eks/`](k8s/eks/) |
 | Model runtime | ONNX Runtime 1.18.0 | dependency in [`pom.xml`](pom.xml); `dssm_model.onnx` in resources |
 | Streaming (local) | Kafka + Flink + Redis | [`docker-compose.streaming.yml`](docker-compose.streaming.yml) |
-| CI/CD automation | **none** | no `.github/workflows/`; build/test/deploy are manual |
+| Resilience CI | GitHub Actions | `.github/workflows/resilience-pr.yml`, `.github/workflows/resilience-scheduled.yml` |
+| Deployment | Operator-controlled | Kustomize overlays and DR runbooks; CI does not deploy |
 
 ## Build, Test & CI Story
 
-There is **no automated CI pipeline** in this repo (no `.github/workflows/`).
-The build and test steps below are what a CI job *would* run — invoke them
-locally or wire them into your own runner.
+Pull requests run dependency validation and the deterministic resilience
+profile:
+
+```bash
+mvn --batch-mode validate
+mvn --batch-mode -Presilience test
+```
+
+The profile excludes `load` and `docker`, requires no daemon or cloud
+credentials, and covers the deterministic circuit, limiter, bulkhead,
+degradation, drain, outbox, Saga, and TCC paths. The normal local suite remains:
 
 ### Build
 
@@ -135,18 +148,40 @@ classpath, which disables CDS; turning it off up front keeps output clean) and
 **skips two tag groups by default**: `@Tag("load")` and `@Tag("docker")`.
 
 ```bash
-mvn test                                  # all tests EXCEPT load + docker
+mvn --batch-mode test                     # all tests EXCEPT load + docker
 
 mvn test -Dtest=RecommendationServiceTest # a single test class
 
-# Opt in to the tag-gated groups:
-mvn test -DexcludedGroups="" -Dgroups=load   # load tests only
-mvn test -DexcludedGroups=load               # include docker tests (keep load excluded)
+# Match the scheduled workflow selectors:
+mvn --batch-mode test -DexcludedGroups=docker -Dgroups=load \
+  -Dresilience.evidence.suite=load \
+  -Dresilience.evidence.output=target/resilience-measurements-load.json
+mvn --batch-mode test -DexcludedGroups=load -Dgroups=docker \
+  -Dresilience.evidence.suite=docker \
+  -Dresilience.evidence.output=target/resilience-measurements-docker.json
 ```
 
-> **Docker-tagged tests are local-only.** They use Testcontainers and require a
-> running Docker daemon; because there is no CI, they run **only** when you
-> invoke them locally. On macOS with Colima, Surefire already sets
+The scheduled/manual workflow runs each selector in a fresh job, then combines
+that job's isolated Surefire reports with its required measurement sidecar:
+
+```bash
+python3 scripts/summarize-resilience-results.py \
+  --suite load \
+  --reports target/surefire-reports \
+  --measurements target/resilience-measurements-load.json \
+  --output resilience-evidence-load.json
+```
+
+The Docker command uses `--suite docker` and the corresponding Docker sidecar.
+Evidence is schema version 1 and fails closed on malformed/empty reports,
+invalid measurements, failed tests, or failed invariants. Applicability is
+explicit: load evidence covers serving/admission/bulkhead/recall/timeout/drain;
+Docker evidence covers the real Redis/Lua boundary. Neither artifact claims the
+other suite's measurements.
+
+> **Docker-tagged tests require a running Docker daemon.** The scheduled
+> GitHub-hosted Docker job is the canonical environmental run. On macOS with
+> Colima, Surefire already sets
 > `TESTCONTAINERS_RYUK_DISABLED=true` and
 > `TESTCONTAINERS_DOCKER_SOCKET_OVERRIDE=/var/run/docker.sock` so the socket
 > mounts correctly.
@@ -247,6 +282,32 @@ Key environment variables: `REDIS_HOST`, `REDIS_PORT`,
 `RECSYS_MAIN_CLASS`, `RECALL_CHANNEL_TIMEOUT_MS` (per-channel recall timeout,
 default 200).
 
+### Online Redis emergency limiter
+
+The Redis-backed online limiter is the cluster-wide authority while Redis is
+healthy. If Redis fails, returns a malformed decision, or its circuit does not
+admit the call, each replica uses one local emergency token bucket:
+
+| Variable | Default | Contract |
+|---|---:|---|
+| `ONLINE_REDIS_EMERGENCY_LIMIT_ENABLED` | `true` | Must be exactly `true` or `false` (case-insensitive). |
+| `ONLINE_REDIS_EMERGENCY_RATE_PER_SECOND` | one quarter of `ONLINE_REDIS_RATE_LIMIT_QPS`, minimum `1` | Finite, non-negative number. Kubernetes sets `50`. |
+| `ONLINE_REDIS_EMERGENCY_BURST` | emergency rate rounded down, minimum `1` | Non-negative integer. Kubernetes sets `50`. |
+
+These settings are inactive when `ONLINE_REDIS_RATE_LIMIT_QPS=0`. Invalid
+values fail service startup instead of silently widening the degraded path.
+For an emergency rollback, set the enable flag to `false`, or set either rate
+or burst to `0`; Redis failures then retain the former unlimited fail-open
+behavior. The budget is **per online-serving replica**, is consumed only on the
+Redis fail-open path, and therefore is not a cluster-wide limit. Exhaustion
+uses the existing `429`, positive `Retry-After`, and
+`online serving rate limited` response.
+
+Prometheus exposes `recsys_online_rate_limit_decisions_total` with only bounded
+`source=redis|emergency` and `result=allowed|rejected` tags. `/online/ops`
+reports the circuit state, emergency configuration, and the four cumulative
+decision counters without bucket or principal dimensions.
+
 ## JVM Tuning
 
 Two layers of JVM configuration:
@@ -267,8 +328,8 @@ is incompatible.
 ## Troubleshooting
 
 - **A test class doesn't run** — it may be tagged `@Tag("load")` or
-  `@Tag("docker")`, which are excluded by default. Run with
-  `-DexcludedGroups=load` (docker) or `-Dgroups=load -DexcludedGroups=""` (load).
+  `@Tag("docker")`, which are excluded by default. Use the exact scheduled
+  selectors above so the matching evidence probe and sidecar run as well.
 - **Docker/Testcontainers tests fail to find the daemon** — ensure Docker is
   running. On macOS/Colima the Surefire socket overrides are already set; for
   other setups export `DOCKER_HOST` / `TESTCONTAINERS_DOCKER_SOCKET_OVERRIDE`
