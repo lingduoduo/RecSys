@@ -22,8 +22,10 @@ next two sections.
 |---|---|---|
 | `RECSYS_MAIN_CLASS` | `com.recsys.api.gateway.MicroserviceGatewayServer` in the image | Selects the Java main class for the shared container image. Local Maven commands invoke their main class directly. |
 | `CORS_ALLOWED_ORIGIN` | unset | Optional catalog-serving CORS origin. |
-| `SERVICE_REGISTRY_SERVICE_NAME` | unset | Opts a service into Redis-backed registration. |
-| `SERVICE_REGISTRY_ADVERTISE_URL` | unset | Advertised URL for an opted-in service registry entry. |
+| `SERVICE_REGISTRY_ENABLED` | `false` | Enables Redis service registration and gateway registry lookup. Registration occurs only when this is true and both settings below are nonblank. |
+| `SERVICE_REGISTRY_SERVICE_NAME` / `SERVICE_REGISTRY_ADVERTISE_URL` | unset / unset | Registered service name and advertised URL; neither setting registers a service unless `SERVICE_REGISTRY_ENABLED=true`. |
+| `SERVICE_REGISTRY_HEARTBEAT_MS` / `SERVICE_REGISTRY_TTL_MS` | `10000` / `30000` ms | Registrar heartbeat interval and Redis registry-record TTL. |
+| `SERVICE_REGISTRY_REFRESH_MS` | `10000` ms | Gateway registry refresh interval when registry lookup is enabled; a non-positive value performs only the initial refresh. |
 
 ## Service selection and ports
 
@@ -145,7 +147,7 @@ The base ConfigMap supplies Kubernetes service URLs instead.
 | `ONLINE_MAX_CONCURRENT_REQUESTS` / `ONLINE_DRAIN_UTILIZATION` | `64` / `0.90` | Online per-replica admission cap and readiness-drain threshold. Base ConfigMap sets both values. |
 | `ONLINE_REDIS_RATE_LIMIT_QPS` / `ONLINE_REDIS_RATE_LIMIT_WINDOW_SECONDS` | `0` / `1` | Redis-backed cross-instance online rate limit. A QPS of `0` disables this limiter and its emergency bucket. Base ConfigMap sets `200` and `1`. |
 | `ONLINE_REDIS_EMERGENCY_LIMIT_ENABLED` | `true` | Exact case-insensitive `true` or `false`; any other nonblank value fails online-serving startup. |
-| `ONLINE_REDIS_EMERGENCY_RATE_PER_SECOND` | one quarter of online Redis QPS, minimum `1` | Finite non-negative decimal. Invalid, negative, or non-finite values fail startup. Base ConfigMap sets `50`. |
+| `ONLINE_REDIS_EMERGENCY_RATE_PER_SECOND` | `max(1, floor(QPS / 4))` | Finite non-negative decimal. Invalid, negative, or non-finite values fail startup. Base ConfigMap sets `50`. |
 | `ONLINE_REDIS_EMERGENCY_BURST` | emergency rate rounded down, minimum `1` | Non-negative integer. Invalid or negative values fail startup. Base ConfigMap sets `50`. |
 | `GATEWAY_RATE_LIMIT_RPS` / `GATEWAY_RATE_LIMIT_BURST` | `0` / `0` | Gateway token-bucket rate and burst per route and authenticated principal. Base ConfigMap sets `100` and `200`. |
 | `GATEWAY_RATE_LIMIT_<ROUTE>_RPS` / `GATEWAY_RATE_LIMIT_<ROUTE>_BURST` | unset (inherit the global values) | Per-route gateway rate/burst override; base config sets the model route to `50` / `100`. |
