@@ -13,10 +13,10 @@ signing keys, API keys, and similar secrets in a Secret rather than a ConfigMap.
 ## Local development essentials
 
 For the ordinary local path, start the streaming stack, then run
-`scripts/run-microservices-local.sh`. The script supplies the four standard
-ports and local gateway upstream URLs; no environment variables are required
-for the demo path. Redis connection and per-service port overrides are in the
-next two sections.
+`GATEWAY_ALLOW_ANONYMOUS=true sh scripts/run-microservices-local.sh`. This is
+an explicit development-only authentication choice; the script supplies the
+four standard ports and local gateway upstream URLs. Redis connection and
+per-service port overrides are in the next two sections.
 
 | Setting | Default | Use |
 |---|---|---|
@@ -104,6 +104,7 @@ corresponding Service, probe, and gateway upstream configuration.
 | `ONLINE_DURABLE_EVENTS_ENABLED` | `false` | Enables durable online feature-event acceptance; requires `MYSQL_ENABLED=true` and the consistency-token secret in the next row. |
 | `ONLINE_CONSISTENCY_TOKEN_SECRET` | unset | At least 32 UTF-8 bytes for durable consistency tokens; use a Secret. |
 | `RECSYS_MODEL_ARTIFACTS_DIR` | classpath artifacts | External model-variant artifact root. |
+| `RECSYS_SPARK_ARTIFACTS_DIR` | classpath artifacts | External PySpark artifact root, including `als_model_metadata.json`; set it when a packaged JAR needs a filesystem path for Spark artifacts. |
 | `RECSYS_MODEL_FILE` | `dssm_model.onnx` | Model artifact filename. |
 | `RECSYS_MODEL_ITEM_EMBEDDINGS_SOURCE` | `classpath` | `classpath` or `redis`. |
 | `RECSYS_MODEL_REDIS_ITEM_EMBEDDING_PREFIX` | `i2vEmb` | Redis key prefix when model item embeddings use Redis. |
