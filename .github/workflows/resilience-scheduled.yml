@@ -23,7 +23,7 @@ jobs:
         run: >-
           mvn --batch-mode test
           -DexcludedGroups=docker
-          -Dgroups=load,resilience-evidence
+          -Dgroups=load
           -Dresilience.evidence.suite=load
           -Dresilience.evidence.output=target/resilience-measurements-load.json
       - name: Generate load evidence
@@ -60,7 +60,7 @@ jobs:
         run: >-
           mvn --batch-mode test
           -DexcludedGroups=load
-          -Dgroups=docker,resilience-evidence
+          -Dgroups=docker
           -Dresilience.evidence.suite=docker
           -Dresilience.evidence.output=target/resilience-measurements-docker.json
       - name: Generate Docker evidence

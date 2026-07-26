@@ -143,6 +143,35 @@ class ResilienceEvidenceSchemaTest {
         assertFailed(reports, measurements, "impossible concurrency");
     }
 
+    @Test
+    void writesFailedEvidenceBeforeReturningNonzeroAndValidatesDockerShape() throws Exception {
+        Path reports = Files.createDirectory(temp.resolve("failed-evidence-reports"));
+        Files.writeString(reports.resolve("TEST-one.xml"),
+                "<testsuite tests=\"1\" failures=\"0\" errors=\"0\" skipped=\"0\" time=\"0\"/>");
+        Path failedMeasurements = temp.resolve("failed-measurements.json");
+        Files.writeString(failedMeasurements, validMeasurements()
+                .replace("\"bulkhead\": 1", "\"bulkhead\": 0")
+                .replace("\"bulkheadRejected\": true", "\"bulkheadRejected\": false"));
+        Path failedOutput = temp.resolve("failed-evidence.json");
+
+        CommandResult failed = runSummarizer(reports, failedMeasurements, failedOutput);
+        assertThat(failed.exitCode()).as(failed.output()).isEqualTo(1);
+        assertThat(JSON.readTree(failedOutput.toFile()).get("invariantsPassed").asBoolean())
+                .isFalse();
+
+        Path dockerMeasurements = temp.resolve("docker-measurements.json");
+        Files.writeString(dockerMeasurements, validDockerMeasurements());
+        Path dockerOutput = temp.resolve("docker-evidence.json");
+        CommandResult docker =
+                runSummarizer(reports, dockerMeasurements, dockerOutput, "docker");
+        assertThat(docker.exitCode()).as(docker.output()).isZero();
+        JsonNode evidence = JSON.readTree(dockerOutput.toFile());
+        assertThat(evidence.get("source").asText()).isEqualTo("schema-test-real-redis");
+        assertThat(evidence.at("/applicability/load").asBoolean()).isFalse();
+        assertThat(evidence.at("/applicability/redisBoundary").asBoolean()).isTrue();
+        assertThat(evidence.at("/measurements/concurrency").isMissingNode()).isTrue();
+    }
+
     private static void assertFailed(Path reports, Path measurements, String message) throws Exception {
         CommandResult result = runSummarizer(reports, measurements, reports.resolve("out.json"));
         assertThat(result.exitCode()).as(result.output()).isNotZero();
@@ -151,13 +180,18 @@ class ResilienceEvidenceSchemaTest {
 
     private static CommandResult runSummarizer(Path reports, Path measurements, Path output)
             throws Exception {
+        return runSummarizer(reports, measurements, output, "load");
+    }
+
+    private static CommandResult runSummarizer(
+            Path reports, Path measurements, Path output, String suite) throws Exception {
         Path script = Path.of("scripts", "summarize-resilience-results.py").toAbsolutePath();
         Exception last = null;
         for (String python : pythonCandidates()) {
             try {
                 Process process = new ProcessBuilder(
                         python, script.toString(),
-                        "--suite", "load",
+                        "--suite", suite,
                         "--reports", reports.toString(),
                         "--measurements", measurements.toString(),
                         "--output", output.toString())
@@ -194,12 +228,17 @@ class ResilienceEvidenceSchemaTest {
                 {
                   "schemaVersion": 1,
                   "suite": "load",
+                  "source": "schema-test-load-probe",
+                  "applicability": {
+                    "load": true,
+                    "redisBoundary": false,
+                    "redisBoundaryCoveredBy": "docker"
+                  },
                   "measurements": {
                     "concurrency": {"offered": 3, "accepted": 2},
                     "rejections": {"admission": 1, "bulkhead": 1},
                     "degradation": {"total": 2, "degraded": 1, "ratio": 0.5},
                     "timeoutRecovery": {"timeouts": 1, "recovered": true},
-                    "redisBoundary": {"limit": 2, "attempted": 3, "allowed": 2, "rejected": 1},
                     "gracefulDrain": {"completed": true, "inFlightAfterDrain": 0},
                     "performance": {"elapsedMillis": 1}
                   },
@@ -208,9 +247,34 @@ class ResilienceEvidenceSchemaTest {
                     "bulkheadRejected": true,
                     "degradationMeasured": true,
                     "timeoutRecovered": true,
-                    "redisBoundaryEnforced": true,
                     "gracefulDrainCompleted": true
                   }
+                }
+                """;
+    }
+
+    private static String validDockerMeasurements() {
+        return """
+                {
+                  "schemaVersion": 1,
+                  "suite": "docker",
+                  "source": "schema-test-real-redis",
+                  "applicability": {
+                    "load": false,
+                    "loadCoveredBy": "load",
+                    "redisBoundary": true
+                  },
+                  "measurements": {
+                    "redisBoundary": {
+                      "limit": 100,
+                      "initialAllowed": 100,
+                      "attempted": 100,
+                      "allowed": 0,
+                      "rejected": 100
+                    },
+                    "performance": {"elapsedMillis": 1}
+                  },
+                  "invariants": {"redisBoundaryEnforced": true}
                 }
                 """;
     }

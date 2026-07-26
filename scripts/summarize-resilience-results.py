@@ -99,7 +99,7 @@ def required_number(value, path: str, *, integer: bool = False):
     return value
 
 
-def load_measurements(path: Path, suite: str) -> tuple[dict, dict]:
+def load_measurements(path: Path, suite: str) -> tuple[dict, dict, str, dict]:
     try:
         payload = json.loads(
             path.read_text(encoding="utf-8"),
@@ -116,8 +116,14 @@ def load_measurements(path: Path, suite: str) -> tuple[dict, dict]:
         raise ValueError(f"measurement suite {payload.get('suite')!r} does not match {suite!r}")
     measurements = payload.get("measurements")
     invariants = payload.get("invariants")
-    if not isinstance(measurements, dict) or not isinstance(invariants, dict):
-        raise ValueError("measurement sidecar requires measurements and invariants objects")
+    source = payload.get("source")
+    applicability = payload.get("applicability")
+    if (not isinstance(measurements, dict) or not isinstance(invariants, dict)
+            or not isinstance(applicability, dict)
+            or not isinstance(source, str) or not source.strip()):
+        raise ValueError(
+            "measurement sidecar requires nonempty source, applicability, "
+            "measurements, and invariants")
 
     def measurement_object(name: str) -> dict:
         value = measurements.get(name)
@@ -125,67 +131,93 @@ def load_measurements(path: Path, suite: str) -> tuple[dict, dict]:
             raise ValueError(f"measurements.{name} must be an object")
         return value
 
-    concurrency = measurement_object("concurrency")
-    offered = required_number(concurrency.get("offered"), "concurrency.offered", integer=True)
-    accepted = required_number(concurrency.get("accepted"), "concurrency.accepted", integer=True)
-    rejections = measurement_object("rejections")
-    admission = required_number(rejections.get("admission"), "rejections.admission", integer=True)
-    bulkhead = required_number(rejections.get("bulkhead"), "rejections.bulkhead", integer=True)
-    if accepted > offered or accepted + admission != offered:
-        raise ValueError("impossible concurrency/admission counter relationship")
-
-    degradation = measurement_object("degradation")
-    total = required_number(degradation.get("total"), "degradation.total", integer=True)
-    degraded = required_number(degradation.get("degraded"), "degradation.degraded", integer=True)
-    ratio = required_number(degradation.get("ratio"), "degradation.ratio")
-    expected_ratio = 0.0 if total == 0 else degraded / total
-    if degraded > total or ratio > 1 or not math.isclose(ratio, expected_ratio, abs_tol=1e-9):
-        raise ValueError("impossible degradation counters or ratio")
-
-    timeout = measurement_object("timeoutRecovery")
-    timeouts = required_number(timeout.get("timeouts"), "timeoutRecovery.timeouts", integer=True)
-    if not isinstance(timeout.get("recovered"), bool):
-        raise ValueError("timeoutRecovery.recovered must be boolean")
-
-    redis = measurement_object("redisBoundary")
-    limit = required_number(redis.get("limit"), "redisBoundary.limit", integer=True)
-    attempted = required_number(redis.get("attempted"), "redisBoundary.attempted", integer=True)
-    allowed = required_number(redis.get("allowed"), "redisBoundary.allowed", integer=True)
-    rejected = required_number(redis.get("rejected"), "redisBoundary.rejected", integer=True)
-    if allowed > limit or allowed + rejected != attempted:
-        raise ValueError("impossible Redis boundary counters")
-
-    drain = measurement_object("gracefulDrain")
-    if not isinstance(drain.get("completed"), bool):
-        raise ValueError("gracefulDrain.completed must be boolean")
-    in_flight = required_number(
-        drain.get("inFlightAfterDrain"), "gracefulDrain.inFlightAfterDrain", integer=True)
-    if drain["completed"] and in_flight != 0:
-        raise ValueError("completed graceful drain must have zero in-flight requests")
-
     performance = measurement_object("performance")
     required_number(performance.get("elapsedMillis"), "performance.elapsedMillis")
-    required_invariants = {
-        "admissionBounded",
-        "bulkheadRejected",
-        "degradationMeasured",
-        "timeoutRecovered",
-        "redisBoundaryEnforced",
-        "gracefulDrainCompleted",
-    }
+    if suite == "load":
+        if (applicability.get("load") is not True
+                or applicability.get("redisBoundary") is not False
+                or applicability.get("redisBoundaryCoveredBy") != "docker"):
+            raise ValueError("invalid load-suite applicability")
+        concurrency = measurement_object("concurrency")
+        offered = required_number(
+            concurrency.get("offered"), "concurrency.offered", integer=True)
+        accepted = required_number(
+            concurrency.get("accepted"), "concurrency.accepted", integer=True)
+        rejections = measurement_object("rejections")
+        admission = required_number(
+            rejections.get("admission"), "rejections.admission", integer=True)
+        bulkhead = required_number(
+            rejections.get("bulkhead"), "rejections.bulkhead", integer=True)
+        if accepted > offered or accepted + admission != offered:
+            raise ValueError("impossible concurrency/admission counter relationship")
+        degradation = measurement_object("degradation")
+        total = required_number(
+            degradation.get("total"), "degradation.total", integer=True)
+        degraded = required_number(
+            degradation.get("degraded"), "degradation.degraded", integer=True)
+        ratio = required_number(degradation.get("ratio"), "degradation.ratio")
+        expected_ratio = 0.0 if total == 0 else degraded / total
+        if (degraded > total or ratio > 1
+                or not math.isclose(ratio, expected_ratio, abs_tol=1e-9)):
+            raise ValueError("impossible degradation counters or ratio")
+        timeout = measurement_object("timeoutRecovery")
+        timeouts = required_number(
+            timeout.get("timeouts"), "timeoutRecovery.timeouts", integer=True)
+        if not isinstance(timeout.get("recovered"), bool):
+            raise ValueError("timeoutRecovery.recovered must be boolean")
+        drain = measurement_object("gracefulDrain")
+        if not isinstance(drain.get("completed"), bool):
+            raise ValueError("gracefulDrain.completed must be boolean")
+        in_flight = required_number(
+            drain.get("inFlightAfterDrain"),
+            "gracefulDrain.inFlightAfterDrain",
+            integer=True)
+        if drain["completed"] and in_flight != 0:
+            raise ValueError("completed graceful drain must have zero in-flight requests")
+        required_invariants = {
+            "admissionBounded", "bulkheadRejected", "degradationMeasured",
+            "timeoutRecovered", "gracefulDrainCompleted",
+        }
+        computed_invariants = {
+            "admissionBounded": accepted <= offered and accepted + admission == offered,
+            "bulkheadRejected": bulkhead > 0,
+            "degradationMeasured": total > 0,
+            "timeoutRecovered": timeouts > 0 and timeout["recovered"],
+            "gracefulDrainCompleted": drain["completed"] and in_flight == 0,
+        }
+    elif suite == "docker":
+        if (applicability.get("load") is not False
+                or applicability.get("loadCoveredBy") != "load"
+                or applicability.get("redisBoundary") is not True):
+            raise ValueError("invalid docker-suite applicability")
+        redis = measurement_object("redisBoundary")
+        limit = required_number(redis.get("limit"), "redisBoundary.limit", integer=True)
+        initial = required_number(
+            redis.get("initialAllowed"), "redisBoundary.initialAllowed", integer=True)
+        attempted = required_number(
+            redis.get("attempted"), "redisBoundary.attempted", integer=True)
+        allowed = required_number(
+            redis.get("allowed"), "redisBoundary.allowed", integer=True)
+        rejected = required_number(
+            redis.get("rejected"), "redisBoundary.rejected", integer=True)
+        if allowed + rejected != attempted or initial > limit:
+            raise ValueError("impossible Redis boundary counters")
+        required_invariants = {"redisBoundaryEnforced"}
+        computed_invariants = {
+            "redisBoundaryEnforced":
+                initial == limit and allowed <= 1 and rejected >= attempted - 1,
+        }
+    else:
+        raise ValueError(f"unsupported evidence suite: {suite}")
+
     missing_invariants = sorted(required_invariants - invariants.keys())
     if missing_invariants:
         raise ValueError(f"missing required invariants: {', '.join(missing_invariants)}")
+    unexpected_invariants = sorted(invariants.keys() - required_invariants)
+    if unexpected_invariants:
+        raise ValueError(f"unexpected suite invariants: {', '.join(unexpected_invariants)}")
     if any(not isinstance(value, bool) for value in invariants.values()):
         raise ValueError("all invariants must be named booleans")
-    computed_invariants = {
-        "admissionBounded": accepted <= offered and accepted + admission == offered,
-        "bulkheadRejected": bulkhead > 0,
-        "degradationMeasured": total > 0,
-        "timeoutRecovered": timeouts > 0 and timeout["recovered"],
-        "redisBoundaryEnforced": allowed == limit and rejected > 0,
-        "gracefulDrainCompleted": drain["completed"] and in_flight == 0,
-    }
     inconsistent = sorted(
         name for name, computed in computed_invariants.items()
         if invariants[name] is not computed
@@ -194,7 +226,7 @@ def load_measurements(path: Path, suite: str) -> tuple[dict, dict]:
         raise ValueError(
             "measurement invariant failed or disagrees with measured values: "
             + ", ".join(inconsistent))
-    return measurements, invariants
+    return measurements, invariants, source, applicability
 
 
 def actual_java_version() -> str:
@@ -220,7 +252,8 @@ def main() -> int:
     args = parse_args()
     try:
         tests = summarize(args.reports)
-        measurements, invariants = load_measurements(args.measurements, args.suite)
+        measurements, invariants, source, applicability = load_measurements(
+            args.measurements, args.suite)
         evidence = {
             "schemaVersion": 1,
             "suite": args.suite,
@@ -232,6 +265,8 @@ def main() -> int:
             "tests": tests,
             "measurements": measurements,
             "invariants": invariants,
+            "source": source,
+            "applicability": applicability,
             "invariantsPassed": (
                 tests["failed"] == 0
                 and tests["errors"] == 0
