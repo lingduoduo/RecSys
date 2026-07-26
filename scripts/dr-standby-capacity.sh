@@ -14,6 +14,7 @@ DR_CONTEXT=""
 DR_REGION=""
 DR_REPORT_PATH=""
 DR_EVIDENCE_PATH=""
+DR_TARGET=""
 DR_DRY_RUN="false"
 DR_CAPACITY_CHANGE="none"
 DR_READY="false"
@@ -23,11 +24,14 @@ DR_CHECK_NAMES=()
 DR_CHECK_RESULTS=()
 DR_CHECK_OBSERVED=()
 DR_DESIRED_HPAS=""
+DR_PREPARED_PAYLOAD=""
+DR_PREPARED_OVERLAY=""
 
 usage() {
   cat >&2 <<EOF
 Usage: $0 promote|demote --context NAME --region us-west-2 [--report FILE] [--dry-run]
        $0 cutover-check|failback-check --context NAME --region us-west-2 --evidence FILE [--report FILE]
+       $0 manifest-digest --target promote|demote|cutover-check|failback-check [--report FILE]
        $0 verify [--report FILE]
 EOF
   exit 2
@@ -70,6 +74,10 @@ actions = {
     "demote": ["confirm traffic has left the standby", "archive this report"],
     "cutover-check": ["perform operator-confirmed traffic cutover"],
     "failback-check": ["perform operator-confirmed traffic and data failback"],
+    "manifest-digest": [
+        "embed this manifestDigest in the approved read-only evidence file",
+        "re-run manifest-digest whenever the overlays change",
+    ],
     "verify": [],
 }.get(command, ["investigate command failure"])
 doc = {
@@ -354,10 +362,15 @@ PY
 
 apply_hpas_if_needed() {
   local overlay="$1" desired observed rendered payload
-  rendered="$(render_overlay "$overlay")"
-  desired="$(printf '%s' "$rendered" | extract_hpas)"
-  DR_DESIRED_HPAS="$desired"
-  payload="$(printf '%s' "$rendered" | filter_hpas_only)"
+  if [ "$DR_PREPARED_OVERLAY" = "$overlay" ] && [ -n "$DR_PREPARED_PAYLOAD" ]; then
+    desired="$DR_DESIRED_HPAS"
+    payload="$DR_PREPARED_PAYLOAD"
+  else
+    rendered="$(render_overlay "$overlay")"
+    desired="$(printf '%s' "$rendered" | extract_hpas)"
+    DR_DESIRED_HPAS="$desired"
+    payload="$(printf '%s' "$rendered" | filter_hpas_only)"
+  fi
   observed="$(observed_hpas)"
   DR_MANIFEST_DIGEST="$(printf '%s' "$payload" | shasum -a 256 | awk '{print $1}')"
   if [ "$DR_DRY_RUN" = "true" ]; then
@@ -390,6 +403,32 @@ apply_hpas_if_needed() {
   fi
   DR_CAPACITY_CHANGE="applied"
   add_check hpa-convergence true "$observed"
+}
+
+prepare_hpa_payload() {
+  local overlay="$1" rendered
+  rendered="$(render_overlay "$overlay")"
+  DR_DESIRED_HPAS="$(printf '%s' "$rendered" | extract_hpas)"
+  DR_PREPARED_PAYLOAD="$(printf '%s' "$rendered" | filter_hpas_only)"
+  DR_PREPARED_OVERLAY="$overlay"
+  DR_MANIFEST_DIGEST="$(printf '%s' "$DR_PREPARED_PAYLOAD" | shasum -a 256 | awk '{print $1}')"
+}
+
+# Emits the canonical HPA manifest digest that the approved evidence files
+# consumed by promote/demote/cutover-check/failback-check must carry. Offline
+# and read-only: it renders overlays and never contacts a cluster.
+manifest_digest() {
+  local overlay
+  case "$DR_TARGET" in
+    promote|cutover-check|failback-check) overlay="$ACTIVE_OVERLAY" ;;
+    demote) overlay="$STANDBY_OVERLAY" ;;
+    "") echo "manifest-digest requires --target" >&2; return 2 ;;
+    *) echo "manifest-digest does not support --target $DR_TARGET" >&2; return 2 ;;
+  esac
+  prepare_hpa_payload "$overlay"
+  add_check hpa-inventory true "$(printf '%s' "$DR_DESIRED_HPAS" | tr '\n' ';')"
+  add_check manifest-digest-target true "$DR_TARGET"
+  printf '%s\n' "$DR_MANIFEST_DIGEST"
 }
 
 check_rollout() {
@@ -629,6 +668,7 @@ while [ $# -gt 0 ]; do
     --region) [ $# -ge 2 ] || usage; DR_REGION="$2"; shift 2 ;;
     --report) [ $# -ge 2 ] || usage; DR_REPORT_PATH="$2"; shift 2 ;;
     --evidence) [ $# -ge 2 ] || usage; DR_EVIDENCE_PATH="$2"; shift 2 ;;
+    --target) [ $# -ge 2 ] || usage; DR_TARGET="$2"; shift 2 ;;
     --dry-run) DR_DRY_RUN="true"; shift ;;
     -h|--help) usage ;;
     *) echo "Unknown argument: $1" >&2; usage ;;
@@ -637,6 +677,7 @@ done
 
 require_command kubectl
 require_command python3
+require_command ruby
 
 if [ "$DR_COMMAND" != verify ] || [ -n "$DR_REPORT_PATH" ]; then
   if ! verify_inherited_locks; then
@@ -656,6 +697,8 @@ case "$DR_COMMAND" in
     validate_context_region
     validate_image_identity
     if [ "$DR_COMMAND" = "promote" ]; then overlay="$ACTIVE_OVERLAY"; else overlay="$STANDBY_OVERLAY"; fi
+    prepare_hpa_payload "$overlay"
+    check_dependencies
     apply_hpas_if_needed "$overlay"
     check_rollout
     check_ready_replicas
@@ -666,6 +709,14 @@ case "$DR_COMMAND" in
     [ "$(desired_hpas "$overlay")" = "$(observed_hpas)" ] || {
       add_check final-hpa-convergence false "capacity changed during readiness checks"; exit 1; }
     add_check final-hpa-convergence true "exact desired min/max retained"
+    DR_READY="true"
+    ;;
+  manifest-digest)
+    [ -z "$DR_CONTEXT" ] && [ -z "$DR_REGION" ] || {
+      echo "manifest-digest is offline and does not accept context/region" >&2; exit 2; }
+    [ "$DR_DRY_RUN" = "false" ] || {
+      echo "--dry-run is not meaningful for manifest-digest" >&2; exit 2; }
+    manifest_digest
     DR_READY="true"
     ;;
   cutover-check|failback-check)

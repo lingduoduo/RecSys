@@ -36,9 +36,25 @@ Before any cluster-facing command:
    }
    ```
 
-4. Produce fresh dependency evidence using approved read-only probes. It is
-   valid for 15 minutes and must contain the canonical HPA manifest digest used
-   by this operation:
+4. Read the canonical HPA manifest digests the evidence files must carry. Every
+   evidence digest is checked against the digest the operation itself renders,
+   so derive it rather than transcribing it:
+
+   ```bash
+   ACTIVE_DIGEST="$(scripts/dr-standby-capacity.sh manifest-digest --target promote)"
+   STANDBY_DIGEST="$(scripts/dr-standby-capacity.sh manifest-digest --target demote)"
+   ```
+
+   `manifest-digest` is offline and read-only: it renders the overlays, prints
+   the digest on stdout, and never contacts a cluster. Use `--target promote`,
+   `cutover-check`, or `failback-check` for the active overlay digest and
+   `--target demote` for the standby overlay digest. Pass `--report` to archive
+   the same schema-1 audit record the other commands write. Re-derive after any
+   overlay or image-digest change.
+
+5. Produce fresh dependency evidence using approved read-only probes. It is
+   valid for 15 minutes and must contain the canonical HPA manifest digests
+   used by this operation:
 
    ```json
    {
@@ -47,7 +63,7 @@ Before any cluster-facing command:
      "provenance": "approved-read-only-dependency-probes",
      "observedAt": "2026-07-26T12:00:00Z",
      "status": "healthy",
-     "manifestDigests": ["<canonical-hpa-manifest-digest>"]
+     "manifestDigests": ["<ACTIVE_DIGEST>", "<STANDBY_DIGEST>"]
    }
    ```
 
@@ -102,11 +118,13 @@ Afterward, create fresh operator evidence (valid for 15 minutes):
   "rpoAccepted": true,
   "trafficTarget": "us-west-2",
   "health": "healthy",
-  "manifestDigest": "<canonical-hpa-manifest-digest>"
+  "manifestDigest": "<ACTIVE_DIGEST>"
 }
 ```
 
-The source must be nonempty and the values must come from approved operator
+`manifestDigest` is the active-overlay digest from
+`scripts/dr-standby-capacity.sh manifest-digest --target cutover-check`. The
+source must be nonempty and the values must come from approved operator
 observations. Do not copy illustrative timestamps or digests.
 
 ## Prove cutover prerequisites

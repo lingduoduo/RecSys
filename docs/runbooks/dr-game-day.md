@@ -30,7 +30,12 @@ or traffic.
    The identity file binds the context to region `us-west-2` and its exact
    authoritative HTTPS endpoint. The dependency file follows the schema in
    [dr-regional-failover.md](dr-regional-failover.md), is healthy and fresh
-   (at most 15 minutes), and includes the canonical HPA manifest digest.
+   (at most 15 minutes), and includes the canonical HPA manifest digests from:
+
+   ```bash
+   scripts/dr-standby-capacity.sh manifest-digest --target promote
+   scripts/dr-standby-capacity.sh manifest-digest --target demote
+   ```
 
 ## Procedure
 

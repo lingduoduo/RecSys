@@ -461,6 +461,58 @@ printf 'immutable\n' >"$TMP/verify-existing.json"
 if "$SCRIPT" verify --report "$TMP/verify-existing.json" >/dev/null 2>&1; then bad "verify rejects existing report"; else ok "verify rejects existing report"; fi
 if [ "$(cat "$TMP/verify-existing.json")" = immutable ]; then ok "verify preserves existing report"; else bad "verify preserves existing report"; fi
 
+# manifest-digest is the operator helper that produces the canonical HPA digest
+# the approved evidence files must carry. It is offline and read-only.
+reset_case
+ACTIVE_DIGEST="$(payload_digest "$ROOT/k8s/eks-us-west-2-active")"
+STANDBY_DIGEST="$(payload_digest "$ROOT/k8s/eks-us-west-2")"
+reset_case
+run_ok "manifest-digest promote succeeds" manifest-digest --target promote
+if [ "$(cat "$TMP/out")" = "$ACTIVE_DIGEST" ]; then ok "manifest-digest promote prints the active digest"; else bad "manifest-digest promote prints the active digest"; fi
+run_ok "manifest-digest cutover-check succeeds" manifest-digest --target cutover-check
+if [ "$(cat "$TMP/out")" = "$ACTIVE_DIGEST" ]; then ok "cutover-check target shares the active digest"; else bad "cutover-check target shares the active digest"; fi
+run_ok "manifest-digest failback-check succeeds" manifest-digest --target failback-check
+if [ "$(cat "$TMP/out")" = "$ACTIVE_DIGEST" ]; then ok "failback-check target shares the active digest"; else bad "failback-check target shares the active digest"; fi
+run_ok "manifest-digest demote succeeds" manifest-digest --target demote
+if [ "$(cat "$TMP/out")" = "$STANDBY_DIGEST" ]; then ok "manifest-digest demote prints the standby digest"; else bad "manifest-digest demote prints the standby digest"; fi
+no_mutation "manifest-digest is read-only"
+if python3 - "$LOG" <<'PY'
+import sys
+rows=open(sys.argv[1],"rb").read().splitlines()
+assert rows and all(b"kustomize" in row and b"--context" not in row for row in rows)
+PY
+then ok "manifest-digest only renders manifests"; else bad "manifest-digest only renders manifests"; fi
+
+reset_case
+"$SCRIPT" manifest-digest --target promote --report "$TMP/digest.json" >/dev/null
+json_assert "manifest-digest writes a schema-1 audit report" "$TMP/digest.json" \
+  'd["schemaVersion"] == 1 and d["command"] == "manifest-digest" and d["ready"] is True'
+json_assert "manifest-digest report carries the canonical digest" "$TMP/digest.json" \
+  "d['manifestDigest'] == '$ACTIVE_DIGEST'"
+json_assert "manifest-digest report names the operator follow-up" "$TMP/digest.json" \
+  'd["remainingOperatorActions"] != [] and [a for a in d["remainingOperatorActions"] if "investigate" in a] == []'
+json_assert "manifest-digest report records the rendered HPA floors" "$TMP/digest.json" \
+  '[c for c in d["checks"] if c["name"] == "hpa-inventory" and c["passed"] is True and "recsys-api-gateway" in c["observed"]] != []'
+
+run_fail "manifest-digest requires a target" manifest-digest
+run_fail "manifest-digest rejects an unknown target" manifest-digest --target verify
+run_fail "manifest-digest rejects cluster context" manifest-digest --target promote --context prod-us-west-2
+run_fail "manifest-digest rejects a region" manifest-digest --target promote --region us-west-2
+
+# The helper's digest must be the value the mutating commands actually accept.
+reset_case
+python3 - "$DR_DEPENDENCY_EVIDENCE_FILE" \
+  "$("$SCRIPT" manifest-digest --target promote)" \
+  "$("$SCRIPT" manifest-digest --target demote)" <<'PY'
+import datetime,json,sys
+json.dump({"schemaVersion":1,"source":"recsys-dependency-observer/v1",
+ "provenance":"approved-read-only-dependency-probes",
+ "observedAt":datetime.datetime.now(datetime.timezone.utc).isoformat().replace("+00:00","Z"),
+ "status":"healthy","manifestDigests":[sys.argv[2],sys.argv[3]]},open(sys.argv[1],"w"))
+PY
+: >"$LOG"
+if "$SCRIPT" promote --context prod-us-west-2 --region us-west-2 --report "$TMP/digest-promote.json" >/dev/null; then ok "helper digests satisfy promote dependency evidence"; else bad "helper digests satisfy promote dependency evidence"; fi
+
 reset_case; export FAKE_KUBECTL_SCENARIO=blocked-child FAKE_BLOCK_MARKER="$TMP/shared-report-blocked"
 "$SCRIPT" promote --context prod-us-west-2 --region us-west-2 --report "$TMP/shared-report.json" >/dev/null 2>&1 &
 cluster_pid=$!

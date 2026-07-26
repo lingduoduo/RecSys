@@ -29,7 +29,14 @@ The context file must bind `prod-us-west-2` to region `us-west-2` and its exact
 authoritative HTTPS endpoint. Dependency evidence must be schema-v1, healthy,
 from `recsys-dependency-observer/v1` /
 `approved-read-only-dependency-probes`, no more than 15 minutes old, and include
-the canonical HPA manifest digest.
+the canonical HPA manifest digests.
+
+Derive those digests offline instead of transcribing them:
+
+```bash
+ACTIVE_DIGEST="$(scripts/dr-standby-capacity.sh manifest-digest --target failback-check)"
+STANDBY_DIGEST="$(scripts/dr-standby-capacity.sh manifest-digest --target demote)"
+```
 
 Create fresh failback evidence:
 
@@ -43,7 +50,7 @@ Create fresh failback evidence:
   "rpoAccepted": true,
   "trafficTarget": "us-east-1",
   "health": "healthy",
-  "manifestDigest": "<canonical-hpa-manifest-digest>"
+  "manifestDigest": "<ACTIVE_DIGEST>"
 }
 ```
 

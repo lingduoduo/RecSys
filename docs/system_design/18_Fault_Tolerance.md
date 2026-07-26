@@ -344,8 +344,10 @@ It refuses placeholder/inconsistent images, a wrong context/region/endpoint,
 ambiguous HPA state, unhealthy rollout/PDB/topology/services, or missing fresh
 dependency evidence. `demote` restores only the warm HPA floor; `verify` is an
 offline drift guard; `cutover-check` and `failback-check` are read-only
-evidence gates. Reports are schema-v1, locked, atomic, and never overwrite an
-existing path. Data roles, DNS, and traffic remain explicit operator actions.
+evidence gates; `manifest-digest --target <command>` is the offline helper that
+prints the canonical HPA digest those evidence files must carry, so operators
+derive it instead of transcribing it. Reports are schema-v1, locked, atomic,
+and never overwrite an existing path. Data roles, DNS, and traffic remain explicit operator actions.
 The design is
 [2026-07-08-multi-region-dr-failover-design.md](../superpowers/specs/2026-07-08-multi-region-dr-failover-design.md);
 operations are in [dr-regional-failover.md](../runbooks/dr-regional-failover.md),
