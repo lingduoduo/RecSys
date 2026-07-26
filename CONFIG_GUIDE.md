@@ -39,9 +39,8 @@ by the `RECSYS_MAIN_CLASS` env var. Configuration is split by tool convention.
   four services.
 - [`.dockerignore`](.dockerignore) — trims the build context sent to the Docker
   daemon (excludes `target/`, `src/test/`, `streaming/`, `k8s/`, docs, etc.).
-- [`jvm.options`](jvm.options), [`jvm-g1.options`](jvm-g1.options),
-  [`jvm-zgc.options`](jvm-zgc.options) — baseline JVM flag sets (default, G1GC,
-  ZGC).
+- [`config/jvm/`](config/jvm/) — per-service JVM flag sets, a G1 profile and a
+  `-zgc` variant each.
 - [`docker-compose.streaming.yml`](docker-compose.streaming.yml) — local
   streaming infrastructure (Zookeeper, Kafka, Flink, Redis) for the streaming
   path. Not part of the service image.
@@ -104,7 +103,7 @@ by the `RECSYS_MAIN_CLASS` env var. Configuration is split by tool convention.
 | Unit / integration tests | JUnit 5 + Surefire | [`pom.xml`](pom.xml) `maven-surefire-plugin` (`-Xshare:off`, tag groups) |
 | Container image | Docker (multi-stage, BuildKit) | [`Dockerfile`](Dockerfile), [`.dockerignore`](.dockerignore) |
 | JVM startup | AppCDS + jlink JRE | build-time archive in [`Dockerfile`](Dockerfile) |
-| Runtime JVM tuning | JVM option files | [`jvm-*.options`](jvm.options), [`config/jvm/`](config/jvm/) |
+| Runtime JVM tuning | JVM option files | [`config/jvm/`](config/jvm/) (local), `JAVA_OPTS` (container) |
 | Orchestration / deploy | Kubernetes + Kustomize | [`k8s/base/`](k8s/base/), [`k8s/eks/`](k8s/eks/) |
 | Model runtime | ONNX Runtime 1.18.0 | dependency in [`pom.xml`](pom.xml); `dssm_model.onnx` in resources |
 | Streaming (local) | Kafka + Flink + Redis | [`docker-compose.streaming.yml`](docker-compose.streaming.yml) |
@@ -310,15 +309,16 @@ decision counters without bucket or principal dimensions.
 
 ## JVM Tuning
 
-Two layers of JVM configuration:
+Two places JVM flags come from, depending on how the service runs:
 
-1. **Baseline flag sets** at the root: [`jvm.options`](jvm.options) (default),
-   [`jvm-g1.options`](jvm-g1.options) (G1GC),
-   [`jvm-zgc.options`](jvm-zgc.options) (ZGC).
-2. **Per-service overrides** in [`config/jvm/`](config/jvm/), selected by
-   [`scripts/run-with-jvm-tuning.sh <profile>`](scripts/run-with-jvm-tuning.sh).
-   Each service has a G1 and a `-zgc` variant, e.g. `model-serving.jvmopts` /
-   `model-serving-zgc.jvmopts`.
+1. **Locally** — per-service flag sets in [`config/jvm/`](config/jvm/), selected
+   by [`scripts/run-with-jvm-tuning.sh <profile>`](scripts/run-with-jvm-tuning.sh),
+   which exports them as `MAVEN_OPTS`. Each service has a G1 profile and a
+   `-zgc` variant, e.g. `model-serving.jvmopts` / `model-serving-zgc.jvmopts`.
+2. **In a container** — `JAVA_OPTS`, expanded by the image entrypoint and set
+   per service in `k8s/base/*.yaml` (`256 m`–`2 g`, plus
+   `-XX:MaxDirectMemorySize=512m` for model-serving). The `config/jvm/` files
+   are *not* baked into the image.
 
 Note: ONNX Runtime requires `-Xshare:off` (already set in the Surefire config
 for tests). In production, the image's AppCDS archive is loaded via

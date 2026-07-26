@@ -131,7 +131,7 @@ sub-packages.
 
 ## JVM Tuning
 
-JVM options live in `jvm.options` (default), `jvm-g1.options` (G1GC), and `jvm-zgc.options` (ZGC). `scripts/run-with-jvm-tuning.sh` selects options by service name. ONNX Runtime requires `-Xshare:off` (already set in Surefire config).
+JVM options live in `config/jvm/<profile>.jvmopts` — one per service plus a `-zgc` variant each. `scripts/run-with-jvm-tuning.sh <profile> -- <command>` reads the matching file and exports it as `MAVEN_OPTS`; it is the only consumer of those files. Containers get their flags from `JAVA_OPTS` instead (expanded by the image entrypoint, set per service in `k8s/base/*.yaml`), so `config/jvm/` applies to local runs only. ONNX Runtime requires `-Xshare:off` (already set in Surefire config).
 
 ## Kubernetes
 
