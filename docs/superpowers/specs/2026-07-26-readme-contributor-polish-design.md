@@ -11,9 +11,9 @@ build, test, run, inspect, and troubleshoot it locally.
 
 ## Scope
 
-The change rewrites `README.md` only. Existing architecture, configuration,
-system-design, and runbook documents remain authoritative and are linked rather
-than duplicated.
+The change rewrites `README.md` and consolidates configuration reference
+material in `CONFIG_GUIDE.md`. Existing architecture, system-design, and
+runbook documents remain authoritative and are linked rather than duplicated.
 
 The target length is approximately 400–700 lines. Clarity and correctness take
 priority over reaching a specific line count.
@@ -47,7 +47,8 @@ The README will use this order:
    - stop and reset local infrastructure;
    - inspect logs and health.
 5. Repository layout and where changes belong.
-6. Configuration entry points and a short list of essential variables.
+6. Configuration entry points and only the essential local-development
+   variables.
 7. Testing profiles, including deterministic, load, and Docker boundaries.
 8. Focused troubleshooting for the most likely local failures.
 9. Curated documentation index grouped by:
@@ -67,6 +68,14 @@ The README will use this order:
 - Deep API inventories, SQL examples, algorithm explanations, Kubernetes
   procedures, DR sequences, and subsystem investigations will be replaced by
   descriptive links to their authoritative documents.
+- `CONFIG_GUIDE.md` is the single authoritative environment-variable
+  reference. The README will retain only the variables required for its local
+  quick-start path, such as Redis and service-port overrides, and will link to
+  the guide for all per-service, resilience, authentication, and production
+  settings.
+- During consolidation, duplicated configuration tables will be removed from
+  README. Inconsistencies found in `CONFIG_GUIDE.md` may be corrected against
+  current production configuration parsing and deployment defaults.
 - Contributor workflow details remain only when they help build, run, test,
   debug, or navigate the local repository. A section is removed when its main
   purpose is explaining production architecture rather than enabling one of
@@ -105,6 +114,9 @@ The implementation will:
 - compare README headings against `docs/system_design/` and remove duplicated
   explanatory sections, including SQL Backend Patterns and Microservice
   architecture;
+- compare README configuration tables with `CONFIG_GUIDE.md`, remove duplicate
+  tables from README, and verify the retained guide entries against current
+  code and Kubernetes defaults;
 - scan for stale unlimited fail-open, obsolete scripts, and contradictory
   startup commands;
 - run `git diff --check`;
