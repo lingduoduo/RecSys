@@ -1,0 +1,155 @@
+# Contributor-First README Design
+
+## Goal
+
+Replace the repository's 2,311-line README with a concise contributor guide
+that gets a local development environment running quickly and routes deeper
+architecture and operational material to the existing documentation.
+
+The primary reader is a contributor who has cloned the repository and needs to
+build, test, run, inspect, and troubleshoot it locally.
+
+## Scope
+
+The change rewrites `README.md`, consolidates configuration reference material
+in `CONFIG_GUIDE.md`, and moves any still-useful unique README material into the
+most relevant Markdown document under `docs/`. Existing architecture,
+system-design, and runbook documents remain authoritative.
+
+The target length is approximately 300–500 lines. Clarity and correctness take
+priority over reaching a specific line count.
+
+The governing rule is:
+
+> README is the simple contributor entry point. Detailed explanations belong
+> in `docs/`, consolidated with the document that already owns that topic.
+
+Content is not retained in README merely because it is useful, and it is not
+deleted merely because it is duplicated. Each substantial section is triaged:
+
+1. Keep it only if a contributor needs it to build, run, test, troubleshoot, or
+   navigate the repository.
+2. Move and merge it into the relevant `docs/` Markdown file if it is useful
+   architecture, API, data, or operational reference material.
+3. Remove it if it is stale, sampled output, or already fully represented by an
+   authoritative document.
+
+The rewrite removes README copies of material already maintained in
+`docs/system_design/`, including:
+
+- the large Architecture Layers and System Design inventories;
+- SQL backend patterns and index-design explanations;
+- microservice and gateway architecture;
+- caching, sharding, replication, partitioning, and consistency internals;
+- service discovery, CDN, load-balancing, scalability, and capacity design;
+- fault-tolerance algorithms and multi-region DR procedures;
+- messaging/outbox/Saga implementation narratives;
+- JVM and pipeline optimization logs.
+
+The README may retain a one-sentence orientation and a link for each topic, but
+not a second implementation guide.
+
+## Information Architecture
+
+The README will use this order:
+
+1. Project purpose and four-service summary.
+2. A five-minute quick start for the Docker-backed local stack.
+3. Service ports and health endpoints.
+4. Common contributor workflows:
+   - build and deterministic tests;
+   - start all services;
+   - start one service;
+   - stop and reset local infrastructure;
+   - inspect logs and health.
+5. Repository layout and where changes belong.
+6. Configuration entry points and only the essential local-development
+   variables.
+7. Testing profiles, including deterministic, load, and Docker boundaries.
+8. Focused troubleshooting for the most likely local failures.
+9. Curated documentation index grouped by:
+   - system architecture and subsystem investigations;
+   - local configuration and APIs;
+   - testing and operational runbooks;
+   - Kubernetes, resilience evidence, and DR.
+10. Contribution handoff: validation commands to run before opening a PR.
+
+## Content Rules
+
+- Commands must reflect files and scripts present on current `main`.
+- Docker/Colima requirements must distinguish macOS from other environments.
+- Expected health endpoints and ports must match the implemented services.
+- The README must not promise that Redis failures always return `200`; it will
+  distinguish data-path degradation from bounded emergency rate limiting.
+- Deep API inventories, SQL examples, algorithm explanations, Kubernetes
+  procedures, DR sequences, and subsystem investigations will be replaced by
+  descriptive links to their authoritative documents.
+- `CONFIG_GUIDE.md` is the single authoritative environment-variable
+  reference. The README will retain only the variables required for its local
+  quick-start path, such as Redis and service-port overrides, and will link to
+  the guide for all per-service, resilience, authentication, and production
+  settings.
+- During consolidation, duplicated configuration tables will be removed from
+  README. Inconsistencies found in `CONFIG_GUIDE.md` may be corrected against
+  current production configuration parsing and deployment defaults.
+- Contributor workflow details remain only when they help build, run, test,
+  debug, or navigate the local repository. A section is removed when its main
+  purpose is explaining production architecture rather than enabling one of
+  those tasks.
+- When README contains useful details not yet present in the destination
+  document, those details will be merged into that existing `docs/` page before
+  the README copy is removed. The implementation will avoid creating a new
+  Markdown file when an established topic owner already exists.
+- The documentation index will link directly to the existing numbered
+  `docs/system_design/` investigations, avoiding a duplicate prose summary of
+  every design.
+- The quick-start path will avoid optional production infrastructure and
+  credentials.
+- Commands that delete/reset local state will be clearly labeled.
+- Load and Docker tests will be presented as opt-in environmental suites, not
+  ordinary pre-commit checks.
+- Outdated transcript-style code/result samples will be removed. This includes
+  large response dumps with fabricated or point-in-time counters, latency,
+  utilization, failure rates, in-flight requests, thresholds, and suggested
+  weights.
+- A response example may remain only when it is short, stable, and verified
+  against current production code or tests. Volatile health and operations
+  responses will instead document the endpoint, status semantics, and stable
+  field names, then link to the authoritative test or subsystem document.
+- Commented sequences such as `// 200 — healthy` followed by several simulated
+  `503` bodies will be replaced by a compact status/reason table when those
+  states remain part of the current contract, or removed when they do not.
+
+## Verification
+
+The implementation will:
+
+- verify every referenced local file and heading exists;
+- check all README relative Markdown links;
+- run the documented lightweight build/test or validation commands where the
+  environment permits;
+- compare retained request/response examples with current endpoint
+  implementations and contract tests;
+- scan for sampled numeric results and stale multi-response transcripts;
+- compare README headings against `docs/system_design/` and remove duplicated
+  explanatory sections, including SQL Backend Patterns and Microservice
+  architecture;
+- maintain a section-by-section migration inventory recording whether each
+  removed README section was consolidated into an existing document, linked to
+  an already-complete document, or removed as stale;
+- compare README configuration tables with `CONFIG_GUIDE.md`, remove duplicate
+  tables from README, and verify the retained guide entries against current
+  code and Kubernetes defaults;
+- scan for stale unlimited fail-open, obsolete scripts, and contradictory
+  startup commands;
+- run `git diff --check`;
+- independently review the final README for contributor usability and technical
+  accuracy.
+
+## Non-Goals
+
+- Redesigning production code, configuration, APIs, or deployment behavior.
+- Broadly rewriting linked architecture and runbook documents beyond merging
+  relevant README material and correcting contradictions exposed by that merge.
+- Adding screenshots, generated diagrams, badges, or marketing copy.
+- Providing exhaustive API or subsystem documentation in the README.

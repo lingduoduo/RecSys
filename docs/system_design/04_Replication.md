@@ -52,8 +52,7 @@ export REDIS_REPLICA_NODES="redis-b.internal:6379@us-east-1b,redis-c.internal:63
 ```
 
 When `REDIS_REPLICA_NODES` is unset the router routes every read to the primary, so
-local dev needs no extra config. This is the system's core CAP dial — see the README
-[Redis Read Replicas](../../README.md#redis-read-replicas) section and
+local dev needs no extra config. This is the system's core CAP dial — see
 [05_CAP §4](05_CAP.md#4-the-tunable-dial).
 
 ## 2. Primary failover — Sentinel

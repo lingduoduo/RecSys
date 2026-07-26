@@ -34,8 +34,8 @@ the three backend authorities are `recsys-catalog-serving` (6010, `/health`),
 `/health`). Each route's address comes from its env var / configmap (or the coded
 default), and `serviceName` is the key the registry overlay resolves against
 (`null` for LLM/unmapped routes, which never use the registry). With the registry
-off, this table *is* the resolution — exactly as documented under the README
-[Microservice Gateway](../../README.md#microservice-gateway).
+off, this table *is* the resolution; the gateway's request pipeline is documented in
+[API Gateway](09_API_Gateway.md).
 
 ## 2. The opt-in Redis registry
 

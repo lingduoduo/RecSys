@@ -74,8 +74,7 @@ service is chosen at runtime:
 ## 3. Clean-architecture layering
 
 The package tree under `com.recsys` is layered by **role, not service** (the
-authoritative map is the CLAUDE.md Package Map, mirrored in the README
-[Project Layout](../../README.md#project-layout)):
+authoritative map is the repository's CLAUDE.md Package Map):
 
 | Layer | Responsibility |
 |---|---|

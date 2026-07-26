@@ -113,7 +113,8 @@ caches non-streaming LLM proxy responses keyed by a **SHA-256 of the request bod
 **300 s**), returning `X-Cache: HIT/MISS`. It applies **only to the buffered path** — the
 SSE streaming path skips caching entirely (a stream can't be replayed from a cache). The
 justification for caching a nondeterministic model is that the demo runs at
-temperature 0. It sits inside the [LLM Gateway](../../README.md#llm-gateway) proxy.
+temperature 0. It sits inside the [API Gateway](09_API_Gateway.md) LLM proxy; its
+streaming-vs-buffered behavior is owned by [SSE Streaming](16_SSE_Streaming.md).
 
 ## 5. Supporting machinery
 

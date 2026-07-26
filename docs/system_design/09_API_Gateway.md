@@ -1,7 +1,7 @@
 # API Gateway in Recsys-Backend-Service
 
 An investigation of the single public edge — `MicroserviceGatewayServer` (Armeria,
-port 8010) — that fronts all four backends: how it routes and prefix-strips, how it
+port 8010) — that fronts the three backend services: how it routes and prefix-strips, how it
 is the trust boundary that authenticates callers and strips their credentials before
 proxying, how it aggregates downstream health, and how the cross-cutting concerns
 (circuit breaking, rate limiting, upstream discovery, the LLM proxy) compose into
@@ -13,8 +13,8 @@ is the map that ties them together.
 The gateway implements the **API Gateway pattern**: a single edge that concentrates
 cross-cutting concerns so backends stay simple and clients learn just one hostname
 and port. The tradeoff is one shared choke point — mitigated by health-checked
-upstreams and per-route circuit breakers — in exchange for that simplicity. All four
-services sit behind it.
+upstreams and per-route circuit breakers — in exchange for that simplicity. The three
+backend services sit behind it.
 
 A request traverses a deliberate pipeline. Some stages are Armeria server decorators
 (applied before dispatch); the rest run inside the proxy per request:
