@@ -20,8 +20,10 @@ import java.util.concurrent.atomic.LongAdder;
  * catalog path. Recorded inside {@link MultiChannelRecallService} for every caller;
  * surfaced (on 6010) by {@code CatalogLoadService} at {@code GET /health/load}.
  */
+// Not final: TraceIdAspect advises every com.recsys bean outside infrastructure,
+// so Spring must be able to generate a CGLIB subclass of this component.
 @Component
-public final class RecallDegradationMetrics {
+public class RecallDegradationMetrics {
 
     public enum Reason { REJECTED, TIMEOUT, ERROR }
 
