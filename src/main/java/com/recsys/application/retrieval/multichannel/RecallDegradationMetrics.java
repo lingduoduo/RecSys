@@ -2,6 +2,8 @@ package com.recsys.application.retrieval.multichannel;
 
 import io.micrometer.core.instrument.FunctionCounter;
 import io.micrometer.core.instrument.MeterRegistry;
+import org.springframework.beans.factory.annotation.Autowired;
+import org.springframework.stereotype.Component;
 
 import java.util.EnumMap;
 import java.util.LinkedHashMap;
@@ -18,6 +20,7 @@ import java.util.concurrent.atomic.LongAdder;
  * catalog path. Recorded inside {@link MultiChannelRecallService} for every caller;
  * surfaced (on 6010) by {@code CatalogLoadService} at {@code GET /health/load}.
  */
+@Component
 public final class RecallDegradationMetrics {
 
     public enum Reason { REJECTED, TIMEOUT, ERROR }
@@ -32,6 +35,12 @@ public final class RecallDegradationMetrics {
         for (RecallResult.DegradationOutcome outcome : RecallResult.DegradationOutcome.values()) {
             byOutcome.put(outcome, new LongAdder());
         }
+    }
+
+    @Autowired
+    public RecallDegradationMetrics(MeterRegistry registry) {
+        this();
+        registerMetrics(registry);
     }
 
     public static Reason classify(Throwable t) {

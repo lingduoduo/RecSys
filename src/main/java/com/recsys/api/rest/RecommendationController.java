@@ -12,6 +12,8 @@ import com.recsys.ratelimit.ModelRateLimiter;
 import com.recsys.exception.RateLimitExceededException;
 import com.recsys.exception.ServiceOverloadedException;
 import com.recsys.application.recommendation.RecommendationService;
+import com.recsys.application.retrieval.multichannel.RecallDegradationMetrics;
+import com.recsys.application.retrieval.multichannel.RecallResult;
 import com.recsys.application.auth.SubmitTokenService;
 import jakarta.validation.Valid;
 import org.springframework.http.CacheControl;
@@ -31,6 +33,7 @@ public class RecommendationController {
     private final ModelRateLimiter modelRateLimiter;
     private final SubmitTokenService submitTokenService;
     private final AbExposureLogger abExposureLogger;
+    private final RecallDegradationMetrics recallDegradationMetrics;
 
     public RecommendationController(RecommendationService recommendationService,
                                     InferenceMetricsService metricsService,
@@ -38,7 +41,8 @@ public class RecommendationController {
                                     LoadShedder loadShedder,
                                     ModelRateLimiter modelRateLimiter,
                                     SubmitTokenService submitTokenService,
-                                    AbExposureLogger abExposureLogger) {
+                                    AbExposureLogger abExposureLogger,
+                                    RecallDegradationMetrics recallDegradationMetrics) {
         this.recommendationService = recommendationService;
         this.metricsService = metricsService;
         this.abTestService = abTestService;
@@ -46,6 +50,7 @@ public class RecommendationController {
         this.modelRateLimiter = modelRateLimiter;
         this.submitTokenService = submitTokenService;
         this.abExposureLogger = abExposureLogger;
+        this.recallDegradationMetrics = recallDegradationMetrics;
     }
 
     @GetMapping(
@@ -99,6 +104,7 @@ public class RecommendationController {
                 HttpHeaders headers = new HttpHeaders();
                 headers.set("X-Served-From", "degraded-cache");
                 headers.set("X-Recall-Degradation-Reason", "fallback");
+                recallDegradationMetrics.recordOutcome(RecallResult.DegradationOutcome.FALLBACK);
                 return ResponseEntity.ok().headers(headers).body(degraded);
             }
             metricsService.recordFailure(0L, assignment.variant());

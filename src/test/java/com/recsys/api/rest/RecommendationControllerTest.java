@@ -16,6 +16,8 @@ import com.recsys.application.recommendation.RecommendationService;
 import com.recsys.exception.SubmitTokenException;
 import com.recsys.application.auth.LoginTokenService;
 import com.recsys.application.auth.SubmitTokenService;
+import com.recsys.application.retrieval.multichannel.RecallDegradationMetrics;
+import com.recsys.application.retrieval.multichannel.RecallResult;
 
 import java.time.Duration;
 import org.junit.jupiter.api.BeforeEach;
@@ -54,6 +56,7 @@ class RecommendationControllerTest {
     @MockBean AbExposureLogger abExposureLogger;
     @MockBean LoginTokenService loginTokenService;
     @MockBean RequestScopeData requestScopeData;
+    @MockBean RecallDegradationMetrics recallDegradationMetrics;
 
     @BeforeEach
     void allowRequest() {
@@ -233,6 +236,8 @@ class RecommendationControllerTest {
                 .andExpect(jsonPath("$.error").value("recommendation service is overloaded"));
 
         verify(metricsService).recordFailure(0L, "training");
+        verify(recallDegradationMetrics, org.mockito.Mockito.never())
+                .recordOutcome(RecallResult.DegradationOutcome.FALLBACK);
     }
 
     @Test
@@ -255,6 +260,9 @@ class RecommendationControllerTest {
                 .andExpect(jsonPath("$.userId").value("123"))
                 .andExpect(jsonPath("$.modelVersion").value("cached-v1"))
                 .andExpect(jsonPath("$.recommendations[0].itemId").value("7"));
+
+        verify(recallDegradationMetrics, org.mockito.Mockito.times(1))
+                .recordOutcome(RecallResult.DegradationOutcome.FALLBACK);
     }
 
     @Test

@@ -4,6 +4,9 @@ import com.recsys.infrastructure.persistence.CatalogDatabaseBootstrap;
 import com.recsys.infrastructure.persistence.MySqlClient;
 import com.recsys.infrastructure.persistence.MySqlConnectionSettings;
 import com.linecorp.armeria.server.ServerBuilder;
+import com.recsys.application.retrieval.multichannel.RecallDegradationMetrics;
+import com.recsys.application.retrieval.multichannel.RecallResult;
+import io.micrometer.core.instrument.simple.SimpleMeterRegistry;
 import org.junit.jupiter.api.Test;
 import org.mockito.InOrder;
 
@@ -16,6 +19,16 @@ import static org.mockito.Mockito.never;
 import static org.mockito.Mockito.verify;
 
 class RecSysServerCatalogWiringTest {
+    @Test void recallOutcomeMetricsAreRegisteredOnTheServingRegistry() {
+        SimpleMeterRegistry registry = new SimpleMeterRegistry();
+        RecallDegradationMetrics metrics = RecSysServer.createRecallMetrics(registry);
+
+        metrics.recordOutcome(RecallResult.DegradationOutcome.PARTIAL);
+
+        assertThat(registry.get("recsys.recall.degradation.outcomes")
+                .tag("outcome", "partial").functionCounter().count()).isEqualTo(1.0);
+    }
+
     @Test void disabledStartupBuildsUnavailableRouteWithoutMigrationOrClientCreation() {
         CatalogDatabaseBootstrap bootstrap = mock(CatalogDatabaseBootstrap.class);
         Function<MySqlConnectionSettings, MySqlClient> clients = mock(Function.class);
