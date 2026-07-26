@@ -18,6 +18,21 @@ than duplicated.
 The target length is approximately 400–700 lines. Clarity and correctness take
 priority over reaching a specific line count.
 
+The rewrite removes README copies of material already maintained in
+`docs/system_design/`, including:
+
+- the large Architecture Layers and System Design inventories;
+- SQL backend patterns and index-design explanations;
+- microservice and gateway architecture;
+- caching, sharding, replication, partitioning, and consistency internals;
+- service discovery, CDN, load-balancing, scalability, and capacity design;
+- fault-tolerance algorithms and multi-region DR procedures;
+- messaging/outbox/Saga implementation narratives;
+- JVM and pipeline optimization logs.
+
+The README may retain a one-sentence orientation and a link for each topic, but
+not a second implementation guide.
+
 ## Information Architecture
 
 The README will use this order:
@@ -35,8 +50,11 @@ The README will use this order:
 6. Configuration entry points and a short list of essential variables.
 7. Testing profiles, including deterministic, load, and Docker boundaries.
 8. Focused troubleshooting for the most likely local failures.
-9. Curated documentation index for architecture, APIs, fault tolerance,
-   configuration, Kubernetes, DR, and deeper subsystem investigations.
+9. Curated documentation index grouped by:
+   - system architecture and subsystem investigations;
+   - local configuration and APIs;
+   - testing and operational runbooks;
+   - Kubernetes, resilience evidence, and DR.
 10. Contribution handoff: validation commands to run before opening a PR.
 
 ## Content Rules
@@ -49,6 +67,13 @@ The README will use this order:
 - Deep API inventories, SQL examples, algorithm explanations, Kubernetes
   procedures, DR sequences, and subsystem investigations will be replaced by
   descriptive links to their authoritative documents.
+- Contributor workflow details remain only when they help build, run, test,
+  debug, or navigate the local repository. A section is removed when its main
+  purpose is explaining production architecture rather than enabling one of
+  those tasks.
+- The documentation index will link directly to the existing numbered
+  `docs/system_design/` investigations, avoiding a duplicate prose summary of
+  every design.
 - The quick-start path will avoid optional production infrastructure and
   credentials.
 - Commands that delete/reset local state will be clearly labeled.
@@ -77,6 +102,9 @@ The implementation will:
 - compare retained request/response examples with current endpoint
   implementations and contract tests;
 - scan for sampled numeric results and stale multi-response transcripts;
+- compare README headings against `docs/system_design/` and remove duplicated
+  explanatory sections, including SQL Backend Patterns and Microservice
+  architecture;
 - scan for stale unlimited fail-open, obsolete scripts, and contradictory
   startup commands;
 - run `git diff --check`;
