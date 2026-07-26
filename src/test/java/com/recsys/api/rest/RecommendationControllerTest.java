@@ -28,6 +28,7 @@ import org.springframework.http.MediaType;
 import org.springframework.test.web.servlet.MockMvc;
 
 import java.util.List;
+import java.util.Optional;
 
 import static org.mockito.ArgumentMatchers.any;
 import static org.mockito.ArgumentMatchers.eq;
@@ -232,6 +233,28 @@ class RecommendationControllerTest {
                 .andExpect(jsonPath("$.error").value("recommendation service is overloaded"));
 
         verify(metricsService).recordFailure(0L, "training");
+    }
+
+    @Test
+    void recommend_overloadedCacheRecoveryReturnsFallbackReasonAndUnchangedBody() throws Exception {
+        when(loadShedder.tryAcquire()).thenReturn(false);
+        var response = new RecommendResponse("123", "cached-v1", "training", List.of(
+                new ScoredItem("7", 0.81)));
+        when(recommendationService.tryServeFromCache(any(), any())).thenReturn(Optional.of(response));
+
+        var req = new RecommendRequest();
+        req.setUserId("123");
+        req.setK(5);
+
+        mockMvc.perform(post("/api/v1/recommend")
+                        .contentType(MediaType.APPLICATION_JSON)
+                        .content(objectMapper.writeValueAsString(req)))
+                .andExpect(status().isOk())
+                .andExpect(header().string("X-Served-From", "degraded-cache"))
+                .andExpect(header().string("X-Recall-Degradation-Reason", "fallback"))
+                .andExpect(jsonPath("$.userId").value("123"))
+                .andExpect(jsonPath("$.modelVersion").value("cached-v1"))
+                .andExpect(jsonPath("$.recommendations[0].itemId").value("7"));
     }
 
     @Test

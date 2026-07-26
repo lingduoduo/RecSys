@@ -98,6 +98,7 @@ public class RecommendationController {
                         !degraded.abTestVariant().equals(assignment.variant()), degraded.modelVersion());
                 HttpHeaders headers = new HttpHeaders();
                 headers.set("X-Served-From", "degraded-cache");
+                headers.set("X-Recall-Degradation-Reason", "fallback");
                 return ResponseEntity.ok().headers(headers).body(degraded);
             }
             metricsService.recordFailure(0L, assignment.variant());

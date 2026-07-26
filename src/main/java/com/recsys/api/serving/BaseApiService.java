@@ -9,7 +9,9 @@ import com.linecorp.armeria.common.HttpResponse;
 import com.linecorp.armeria.common.HttpStatus;
 import com.linecorp.armeria.common.MediaType;
 import com.linecorp.armeria.common.ResponseHeaders;
+import com.linecorp.armeria.common.ResponseHeadersBuilder;
 import com.linecorp.armeria.common.HttpHeaderNames;
+import com.recsys.application.retrieval.multichannel.RecallResult.DegradationOutcome;
 import com.linecorp.armeria.server.AbstractHttpService;
 import com.linecorp.armeria.server.ServiceRequestContext;
 import org.slf4j.Logger;
@@ -17,6 +19,7 @@ import org.slf4j.LoggerFactory;
 
 import java.io.IOException;
 import java.util.Map;
+import java.util.Objects;
 import java.util.Set;
 import java.util.stream.Collectors;
 
@@ -81,9 +84,10 @@ public abstract class BaseApiService extends AbstractHttpService {
     }
 
     /**
-     * Like {@link #writeJson} but adds {@code X-Recall-Degraded: <comma-joined>} when
-     * {@code degradedChannels} is non-empty. Signals silent recall-quality degradation
-     * without changing the response status or body.
+     * Like {@link #writeJson} but adds the compatibility
+     * {@code X-Recall-Degraded: <comma-joined>} header for degraded channels and
+     * the bounded {@code X-Recall-Degradation-Reason} for non-healthy outcomes.
+     * Neither signal changes the response status or body.
      *
      * <p>Channel names are sorted before joining. {@code degradedChannels} typically arrives
      * as (or backed by) {@code Set.copyOf(...)} (see {@code RecallResult}), whose iteration
@@ -91,19 +95,26 @@ public abstract class BaseApiService extends AbstractHttpService {
      * value deterministic for callers and tests instead of varying process to process.
      */
     protected static HttpResponse writeJsonWithRecallDegraded(HttpStatus status, Object payload,
-                                                              Set<String> degradedChannels) {
-        if (degradedChannels == null || degradedChannels.isEmpty()) {
+                                                              Set<String> degradedChannels,
+                                                              DegradationOutcome outcome) {
+        Objects.requireNonNull(outcome, "outcome");
+        boolean hasDegradedChannels = degradedChannels != null && !degradedChannels.isEmpty();
+        if (!hasDegradedChannels && outcome == DegradationOutcome.HEALTHY) {
             return writeJson(status, payload);
         }
         try {
             byte[] body = MAPPER.writeValueAsBytes(payload);
-            String headerValue = degradedChannels.stream().sorted()
-                    .collect(Collectors.joining(","));
-            ResponseHeaders headers = ResponseHeaders.builder(status)
-                    .contentType(MediaType.JSON_UTF_8)
-                    .set(HttpHeaderNames.of("x-recall-degraded"), headerValue)
-                    .build();
-            return HttpResponse.of(headers, HttpData.wrap(body));
+            ResponseHeadersBuilder headers = ResponseHeaders.builder(status)
+                    .contentType(MediaType.JSON_UTF_8);
+            if (hasDegradedChannels) {
+                String headerValue = degradedChannels.stream().sorted()
+                        .collect(Collectors.joining(","));
+                headers.set(HttpHeaderNames.of("x-recall-degraded"), headerValue);
+            }
+            if (outcome != DegradationOutcome.HEALTHY) {
+                headers.set(HttpHeaderNames.of("x-recall-degradation-reason"), outcome.wireValue());
+            }
+            return HttpResponse.of(headers.build(), HttpData.wrap(body));
         } catch (Exception e) {
             return writeError(HttpStatus.INTERNAL_SERVER_ERROR, "serialization error");
         }

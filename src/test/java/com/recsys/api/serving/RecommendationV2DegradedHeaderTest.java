@@ -26,7 +26,8 @@ class RecommendationV2DegradedHeaderTest {
         RecommendationPipeline pipeline = mock(RecommendationPipeline.class);
         when(pipeline.recommend(any())).thenReturn(new RecommendationResult(
                 "1", List.<RankedMovie>of(), null,
-                Map.of("degradedChannels", "momentum,trending")));
+                Map.of("degradedChannels", "momentum,trending",
+                        "degradationOutcome", "all_channels")));
 
         RecommendationService.V2 v2 = new RecommendationService.V2(pipeline);
         HttpRequest req = HttpRequest.of(
@@ -39,6 +40,7 @@ class RecommendationV2DegradedHeaderTest {
 
         assertThat(res.status()).isEqualTo(HttpStatus.OK);
         assertThat(res.headers().get("x-recall-degraded")).isEqualTo("momentum,trending");
+        assertThat(res.headers().get("x-recall-degradation-reason")).isEqualTo("all_channels");
     }
 
     @Test
@@ -58,5 +60,6 @@ class RecommendationV2DegradedHeaderTest {
 
         assertThat(res.status()).isEqualTo(HttpStatus.OK);
         assertThat(res.headers().get("x-recall-degraded")).isNull();
+        assertThat(res.headers().get("x-recall-degradation-reason")).isNull();
     }
 }

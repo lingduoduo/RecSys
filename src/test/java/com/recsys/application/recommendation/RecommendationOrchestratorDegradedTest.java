@@ -18,6 +18,7 @@ import static org.mockito.ArgumentMatchers.any;
 import static org.mockito.ArgumentMatchers.anyInt;
 import static org.mockito.Mockito.mock;
 import static org.mockito.Mockito.when;
+import static com.recsys.application.retrieval.multichannel.RecallResult.DegradationOutcome.*;
 
 class RecommendationOrchestratorDegradedTest {
 
@@ -36,6 +37,7 @@ class RecommendationOrchestratorDegradedTest {
                 new RecommendationQuery("1", 10, Set.of(), null));
 
         assertThat(result.trace()).containsEntry("degradedChannels", "trending");
+        assertThat(result.trace()).containsEntry("degradationOutcome", "partial");
     }
 
     @Test
@@ -56,6 +58,7 @@ class RecommendationOrchestratorDegradedTest {
                 new RecommendationQuery("1", 10, Set.of(), null));
 
         assertThat(result.trace()).containsEntry("degradedChannels", "momentum,trending");
+        assertThat(result.trace()).containsEntry("degradationOutcome", "partial");
     }
 
     @Test
@@ -73,5 +76,21 @@ class RecommendationOrchestratorDegradedTest {
                 new RecommendationQuery("1", 10, Set.of(), null));
 
         assertThat(result.trace()).doesNotContainKey("degradedChannels");
+        assertThat(result.trace()).doesNotContainKey("degradationOutcome");
+    }
+
+    @Test
+    void allChannelFailureIsCarriedWithoutInferringFromEmptyItems() {
+        MultiChannelRecallService recall = mock(MultiChannelRecallService.class);
+        when(recall.recallDetailed(any(), anyInt()))
+                .thenReturn(new RecallResult(List.of(), Set.of("trending"), ALL_CHANNELS));
+        CandidateRanker ranker = mock(CandidateRanker.class);
+        when(ranker.rank(any(), any(), anyInt())).thenReturn(List.of());
+
+        RecommendationResult result = new RecommendationOrchestrator(
+                recall, ranker, null, new CursorPaginationService())
+                .recommend(new RecommendationQuery("1", 10, Set.of(), null));
+
+        assertThat(result.trace()).containsEntry("degradationOutcome", "all_channels");
     }
 }

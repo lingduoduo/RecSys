@@ -71,6 +71,10 @@ public class RecommendationOrchestrator implements RecommendationPipeline {
                     .sorted()
                     .collect(java.util.stream.Collectors.joining(",")));
         }
+        if (recall.outcome()
+                != com.recsys.application.retrieval.multichannel.RecallResult.DegradationOutcome.HEALTHY) {
+            trace.put("degradationOutcome", recall.outcome().wireValue());
+        }
 
         return new RecommendationResult(query.userId(), hydrated, page.nextCursor(), trace);
     }
