@@ -30,6 +30,7 @@ import java.util.Map;
 import java.util.Set;
 import java.util.concurrent.CompletableFuture;
 import java.util.concurrent.TimeUnit;
+import java.util.concurrent.atomic.AtomicBoolean;
 import java.util.stream.Collectors;
 
 /**
@@ -178,7 +179,8 @@ public final class LlmProxyService implements HttpService {
                     }
 
                     // Circuit breaker
-                    if (!circuitBreaker.tryAcquire()) {
+                    RouteCircuitBreaker.Permit circuitPermit = circuitBreaker.tryAcquirePermit();
+                    if (circuitPermit == null) {
                         return CompletableFuture.completedFuture(
                                 GatewayProxyService.gatewayError(HttpStatus.SERVICE_UNAVAILABLE,
                                         route.name() + " circuit open — LLM service unavailable, retry later"));
@@ -196,19 +198,24 @@ public final class LlmProxyService implements HttpService {
                         // Return the streaming response directly without wrapping in a future.
                         // We complete the CompletableFuture immediately with the streaming writer.
                         return CompletableFuture.completedFuture(
-                                forwardStreaming(webClient.execute(upstreamReq)));
+                                forwardStreaming(webClient.execute(upstreamReq), circuitPermit));
                     } else {
                         return CompletableFuture.completedFuture(
-                                forwardBuffered(upstreamReq, requestBody));
+                                forwardBuffered(upstreamReq, requestBody, circuitPermit));
                     }
                 }));
     }
 
     // ── Streaming path ──────────────────────────────────────────────────────────────────────────
 
-    private HttpResponse forwardStreaming(HttpResponse upstream) {
+    private HttpResponse forwardStreaming(
+            HttpResponse upstream,
+            RouteCircuitBreaker.Permit circuitPermit) {
         HttpResponseWriter writer = HttpResponse.streaming();
         upstream.subscribe(new org.reactivestreams.Subscriber<HttpObject>() {
+            private final AtomicBoolean breakerCompleted = new AtomicBoolean();
+            private volatile HttpStatus responseStatus;
+
             @Override
             public void onSubscribe(org.reactivestreams.Subscription s) {
                 s.request(Long.MAX_VALUE);
@@ -217,10 +224,9 @@ public final class LlmProxyService implements HttpService {
             @Override
             public void onNext(HttpObject obj) {
                 if (obj instanceof ResponseHeaders h) {
+                    responseStatus = h.status();
                     if (h.status().isServerError()) {
-                        circuitBreaker.recordFailure();
-                    } else {
-                        circuitBreaker.recordSuccess();
+                        recordFailureOnce();
                     }
                     // Strip hop-by-hop headers and forward downstream
                     ResponseHeaders filtered = filterResponseHeaders(h);
@@ -232,13 +238,30 @@ public final class LlmProxyService implements HttpService {
 
             @Override
             public void onError(Throwable t) {
-                circuitBreaker.recordFailure();
+                recordFailureOnce();
                 writer.close(t);
             }
 
             @Override
             public void onComplete() {
+                if (responseStatus != null && !responseStatus.isServerError()) {
+                    recordSuccessOnce();
+                } else {
+                    recordFailureOnce();
+                }
                 writer.close();
+            }
+
+            private void recordSuccessOnce() {
+                if (breakerCompleted.compareAndSet(false, true)) {
+                    circuitBreaker.recordSuccess(circuitPermit);
+                }
+            }
+
+            private void recordFailureOnce() {
+                if (breakerCompleted.compareAndSet(false, true)) {
+                    circuitBreaker.recordFailure(circuitPermit);
+                }
             }
         });
         return writer;
@@ -246,7 +269,10 @@ public final class LlmProxyService implements HttpService {
 
     // ── Buffered path ───────────────────────────────────────────────────────────────────────────
 
-    private HttpResponse forwardBuffered(HttpRequest upstreamReq, byte[] requestBody) {
+    private HttpResponse forwardBuffered(
+            HttpRequest upstreamReq,
+            byte[] requestBody,
+            RouteCircuitBreaker.Permit circuitPermit) {
         RequestHeaders upstreamHeaders = upstreamReq.headers();
         return HttpResponse.of(
                 webClient.execute(upstreamReq).aggregate()
@@ -272,9 +298,9 @@ public final class LlmProxyService implements HttpService {
                         })
                         .thenApply(agg -> {
                             if (agg.status().isServerError()) {
-                                circuitBreaker.recordFailure();
+                                circuitBreaker.recordFailure(circuitPermit);
                             } else {
-                                circuitBreaker.recordSuccess();
+                                circuitBreaker.recordSuccess(circuitPermit);
                             }
 
                             byte[] responseBytes;
@@ -297,7 +323,7 @@ public final class LlmProxyService implements HttpService {
                             return HttpResponse.of(withCacheMiss, HttpData.wrap(responseBytes));
                         })
                         .exceptionally(t -> {
-                            circuitBreaker.recordFailure();
+                            circuitBreaker.recordFailure(circuitPermit);
                             return GatewayProxyService.gatewayError(HttpStatus.BAD_GATEWAY,
                                     "LLM upstream unreachable");
                         }));

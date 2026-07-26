@@ -1,6 +1,7 @@
 package com.recsys.application.retrieval.multichannel;
 
 import org.junit.jupiter.api.Test;
+import io.micrometer.core.instrument.simple.SimpleMeterRegistry;
 
 import java.util.concurrent.CompletionException;
 import java.util.concurrent.RejectedExecutionException;
@@ -8,6 +9,7 @@ import java.util.concurrent.TimeoutException;
 
 import static org.assertj.core.api.Assertions.assertThat;
 import static org.assertj.core.api.Assertions.within;
+import static com.recsys.application.retrieval.multichannel.RecallResult.DegradationOutcome.*;
 
 class RecallDegradationMetricsTest {
 
@@ -86,5 +88,41 @@ class RecallDegradationMetricsTest {
         assertThat(s.totalRecalls()).isEqualTo((long) threads * perThread);
         assertThat(s.byChannel().get("c").get(RecallDegradationMetrics.Reason.REJECTED))
                 .isEqualTo((long) threads * perThread);
+    }
+
+    @Test
+    void snapshotCountsEachBoundedOutcome() {
+        RecallDegradationMetrics m = new RecallDegradationMetrics();
+        m.recordOutcome(HEALTHY);
+        m.recordOutcome(PARTIAL);
+        m.recordOutcome(ALL_CHANNELS);
+        m.recordOutcome(FALLBACK);
+
+        assertThat(m.snapshot().byOutcome())
+                .containsEntry(HEALTHY, 1L)
+                .containsEntry(PARTIAL, 1L)
+                .containsEntry(ALL_CHANNELS, 1L)
+                .containsEntry(FALLBACK, 1L);
+    }
+
+    @Test
+    void micrometerUsesOnlyBoundedOutcomeTags() {
+        RecallDegradationMetrics m = new RecallDegradationMetrics();
+        SimpleMeterRegistry registry = new SimpleMeterRegistry();
+        m.registerMetrics(registry);
+        m.record("unbounded-channel-name", RecallDegradationMetrics.Reason.ERROR);
+        m.recordOutcome(PARTIAL);
+
+        assertThat(registry.getMeters()).hasSize(4);
+        assertThat(registry.getMeters())
+                .allSatisfy(meter -> assertThat(meter.getId().getTags())
+                        .extracting(io.micrometer.core.instrument.Tag::getKey)
+                        .containsExactly("outcome"));
+        assertThat(registry.getMeters().stream()
+                .flatMap(meter -> meter.getId().getTags().stream())
+                .map(io.micrometer.core.instrument.Tag::getValue))
+                .doesNotContain("unbounded-channel-name");
+        assertThat(registry.get("recsys.recall.degradation.outcomes")
+                .tag("outcome", "partial").functionCounter().count()).isEqualTo(1.0);
     }
 }

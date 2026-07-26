@@ -24,6 +24,10 @@ import java.util.concurrent.ForkJoinPool;
 import java.util.concurrent.RejectedExecutionException;
 import java.util.concurrent.TimeUnit;
 
+import static com.recsys.application.retrieval.multichannel.RecallResult.DegradationOutcome.ALL_CHANNELS;
+import static com.recsys.application.retrieval.multichannel.RecallResult.DegradationOutcome.HEALTHY;
+import static com.recsys.application.retrieval.multichannel.RecallResult.DegradationOutcome.PARTIAL;
+
 public class MultiChannelRecallService {
     private static final Logger log = LoggerFactory.getLogger(MultiChannelRecallService.class);
     private static final long DEFAULT_CHANNEL_TIMEOUT_MS = 200L;
@@ -127,7 +131,7 @@ public class MultiChannelRecallService {
 
     private RecallResult recall(RecommendationQuery query, int limit, boolean primary) {
         Objects.requireNonNull(query, "query");
-        if (limit <= 0) return new RecallResult(List.of(), Set.of());
+        if (limit <= 0) return new RecallResult(List.of(), Set.of(), HEALTHY);
         if (!primary) degradationMetrics.recordTotal();
 
         QuotaSpec quota = null;
@@ -209,11 +213,17 @@ public class MultiChannelRecallService {
         if (!primary && !degradedChannels.isEmpty()) {
             degradationMetrics.recordDegradedRequest();
         }
+        RecallResult.DegradationOutcome outcome = degradedChannels.isEmpty()
+                ? HEALTHY
+                : channelResults.isEmpty() ? ALL_CHANNELS : PARTIAL;
+        if (!primary) {
+            degradationMetrics.recordOutcome(outcome);
+        }
 
         List<MovieCandidate> ranked = (quota == null)
                 ? legacyMerge(channelResults, query, limit)
                 : quotaMerge(channelResults, quota, query, limit);
-        return new RecallResult(ranked, degradedChannels);
+        return new RecallResult(ranked, degradedChannels, outcome);
     }
 
     public static final class PrimaryRecallUnavailableException extends RuntimeException {

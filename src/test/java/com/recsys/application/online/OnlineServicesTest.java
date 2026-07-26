@@ -10,6 +10,7 @@ import static org.mockito.Mockito.verifyNoInteractions;
 import static org.mockito.Mockito.when;
 
 import com.linecorp.armeria.common.AggregatedHttpResponse;
+import com.linecorp.armeria.common.HttpHeaderNames;
 import com.linecorp.armeria.common.HttpStatus;
 import com.linecorp.armeria.server.ServerBuilder;
 import com.linecorp.armeria.testing.junit5.server.ServerExtension;
@@ -20,6 +21,10 @@ import com.recsys.application.outbox.DurableEventPublisher;
 import com.recsys.domain.online.OnlineRecommendationResult;
 import com.recsys.domain.user.User;
 import com.recsys.infrastructure.outbox.OutboxConflictException;
+import com.recsys.infrastructure.redis.RedisExecutor;
+import com.recsys.loadshed.OnlineLoadShedder;
+import com.recsys.metrics.OnlineServingMetricsService;
+import com.recsys.ratelimit.RedisRateLimiter;
 import java.time.Clock;
 import java.time.Duration;
 import java.time.Instant;
@@ -48,6 +53,18 @@ class OnlineServicesTest {
                     new User(42, "Alice"), "last_hour", "trending", List.of(), List.of(), List.of()));
             sb.service("/features", new OnlineServices.Features(recommendations, publisher, codec));
             sb.service("/recommend", new OnlineServices.Prediction(recommendations, codec, waiter));
+        }
+    };
+
+    @RegisterExtension
+    static final ServerExtension emergencyLimitedServer = new ServerExtension() {
+        @Override protected void configure(ServerBuilder sb) {
+            RedisExecutor failingRedis = mock(RedisExecutor.class);
+            when(failingRedis.execute(any())).thenThrow(new IllegalStateException("redis down"));
+            RedisRateLimiter limiter = new RedisRateLimiter(failingRedis, "rate:test:", 100L, 1,
+                    100, 10_000L, 1.0, 1, () -> 0L, () -> 0L);
+            sb.service("/limited", new OnlineServices.Prediction(recommendations,
+                    new OnlineServingMetricsService(), new OnlineLoadShedder(10, 1.0), limiter));
         }
     };
 
@@ -116,6 +133,16 @@ class OnlineServicesTest {
         assertThat(response.status()).isEqualTo(HttpStatus.SERVICE_UNAVAILABLE);
         assertThat(response.headers().get("Retry-After")).isEqualTo("1");
         verify(recommendations, never()).recommend(any());
+    }
+
+    @Test void emergencyRateLimitRejectionPreservesHttp429Contract() {
+        emergencyLimitedServer.blockingWebClient().get("/limited?userId=42");
+        AggregatedHttpResponse response = emergencyLimitedServer.blockingWebClient()
+                .get("/limited?userId=42");
+
+        assertThat(response.status()).isEqualTo(HttpStatus.TOO_MANY_REQUESTS);
+        assertThat(response.headers().get(HttpHeaderNames.RETRY_AFTER)).isEqualTo("1");
+        assertThat(response.contentUtf8()).contains("online serving rate limited");
     }
 
     private static AggregatedHttpResponse getRecommendation(int userId, String token) {

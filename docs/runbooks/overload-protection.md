@@ -29,8 +29,9 @@ and how to tune it. Design: `docs/superpowers/specs/2026-07-08-overload-protecti
   counter that consults Redis on every request, bounding a rolling window to ~1× `limit` (no
   per-instance fast-path). Fail-open and circuit breaker behavior are unchanged. The ~1× bound assumes reasonably NTP-synchronized instance clocks, since the window bucket is derived from each instance's wall clock (`nowMs`); skew approaching a full window loosens the bound.
 - **Concurrency gates are per instance** — aggregate cluster concurrency = perInstance × replicas.
-- **Rate limiters fail open** (disabled at 0, and allow on Redis error). **Load shedders are
-  always on** and reject when the concurrency counter is full.
+- **Rate limiters fail open** (disabled at 0). On Redis error the online limiter falls back
+  to a bounded per-replica emergency bucket (`ONLINE_REDIS_EMERGENCY_*`) rather than admitting
+  without limit. **Load shedders are always on** and reject when the concurrency counter is full.
 - **On RecSys 6010, the recall bulkhead saturates before the concurrency gate returns 429.**
   Each admitted request fans out ~6 channel tasks onto the shared `WorkerBulkhead`
   (poolSize + queue ≈ availableProcessors×2 + availableProcessors×8 ≈ availableProcessors×10

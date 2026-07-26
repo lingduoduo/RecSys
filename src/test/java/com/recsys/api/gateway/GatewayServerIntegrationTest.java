@@ -173,8 +173,8 @@ class GatewayServerIntegrationTest {
     void circuitBreakerOpenReturns503() {
         // Unit-style: verify CB blocks after threshold failures
         RouteCircuitBreaker cb = new RouteCircuitBreaker(1, 60_000);
-        cb.recordFailure();
-        assertThat(cb.tryAcquire()).isFalse();
+        cb.recordFailure(cb.tryAcquirePermit());
+        assertThat(cb.tryAcquirePermit()).isNull();
     }
 
     @Test

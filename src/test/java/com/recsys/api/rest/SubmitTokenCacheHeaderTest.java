@@ -18,7 +18,7 @@ class SubmitTokenCacheHeaderTest {
         when(tokens.ttlSeconds()).thenReturn(300);
 
         RecommendationController controller = new RecommendationController(
-                null, null, null, null, null, tokens, null);
+                null, null, null, null, null, tokens, null, null);
 
         ResponseEntity<SubmitTokenResponse> res = controller.getSubmitToken();
 

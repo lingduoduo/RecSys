@@ -20,6 +20,7 @@ import static org.mockito.ArgumentMatchers.any;
 import static org.mockito.ArgumentMatchers.anyInt;
 import static org.mockito.Mockito.mock;
 import static org.mockito.Mockito.when;
+import static com.recsys.application.retrieval.multichannel.RecallResult.DegradationOutcome.*;
 
 class RecommendationV1DegradedHeaderTest {
 
@@ -30,7 +31,7 @@ class RecommendationV1DegradedHeaderTest {
         when(dm.getWatchedMovieIds(1)).thenReturn(Set.of());
         MultiChannelRecallService recall = mock(MultiChannelRecallService.class);
         when(recall.recallDetailed(any(), anyInt()))
-                .thenReturn(new RecallResult(List.<MovieCandidate>of(), Set.of("trending", "momentum")));
+                .thenReturn(new RecallResult(List.<MovieCandidate>of(), Set.of("trending", "momentum"), ALL_CHANNELS));
 
         RecommendationService.V1 v1 = new RecommendationService.V1(dm, recall);
         HttpRequest req = HttpRequest.of(HttpMethod.GET, "/recommendation?userId=1&k=5");
@@ -39,6 +40,7 @@ class RecommendationV1DegradedHeaderTest {
         assertThat(res.status()).isEqualTo(HttpStatus.OK);
         // Sorted alphabetically by the helper for determinism — see BaseApiService javadoc.
         assertThat(res.headers().get("x-recall-degraded")).isEqualTo("momentum,trending");
+        assertThat(res.headers().get("x-recall-degradation-reason")).isEqualTo("all_channels");
     }
 
     @Test
@@ -56,5 +58,6 @@ class RecommendationV1DegradedHeaderTest {
 
         assertThat(res.status()).isEqualTo(HttpStatus.OK);
         assertThat(res.headers().get("x-recall-degraded")).isNull();
+        assertThat(res.headers().get("x-recall-degradation-reason")).isNull();
     }
 }

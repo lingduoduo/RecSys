@@ -16,6 +16,7 @@ import com.recsys.domain.user.User;
 import com.recsys.application.recommendation.RecommendationPipeline;
 import com.recsys.application.retrieval.multichannel.MultiChannelRecallService;
 import com.recsys.application.retrieval.multichannel.RecallResult;
+import com.recsys.application.retrieval.multichannel.RecallResult.DegradationOutcome;
 
 import java.util.LinkedHashSet;
 import java.util.List;
@@ -74,7 +75,8 @@ public final class RecommendationService {
                             .toList();
 
                     return writeJsonWithRecallDegraded(HttpStatus.OK,
-                            new RecommendationResponse(user, movies), recall.degradedChannels());
+                            new RecommendationResponse(user, movies), recall.degradedChannels(),
+                            recall.outcome());
 
                 } catch (BadRequestException | IllegalArgumentException e) {
                     return writeError(HttpStatus.BAD_REQUEST, e.getMessage());
@@ -105,7 +107,11 @@ public final class RecommendationService {
                     Set<String> degradedSet = (degraded == null || degraded.isBlank())
                             ? Set.of()
                             : new LinkedHashSet<>(List.of(degraded.split(",")));
-                    return writeJsonWithRecallDegraded(HttpStatus.OK, result, degradedSet);
+                    String outcomeValue = result.trace().get("degradationOutcome");
+                    DegradationOutcome outcome = outcomeValue == null
+                            ? DegradationOutcome.HEALTHY
+                            : DegradationOutcome.fromWireValue(outcomeValue);
+                    return writeJsonWithRecallDegraded(HttpStatus.OK, result, degradedSet, outcome);
                 } catch (BadRequestException | IllegalArgumentException e) {
                     return writeError(HttpStatus.BAD_REQUEST, e.getMessage());
                 } catch (Exception e) {

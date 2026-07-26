@@ -1,5 +1,8 @@
 package com.recsys.resilience;
 
+import java.util.Objects;
+import java.util.function.LongSupplier;
+
 /**
  * Per-route circuit breaker for the API gateway. Delegates the CLOSED/OPEN/HALF_OPEN
  * state machine to the shared {@link CircuitBreaker}; keeps this class's public State
@@ -8,6 +11,12 @@ package com.recsys.resilience;
 public final class RouteCircuitBreaker {
 
     public enum State { CLOSED, OPEN, HALF_OPEN }
+
+    public record Permit(CircuitBreaker.Permit delegate) {
+        public Permit {
+            Objects.requireNonNull(delegate, "delegate");
+        }
+    }
 
     public static final int  DEFAULT_FAILURE_THRESHOLD = 5;
     public static final long DEFAULT_COOLDOWN_MS       = 10_000L;
@@ -22,6 +31,10 @@ public final class RouteCircuitBreaker {
         this.delegate = new CircuitBreaker(failureThreshold, cooldownMs);
     }
 
+    RouteCircuitBreaker(int failureThreshold, long cooldownMs, LongSupplier clockMs) {
+        this.delegate = new CircuitBreaker(failureThreshold, cooldownMs, clockMs);
+    }
+
     public State state() {
         return switch (delegate.state()) {
             case CLOSED    -> State.CLOSED;
@@ -30,7 +43,16 @@ public final class RouteCircuitBreaker {
         };
     }
 
-    public boolean tryAcquire()   { return delegate.tryAcquire(); }
-    public void    recordSuccess(){ delegate.recordSuccess(); }
-    public void    recordFailure(){ delegate.recordFailure(); }
+    public Permit tryAcquirePermit() {
+        CircuitBreaker.Permit permit = delegate.tryAcquirePermit();
+        return permit == null ? null : new Permit(permit);
+    }
+
+    public void recordSuccess(Permit permit) {
+        delegate.recordSuccess(permit.delegate());
+    }
+
+    public void recordFailure(Permit permit) {
+        delegate.recordFailure(permit.delegate());
+    }
 }

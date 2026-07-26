@@ -1,0 +1,84 @@
+name: resilience-scheduled
+
+on:
+  schedule:
+    - cron: "17 5 * * 2"
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+jobs:
+  load:
+    runs-on: ubuntu-latest
+    timeout-minutes: 35
+    steps:
+      - uses: actions/checkout@11bd71901bbe5b1630ceea73d27597364c9af683 # v4.2.2
+      - uses: actions/setup-java@7a445ee88d4e23b52c33c877a462a71bda80fa32 # v4.7.1
+        with:
+          distribution: temurin
+          java-version: "17"
+          cache: maven
+      - name: Run bounded load suite
+        run: >-
+          mvn --batch-mode test
+          -DexcludedGroups=docker
+          -Dgroups=load
+          -Dresilience.evidence.suite=load
+          -Dresilience.evidence.output=target/resilience-measurements-load.json
+      - name: Generate load evidence
+        if: always()
+        run: >-
+          python3 scripts/summarize-resilience-results.py
+          --suite load
+          --reports target/surefire-reports
+          --measurements target/resilience-measurements-load.json
+          --output resilience-evidence-load.json
+      - name: Upload load evidence and reports
+        if: always()
+        uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02 # v4.6.2
+        with:
+          name: resilience-load-evidence
+          path: |
+            resilience-evidence-load.json
+            target/resilience-measurements-load.json
+            target/surefire-reports/
+          if-no-files-found: warn
+          retention-days: 30
+
+  docker:
+    runs-on: ubuntu-latest
+    timeout-minutes: 35
+    steps:
+      - uses: actions/checkout@11bd71901bbe5b1630ceea73d27597364c9af683 # v4.2.2
+      - uses: actions/setup-java@7a445ee88d4e23b52c33c877a462a71bda80fa32 # v4.7.1
+        with:
+          distribution: temurin
+          java-version: "17"
+          cache: maven
+      - name: Run bounded Docker suite
+        run: >-
+          mvn --batch-mode test
+          -DexcludedGroups=load
+          -Dgroups=docker
+          -Dresilience.evidence.suite=docker
+          -Dresilience.evidence.output=target/resilience-measurements-docker.json
+      - name: Generate Docker evidence
+        if: always()
+        run: >-
+          python3 scripts/summarize-resilience-results.py
+          --suite docker
+          --reports target/surefire-reports
+          --measurements target/resilience-measurements-docker.json
+          --output resilience-evidence-docker.json
+      - name: Upload Docker evidence and reports
+        if: always()
+        uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02 # v4.6.2
+        with:
+          name: resilience-docker-evidence
+          path: |
+            resilience-evidence-docker.json
+            target/resilience-measurements-docker.json
+            target/surefire-reports/
+          if-no-files-found: warn
+          retention-days: 30

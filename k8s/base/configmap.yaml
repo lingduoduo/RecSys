@@ -69,6 +69,10 @@ data:
   # Online-serving Redis rate limiter (cross-instance, fixed-window).
   ONLINE_REDIS_RATE_LIMIT_QPS: "200"
   ONLINE_REDIS_RATE_LIMIT_WINDOW_SECONDS: "1"
+  # Local emergency budget used only while Redis limiting is unavailable.
+  ONLINE_REDIS_EMERGENCY_LIMIT_ENABLED: "true"
+  ONLINE_REDIS_EMERGENCY_RATE_PER_SECOND: "50"
+  ONLINE_REDIS_EMERGENCY_BURST: "50"
   ONLINE_REQUEST_TIMEOUT_MS: "500"
   ONLINE_MAX_CONCURRENT_REQUESTS: "64"
   ONLINE_DRAIN_UTILIZATION: "0.90"

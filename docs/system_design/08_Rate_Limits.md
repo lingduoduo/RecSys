@@ -3,8 +3,9 @@
 An investigation of the five rate limiters in the system: one shared token-bucket
 primitive, three per-instance limiters that guard the gateway, the model service,
 and the LLM proxy, and one global cluster-wide ceiling backed by Redis. The unifying
-theme is **fail-open** — a disabled or broken limiter admits traffic rather than
-dropping it — and the unifying question for each is *what is limited, by what key,
+theme is **fail-open** — a disabled limiter admits traffic rather than dropping it,
+and a broken Redis limiter degrades to a bounded local ceiling rather than an
+unlimited one — and the unifying question for each is *what is limited, by what key,
 and is the ceiling per-instance or global?*
 
 ## The big picture
@@ -24,11 +25,13 @@ Two facts shape everything below:
   the fleet does.
 - **Only `RedisRateLimiter` is a true global ceiling** (state in Redis, consulted
   every request), and it is the one that adds a dependency — so it is also the one
-  with an embedded circuit breaker and the most aggressive fail-open behavior.
+  with an embedded circuit breaker and a **bounded** fail-open path.
 
-Every limiter **fails open**: setting a limit to `0` returns an unlimited decision,
-and the Redis limiter additionally admits traffic when its breaker is open or Redis
-errors. Rate limiting is the *first* gate in the overload stack (rate limit →
+Every limiter **fails open**: setting a limit to `0` returns an unlimited decision.
+When its breaker is open or Redis errors, the Redis limiter does not admit traffic
+without limit — it falls back to one conservative per-replica emergency token bucket
+(`ONLINE_REDIS_EMERGENCY_*`), so a Redis outage cannot remove the only traffic bound.
+Rate limiting is the *first* gate in the overload stack (rate limit →
 admission → bulkhead — see [Fault Tolerance](18_Fault_Tolerance.md#gate-ordering)).
 
 ## 1. `TokenBucket` — the shared primitive
@@ -161,8 +164,9 @@ the design spec is
   eviction, `_anonymous` sharing, refill timing), `LlmTokenRateLimiterTest`
   (burst-then-block, a large request blocked for insufficient tokens). The
   `TokenBucket` primitive has no test of its own — it's exercised transitively.
-- **The global limiter** — `RedisRateLimiterTest` (mocked Redis: fail-open on error,
-  the CLOSED→OPEN→HALF_OPEN→CLOSED breaker lifecycle, no local pass-threshold) and
+- **The global limiter** — `RedisRateLimiterTest` (mocked Redis: bounded fail-open on
+  error via the emergency bucket, the CLOSED→OPEN→HALF_OPEN→CLOSED breaker lifecycle
+  under generation-bound permits, no local pass-threshold) and
   `RedisRateLimiterSlidingWindowIntegrationTest` (`@Tag("docker")`, real Redis + an
   injected logical clock: proves the boundary burst stays ≈1× not ≈2×, and window
   keys self-expire).

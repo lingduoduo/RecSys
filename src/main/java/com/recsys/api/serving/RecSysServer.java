@@ -7,6 +7,7 @@ import com.linecorp.armeria.server.Route;
 import com.linecorp.armeria.server.Server;
 import com.linecorp.armeria.server.ServerBuilder;
 import com.linecorp.armeria.server.cors.CorsService;
+import com.linecorp.armeria.common.metric.PrometheusMeterRegistries;
 import com.recsys.config.EnvConfig;
 import com.recsys.infrastructure.dataloading.DataLoader;
 import com.recsys.infrastructure.dataloading.DataManager;
@@ -36,6 +37,7 @@ import com.recsys.application.retrieval.multichannel.MultiChannelRecallService;
 import com.recsys.application.retrieval.multichannel.RecallConfig;
 import com.recsys.application.retrieval.multichannel.RecallDegradationMetrics;
 import com.recsys.infrastructure.store.TrendingStore;
+import io.micrometer.core.instrument.MeterRegistry;
 import org.slf4j.Logger;
 import org.slf4j.LoggerFactory;
 import java.util.List;
@@ -104,7 +106,8 @@ public class RecSysServer {
             WorkerBulkhead recallBulkhead = new WorkerBulkhead("recall-catalog", recallPoolSize,
                     EnvConfig.readInt("RECALL_BULKHEAD_QUEUE_CAPACITY", recallPoolSize * 4));
             ExecutorService executor = recallBulkhead.asExecutorService();
-            RecallDegradationMetrics recallMetrics = new RecallDegradationMetrics();
+            RecallDegradationMetrics recallMetrics = createRecallMetrics(
+                    PrometheusMeterRegistries.defaultRegistry());
 
             MultiChannelRecallService recallService = MultiChannelRecallService.from(
                     RecallConfig.builder()
@@ -235,5 +238,11 @@ public class RecSysServer {
 
     static void registerCatalogRoute(ServerBuilder builder, CatalogComponent component) {
         builder.service(ROUTE_MOVIE_CATALOG, component.service());
+    }
+
+    static RecallDegradationMetrics createRecallMetrics(MeterRegistry registry) {
+        RecallDegradationMetrics metrics = new RecallDegradationMetrics();
+        metrics.registerMetrics(registry);
+        return metrics;
     }
 }

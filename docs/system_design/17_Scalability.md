@@ -111,7 +111,11 @@ reports `recall.degradedRatio` (fraction of non-primary recall *requests* that
 degraded), a per-channel `recall.channelDegraded` breakdown
 (`REJECTED`/`TIMEOUT`/`ERROR`), and live bulkhead `active`/`queued`; degraded
 responses also carry an `X-Recall-Degraded` header on `/getrecommendation`,
-`/recommendation`, and `/v2/recommend` (observe-only, request outcomes unchanged).
+`/recommendation`, and `/v2/recommend` (observe-only, request outcomes unchanged),
+alongside the bounded `X-Recall-Degradation-Reason`
+(`partial` / `all_channels` / `fallback`) that separates a healthy empty result
+from an empty one caused by unavailable channels — see
+[Fault Tolerance](18_Fault_Tolerance.md#channel-health-and-per-channel-timeouts).
 
 ### Rate limiting (`ratelimit/TokenBucket` primitive)
 
@@ -120,9 +124,10 @@ responses also carry an `X-Recall-Degraded` header on `/getrecommendation`,
 | `GatewayRateLimiter` | per-(route, principal), per instance | bounded Caffeine cache (`GATEWAY_RL_MAX_PRINCIPALS` 100k); 429 on deny |
 | `ModelRateLimiter` | per-user, per instance | access-ordered LRU capped at max-users (10k); fairness between users |
 | `LlmTokenRateLimiter` | token-count-aware | consumes `max_tokens` per call so large-context requests can't drain the quota |
-| `RedisRateLimiter` | **global / cluster-wide** | distributed **weighted sliding-window** (rolling rate ≈1× the limit, not the ~2× a fixed window admits across a boundary); **no local fast-path** — every request consults Redis; **fails open** on Redis error (embeds a 5-fail/30s circuit breaker) |
+| `RedisRateLimiter` | **global / cluster-wide** | distributed **weighted sliding-window** (rolling rate ≈1× the limit, not the ~2× a fixed window admits across a boundary); **no local fast-path** — every request consults Redis; **bounded fail-open** on Redis error — a 5-fail/30s circuit breaker plus a per-replica emergency token bucket (`ONLINE_REDIS_EMERGENCY_*`) |
 
-Rule of thumb: **rate limiters fail open** (disabled at 0, allow on Redis error);
+Rule of thumb: **rate limiters fail open** (disabled at 0; on Redis error the online
+limiter degrades to a bounded per-replica emergency ceiling, not an unlimited one);
 **load shedders are always on**. The online Redis QPS limit is the only *global*
 ceiling; everything else is per-instance, so effective limits move with replica
 count.

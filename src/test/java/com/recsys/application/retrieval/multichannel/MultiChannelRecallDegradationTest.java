@@ -16,6 +16,7 @@ import java.util.concurrent.TimeUnit;
 import static org.assertj.core.api.Assertions.assertThat;
 import static org.assertj.core.api.Assertions.assertThatThrownBy;
 import static org.assertj.core.api.Assertions.within;
+import static com.recsys.application.retrieval.multichannel.RecallResult.DegradationOutcome.*;
 
 class MultiChannelRecallDegradationTest {
 
@@ -61,6 +62,7 @@ class MultiChannelRecallDegradationTest {
 
         assertThat(result.degradedChannels()).contains("trending");
         assertThat(result.candidates()).isNotEmpty(); // ok channel still served
+        assertThat(result.outcome()).isEqualTo(PARTIAL);
         RecallDegradationMetrics.Snapshot s = metrics.snapshot();
         assertThat(s.totalRecalls()).isEqualTo(1);
         assertThat(s.degradedRecalls()).isEqualTo(1);
@@ -83,11 +85,28 @@ class MultiChannelRecallDegradationTest {
         RecallResult result = service.recallDetailed(query(), 10);
 
         assertThat(result.degradedChannels()).containsExactlyInAnyOrder("trending", "popularity");
+        assertThat(result.outcome()).isEqualTo(ALL_CHANNELS);
         RecallDegradationMetrics.Snapshot s = metrics.snapshot();
         assertThat(s.totalRecalls()).isEqualTo(1);
         assertThat(s.degradedRecalls()).isEqualTo(1);
         assertThat(s.degradedRatio()).isLessThanOrEqualTo(1.0);
         assertThat(s.degradedRatio()).isEqualTo(1.0, within(1e-9));
+    }
+
+    @Test
+    void healthyEmptyRecallIsNotClassifiedAsDegraded() {
+        RecallChannel empty = new RecallChannel() {
+            @Override public String name() { return "empty"; }
+            @Override public List<MovieCandidate> recall(RecommendationQuery q, int limit) { return List.of(); }
+            @Override public List<MovieCandidate> recallPrimary(RecommendationQuery q, int limit) { return List.of(); }
+        };
+        MultiChannelRecallService service = new MultiChannelRecallService(List.of(empty));
+
+        RecallResult result = service.recallDetailed(query(), 10);
+
+        assertThat(result.candidates()).isEmpty();
+        assertThat(result.degradedChannels()).isEmpty();
+        assertThat(result.outcome()).isEqualTo(HEALTHY);
     }
 
     @Test
