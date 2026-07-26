@@ -90,8 +90,10 @@ replicas) and fail fast with `Retry-After`.
 
 `loadshed/OnlineLoadShedder` — lock-free CAS loop on an `AtomicInteger` in-flight
 counter. Defaults: **64 concurrent** (`ONLINE_MAX_CONCURRENT_REQUESTS`), drain at
-**0.95** utilization (`ONLINE_DRAIN_UTILIZATION`; catalog 6010 uses **0.90** via
-`CATALOG_*`). `OnlineAdmissionControl` (Armeria decorator) returns **429** +
+the **0.95 application default** (`ONLINE_DRAIN_UTILIZATION`); the base
+Kubernetes ConfigMap overrides online serving to **0.90**, and catalog 6010
+uses **0.90** via `CATALOG_*`. `OnlineAdmissionControl` (Armeria decorator)
+returns **429** +
 `Retry-After` past the ceiling. `suggestedWeight = round((1−util)×100)` feeds ALB
 target weights so a saturated node bleeds off traffic before it hard-rejects.
 SIGTERM sets a one-way `shuttingDown` flag → `/health/ready` flips to 503 for
@@ -125,13 +127,17 @@ from an empty one caused by unavailable channels — see
 | `GatewayRateLimiter` | per-(route, principal), per instance | bounded Caffeine cache (`GATEWAY_RL_MAX_PRINCIPALS` 100k); 429 on deny |
 | `ModelRateLimiter` | per-user, per instance | access-ordered LRU capped at max-users (10k); fairness between users |
 | `LlmTokenRateLimiter` | token-count-aware | consumes `max_tokens` per call so large-context requests can't drain the quota |
-| `RedisRateLimiter` | **global / cluster-wide** | distributed **weighted sliding-window** (rolling rate ≈1× the limit, not the ~2× a fixed window admits across a boundary); **no local fast-path** — every request consults Redis; **bounded fail-open** on Redis error — a 5-fail/30s circuit breaker plus a per-replica emergency token bucket (`ONLINE_REDIS_EMERGENCY_*`) |
+| `RedisRateLimiter` | **global / cluster-wide** | distributed **weighted sliding-window** (rolling rate ≈1× the limit, not the ~2× a fixed window admits across a boundary); **no local fast-path** — every request consults Redis; Redis-outage admission is bounded by a per-replica emergency token bucket only when all construction gates below are active |
 
 Rule of thumb: **rate limiters fail open** (disabled at 0; on Redis error the online
-limiter degrades to a bounded per-replica emergency ceiling, not an unlimited one);
-**load shedders are always on**. The online Redis QPS limit is the only *global*
-ceiling; everything else is per-instance, so effective limits move with replica
-count.
+limiter uses its per-replica emergency ceiling only when a Redis executor exists,
+Redis QPS is positive, the emergency flag is enabled, and emergency rate and burst
+are both positive). If the Redis limiter is active but the emergency flag, rate, or
+burst disables that rollback bucket, Redis errors, malformed decisions, and circuit
+rejections use **unlimited fail-open**. Without an executor or positive Redis QPS,
+the Redis limiter itself is disabled and admits all requests. **Load shedders are
+always on**. The online Redis QPS limit is the only *global* ceiling; everything
+else is per-instance, so effective limits move with replica count.
 
 ### Circuit breakers
 
@@ -258,7 +264,10 @@ genuinely deferred assumptions. Current status:
    bucket is stamped from each instance's wall clock, so the ≈1× bound assumes
    NTP-synced clocks (proven by a `@Tag("docker")` boundary test with an injected
    clock). It's still the only *global* ceiling — every other limit is per-instance
-   and moves with replica count.
+   and moves with replica count. Its Redis-outage path is bounded only while the
+   executor, positive-QPS, emergency-enable, positive-rate, and positive-burst gates
+   all hold; disabling the emergency bucket for rollback restores unlimited
+   fail-open.
 5. **DR warm standby can now be pre-scaled on failover — fixed (PR #204).** The
    standby still *sits* at ~50% minReplicas to save cost, but an operator promotes
    it to the primary baseline in one step (`dr-standby-capacity.sh promote`, HPA-docs

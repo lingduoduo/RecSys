@@ -12,27 +12,24 @@ system-design documents and runbooks.
 
 ## What runs locally
 
-The standard local workflow starts two groups of processes:
+The clean-clone quick start uses the smallest useful runnable subset:
 
-1. `docker-compose.streaming.yml` starts the supporting infrastructure:
-   ZooKeeper, Kafka, a Redis primary and replica, three Redis Sentinel
-   processes, and a Flink JobManager and TaskManager.
-2. `scripts/run-microservices-local.sh` starts four Java services from this
-   Maven project:
-   catalog/recommendation serving, online prediction, model serving, and the
-   API gateway.
+1. `docker-compose.streaming.yml` starts the Redis primary.
+2. The catalog/recommendation service runs on the host and exposes health on
+   port `6010`.
 
-The Java services run on the host so that contributors can rebuild, attach a
-debugger, or restart one process without rebuilding containers. The supporting
-infrastructure stays in Docker.
+The full local topology additionally has ZooKeeper, Kafka, a Redis replica,
+three Redis Sentinel processes, Flink, online prediction, ONNX model serving,
+and the API gateway. The Java services run on the host so contributors can
+rebuild, attach a debugger, or restart one process without rebuilding
+containers.
 
 MySQL-backed catalog routes are optional and disabled by default. The ordinary
 quick start needs no MySQL server, database migration, cloud credentials, or
-external LLM service. It does make an explicit local-only authentication choice
-for the gateway, described below.
-
-The gateway starts after the three backends and aggregates their current
-health, so its endpoint is the single full-stack check used below.
+external LLM service. It also avoids the untracked model and Spark artifacts
+that a clean clone cannot generate. The artifact-dependent four-service
+workflow and its explicit gateway authentication choice are documented under
+[Common contributor workflows](#common-contributor-workflows).
 
 ## Prerequisites
 
@@ -44,24 +41,17 @@ Required:
 - A POSIX-compatible shell for the repository scripts.
 - `curl` for the health checks below.
 
-On macOS, Colima is one option for providing the Docker daemon:
-
-```bash
-colima start
-```
-
-Colima is not required on Linux, and Docker Desktop is also a valid local
-Docker provider. Start whichever Docker provider you use before running
-Compose.
+On macOS, Colima (`colima start`) or Docker Desktop can provide the daemon.
+Colima is not required on Linux. Start your Docker provider before Compose.
 
 Run all commands from the repository root.
 
 ## Five-minute quick start
 
-Start the Docker-backed infrastructure:
+Start only the Redis service needed by catalog serving:
 
 ```bash
-docker compose -f docker-compose.streaming.yml up -d
+docker compose -f docker-compose.streaming.yml up -d redis-primary
 ```
 
 Build the application without running tests:
@@ -70,41 +60,23 @@ Build the application without running tests:
 mvn package -DskipTests
 ```
 
-Start all four Java services:
+Start catalog/recommendation serving:
 
 ```bash
-GATEWAY_ALLOW_ANONYMOUS=true sh scripts/run-microservices-local.sh
+env PORT=6010 sh scripts/run-with-jvm-tuning.sh recsys-serving -- \
+  mvn exec:java -Dexec.mainClass=com.recsys.api.serving.RecSysServer
 ```
 
-> **Development only:** this setting deliberately disables gateway
-> authentication and treats every caller as anonymous. Never use it in
-> production. Configure API-key or Cognito authentication using the
-> [Configuration Guide](CONFIG_GUIDE.md).
-
-Keep that terminal open. The script owns the four child processes and writes
-their output to:
-
-```text
-logs/recsys-serving.log
-logs/model-serving.log
-logs/online-serving.log
-logs/api-gateway.log
-```
-
-The script waits ten seconds before starting the gateway. In another terminal,
-check the aggregate health endpoint:
+Keep that terminal open. In another terminal, check the catalog health
+endpoint:
 
 ```bash
-curl --fail http://localhost:8010/health
+curl --fail http://localhost:6010/health
 ```
 
-`curl --fail` exits nonzero while an upstream is unavailable, so retry after
-checking the service logs if the initial build or model startup is still in
-progress.
-
-To stop the Java services, press `Ctrl-C` in the terminal running
-`run-microservices-local.sh`. Its shutdown trap terminates all four child
-processes.
+This path uses only tracked classpath data and the Redis primary; it does not
+need the ignored model/Spark artifact tree. To stop the Java service, press
+`Ctrl-C` in its terminal.
 
 Stop the supporting containers while retaining the Redis volumes:
 
@@ -152,6 +124,39 @@ on every run. The gateway health contract is described in the
 
 ## Common contributor workflows
 
+### Start the artifact-dependent full stack
+
+Do not use the four-service script until you have restored a compatible model
+artifact bundle. The default variant requires `training/feature_config.json`
+and compatible companion artifacts under
+`src/main/resources/artifacts/model/` or `RECSYS_MODEL_ARTIFACTS_DIR`. Every
+configured A/B variant needs a bundle from the same pipeline.
+
+This repository has no acquisition or generation workflow for those files.
+Without the required model bundle, model serving **will fail during startup**,
+and the gateway aggregate health endpoint will remain `503`.
+
+After supplying the artifacts, start the infrastructure and four services:
+
+```bash
+docker compose -f docker-compose.streaming.yml up -d
+GATEWAY_ALLOW_ANONYMOUS=true sh scripts/run-microservices-local.sh
+```
+
+> **Development only:** anonymous mode deliberately disables gateway
+> authentication. Never use it in production. Without anonymous mode, API keys,
+> or Cognito configuration, the gateway fails closed at startup. Configure a
+> production mechanism using the [Configuration Guide](CONFIG_GUIDE.md).
+
+The script waits ten seconds before the gateway and writes one log per service
+under `logs/`. Check the aggregate only after all three backends are ready:
+
+```bash
+curl --fail http://localhost:8010/health
+```
+
+Press `Ctrl-C` in the script terminal to terminate its four child processes.
+
 ### Start one service
 
 Run one command per terminal. Start Redis first for the catalog and online
@@ -180,6 +185,9 @@ env SERVER_PORT=8080 sh scripts/run-with-jvm-tuning.sh model-serving -- \
   mvn spring-boot:run
 ```
 
+This model command has the same artifact prerequisite as the full-stack
+workflow and will fail without the default variant's model bundle.
+
 API gateway:
 
 ```bash
@@ -190,8 +198,8 @@ env GATEWAY_PORT=8010 GATEWAY_ALLOW_ANONYMOUS=true \
 
 The anonymous setting in the gateway command is development-only. The wrapper
 loads the repository's checked-in JVM options. Use
-`mvn package -DskipTests` for a fast rebuild and the all-service script from the
-quick start when you do not need process-level isolation.
+`mvn package -DskipTests` for a fast rebuild and the artifact-dependent
+all-service script when you do not need process-level isolation.
 
 ### Inspect processes and logs
 
@@ -214,17 +222,14 @@ tail -f logs/recsys-serving.log \
 
 ### Load sample online features
 
-With the Redis primary available on `localhost:6379` and `redis-cli`
-installed:
+With Redis on `localhost:6379` and `redis-cli` installed:
 
 ```bash
 sh streaming/online-serving/scripts/load_online_features.sh
 ```
 
-The loader replays the checked-in
-`src/main/java/com/recsys/data/online_features.txt` data into Redis. The full
-streaming and Flink workflow lives in the
-[online-serving guide](streaming/online-serving/README.md).
+It loads the checked-in sample; see the
+[online-serving guide](streaming/online-serving/README.md) for Flink.
 
 ## Testing
 
@@ -265,20 +270,14 @@ src/main/resources/artifacts/pyspark/als_model_metadata.json
 ```
 
 Consequently, ordinary `mvn --batch-mode test` has fixture-related errors on a
-clean checkout, and model serving on port `8080` may fail to become ready. This
-README change does not claim that suite passes.
-
-Restore the project-specific training/test fixtures from the modeling pipeline
-under those classpath paths before running fixture-dependent tests. This
-checkout has no artifact-preparation script; the `offline-embedding` Maven
-profile only generates Word2Vec item embeddings and does not replace these
-fixtures.
-
-For model serving with already-prepared external artifacts, set
-`RECSYS_MODEL_ARTIFACTS_DIR` to a root containing `training/` and `test/`
-variant directories. Set `RECSYS_SPARK_ARTIFACTS_DIR` to the root containing
-`als_model_metadata.json` when Spark artifacts are needed. Both names are bound
-in [application.yml](src/main/resources/application.yml).
+clean checkout. Model serving on port `8080` will fail during startup without
+the default variant's model bundle. Restore the files from a known-good
+pipeline output; this checkout has no artifact-preparation script, and the
+`offline-embedding` profile generates only Word2Vec item embeddings. External
+bundles can use `RECSYS_MODEL_ARTIFACTS_DIR` for `training/` and `test/` model
+variants and `RECSYS_SPARK_ARTIFACTS_DIR` for `als_model_metadata.json`; both
+are bound in [application.yml](src/main/resources/application.yml). This README
+does not claim that the fixture-dependent suite passes.
 
 ### Opt-in load suite
 
@@ -339,9 +338,10 @@ for the maintained commands and artifact paths.
 
 ## Configuration
 
-The quick start explicitly sets `GATEWAY_ALLOW_ANONYMOUS=true` for local
-development. Its script supplies the standard service ports and gateway
-upstream URLs, and Redis defaults to `localhost:6379`.
+The clean-clone quick start uses the catalog port and Redis defaults. The
+artifact-dependent full-stack command explicitly sets
+`GATEWAY_ALLOW_ANONYMOUS=true` for local development; its script supplies the
+standard service ports and local gateway upstreams.
 
 The local settings most often overridden are:
 
@@ -352,15 +352,12 @@ The local settings most often overridden are:
 | `SERVER_PORT` | `8080` | Spring Boot model-serving port |
 | `GATEWAY_PORT` | `8010` | API gateway port |
 | `REDIS_HOST` / `REDIS_PORT` | `localhost` / `6379` | Host Redis connection |
-| `GATEWAY_ALLOW_ANONYMOUS` | `false` | Explicit development-only opt-in used by the quick start |
+| `GATEWAY_ALLOW_ANONYMOUS` | `false` | Development-only opt-in used by the artifact-dependent full-stack command |
 
 Do not copy service, resilience, authentication, or deployment variables into
 new README tables. The authoritative defaults, parsing behavior, Kubernetes
 overrides, and secret-handling guidance are in the
 [Configuration Guide](CONFIG_GUIDE.md).
-
-Production gateway deployments must use the documented API-key or Cognito
-settings and leave anonymous mode disabled.
 
 The shared container image selects a service with `RECSYS_MAIN_CLASS`;
 Kubernetes manifests set that value per workload. Local Maven commands invoke
@@ -400,8 +397,9 @@ tail -n 200 logs/api-gateway.log
 ```
 
 Common causes are a missing Redis connection, a port already in use, an
-unsupported Java version, or invalid opt-in configuration. The catalog
-service's MySQL configuration is validated only when MySQL is enabled.
+unsupported Java version, invalid opt-in configuration, or missing model
+artifacts. The catalog service's MySQL configuration is validated only when
+MySQL is enabled.
 
 ### The gateway health check returns `503`
 

@@ -1,21 +1,25 @@
 # Configuration Guide
 
-This is the authoritative runtime-configuration reference for the Recsys
-Backend Service. The [README](README.md) keeps only the variables needed for
-its local quick-start path; use this page for service, resilience, integration,
-and Kubernetes settings.
+This is the authoritative reference for contributor- and operator-facing
+runtime controls explicitly read by the shipped services, shared container, and
+local launcher. It covers direct Java environment reads, named Spring
+placeholders, and the custom Spring property bindings used by model serving.
+The [README](README.md) keeps only the settings needed for local workflows.
 
 Defaults below are application defaults when no variable is supplied. Values in
 [`k8s/base/configmap.yaml`](k8s/base/configmap.yaml) or an individual workload
 manifest override those defaults for the base deployment. Put passwords, token
 signing keys, API keys, and similar secrets in a Secret rather than a ConfigMap.
+Generic Spring Boot switches, CI/test-only knobs, individual dynamic
+`FEATURE_FLAG_*` names, and secret values generated or provisioned outside this
+repository are outside this inventory.
 
 ## Local development essentials
 
-For the ordinary local path, start the streaming stack, then run
-`GATEWAY_ALLOW_ANONYMOUS=true sh scripts/run-microservices-local.sh`. This is
-an explicit development-only authentication choice; the script supplies the
-four standard ports and local gateway upstream URLs. Redis connection and
+The clean-clone quick start in the README starts only Redis and catalog serving.
+The artifact-dependent four-service path runs
+`GATEWAY_ALLOW_ANONYMOUS=true sh scripts/run-microservices-local.sh`; that is an
+explicit development-only authentication choice. Redis connection and
 per-service port overrides are in the next two sections.
 
 | Setting | Default | Use |
@@ -26,6 +30,7 @@ per-service port overrides are in the next two sections.
 | `SERVICE_REGISTRY_SERVICE_NAME` / `SERVICE_REGISTRY_ADVERTISE_URL` | unset / unset | Registered service name and advertised URL; neither setting registers a service unless `SERVICE_REGISTRY_ENABLED=true`. |
 | `SERVICE_REGISTRY_HEARTBEAT_MS` / `SERVICE_REGISTRY_TTL_MS` | `10000` / `30000` ms | Registrar heartbeat interval and Redis registry-record TTL. |
 | `SERVICE_REGISTRY_REFRESH_MS` | `10000` ms | Gateway registry refresh interval when registry lookup is enabled; a non-positive value performs only the initial refresh. |
+| `GATEWAY_START_DELAY_SECONDS` | `10` seconds | Local-script delay before launching the gateway. This is a shell `sleep` value, not an application setting; invalid values stop the launcher. |
 
 ## Service selection and ports
 
@@ -68,17 +73,21 @@ corresponding Service, probe, and gateway upstream configuration.
 | `REDIS_POOL_MIN_IDLE` | `2` | Non-negative pool idle minimum. Base online-serving sets `4`. |
 | `REDIS_POOL_MAX_WAIT_MS` | `250` | Positive pool-acquisition wait. Base online-serving sets `100`. |
 | `REDIS_POOL_TEST_ON_BORROW` | `true` | Whether to validate borrowed pooled connections. |
-| `REDIS_EMBEDDING_MGET_BATCH_SIZE` | `500` | Catalog/model Redis embedding read batch size. |
+| `REDIS_EMBEDDING_MGET_BATCH_SIZE` | `500` | Catalog/model embedding MGET batch size. Invalid integers use `500`; values below `1` clamp to `1`. |
+| `REDIS_LOADALL_TIMEOUT_MS` | `30000` ms | Wall-clock budget for model Redis embedding `SCAN`/`MGET` startup loads. Invalid integers use `30000`; negative values clamp to `0`, and `0` disables the budget. |
 | `ONLINE_FEATURE_REDIS_MGET_BATCH_SIZE` | `500` | Online feature-store Redis read batch size. |
+| `REDIS_REPLICA_LAG_PROBE_SECONDS` | `10` seconds | Online-serving replica-lag sampling interval. Invalid integers use `10`; zero or negative values fail startup. |
+| `REDIS_FEATURE_VERSION_SAMPLE_LIMIT` / `REDIS_FEATURE_VERSION_SAMPLE_SECONDS` | `1000` keys / `30` seconds | Online-serving feature-version sample bound and interval. Invalid integers use the defaults; either value below `1` fails startup. |
 | `ONLINE_EVENTS_SQS_ENABLED` / `ONLINE_EVENTS_SQS_QUEUE_URL` | `false` / unset | Enable online-event SQS publishing only with a queue URL. |
 | `ONLINE_EVENTS_KAFKA_ENABLED` / `ONLINE_EVENTS_KAFKA_BOOTSTRAP_SERVERS` / `ONLINE_EVENTS_KAFKA_TOPIC` | `false` / unset / `movie_events_v2` | Enable online-event Kafka publishing only with bootstrap servers; records are keyed by `userId`. |
+| `ASYNC_EVENT_QUEUE_CAPACITY` / `ASYNC_EVENT_BATCH_SIZE` | `10000` / `100` | Bounded queue and drain batch shared by online-event and model A/B-exposure publishers. Invalid integers use the defaults; values below `1` clamp to `1`. |
 | `FLINK_CHECKPOINT_DIR` | unset | Optional checkpoint location for the opt-in Flink job. |
 
 ## Recommendation and model serving
 
 | Variable | Default | Use |
 |---|---:|---|
-| `RECSYS_VECTOR_BACKEND` | `lsh` | Catalog vector backend: `lsh` or `exact`. |
+| `RECSYS_VECTOR_BACKEND` / JVM `-Drecsys.vector.backend` | `lsh` | Catalog vector backend (`lsh`/`ann`, `exact`/`flat`, or portable `faiss` fallback to LSH). The JVM property wins; an unknown value stops catalog startup. |
 | `LOCAL_EMBEDDING_CACHE_MAX_ENTRIES` | `100000` | JVM LRU capacity for catalog embeddings. |
 | `RECALL_CHANNEL_TIMEOUT_MS` | `200` | Per-channel recall deadline shared by catalog and online serving. |
 | `RECALL_BULKHEAD_QUEUE_CAPACITY` | four times the recall pool size | Bounded recall queue shared by catalog and online serving. |
@@ -108,8 +117,12 @@ corresponding Service, probe, and gateway upstream configuration.
 | `RECSYS_MODEL_FILE` | `dssm_model.onnx` | Model artifact filename. |
 | `RECSYS_MODEL_ITEM_EMBEDDINGS_SOURCE` | `classpath` | `classpath` or `redis`. |
 | `RECSYS_MODEL_REDIS_ITEM_EMBEDDING_PREFIX` | `i2vEmb` | Redis key prefix when model item embeddings use Redis. |
-| `RECSYS_HEALTH_MAX_FAILURE_RATE` | `0.5` | Model readiness failure-rate threshold. |
-| `RECSYS_HEALTH_MAX_AVG_LATENCY_MS` | `2000` | Model readiness average-latency threshold. |
+| `RECSYS_RECOMMENDATION_CACHE_ENABLED` / `RECSYS_RECOMMENDATION_CACHE_TTL_SECONDS` / `RECSYS_RECOMMENDATION_CACHE_MAX_ENTRIES` | `true` / `300` / `10000` | Model-serving response cache switch, positive TTL, and positive capacity (maximum `100000`). Invalid bound values fail Spring startup. |
+| `RECSYS_RECOMMENDATION_CACHE_COLD_START_ENABLED` / `RECSYS_RECOMMENDATION_CACHE_COLD_START_TTL_SECONDS` / `RECSYS_RECOMMENDATION_CACHE_COLD_START_MAX_K` | `true` / `3600` / `100` | Shared cold-start cache switch, positive TTL, and maximum result size in `1..100`. |
+| `RECSYS_RECOMMENDATION_CACHE_COMPUTE_WAIT_TIMEOUT_MILLIS` | `2000` ms | Maximum wait for an in-flight duplicate cache computation; valid range `1..60000`. |
+| `RECSYS_AB_BUCKET_A_PERCENT` / `RECSYS_AB_BUCKET_B_PERCENT` | `20` / `20` | Model A/B allocation percentages. Each is non-negative and their sum must be at most `100`, otherwise Spring startup fails. |
+| Spring `recsys.ab-test.enabled`, `layer-name`, `bucket-a-variant`, `bucket-b-variant`, `default-variant` | `false` / `default` / `test` / `training` / `training` | Controls assignment and loaded variants. Layer and variant names must be nonblank. The named percentage environment aliases are in the preceding row. |
+| `RECSYS_MODEL_RATE_LIMIT_RPS` / `RECSYS_MODEL_RATE_LIMIT_BURST` / `RECSYS_MODEL_RATE_LIMIT_MAX_USERS` | `0.0` / `0` / `10000` | Per-user, per-model-replica token bucket. Positive rate and burst are both required to enable it; tracked-user capacity clamps to at least `1`. Malformed Spring numeric binding fails startup. |
 | `RECSYS_HEALTH_MAX_CONCURRENT_REQUESTS` | `64` | Model per-instance in-flight cap. Base ConfigMap sets `64`. |
 | `RECSYS_HEALTH_MAX_IN_FLIGHT_UTILIZATION` | `0.95` | Model readiness drain threshold. Base ConfigMap sets `0.95`. |
 | `RECSYS_EVENTS_SQS_ENABLED` / `RECSYS_EVENTS_SQS_QUEUE_URL` / `RECSYS_EVENTS_SQS_REGION` | `false` / unset / `AWS_REGION` or `us-east-1` | Model A/B exposure SQS publishing; needs a queue URL. |
@@ -119,12 +132,16 @@ corresponding Service, probe, and gateway upstream configuration.
 
 Gateway upstream defaults are `http://localhost:6010` for catalog,
 `http://localhost:8080` for model, and `http://localhost:7010` for online.
-The base ConfigMap supplies Kubernetes service URLs instead.
+The base ConfigMap overrides the compatibility, user, movie, and feature route
+names. Other active route names below retain their localhost defaults unless a
+deployment supplies them. Every configured value must be a URI with a scheme
+and host; malformed values stop gateway startup.
 
 | Variable | Default | Use |
 |---|---:|---|
-| `CATALOG_SERVICE_URL` / `MODEL_SERVICE_URL` / `ONLINE_SERVICE_URL` | local service URLs | Gateway upstreams for catalog, model, and online routes. |
-| `USER_PROFILE_SERVICE_URL` / `MOVIE_METADATA_SERVICE_URL` / `FEATURE_SERVICE_URL` / `RECOMMENDATION_RETRIEVAL_SERVICE_URL` / `RANKING_SERVICE_URL` / `AGENT_WORKFLOW_SERVICE_URL` / `OBSERVABILITY_SERVICE_URL` | base ConfigMap service URLs | Optional gateway integration endpoints. |
+| `CATALOG_SERVICE_URL` / `MODEL_SERVICE_URL` / `ONLINE_SERVICE_URL` | ports `6010` / `8080` / `7010` on localhost | Backward-compatible gateway upstreams for catalog, model, and online routes. |
+| `EMBED_RECALL_SERVICE_URL` / `MODEL_INFERENCE_SERVICE_URL` / `ONLINE_BLEND_SERVICE_URL` / `SEQUENTIAL_SERVICE_URL` | ports `6010` / `8080` / `7010` / `8080` on localhost | Gateway recommendation-route upstreams. |
+| `USER_PROFILE_SERVICE_URL` / `MOVIE_METADATA_SERVICE_URL` / `FEATURE_SERVICE_URL` / `KNOWLEDGE_SERVICE_URL` | ports `6010` / `6010` / `7010` / `8080` on localhost | Gateway user, movie, feature, and knowledge-route upstreams. |
 | `GATEWAY_TIMEOUT_MS` | `3000` | Gateway upstream deadline. Base ConfigMap sets `3000`. |
 | `GATEWAY_API_KEYS` | unset | Comma-separated API keys; enable through a Secret. |
 | `GATEWAY_COGNITO_ISSUER` | unset | Enables Cognito JWT validation. |
@@ -134,6 +151,8 @@ The base ConfigMap supplies Kubernetes service URLs instead.
 | `GATEWAY_PUBLIC_PATHS` | `/health` | Comma-separated boundary-matched public paths. Base adds two non-sensitive catalog reads; do not use a broad catalog prefix. |
 | `GATEWAY_ORIGIN_SECRET` | unset | Comma-separated accepted origin secrets; enables direct-origin rejection. Keep in a Secret. |
 | `GATEWAY_UPSTREAM_HEALTHCHECK_ENABLED` / `GATEWAY_UPSTREAM_HEALTHCHECK_INTERVAL_MS` | `true` / `10000` | Enables and schedules gateway upstream health checks. |
+| `RECSYS_LOGIN_API_KEYS` (Spring `recsys.login.api-keys`) | empty | Comma-separated API keys for model-serving `/api/v1/auth/login`; empty disables that login endpoint. Keep keys in a Secret. This is separate from gateway authentication. |
+| `RECSYS_SUBMIT_TOKEN_ENABLED` / `RECSYS_SUBMIT_TOKEN_TTL_SECONDS` / `RECSYS_SUBMIT_TOKEN_KEY_PREFIX` | `false` / `300` / `submit_token:` | Optional one-use Redis token protection for model-serving recommendation submits. TTL must be `1..86400`; a blank prefix resets to `submit_token:`. |
 | `LLM_SERVICE_URL` / `LLM_EXPLANATION_SERVICE_URL` | unset | Register the optional LLM / explanation routes only when explicitly configured. |
 | `LLM_TIMEOUT_MS` / `LLM_CONNECT_TIMEOUT_MS` / `LLM_IDLE_TIMEOUT_MS` / `LLM_PING_INTERVAL_MS` | `120000` / `2000` / `60000` / `20000` ms | LLM proxy request, connect, idle, and ping timeouts. |
 | `LLM_CACHE_MAX_SIZE` / `LLM_CACHE_TTL_SECONDS` | `500` / `300` | LLM response-cache capacity and TTL. |
@@ -145,7 +164,7 @@ The base ConfigMap supplies Kubernetes service URLs instead.
 
 | Variable | Default | Use |
 |---|---:|---|
-| `ONLINE_MAX_CONCURRENT_REQUESTS` / `ONLINE_DRAIN_UTILIZATION` | `64` / `0.90` | Online per-replica admission cap and readiness-drain threshold. Base ConfigMap sets both values. |
+| `ONLINE_MAX_CONCURRENT_REQUESTS` / `ONLINE_DRAIN_UTILIZATION` | `64` / `0.95` | Online per-replica admission cap and readiness-drain threshold. Parse failures use application defaults; capacity clamps to at least `1` and finite utilization values to `0..1`. The base ConfigMap overrides utilization to `0.90` (and capacity to `64`). |
 | `ONLINE_REDIS_RATE_LIMIT_QPS` / `ONLINE_REDIS_RATE_LIMIT_WINDOW_SECONDS` | `0` / `1` | Redis-backed cross-instance online rate limit. A QPS of `0` disables this limiter and its emergency bucket. Base ConfigMap sets `200` and `1`. |
 | `ONLINE_REDIS_EMERGENCY_LIMIT_ENABLED` | `true` | Exact case-insensitive `true` or `false`; any other nonblank value fails online-serving startup. |
 | `ONLINE_REDIS_EMERGENCY_RATE_PER_SECOND` | `max(1, floor(QPS / 4))` | Finite non-negative decimal. Invalid, negative, or non-finite values fail startup. Base ConfigMap sets `50`. |
@@ -160,9 +179,10 @@ Redis QPS is positive, the enable flag is true, and both emergency rate and
 burst are positive. It is a local, per-online-serving-replica budget used only
 when Redis limiting fails, returns a malformed decision, or its circuit cannot
 admit the Redis call. Setting the flag to `false`, or either rate or burst to
-`0`, disables that bucket as a rollback. Exhaustion follows the normal rate
-limit rejection (`429` with a positive `Retry-After`); this setting is not a
-cluster-wide limit.
+`0`, disables that bucket as a rollback; while the Redis limiter itself remains
+active, its Redis-error path is then unlimited fail-open. Exhaustion of an
+active emergency bucket follows the normal rate-limit rejection (`429` with a
+positive `Retry-After`); this setting is not a cluster-wide limit.
 
 ## Observability
 
@@ -170,6 +190,11 @@ cluster-wide limit.
 |---|---:|---|
 | `ONLINE_METRICS_WINDOW_SECONDS` | `60` | Rolling online-serving metrics window. |
 | `ONLINE_TARGET_DAU` / `ONLINE_PEAK_QPS` / `ONLINE_PEAK_TPS` | `2000000` / `8000` / `20000` | Online capacity-planning inputs used by the operations surface. |
+| Spring `recsys.health.window-seconds` / `recsys.health.min-sample-size` | `60` / `5` | Positive model-serving readiness metrics window and minimum sample count. |
+| `RECSYS_HEALTH_MAX_FAILURE_RATE` / `RECSYS_HEALTH_MAX_AVG_LATENCY_MS` | `0.5` / `2000` ms | Model readiness thresholds; failure rate must be `0..1` and latency positive. |
+| `SPRING_APPLICATION_NAME` | `recsys-model-serving` | Spring application/metrics identity for model serving. |
+| `RECSYS_SHUTDOWN_TIMEOUT` | `30s` | Spring graceful-shutdown phase timeout; must be a valid duration. |
+| `MANAGEMENT_ENDPOINTS_EXPOSURE` | `health,info,prometheus` | Comma-separated Spring Actuator web exposure list. Do not expose sensitive endpoints without access controls. |
 | `RECSYS_EXECUTOR_SHUTDOWN_TIMEOUT_MS` | `5000` ms | Graceful executor shutdown window; an invalid value falls back to the default. |
 
 ## Deployment-only settings
@@ -187,6 +212,8 @@ environment rather than a contributor's shell.
 | `RECONCILIATION_WINDOW_HOURS` / `RECONCILIATION_MAX_BATCH` / `RECONCILIATION_LEASE_SECONDS` | `24` / `500` / `300` | Reconciliation window, batch size, and per-event lease. |
 | `RECONCILIATION_REPAIR` | `false` | Report-only by default; turn on only after operational review. |
 | `SAGA_EVENTS_SQS_ENABLED` / `SAGA_EVENTS_SQS_QUEUE_URL` / `SAGA_EVENTS_SQS_BEST_EFFORT` | `false` / empty / `false` | Optional saga SQS transition publishing; requires queue configuration and IAM permission. |
+| `HOSTNAME` | generated `relay-<UUID>` / `reconciler-<UUID>` | Platform-provided worker identity used for outbox and reconciliation leases. |
+| JVM `-DWATCHDOG_THREADS` | `2` | Shared Redis-lock renewal scheduler size; invalid values use `2` and values below `1` clamp to `1`. An environment variable of this name alone is not read. |
 | `JAVA_OPTS` | workload-specific | Base manifests provide per-workload heap settings; tune with deployment resources, not a local default. |
 
 For the exact base values and workload-specific overrides, inspect
