@@ -19,10 +19,21 @@ if [ "${1:-}" = "kustomize" ]; then
   digest="${FAKE_IMAGE_DIGEST:-sha256:aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa}"
   if [ "$scenario" = wrong-image ] && [[ "$path" == *"/eks-us-west-2" ]]; then digest=sha256:bbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb; fi
   names=(api-gateway catalog-serving model-serving online-serving)
+  if [ "$scenario" = reordered ]; then
+    hpa_header="kind: HorizontalPodAutoscaler
+apiVersion: autoscaling/v2"
+    deployment_header="kind: Deployment
+apiVersion: apps/v1"
+  else
+    hpa_header="apiVersion: autoscaling/v2
+kind: HorizontalPodAutoscaler"
+    deployment_header="apiVersion: apps/v1
+kind: Deployment"
+  fi
   for i in 0 1 2 3; do
     cat <<YAML
-apiVersion: autoscaling/v2
-kind: HorizontalPodAutoscaler
+$hpa_header
+${FAKE_DUPLICATE_TOP_KEY:-}
 metadata:
   name: recsys-${names[$i]}
   namespace: recsys
@@ -32,7 +43,9 @@ spec:
 ---
 YAML
   done
-  for name in api-gateway catalog-serving model-serving online-serving outbox-relay; do
+  deployment_names=(api-gateway catalog-serving model-serving online-serving outbox-relay)
+  [ "$scenario" != duplicate-resource ] || deployment_names+=(api-gateway)
+  for name in "${deployment_names[@]}"; do
     if [ "$name" = outbox-relay ]; then
       topology=""
     else
@@ -42,10 +55,11 @@ YAML
           whenUnsatisfiable: DoNotSchedule"
     fi
     cat <<YAML
-apiVersion: apps/v1
-kind: Deployment
+$deployment_header
 metadata:
   name: recsys-$name
+  annotations:
+    nested-lookalike: "kind: HorizontalPodAutoscaler"
 spec:
   template:
     spec:
@@ -62,6 +76,9 @@ fi
 args=" $* "
 if [[ "$args" == *" config current-context "* ]]; then
   printf '%s\n' "${FAKE_CURRENT_CONTEXT:-prod-us-west-2}"
+elif [[ "$args" == *" config view "* ]]; then
+  printf '{"contexts":[{"name":"%s","context":{"cluster":"target"}}],"clusters":[{"name":"target","cluster":{"server":"%s"}}]}\n' \
+    "${FAKE_CURRENT_CONTEXT:-prod-us-west-2}" "${FAKE_CLUSTER_SERVER:-https://west.example.invalid}"
 elif [[ "$args" == *" get hpa "* ]]; then
   state=""; [ ! -e "$FAKE_CLUSTER_STATE" ] || state="$(cat "$FAKE_CLUSTER_STATE")"
   if [ "$state" = warm ] || { { [ "$scenario" = "warm" ] || [ "$scenario" = "stateful" ] || [ "$scenario" = "apply-fail" ] || [ "$scenario" = "partial-apply" ]; } && [ -z "$state" ]; }; then
@@ -75,18 +92,15 @@ elif [[ "$args" == *" apply "* ]]; then
   payload="$(cat)"
   if [ "$scenario" = "apply-fail" ]; then exit 1; fi
   python3 -c '
-import re,sys
-docs=re.split(r"(?m)^---\s*$",sys.stdin.read())
-names=[]
-for d in docs:
- k=re.search(r"(?m)^kind:\s*(\S+)\s*$",d)
- if not k: continue
- assert k.group(1)=="HorizontalPodAutoscaler"
- n=re.search(r"(?m)^\s+name:\s+(\S+)",d); assert n; names.append(n.group(1))
+import json,sys
+d=json.load(sys.stdin)
+assert d["apiVersion"]=="v1" and d["kind"]=="List"
+items=d["items"]; names=[x["metadata"]["name"] for x in items]
+assert all(x["apiVersion"]=="autoscaling/v2" and x["kind"]=="HorizontalPodAutoscaler" for x in items)
 assert set(names)=={"recsys-api-gateway","recsys-catalog-serving","recsys-model-serving","recsys-online-serving"} and len(names)==4
 ' <<<"$payload"
   if [[ "$args" != *" --dry-run=server "* ]] && [ "$scenario" != partial-apply ]; then
-    if [[ "$payload" == *"minReplicas: 1"* ]]; then printf warm >"$FAKE_CLUSTER_STATE"; else printf promoted >"$FAKE_CLUSTER_STATE"; fi
+    if [[ "$payload" == *'"minReplicas":1'* ]]; then printf warm >"$FAKE_CLUSTER_STATE"; else printf promoted >"$FAKE_CLUSTER_STATE"; fi
   fi
   printf 'applied\n'
 elif [[ "$args" == *" rollout status "* || "$args" == *" wait pod "* ]]; then
@@ -98,9 +112,30 @@ elif [[ "$args" == *" get pdb "* ]]; then
     printf 'recsys-api-gateway-pdb 1 3 3\nrecsys-catalog-serving-pdb 1 2 2\nrecsys-model-serving-pdb 1 3 3\nrecsys-online-serving-pdb 1 2 2\n'
   fi
 elif [[ "$args" == *" get --raw "* ]]; then
+  if [ "$scenario" = "cutover-race" ]; then
+    : >"${FAKE_RACE_MARKER:?}"
+    sleep 0.2
+  fi
   if [ "$scenario" = "service-fail" ]; then printf '{"status":"DOWN"}\n'; else printf '{"status":"UP"}\n'; fi
 elif [[ "$args" == *" get nodes "* ]]; then
-  if [ "$scenario" = "topology-fail" ]; then printf 'us-west-2a\n'; else printf 'us-west-2a\nus-west-2b\n'; fi
+  if [ "$scenario" = "topology-fail" ]; then zones=(us-west-2a); else zones=(us-west-2a us-west-2b); fi
+  python3 - "${zones[@]}" <<'PY'
+import json,sys
+print(json.dumps({"items":[{"metadata":{"name":"node-"+str(i),"labels":{"topology.kubernetes.io/zone":z}},
+"spec":{},"status":{"conditions":[{"type":"Ready","status":"True"}]}} for i,z in enumerate(sys.argv[1:])]}))
+PY
+elif [[ "$args" == *" get pods "* ]]; then
+  python3 - "$scenario" <<'PY'
+import json,sys
+counts={"recsys-api-gateway":2,"recsys-catalog-serving":2,"recsys-model-serving":3,"recsys-online-serving":2}
+items=[]
+for app,count in counts.items():
+  for i in range(count):
+    node="node-0" if sys.argv[1]=="pod-placement-fail" else "node-"+str(i%2)
+    items.append({"metadata":{"name":app+"-"+str(i),"labels":{"app":app}},"spec":{"nodeName":node},
+      "status":{"conditions":[{"type":"Ready","status":"True"}]}})
+print(json.dumps({"items":items}))
+PY
 else
   echo "unexpected fake kubectl invocation: $*" >&2
   exit 90
@@ -111,6 +146,8 @@ chmod +x "$TMP/bin/kubectl"
 export PATH="$TMP/bin:$PATH"
 export FAKE_KUBECTL_LOG="$LOG"
 export FAKE_CLUSTER_STATE="$TMP/cluster-promoted"
+CONTEXT_IDENTITIES="$TMP/context-identities.json"
+printf '{"contexts":{"prod-us-west-2":{"region":"us-west-2","server":"https://west.example.invalid"},"west-alias":{"region":"us-west-2","server":"https://west.example.invalid"}}}\n' >"$CONTEXT_IDENTITIES"
 cat >"$TMP/bin/dependency-probe" <<'PROBE'
 #!/usr/bin/env bash
 [ "${FAKE_KUBECTL_SCENARIO:-healthy}" != dependency-fail ] && { echo healthy; exit 0; }
@@ -122,7 +159,7 @@ SCRIPT="$ROOT/scripts/dr-standby-capacity.sh"
 PASS=0
 FAIL=0
 
-reset_case() { : >"$LOG"; rm -f "$FAKE_CLUSTER_STATE"; unset DR_WRITER_IDENTITY DR_REPLICATION_DIRECTION DR_REPLICATION_LAG_STATUS DR_TRAFFIC_TARGET DR_CAPACITY_READY FAKE_IMAGE_SEPARATOR; export DR_DEPENDENCY_PROBE="$TMP/bin/dependency-probe" FAKE_KUBECTL_SCENARIO=healthy FAKE_CURRENT_CONTEXT=prod-us-west-2 FAKE_IMAGE_DIGEST=sha256:aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa; }
+reset_case() { : >"$LOG"; rm -f "$FAKE_CLUSTER_STATE"; unset DR_WRITER_IDENTITY DR_REPLICATION_DIRECTION DR_REPLICATION_LAG_STATUS DR_TRAFFIC_TARGET DR_CAPACITY_READY FAKE_IMAGE_SEPARATOR FAKE_DUPLICATE_TOP_KEY; export DR_CONTEXT_IDENTITY_FILE="$CONTEXT_IDENTITIES" DR_DEPENDENCY_EVIDENCE_FILE="$TMP/dependency-evidence.json" FAKE_CLUSTER_SERVER=https://west.example.invalid FAKE_KUBECTL_SCENARIO=healthy FAKE_CURRENT_CONTEXT=prod-us-west-2 FAKE_IMAGE_DIGEST=sha256:aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa; make_dependency_evidence; : >"$LOG"; }
 ok() { PASS=$((PASS + 1)); printf 'ok - %s\n' "$1"; }
 bad() { FAIL=$((FAIL + 1)); printf 'not ok - %s\n' "$1" >&2; }
 run_ok() { local name="$1"; shift; reset_case; if "$SCRIPT" "$@" >"$TMP/out" 2>"$TMP/err"; then ok "$name"; else bad "$name"; sed -n '1,120p' "$TMP/err" >&2; fi; }
@@ -146,10 +183,40 @@ assert eval(sys.argv[2], {"__builtins__": {}}, {"d": d})
 PY
   then ok "$name"; else bad "$name"; fi
 }
+payload_digest() {
+  local overlay="$1" rendered payload
+  rendered="$(kubectl kustomize "$overlay")"
+  payload="$(printf '%s' "$rendered" | ruby -ryaml -rjson -e '
+d=Psych.parse_stream(STDIN.read).children.map(&:to_ruby).compact
+h=d.select{|x|x["kind"]=="HorizontalPodAutoscaler"}.sort_by{|x|x.dig("metadata","name")}
+c=nil;c=lambda{|o|o.is_a?(Hash) ? o.keys.sort.to_h{|k|[k,c.call(o[k])]} : (o.is_a?(Array) ? o.map{|v|c.call(v)} : o)}
+puts JSON.generate(c.call({"apiVersion"=>"v1","kind"=>"List","items"=>h}))
+')"
+  printf '%s' "$payload" | shasum -a 256 | awk '{print $1}'
+}
+make_dependency_evidence() {
+  local active standby status
+  active="$(payload_digest "$ROOT/k8s/eks-us-west-2-active")"
+  standby="$(payload_digest "$ROOT/k8s/eks-us-west-2")"
+  if [ "${FAKE_KUBECTL_SCENARIO:-healthy}" = dependency-fail ]; then status=failed; else status=healthy; fi
+  python3 - "$DR_DEPENDENCY_EVIDENCE_FILE" "$active" "$standby" "$status" <<'PY'
+import datetime,json,sys
+json.dump({"schemaVersion":1,"source":"recsys-dependency-observer/v1",
+ "provenance":"approved-read-only-dependency-probes",
+ "observedAt":datetime.datetime.now(datetime.timezone.utc).isoformat().replace("+00:00","Z"),
+ "status":sys.argv[4],"manifestDigests":[sys.argv[2],sys.argv[3]]},open(sys.argv[1],"w"))
+PY
+}
 make_evidence() {
-  local path="$1" rendered digest
+  local path="$1" rendered payload digest
   rendered="$(kubectl kustomize "$ROOT/k8s/eks-us-west-2-active")"
-  digest="$(printf '%s' "$rendered" | shasum -a 256 | awk '{print $1}')"
+  payload="$(printf '%s' "$rendered" | ruby -ryaml -rjson -e '
+d=Psych.parse_stream(STDIN.read).children.map(&:to_ruby).compact
+h=d.select{|x|x["kind"]=="HorizontalPodAutoscaler"}.sort_by{|x|x.dig("metadata","name")}
+c=nil;c=lambda{|o|o.is_a?(Hash) ? o.keys.sort.to_h{|k|[k,c.call(o[k])]} : (o.is_a?(Array) ? o.map{|v|c.call(v)} : o)}
+puts JSON.generate(c.call({"apiVersion"=>"v1","kind"=>"List","items"=>h}))
+')"
+  digest="$(printf '%s' "$payload" | shasum -a 256 | awk '{print $1}')"
   python3 - "$path" "$digest" \
     "${DR_WRITER_IDENTITY:-unknown}" "${DR_REPLICATION_DIRECTION:-unknown}" \
     "${DR_REPLICATION_LAG_STATUS:-unknown}" "${DR_TRAFFIC_TARGET:-unknown}" \
@@ -167,6 +234,10 @@ PY
 run_fail "wrong context rejected" promote --context prod-us-east-1 --region us-west-2 --report "$TMP/wrong.json"
 json_assert "wrong context writes failed report" "$TMP/wrong.json" 'd["schemaVersion"] == 1 and d["ready"] is False'
 run_fail "spoofed context rejected" promote --context evil-prod-us-west-2 --region us-west-2 --report "$TMP/spoof.json"
+reset_case; export FAKE_CURRENT_CONTEXT=west-alias
+if "$SCRIPT" promote --context west-alias --region us-west-2 --report "$TMP/alias.json" >/dev/null; then ok "configured exact context alias accepted"; else bad "configured exact context alias accepted"; fi
+reset_case; export FAKE_CLUSTER_SERVER=https://east.example.invalid
+if "$SCRIPT" promote --context prod-us-west-2 --region us-west-2 --report "$TMP/identity.json" >/dev/null 2>&1; then bad "wrong authoritative cluster identity rejected"; else ok "wrong authoritative cluster identity rejected"; fi
 
 reset_case; export FAKE_IMAGE_DIGEST=sha256:0000000000000000000000000000000000000000000000000000000000000000
 if "$SCRIPT" promote --context prod-us-west-2 --region us-west-2 --report "$TMP/placeholder.json" >/dev/null 2>&1; then bad "placeholder image rejected"; else ok "placeholder image rejected"; fi
@@ -179,6 +250,20 @@ no_mutation "mutable image rejected before mutation"
 reset_case; export FAKE_KUBECTL_SCENARIO=wrong-image
 if "$SCRIPT" promote --context prod-us-west-2 --region us-west-2 --report "$TMP/wrong-image.json" >/dev/null 2>&1; then bad "inconsistent regional digest rejected"; else ok "inconsistent regional digest rejected"; fi
 no_mutation "inconsistent digest rejected before mutation"
+
+reset_case; export FAKE_DUPLICATE_TOP_KEY='kind: HorizontalPodAutoscaler'
+if "$SCRIPT" promote --context prod-us-west-2 --region us-west-2 --report "$TMP/duplicate-key.json" >/dev/null 2>&1; then bad "duplicate top-level YAML key rejected"; else ok "duplicate top-level YAML key rejected"; fi
+no_mutation "duplicate key rejected before mutation"
+
+reset_case; export FAKE_KUBECTL_SCENARIO=duplicate-resource
+if "$SCRIPT" promote --context prod-us-west-2 --region us-west-2 --report "$TMP/duplicate-resource.json" >/dev/null 2>&1; then bad "duplicate resource identity rejected"; else ok "duplicate resource identity rejected"; fi
+no_mutation "duplicate resource rejected before mutation"
+
+reset_case
+if "$SCRIPT" promote --context prod-us-west-2 --region us-west-2 --report "$TMP/nested-lookalike.json" >/dev/null; then ok "nested kind lookalike does not alter structural classification"; else bad "nested kind lookalike does not alter structural classification"; fi
+
+reset_case; export FAKE_KUBECTL_SCENARIO=reordered
+if "$SCRIPT" promote --context prod-us-west-2 --region us-west-2 --report "$TMP/reordered.json" >/dev/null; then ok "reordered structural fields are parsed by identity"; else bad "reordered structural fields are parsed by identity"; fi
 
 run_ok "already promoted succeeds" promote --context prod-us-west-2 --region us-west-2 --report "$TMP/reports with spaces/promote.json"
 no_mutation "already promoted does not apply"
@@ -209,12 +294,26 @@ if "$SCRIPT" promote --context prod-us-west-2 --region us-west-2 --report "$TMP/
 json_assert "partial apply remains attempted and not ready" "$TMP/partial-apply.json" 'd["capacityChange"] == "attempted" and d["ready"] is False'
 
 reset_case
+printf 'do-not-overwrite\n' >"$TMP/existing-report.json"
+if "$SCRIPT" demote --context prod-us-west-2 --region us-west-2 --report "$TMP/existing-report.json" >/dev/null 2>&1; then bad "existing audit report rejected"; else ok "existing audit report rejected"; fi
+if [ "$(cat "$TMP/existing-report.json")" = "do-not-overwrite" ]; then ok "existing audit report preserved"; else bad "existing audit report preserved"; fi
+no_mutation "report identity conflict rejected before mutation"
+
+reset_case
 lock_key="$(printf '%s/%s' prod-us-west-2 recsys | shasum -a 256 | awk '{print $1}')"
-lock_dir="${TMPDIR:-/tmp}/recsys-dr-$lock_key.lock"
-mkdir "$lock_dir"
-if "$SCRIPT" demote --context prod-us-west-2 --region us-west-2 --report "$TMP/locked.json" >/dev/null 2>&1; then bad "concurrent opposite action rejected"; else ok "concurrent opposite action rejected"; fi
-rmdir "$lock_dir"
-no_mutation "lock conflict rejected before mutation"
+mkdir -p "${TMPDIR:-/tmp}/recsys-dr-locks"
+python3 - "${TMPDIR:-/tmp}/recsys-dr-locks/operation-$lock_key.lock" "$TMP/lock-held" <<'PY' &
+import fcntl,sys,time
+with open(sys.argv[1],"a+b") as f:
+    fcntl.flock(f,fcntl.LOCK_EX)
+    open(sys.argv[2],"w").close()
+    time.sleep(30)
+PY
+lock_holder=$!
+for _ in 1 2 3 4 5 6 7 8 9 10; do [ -e "$TMP/lock-held" ] && break; sleep 0.05; done
+kill -9 "$lock_holder"
+wait "$lock_holder" 2>/dev/null || true
+if "$SCRIPT" promote --context prod-us-west-2 --region us-west-2 --dry-run --report "$TMP/recovered-lock.json" >/dev/null; then ok "kernel lock recovers after abnormal holder termination"; else bad "kernel lock recovers after abnormal holder termination"; fi
 
 reset_case; export FAKE_KUBECTL_SCENARIO=stateful
 "$SCRIPT" promote --context prod-us-west-2 --region us-west-2 --report "$TMP/first.json" >/dev/null
@@ -247,6 +346,7 @@ if "$SCRIPT" promote --context prod-us-west-2 --region us-west-2 --report "$TMP/
 json_assert "PDB failure report is not ready" "$TMP/pdb.json" 'd["ready"] is False'
 
 reset_case; export FAKE_KUBECTL_SCENARIO=dependency-fail
+make_dependency_evidence; : >"$LOG"
 if "$SCRIPT" promote --context prod-us-west-2 --region us-west-2 --report "$TMP/dependency.json" >/dev/null 2>&1; then bad "dependency failure fails"; else ok "dependency failure fails"; fi
 json_assert "dependency failure report is not ready" "$TMP/dependency.json" 'd["ready"] is False'
 
@@ -256,6 +356,9 @@ json_assert "service failure report is not ready" "$TMP/service.json" 'd["ready"
 
 reset_case; export FAKE_KUBECTL_SCENARIO=topology-fail
 if "$SCRIPT" promote --context prod-us-west-2 --region us-west-2 --report "$TMP/topology.json" >/dev/null 2>&1; then bad "single-zone schedulability fails"; else ok "single-zone schedulability fails"; fi
+
+reset_case; export FAKE_KUBECTL_SCENARIO=pod-placement-fail
+if "$SCRIPT" promote --context prod-us-west-2 --region us-west-2 --report "$TMP/pod-placement.json" >/dev/null 2>&1; then bad "target pods lacking cross-zone placement fail"; else ok "target pods lacking cross-zone placement fail"; fi
 
 reset_case; export DR_WRITER_IDENTITY=unknown DR_REPLICATION_DIRECTION=west-to-east DR_REPLICATION_LAG_STATUS=accepted DR_TRAFFIC_TARGET=us-west-2 DR_DEPENDENCY_HEALTH=healthy DR_CAPACITY_READY=ready
 make_evidence "$TMP/evidence-bad.json"
@@ -281,12 +384,27 @@ unset DR_EVIDENCE_AGE_SECONDS
 reset_case; export DR_WRITER_IDENTITY=us-west-2 DR_REPLICATION_DIRECTION=west-to-east DR_REPLICATION_LAG_STATUS=accepted DR_TRAFFIC_TARGET=us-west-2 DR_DEPENDENCY_HEALTH=healthy DR_CAPACITY_READY=ready
 make_evidence "$TMP/evidence-cutover.json"
 run_status=0; "$SCRIPT" cutover-check --context prod-us-west-2 --region us-west-2 --evidence "$TMP/evidence-cutover.json" --report "$TMP/cutover.json" >/dev/null || run_status=$?
-if [ "$run_status" -eq 0 ]; then ok "known cutover evidence accepted"; else bad "known cutover evidence accepted"; fi
+if [ "$run_status" -eq 0 ]; then ok "known cutover evidence accepted"; else bad "known cutover evidence accepted"; python3 -m json.tool "$TMP/cutover.json" >&2; fi
 no_mutation "successful cutover check is read-only"
+
+reset_case
+export DR_WRITER_IDENTITY=us-west-2 DR_REPLICATION_DIRECTION=west-to-east DR_REPLICATION_LAG_STATUS=accepted DR_TRAFFIC_TARGET=us-west-2
+export FAKE_KUBECTL_SCENARIO=cutover-race FAKE_RACE_MARKER="$TMP/cutover-probing"
+make_evidence "$TMP/evidence-race.json"
+"$SCRIPT" cutover-check --context prod-us-west-2 --region us-west-2 --evidence "$TMP/evidence-race.json" --report "$TMP/cutover-race.json" >/dev/null &
+cutover_pid=$!
+for _ in 1 2 3 4 5 6 7 8 9 10 11 12 13 14 15 16 17 18 19 20; do [ -e "$FAKE_RACE_MARKER" ] && break; sleep 0.05; done
+"$SCRIPT" demote --context prod-us-west-2 --region us-west-2 --report "$TMP/demote-race.json" >/dev/null &
+demote_pid=$!
+cutover_status=0; wait "$cutover_pid" || cutover_status=$?
+demote_status=0; wait "$demote_pid" || demote_status=$?
+if [ "$cutover_status" -eq 0 ] && [ "$demote_status" -eq 0 ]; then ok "cutover final gate serializes against concurrent demote"; else bad "cutover final gate serializes against concurrent demote"; fi
+json_assert "serialized cutover report remains ready" "$TMP/cutover-race.json" 'd["ready"] is True'
+unset FAKE_RACE_MARKER
 
 reset_case; export DR_WRITER_IDENTITY=us-east-1 DR_REPLICATION_DIRECTION=east-to-west DR_REPLICATION_LAG_STATUS=accepted DR_TRAFFIC_TARGET=us-east-1 DR_DEPENDENCY_HEALTH=healthy DR_CAPACITY_READY=ready
 make_evidence "$TMP/evidence-failback.json"
-if "$SCRIPT" failback-check --context prod-us-west-2 --region us-west-2 --evidence "$TMP/evidence-failback.json" --report "$TMP/failback.json" >/dev/null; then ok "known failback evidence accepted"; else bad "known failback evidence accepted"; fi
+if "$SCRIPT" failback-check --context prod-us-west-2 --region us-west-2 --evidence "$TMP/evidence-failback.json" --report "$TMP/failback.json" >/dev/null; then ok "known failback evidence accepted"; else bad "known failback evidence accepted"; python3 -m json.tool "$TMP/failback.json" >&2; fi
 no_mutation "failback check is read-only"
 
 run_ok "verify remains offline" verify

@@ -9,6 +9,7 @@ BASE_OVERLAY="$REPO_ROOT/k8s/base"
 PRIMARY_OVERLAY="$REPO_ROOT/k8s/eks"
 DR_NAMESPACE="recsys"
 DR_COMMAND="${1:-}"
+DR_ORIGINAL_ARGS=("$@")
 DR_CONTEXT=""
 DR_REGION=""
 DR_REPORT_PATH=""
@@ -21,7 +22,6 @@ DR_REPORT_WRITTEN="false"
 DR_CHECK_NAMES=()
 DR_CHECK_RESULTS=()
 DR_CHECK_OBSERVED=()
-DR_LOCK_DIR=""
 
 usage() {
   cat >&2 <<EOF
@@ -102,7 +102,6 @@ finish() {
   if [ "$DR_REPORT_WRITTEN" != "true" ]; then
     write_report || printf 'warning: could not write DR report %s\n' "$DR_REPORT_PATH" >&2
   fi
-  if [ -n "$DR_LOCK_DIR" ]; then rmdir "$DR_LOCK_DIR" 2>/dev/null || true; fi
   exit "$status"
 }
 trap 'finish $?' EXIT
@@ -116,62 +115,90 @@ require_command() {
 }
 
 extract_hpas() {
-  python3 -c '
-import re, sys
-out = {}
-for doc in re.split(r"(?m)^---\s*$", sys.stdin.read()):
-    kind = re.search(r"(?m)^kind:\s*(\S+)\s*$", doc)
-    api = re.search(r"(?m)^apiVersion:\s*(\S+)\s*$", doc)
-    if not kind or kind.group(1) != "HorizontalPodAutoscaler": continue
-    if not api or api.group(1) != "autoscaling/v2": raise SystemExit("invalid HPA apiVersion")
-    name = re.search(r"(?m)^\s+name:\s+(\S+)", doc)
-    minimum = re.search(r"(?m)^\s+minReplicas:\s+(\d+)", doc)
-    maximum = re.search(r"(?m)^\s+maxReplicas:\s+(\d+)", doc)
-    if not name or not minimum or not maximum or name.group(1) in out:
-        raise SystemExit("malformed or duplicate HPA")
-    out[name.group(1)] = (minimum.group(1), maximum.group(1))
-expected={"recsys-api-gateway","recsys-catalog-serving","recsys-model-serving","recsys-online-serving"}
-if set(out) != expected: raise SystemExit("unexpected HPA set: "+repr(sorted(out)))
-for name in sorted(out): print(name, *out[name])
-'
+  structural_render hpas
 }
 
 filter_hpas_only() {
-  python3 -c '
-import re, sys
-docs = [d for d in re.split(r"(?m)^---\s*$", sys.stdin.read())
-        if re.search(r"(?m)^kind:\s*HorizontalPodAutoscaler\s*$", d)]
-sys.stdout.write("---".join(docs))
-'
+  structural_render payload
 }
 
 validate_manifest_structure() {
-  python3 -c '
-import re, sys
-docs=re.split(r"(?m)^---\s*$",sys.stdin.read())
-expected={"recsys-api-gateway","recsys-catalog-serving","recsys-model-serving","recsys-online-serving","recsys-outbox-relay"}
-images={}
-topology=set()
-for d in docs:
-    kind=re.search(r"(?m)^kind:\s*(\S+)\s*$",d)
-    if not kind or kind.group(1)!="Deployment": continue
-    name=re.search(r"(?m)^metadata:\s*\n(?:^[ \t]+.*\n)*?^\s+name:\s+(\S+)\s*$",d)
-    if not name: raise SystemExit("deployment missing name")
-    n=name.group(1)
-    vals=re.findall(r"(?m)^\s+image:\s*(\S+)\s*$",d)
-    if len(vals)!=1: raise SystemExit("deployment must have exactly one image: "+n)
-    m=re.fullmatch(r"[^@\s]+@sha256:([0-9a-f]{64})",vals[0])
-    if not m or m.group(1)=="0"*64: raise SystemExit("unpinned or placeholder image: "+n)
-    images[n]=m.group(1)
-    if (re.search(r"(?m)^\s+topologySpreadConstraints:\s*$",d)
-        and re.search(r"(?m)^\s+topologyKey:\s*topology\.kubernetes\.io/zone\s*$",d)
-        and re.search(r"(?m)^\s+whenUnsatisfiable:\s*DoNotSchedule\s*$",d)):
-        topology.add(n)
-if set(images)!=expected: raise SystemExit("unexpected deployment set: "+repr(sorted(images)))
-if len(set(images.values()))!=1: raise SystemExit("workload digest mismatch")
-if topology != expected-{"recsys-outbox-relay"}: raise SystemExit("missing topology spread constraints")
-print(next(iter(images.values())))
-'
+  structural_render full
+}
+
+structural_render() {
+  ruby -ryaml -rjson -rdigest -e '
+mode=ARGV.fetch(0)
+stream=Psych.parse_stream(STDIN.read)
+def audit(node)
+  raise "YAML aliases/anchors are forbidden" if node.is_a?(Psych::Nodes::Alias) ||
+    (node.respond_to?(:anchor) && node.anchor)
+  if node.is_a?(Psych::Nodes::Mapping)
+    seen={}
+    node.children.each_slice(2) do |key,value|
+      raise "non-scalar YAML key" unless key.is_a?(Psych::Nodes::Scalar)
+      raise "duplicate YAML key #{key.value}" if seen[key.value]
+      seen[key.value]=true
+      audit(value)
+    end
+  elsif node.respond_to?(:children)
+    node.children.to_a.each { |child| audit(child) }
+  end
+end
+stream.children.each { |doc| audit(doc) }
+docs=stream.children.map(&:to_ruby).compact
+ids={}
+docs.each do |d|
+  raise "resource is not a mapping" unless d.is_a?(Hash)
+  api=d["apiVersion"]; kind=d["kind"]; meta=d["metadata"]
+  raise "missing resource identity" unless api.is_a?(String) && kind.is_a?(String) && meta.is_a?(Hash) && meta["name"].is_a?(String)
+  key=[api,kind,meta["namespace"],meta["name"]]
+  raise "duplicate resource #{key.inspect}" if ids[key]
+  ids[key]=true
+end
+hpas=docs.select { |d| d["kind"]=="HorizontalPodAutoscaler" }
+expected_hpas=%w[recsys-api-gateway recsys-catalog-serving recsys-model-serving recsys-online-serving]
+raise "unexpected HPA cardinality/set" unless hpas.length==4 && hpas.map{|x|x.dig("metadata","name")}.sort==expected_hpas.sort
+hpas.each do |h|
+  raise "invalid HPA identity" unless h["apiVersion"]=="autoscaling/v2" && h.dig("metadata","namespace")=="recsys"
+  raise "invalid HPA min/max" unless h.dig("spec","minReplicas").is_a?(Integer) &&
+    h.dig("spec","maxReplicas").is_a?(Integer) && h.dig("spec","minReplicas")<=h.dig("spec","maxReplicas")
+end
+if mode=="hpas"
+  hpas.sort_by{|h|h.dig("metadata","name")}.each{|h| puts [h.dig("metadata","name"),h.dig("spec","minReplicas"),h.dig("spec","maxReplicas")].join(" ")}
+elsif mode=="payload"
+  canonical=nil
+  canonical=lambda{|o| o.is_a?(Hash) ? o.keys.sort.to_h{|k|[k,canonical.call(o[k])]} :
+    (o.is_a?(Array) ? o.map{|v|canonical.call(v)} : o)}
+  puts JSON.generate(canonical.call({"apiVersion"=>"v1","kind"=>"List","items"=>hpas.sort_by{|h|h.dig("metadata","name")}}))
+elsif mode=="full"
+  deployments=docs.select{|d|d["kind"]=="Deployment"}
+  expected=%w[recsys-api-gateway recsys-catalog-serving recsys-model-serving recsys-online-serving recsys-outbox-relay]
+  raise "unexpected deployment cardinality/set" unless deployments.length==5 &&
+    deployments.map{|d|d.dig("metadata","name")}.sort==expected.sort
+  digests=[]
+  deployments.each do |d|
+    name=d.dig("metadata","name")
+    podspec=d.dig("spec","template","spec")
+    raise "unsupported placement constraints require validator update" if
+      ["nodeSelector","affinity","tolerations"].any?{|k| podspec.key?(k) && podspec[k] && podspec[k]!={} && podspec[k]!=[]}
+    containers=podspec["containers"]
+    raise "invalid container cardinality" unless containers.is_a?(Array) && containers.length==1
+    image=containers[0]["image"]
+    match=/\A[^@\s]+@sha256:([0-9a-f]{64})\z/.match(image.to_s)
+    raise "unpinned/placeholder image" unless match && match[1]!="0"*64
+    digests << match[1]
+    next if name=="recsys-outbox-relay"
+    spreads=d.dig("spec","template","spec","topologySpreadConstraints")
+    valid=spreads.is_a?(Array) && spreads.any?{|s|s["topologyKey"]=="topology.kubernetes.io/zone" && s["whenUnsatisfiable"]=="DoNotSchedule"}
+    raise "missing exact topology constraint" unless valid
+  end
+  raise "workload digest mismatch" unless digests.uniq.length==1
+  puts digests[0]
+else
+  raise "unknown structural render mode"
+end
+' "$1"
 }
 
 render_overlay() {
@@ -179,10 +206,23 @@ render_overlay() {
 }
 
 validate_context_region() {
-  local current
-  if [ "$DR_REGION" != "us-west-2" ] || [ "$DR_CONTEXT" != "prod-us-west-2" ]; then
+  local current expected_server observed_server identity_file
+  identity_file="${DR_CONTEXT_IDENTITY_FILE:-}"
+  if [ -z "$identity_file" ] || [ ! -f "$identity_file" ]; then
+    add_check context-region false "missing DR_CONTEXT_IDENTITY_FILE"
+    return 1
+  fi
+  if ! expected_server="$(python3 - "$identity_file" "$DR_CONTEXT" "$DR_REGION" <<'PY'
+import json,sys
+d=json.load(open(sys.argv[1],encoding="utf-8"))
+entry=d.get("contexts",{}).get(sys.argv[2])
+assert isinstance(entry,dict) and set(entry)=={"region","server"}
+assert entry["region"]==sys.argv[3] and isinstance(entry["server"],str) and entry["server"].startswith("https://")
+print(entry["server"])
+PY
+)"; then
     add_check context-region false "context=$DR_CONTEXT region=$DR_REGION"
-    echo "Context '$DR_CONTEXT' is not explicitly bound to region '$DR_REGION'" >&2
+    echo "Context '$DR_CONTEXT' has no exact authoritative region/endpoint mapping" >&2
     return 1
   fi
   current="$(kubectl config current-context)"
@@ -191,13 +231,26 @@ validate_context_region() {
     echo "Current Kubernetes context does not match --context" >&2
     return 1
   fi
-  add_check context-region true "context=$DR_CONTEXT region=$DR_REGION"
+  observed_server="$(kubectl config view --raw -o json | python3 -c '
+import json,sys
+d=json.load(sys.stdin); target=sys.argv[1]
+ctx=next((x["context"]["cluster"] for x in d["contexts"] if x["name"]==target),None)
+server=next((x["cluster"]["server"] for x in d["clusters"] if x["name"]==ctx),None)
+assert server
+print(server)
+' "$DR_CONTEXT")"
+  if [ "$observed_server" != "$expected_server" ]; then
+    add_check context-region false "expected endpoint=$expected_server observed=$observed_server"
+    return 1
+  fi
+  add_check context-region true "context=$DR_CONTEXT region=$DR_REGION endpoint=$observed_server"
 }
 
 validate_image_identity() {
-  local active_digest standby_digest primary_digest rendered
+  local active_digest standby_digest primary_digest rendered hpa_payload
   rendered="$(render_overlay "$ACTIVE_OVERLAY")"
-  DR_MANIFEST_DIGEST="$(printf '%s' "$rendered" | shasum -a 256 | awk '{print $1}')"
+  hpa_payload="$(printf '%s' "$rendered" | filter_hpas_only)"
+  DR_MANIFEST_DIGEST="$(printf '%s' "$hpa_payload" | shasum -a 256 | awk '{print $1}')"
   active_digest="$(printf '%s' "$rendered" | validate_manifest_structure)" || {
     add_check manifest-structure false "active overlay invalid"; return 1; }
   standby_digest="$(render_overlay "$STANDBY_OVERLAY" | validate_manifest_structure)" || {
@@ -235,26 +288,49 @@ for name in sorted(out): print(name,*out[name])
 '
 }
 
-acquire_lock() {
-  local lock_key lock_candidate
+run_with_kernel_locks() {
+  local lock_root lock_key operation_lock report_lock saved_report
+  lock_root="${TMPDIR:-/tmp}/recsys-dr-locks"
+  mkdir -p "$lock_root"
+  chmod 700 "$lock_root"
   lock_key="$(printf '%s/%s' "$DR_CONTEXT" "$DR_NAMESPACE" | shasum -a 256 | awk '{print $1}')"
-  lock_candidate="${TMPDIR:-/tmp}/recsys-dr-$lock_key.lock"
-  if ! mkdir "$lock_candidate" 2>/dev/null; then
-    add_check operation-lock false "another capacity operation holds $DR_CONTEXT/$DR_NAMESPACE"
-    return 1
-  fi
-  DR_LOCK_DIR="$lock_candidate"
-  add_check operation-lock true "$DR_CONTEXT/$DR_NAMESPACE"
+  operation_lock="$lock_root/operation-$lock_key.lock"
+  report_lock="$lock_root/report-$(printf '%s' "${DR_REPORT_PATH:-none}" | shasum -a 256 | awk '{print $1}').lock"
+  saved_report="$DR_REPORT_PATH"
+  DR_REPORT_PATH=""
+  trap - EXIT
+  python3 - "$operation_lock" "$report_lock" "$saved_report" "$0" "${DR_ORIGINAL_ARGS[@]}" <<'PY'
+import fcntl, os, signal, subprocess, sys
+operation_lock, report_lock, report, script, *args = sys.argv[1:]
+with open(operation_lock, "a+b") as op, open(report_lock, "a+b") as rp:
+    fcntl.flock(op, fcntl.LOCK_EX)
+    fcntl.flock(rp, fcntl.LOCK_EX)
+    if report and os.path.exists(report):
+        print("refusing to overwrite existing audit report: "+report, file=sys.stderr)
+        raise SystemExit(2)
+    env=os.environ.copy()
+    env["DR_KERNEL_LOCK_HELD"]="1"
+    child=subprocess.Popen([script, *args], env=env, start_new_session=True)
+    def stop(signum, frame):
+        del frame
+        try: os.killpg(child.pid, signum)
+        except ProcessLookupError: pass
+    signal.signal(signal.SIGTERM, stop)
+    signal.signal(signal.SIGINT, stop)
+    raise SystemExit(child.wait())
+PY
 }
 
 apply_hpas_if_needed() {
-  local overlay="$1" desired observed
-  desired="$(desired_hpas "$overlay")"
+  local overlay="$1" desired observed rendered payload
+  rendered="$(render_overlay "$overlay")"
+  desired="$(printf '%s' "$rendered" | extract_hpas)"
+  payload="$(printf '%s' "$rendered" | filter_hpas_only)"
   observed="$(observed_hpas)"
-  DR_MANIFEST_DIGEST="$(render_overlay "$overlay" | shasum -a 256 | awk '{print $1}')"
+  DR_MANIFEST_DIGEST="$(printf '%s' "$payload" | shasum -a 256 | awk '{print $1}')"
   if [ "$DR_DRY_RUN" = "true" ]; then
     DR_CAPACITY_CHANGE="dry-run"
-    render_overlay "$overlay" | filter_hpas_only |
+    printf '%s' "$payload" |
       kubectl --context "$DR_CONTEXT" apply --dry-run=server -f - >/dev/null || {
         add_check server-dry-run false "API validation failed"; return 1; }
     add_check server-dry-run true "HPA documents accepted"
@@ -271,7 +347,7 @@ apply_hpas_if_needed() {
     return 0
   fi
   DR_CAPACITY_CHANGE="attempted"
-  if ! render_overlay "$overlay" | filter_hpas_only |
+  if ! printf '%s' "$payload" |
       kubectl --context "$DR_CONTEXT" apply -f - >/dev/null; then
     add_check hpa-apply false "apply failed"; return 1
   fi
@@ -332,16 +408,30 @@ print("exact PDB set healthy")
 }
 
 check_dependencies() {
-  local probe="${DR_DEPENDENCY_PROBE:-}"
-  local result
-  if [ -z "$probe" ] || [ ! -x "$probe" ]; then
-    add_check dependencies false "DR_DEPENDENCY_PROBE is not an executable"
+  local evidence="${DR_DEPENDENCY_EVIDENCE_FILE:-}" result
+  if [ -z "$evidence" ] || [ ! -f "$evidence" ]; then
+    add_check dependencies false "missing DR_DEPENDENCY_EVIDENCE_FILE"
     return 1
   fi
-  if ! result="$("$probe" "$DR_CONTEXT" "$DR_REGION" 2>&1)"; then
-    add_check dependencies false "$probe: $result"; return 1
+  if ! result="$(python3 - "$evidence" "$DR_MANIFEST_DIGEST" <<'PY'
+import datetime,json,sys
+d=json.load(open(sys.argv[1],encoding="utf-8"))
+assert set(d)=={"schemaVersion","source","provenance","observedAt","status","manifestDigests"}
+assert d["schemaVersion"]==1
+assert d["source"]=="recsys-dependency-observer/v1"
+assert d["provenance"]=="approved-read-only-dependency-probes"
+t=datetime.datetime.fromisoformat(d["observedAt"].replace("Z","+00:00"))
+now=datetime.datetime.now(datetime.timezone.utc)
+assert t.tzinfo and datetime.timedelta(0)<=now-t<=datetime.timedelta(minutes=15)
+assert d["status"]=="healthy"
+assert isinstance(d["manifestDigests"],list) and sys.argv[2] in d["manifestDigests"]
+print(d["source"]+" "+d["provenance"]+" healthy")
+PY
+)"; then
+    add_check dependencies false "invalid, stale, unhealthy, or wrong-digest dependency evidence"
+    return 1
   fi
-  add_check dependencies true "$probe: $result"
+  add_check dependencies true "$result"
 }
 
 check_services() {
@@ -366,16 +456,45 @@ check_services() {
 }
 
 check_topology_scheduling() {
-  local zones zone_count
-  zones="$(kubectl --context "$DR_CONTEXT" get nodes \
-    -l "topology.kubernetes.io/region=$DR_REGION" \
-    -o 'jsonpath={range .items[?(@.spec.unschedulable!=true)]}{.metadata.labels.topology\.kubernetes\.io/zone}{"\n"}{end}')"
-  zone_count="$(printf '%s\n' "$zones" | awk 'NF{seen[$0]=1} END{print length(seen)}')"
-  if [ "$zone_count" -lt 2 ]; then
-    add_check topology-schedulability false "${zones:-no schedulable zones}"
+  local nodes_file pods_file result
+  nodes_file="$(mktemp "${TMPDIR:-/tmp}/dr-nodes.XXXXXX")"
+  pods_file="$(mktemp "${TMPDIR:-/tmp}/dr-pods.XXXXXX")"
+  kubectl --context "$DR_CONTEXT" get nodes -o json >"$nodes_file"
+  kubectl --context "$DR_CONTEXT" get pods --namespace "$DR_NAMESPACE" \
+    -l 'app in (recsys-api-gateway,recsys-catalog-serving,recsys-model-serving,recsys-online-serving)' \
+    -o json >"$pods_file"
+  if ! result="$(python3 - "$nodes_file" "$pods_file" "$DR_COMMAND" <<'PY'
+import json,sys
+nodes=json.load(open(sys.argv[1]))["items"]; pods=json.load(open(sys.argv[2]))["items"]
+usable={}
+for n in nodes:
+    ready=any(c.get("type")=="Ready" and c.get("status")=="True" for c in n.get("status",{}).get("conditions",[]))
+    tainted=any(t.get("effect") in ("NoSchedule","NoExecute") for t in n.get("spec",{}).get("taints",[]))
+    zone=n.get("metadata",{}).get("labels",{}).get("topology.kubernetes.io/zone")
+    if ready and not n.get("spec",{}).get("unschedulable",False) and not tainted and zone:
+        usable[n["metadata"]["name"]]=zone
+if len(set(usable.values()))<2: raise SystemExit("fewer than two ready untainted schedulable zones")
+minimum={"recsys-api-gateway":2,"recsys-catalog-serving":2,"recsys-model-serving":3,"recsys-online-serving":2}
+if sys.argv[3]=="demote": minimum={"recsys-api-gateway":1,"recsys-catalog-serving":1,"recsys-model-serving":2,"recsys-online-serving":1}
+placed={k:[] for k in minimum}
+for p in pods:
+    app=p.get("metadata",{}).get("labels",{}).get("app")
+    node=p.get("spec",{}).get("nodeName")
+    ready=any(c.get("type")=="Ready" and c.get("status")=="True" for c in p.get("status",{}).get("conditions",[]))
+    if app in placed and ready and node in usable: placed[app].append(usable[node])
+for app,zones in placed.items():
+    required_zones=min(2,minimum[app])
+    if len(zones)<minimum[app] or len(set(zones))<required_zones:
+        raise SystemExit(app+" lacks ready cross-zone target capacity")
+print("ready nodes and target pods span zones: "+",".join(sorted(set(usable.values()))))
+PY
+)"; then
+    rm -f "$nodes_file" "$pods_file"
+    add_check topology-schedulability false "node/pod placement mismatch"
     return 1
   fi
-  add_check topology-schedulability true "$zones"
+  rm -f "$nodes_file" "$pods_file"
+  add_check topology-schedulability true "$result"
 }
 
 verify_drift() {
@@ -480,6 +599,11 @@ done
 require_command kubectl
 require_command python3
 
+if [ "$DR_COMMAND" != verify ] && [ "${DR_KERNEL_LOCK_HELD:-0}" != 1 ]; then
+  run_with_kernel_locks
+  exit $?
+fi
+
 case "$DR_COMMAND" in
   verify)
     [ -z "$DR_CONTEXT" ] || { echo "verify is offline and does not accept --context" >&2; exit 2; }
@@ -488,7 +612,6 @@ case "$DR_COMMAND" in
   promote|demote)
     [ -n "$DR_CONTEXT" ] && [ -n "$DR_REGION" ] || usage
     validate_context_region
-    acquire_lock
     validate_image_identity
     if [ "$DR_COMMAND" = "promote" ]; then overlay="$ACTIVE_OVERLAY"; else overlay="$STANDBY_OVERLAY"; fi
     apply_hpas_if_needed "$overlay"
@@ -509,6 +632,11 @@ case "$DR_COMMAND" in
     validate_context_region
     validate_image_identity
     check_operator_evidence
+    if [ "$(desired_hpas "$ACTIVE_OVERLAY")" != "$(observed_hpas)" ]; then
+      add_check final-active-capacity false "active min/max changed during prerequisite checks"
+      exit 1
+    fi
+    add_check final-active-capacity true "exact active min/max re-observed as final gate"
     DR_READY="true"
     ;;
   -h|--help) usage ;;
