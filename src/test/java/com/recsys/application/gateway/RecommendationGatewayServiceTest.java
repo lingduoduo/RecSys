@@ -283,7 +283,9 @@ class RecommendationGatewayServiceTest {
                         route("online-blend", online),
                         route("sequential", sequential));
                 RouteCircuitBreaker onlineBreaker = new RouteCircuitBreaker(1, 60_000);
-                if (openOnlineCircuit) onlineBreaker.recordFailure();
+                if (openOnlineCircuit) {
+                    onlineBreaker.recordFailure(onlineBreaker.tryAcquirePermit());
+                }
                 Map<String, RouteCircuitBreaker> breakers = Map.of(
                         "embed-recall", new RouteCircuitBreaker(),
                         "model-inference", new RouteCircuitBreaker(),

@@ -143,7 +143,8 @@ public final class GatewayRequestForwarder implements java.io.Closeable {
         }
 
         RouteCircuitBreaker cb = circuitBreakers.get(route.name());
-        if (cb != null && !cb.tryAcquire()) {
+        RouteCircuitBreaker.Permit permit = cb == null ? null : cb.tryAcquirePermit();
+        if (cb != null && permit == null) {
             return GatewayProxyService.gatewayError(HttpStatus.SERVICE_UNAVAILABLE,
                     route.name() + " circuit open — upstream unavailable, retry later");
         }
@@ -155,13 +156,13 @@ public final class GatewayRequestForwarder implements java.io.Closeable {
         return HttpResponse.of(upstream.aggregate()
                 .thenApply(aggResp -> {
                     if (cb != null) {
-                        if (aggResp.status().isServerError()) cb.recordFailure();
-                        else cb.recordSuccess();
+                        if (aggResp.status().isServerError()) cb.recordFailure(permit);
+                        else cb.recordSuccess(permit);
                     }
                     return aggResp.toHttpResponse();
                 })
                 .exceptionally(t -> {
-                    if (cb != null) cb.recordFailure();
+                    if (cb != null) cb.recordFailure(permit);
                     if (isNoHealthyEndpoint(t)) {
                         return GatewayProxyService.gatewayError(HttpStatus.SERVICE_UNAVAILABLE,
                                 route.name() + " upstream unavailable — no healthy endpoint");

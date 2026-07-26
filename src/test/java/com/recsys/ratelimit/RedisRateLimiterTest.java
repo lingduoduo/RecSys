@@ -8,6 +8,7 @@ import org.mockito.ArgumentCaptor;
 
 import java.util.List;
 import java.util.function.Function;
+import java.util.concurrent.atomic.AtomicLong;
 
 import static org.assertj.core.api.Assertions.assertThat;
 import static org.mockito.ArgumentMatchers.any;
@@ -149,19 +150,21 @@ class RedisRateLimiterTest {
     }
 
     @Test
-    void circuitBreaker_halfOpenAfterResetWindow() throws Exception {
+    void circuitBreaker_halfOpenAfterResetWindow() {
         RedisExecutor exec = mock(RedisExecutor.class);
         when(exec.execute(any())).thenThrow(new RuntimeException("redis down"));
-        RedisRateLimiter limiter = new RedisRateLimiter(exec, "rate:", 100L, 1, 1, 20L);
+        AtomicLong clock = new AtomicLong();
+        RedisRateLimiter limiter = new RedisRateLimiter(
+                exec, "rate:", 100L, 1, 1, 20L, clock::get);
 
         limiter.tryAcquire("x");
-        Thread.sleep(30);
+        clock.set(20L);
 
         assertThat(limiter.circuitState()).isEqualTo(RedisRateLimiter.CircuitState.HALF_OPEN);
     }
 
     @Test
-    void circuitBreaker_closesOnSuccessfulProbeInHalfOpen() throws Exception {
+    void circuitBreaker_closesOnSuccessfulProbeInHalfOpen() {
         RedisCommands<String, String> cmd = mockCommands();
         when(cmd.eval(any(String.class), any(ScriptOutputType.class), any(String[].class), any(String[].class)))
                 .thenReturn(List.of(1L, 99L, 0L));
@@ -169,10 +172,12 @@ class RedisRateLimiterTest {
         when(exec.execute(any()))
                 .thenThrow(new RuntimeException("redis down"))
                 .thenAnswer(i -> i.getArgument(0, Function.class).apply(cmd));
-        RedisRateLimiter limiter = new RedisRateLimiter(exec, "rate:", 100L, 1, 1, 20L);
+        AtomicLong clock = new AtomicLong();
+        RedisRateLimiter limiter = new RedisRateLimiter(
+                exec, "rate:", 100L, 1, 1, 20L, clock::get);
 
         limiter.tryAcquire("x"); // opens
-        Thread.sleep(30);        // → HALF_OPEN
+        clock.set(20L);          // → HALF_OPEN
 
         RedisRateLimiter.Decision probe = limiter.tryAcquire("x"); // probe succeeds → CLOSED
         assertThat(probe.allowed()).isTrue();

@@ -107,7 +107,10 @@ public final class RedisRateLimiter {
         this.windowSeconds = Math.max(1, windowSeconds);
         this.windowMs = (long) this.windowSeconds * 1000L;
         this.enabled = exec != null && this.limit > 0L;
-        this.circuit = new CircuitBreaker(Math.max(1, circuitFailureThreshold), Math.max(1L, circuitResetMs));
+        this.circuit = new CircuitBreaker(
+                Math.max(1, circuitFailureThreshold),
+                Math.max(1L, circuitResetMs),
+                nowMillis);
         this.nowMillis = nowMillis;
     }
 
@@ -120,7 +123,8 @@ public final class RedisRateLimiter {
             return Decision.allowed(limit, 0, false);
         }
         // CLOSED → proceed; OPEN → fail open; HALF_OPEN → only the probe winner proceeds.
-        if (!circuit.tryAcquire()) {
+        CircuitBreaker.Permit permit = circuit.tryAcquirePermit();
+        if (permit == null) {
             return Decision.allowed(limit, 0, true);
         }
 
@@ -132,10 +136,10 @@ public final class RedisRateLimiter {
                     new String[]{key},
                     Long.toString(limit), Long.toString(windowMs), Long.toString(nowMillis.getAsLong())
             ));
-            circuit.recordSuccess();
+            circuit.recordSuccess(permit);
             return parseDecision(raw);
         } catch (Exception e) {
-            circuit.recordFailure();
+            circuit.recordFailure(permit);
             log.warn("Redis rate limiter failed open for bucket '{}' (failures={}): {}",
                     bucket, circuit.failureCount(), e.toString());
             return Decision.allowed(limit, 0, true);

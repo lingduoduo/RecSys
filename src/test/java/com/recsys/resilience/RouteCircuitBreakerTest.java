@@ -1,7 +1,6 @@
 package com.recsys.resilience;
-import com.recsys.resilience.RouteCircuitBreaker;
-
 import org.junit.jupiter.api.Test;
+import java.util.concurrent.atomic.AtomicLong;
 
 import static com.recsys.resilience.RouteCircuitBreaker.State.*;
 import static org.assertj.core.api.Assertions.assertThat;
@@ -16,82 +15,89 @@ class RouteCircuitBreakerTest {
 
     @Test
     void tryAcquire_trueWhenClosed() {
-        assertThat(new RouteCircuitBreaker().tryAcquire()).isTrue();
+        assertThat(new RouteCircuitBreaker().tryAcquirePermit()).isNotNull();
     }
 
     @Test
     void opensAfterConsecutiveFailuresReachThreshold() {
         RouteCircuitBreaker cb = new RouteCircuitBreaker(3, 10_000L);
 
-        cb.recordFailure();
-        cb.recordFailure();
+        cb.recordFailure(cb.tryAcquirePermit());
+        cb.recordFailure(cb.tryAcquirePermit());
         assertThat(cb.state()).isEqualTo(CLOSED);
 
-        cb.recordFailure(); // threshold reached
+        cb.recordFailure(cb.tryAcquirePermit()); // threshold reached
         assertThat(cb.state()).isEqualTo(OPEN);
-        assertThat(cb.tryAcquire()).isFalse();
+        assertThat(cb.tryAcquirePermit()).isNull();
     }
 
     @Test
     void successResetsFailureCount() {
         RouteCircuitBreaker cb = new RouteCircuitBreaker(3, 10_000L);
 
-        cb.recordFailure();
-        cb.recordFailure();
-        cb.recordSuccess();   // resets counter
-        cb.recordFailure();   // back to 1
-        cb.recordFailure();   // 2
+        RouteCircuitBreaker.Permit first = cb.tryAcquirePermit();
+        RouteCircuitBreaker.Permit second = cb.tryAcquirePermit();
+        RouteCircuitBreaker.Permit success = cb.tryAcquirePermit();
+        cb.recordFailure(first);
+        cb.recordFailure(second);
+        cb.recordSuccess(success);   // resets counter
+        cb.recordFailure(cb.tryAcquirePermit()); // back to 1
+        cb.recordFailure(cb.tryAcquirePermit()); // 2
         assertThat(cb.state()).isEqualTo(CLOSED); // threshold not reached again
     }
 
     @Test
-    void transitionsToHalfOpenAfterCooldown() throws InterruptedException {
-        RouteCircuitBreaker cb = new RouteCircuitBreaker(1, 50L); // 50 ms cooldown
+    void transitionsToHalfOpenAfterCooldown() {
+        AtomicLong clock = new AtomicLong();
+        RouteCircuitBreaker cb = new RouteCircuitBreaker(1, 50L, clock::get);
 
-        cb.recordFailure(); // opens immediately (threshold = 1)
+        cb.recordFailure(cb.tryAcquirePermit()); // opens immediately (threshold = 1)
         assertThat(cb.state()).isEqualTo(OPEN);
 
-        Thread.sleep(60); // wait past cooldown
+        clock.set(50L);
 
         assertThat(cb.state()).isEqualTo(HALF_OPEN);
-        assertThat(cb.tryAcquire()).isTrue(); // probe request allowed
+        assertThat(cb.tryAcquirePermit()).isNotNull(); // probe request allowed
     }
 
     @Test
-    void halfOpenClosesOnSuccess() throws InterruptedException {
-        RouteCircuitBreaker cb = new RouteCircuitBreaker(1, 50L);
+    void halfOpenClosesOnSuccess() {
+        AtomicLong clock = new AtomicLong();
+        RouteCircuitBreaker cb = new RouteCircuitBreaker(1, 50L, clock::get);
 
-        cb.recordFailure();
-        Thread.sleep(60);
+        cb.recordFailure(cb.tryAcquirePermit());
+        clock.set(50L);
         assertThat(cb.state()).isEqualTo(HALF_OPEN);
 
-        cb.recordSuccess();
+        cb.recordSuccess(cb.tryAcquirePermit());
         assertThat(cb.state()).isEqualTo(CLOSED);
-        assertThat(cb.tryAcquire()).isTrue();
+        assertThat(cb.tryAcquirePermit()).isNotNull();
     }
 
     @Test
-    void halfOpenAllowsOnlyOneProbe() throws InterruptedException {
-        RouteCircuitBreaker cb = new RouteCircuitBreaker(1, 50L);
-        cb.recordFailure();
-        Thread.sleep(60);
+    void halfOpenAllowsOnlyOneProbe() {
+        AtomicLong clock = new AtomicLong();
+        RouteCircuitBreaker cb = new RouteCircuitBreaker(1, 50L, clock::get);
+        cb.recordFailure(cb.tryAcquirePermit());
+        clock.set(50L);
         assertThat(cb.state()).isEqualTo(HALF_OPEN);
 
-        assertThat(cb.tryAcquire()).isTrue();  // first caller gets the probe token
-        assertThat(cb.tryAcquire()).isFalse(); // second concurrent caller is fast-failed
+        assertThat(cb.tryAcquirePermit()).isNotNull(); // first caller gets the probe token
+        assertThat(cb.tryAcquirePermit()).isNull();    // second concurrent caller is fast-failed
     }
 
     @Test
-    void halfOpenReopensOnFailure() throws InterruptedException {
-        RouteCircuitBreaker cb = new RouteCircuitBreaker(1, 50L);
+    void halfOpenReopensOnFailure() {
+        AtomicLong clock = new AtomicLong();
+        RouteCircuitBreaker cb = new RouteCircuitBreaker(1, 50L, clock::get);
 
-        cb.recordFailure();
-        Thread.sleep(60);
+        cb.recordFailure(cb.tryAcquirePermit());
+        clock.set(50L);
         assertThat(cb.state()).isEqualTo(HALF_OPEN);
 
-        cb.recordFailure(); // probe failed → reopen
+        cb.recordFailure(cb.tryAcquirePermit()); // probe failed → reopen
         assertThat(cb.state()).isEqualTo(OPEN);
-        assertThat(cb.tryAcquire()).isFalse();
+        assertThat(cb.tryAcquirePermit()).isNull();
     }
 
     @Test
