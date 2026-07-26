@@ -22,6 +22,7 @@ DR_REPORT_WRITTEN="false"
 DR_CHECK_NAMES=()
 DR_CHECK_RESULTS=()
 DR_CHECK_OBSERVED=()
+DR_DESIRED_HPAS=""
 
 usage() {
   cat >&2 <<EOF
@@ -133,6 +134,10 @@ stream=Psych.parse_stream(STDIN.read)
 def audit(node)
   raise "YAML aliases/anchors are forbidden" if node.is_a?(Psych::Nodes::Alias) ||
     (node.respond_to?(:anchor) && node.anchor)
+  allowed_tags=[nil,"tag:yaml.org,2002:str","tag:yaml.org,2002:int",
+    "tag:yaml.org,2002:bool","tag:yaml.org,2002:null","tag:yaml.org,2002:float",
+    "tag:yaml.org,2002:map","tag:yaml.org,2002:seq"]
+  raise "custom/unsafe YAML tag" if node.respond_to?(:tag) && !allowed_tags.include?(node.tag)
   if node.is_a?(Psych::Nodes::Mapping)
     seen={}
     node.children.each_slice(2) do |key,value|
@@ -179,6 +184,8 @@ elsif mode=="full"
   digests=[]
   deployments.each do |d|
     name=d.dig("metadata","name")
+    raise "invalid Deployment identity" unless d["apiVersion"]=="apps/v1" &&
+      d.dig("metadata","namespace")=="recsys"
     podspec=d.dig("spec","template","spec")
     raise "unsupported placement constraints require validator update" if
       ["nodeSelector","affinity","tolerations"].any?{|k| podspec.key?(k) && podspec[k] && podspec[k]!={} && podspec[k]!=[]}
@@ -309,8 +316,11 @@ with open(operation_lock, "a+b") as op, open(report_lock, "a+b") as rp:
         print("refusing to overwrite existing audit report: "+report, file=sys.stderr)
         raise SystemExit(2)
     env=os.environ.copy()
-    env["DR_KERNEL_LOCK_HELD"]="1"
-    child=subprocess.Popen([script, *args], env=env, start_new_session=True)
+    os.set_inheritable(op.fileno(), True)
+    os.set_inheritable(rp.fileno(), True)
+    env["DR_INHERITED_LOCK_FDS"]=str(op.fileno())+","+str(rp.fileno())
+    child=subprocess.Popen([script, *args], env=env, start_new_session=True,
+                           pass_fds=(op.fileno(),rp.fileno()))
     def stop(signum, frame):
         del frame
         try: os.killpg(child.pid, signum)
@@ -321,10 +331,32 @@ with open(operation_lock, "a+b") as op, open(report_lock, "a+b") as rp:
 PY
 }
 
+verify_inherited_locks() {
+  local lock_root lock_key operation_lock report_lock
+  lock_root="${TMPDIR:-/tmp}/recsys-dr-locks"
+  lock_key="$(printf '%s/%s' "$DR_CONTEXT" "$DR_NAMESPACE" | shasum -a 256 | awk '{print $1}')"
+  operation_lock="$lock_root/operation-$lock_key.lock"
+  report_lock="$lock_root/report-$(printf '%s' "${DR_REPORT_PATH:-none}" | shasum -a 256 | awk '{print $1}').lock"
+  python3 - "${DR_INHERITED_LOCK_FDS:-}" "$operation_lock" "$report_lock" <<'PY'
+import fcntl,os,sys
+try:
+    fds=[int(x) for x in sys.argv[1].split(",")]
+    paths=sys.argv[2:4]
+    assert len(fds)==2 and all(paths)
+    for fd,path in zip(fds,paths):
+        fst=os.fstat(fd); pst=os.stat(path)
+        assert (fst.st_dev,fst.st_ino)==(pst.st_dev,pst.st_ino)
+        fcntl.flock(fd,fcntl.LOCK_EX|fcntl.LOCK_NB)
+except Exception:
+    raise SystemExit(1)
+PY
+}
+
 apply_hpas_if_needed() {
   local overlay="$1" desired observed rendered payload
   rendered="$(render_overlay "$overlay")"
   desired="$(printf '%s' "$rendered" | extract_hpas)"
+  DR_DESIRED_HPAS="$desired"
   payload="$(printf '%s' "$rendered" | filter_hpas_only)"
   observed="$(observed_hpas)"
   DR_MANIFEST_DIGEST="$(printf '%s' "$payload" | shasum -a 256 | awk '{print $1}')"
@@ -456,14 +488,16 @@ check_services() {
 }
 
 check_topology_scheduling() {
-  local nodes_file pods_file result
+  local nodes_file pods_file desired_file result
   nodes_file="$(mktemp "${TMPDIR:-/tmp}/dr-nodes.XXXXXX")"
   pods_file="$(mktemp "${TMPDIR:-/tmp}/dr-pods.XXXXXX")"
+  desired_file="$(mktemp "${TMPDIR:-/tmp}/dr-desired.XXXXXX")"
+  printf '%s\n' "$DR_DESIRED_HPAS" >"$desired_file"
   kubectl --context "$DR_CONTEXT" get nodes -o json >"$nodes_file"
   kubectl --context "$DR_CONTEXT" get pods --namespace "$DR_NAMESPACE" \
     -l 'app in (recsys-api-gateway,recsys-catalog-serving,recsys-model-serving,recsys-online-serving)' \
     -o json >"$pods_file"
-  if ! result="$(python3 - "$nodes_file" "$pods_file" "$DR_COMMAND" <<'PY'
+  if ! result="$(python3 - "$nodes_file" "$pods_file" "$desired_file" <<'PY'
 import json,sys
 nodes=json.load(open(sys.argv[1]))["items"]; pods=json.load(open(sys.argv[2]))["items"]
 usable={}
@@ -474,8 +508,12 @@ for n in nodes:
     if ready and not n.get("spec",{}).get("unschedulable",False) and not tainted and zone:
         usable[n["metadata"]["name"]]=zone
 if len(set(usable.values()))<2: raise SystemExit("fewer than two ready untainted schedulable zones")
-minimum={"recsys-api-gateway":2,"recsys-catalog-serving":2,"recsys-model-serving":3,"recsys-online-serving":2}
-if sys.argv[3]=="demote": minimum={"recsys-api-gateway":1,"recsys-catalog-serving":1,"recsys-model-serving":2,"recsys-online-serving":1}
+minimum={}
+for line in open(sys.argv[3]):
+    name,value,_maximum=line.split()
+    minimum[name]=int(value)
+expected={"recsys-api-gateway","recsys-catalog-serving","recsys-model-serving","recsys-online-serving"}
+if set(minimum)!=expected: raise SystemExit("desired HPA set unavailable")
 placed={k:[] for k in minimum}
 for p in pods:
     app=p.get("metadata",{}).get("labels",{}).get("app")
@@ -489,11 +527,11 @@ for app,zones in placed.items():
 print("ready nodes and target pods span zones: "+",".join(sorted(set(usable.values()))))
 PY
 )"; then
-    rm -f "$nodes_file" "$pods_file"
+    rm -f "$nodes_file" "$pods_file" "$desired_file"
     add_check topology-schedulability false "node/pod placement mismatch"
     return 1
   fi
-  rm -f "$nodes_file" "$pods_file"
+  rm -f "$nodes_file" "$pods_file" "$desired_file"
   add_check topology-schedulability true "$result"
 }
 
@@ -576,6 +614,7 @@ PY
   if [ "$(desired_hpas "$ACTIVE_OVERLAY")" != "$(observed_hpas)" ]; then
     add_check application-capacity false "live HPA min/max differ from active overlay"; return 1
   fi
+  DR_DESIRED_HPAS="$(desired_hpas "$ACTIVE_OVERLAY")"
   add_check application-capacity true "independently observed exact live min/max"
   check_topology_scheduling
   check_services
@@ -599,9 +638,12 @@ done
 require_command kubectl
 require_command python3
 
-if [ "$DR_COMMAND" != verify ] && [ "${DR_KERNEL_LOCK_HELD:-0}" != 1 ]; then
-  run_with_kernel_locks
-  exit $?
+if [ "$DR_COMMAND" != verify ] || [ -n "$DR_REPORT_PATH" ]; then
+  if ! verify_inherited_locks; then
+    unset DR_INHERITED_LOCK_FDS
+    run_with_kernel_locks
+    exit $?
+  fi
 fi
 
 case "$DR_COMMAND" in

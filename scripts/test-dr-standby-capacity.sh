@@ -16,6 +16,7 @@ scenario="${FAKE_KUBECTL_SCENARIO:-healthy}"
 if [ "${1:-}" = "kustomize" ]; then
   path="$2"
   if [[ "$path" == *"eks-us-west-2-active"* || "$path" == *"/base" ]]; then mins=(2 2 3 2); else mins=(1 1 2 1); fi
+  if [[ "$path" == *"eks-us-west-2-active"* ]] && [ -n "${FAKE_ACTIVE_API_MIN:-}" ]; then mins[0]="$FAKE_ACTIVE_API_MIN"; fi
   digest="${FAKE_IMAGE_DIGEST:-sha256:aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa}"
   if [ "$scenario" = wrong-image ] && [[ "$path" == *"/eks-us-west-2" ]]; then digest=sha256:bbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb; fi
   names=(api-gateway catalog-serving model-serving online-serving)
@@ -23,11 +24,11 @@ if [ "${1:-}" = "kustomize" ]; then
     hpa_header="kind: HorizontalPodAutoscaler
 apiVersion: autoscaling/v2"
     deployment_header="kind: Deployment
-apiVersion: apps/v1"
+apiVersion: ${FAKE_DEPLOYMENT_API:-apps/v1}"
   else
     hpa_header="apiVersion: autoscaling/v2
 kind: HorizontalPodAutoscaler"
-    deployment_header="apiVersion: apps/v1
+    deployment_header="apiVersion: ${FAKE_DEPLOYMENT_API:-apps/v1}
 kind: Deployment"
   fi
   for i in 0 1 2 3; do
@@ -38,7 +39,7 @@ metadata:
   name: recsys-${names[$i]}
   namespace: recsys
 spec:
-  minReplicas: ${mins[$i]}
+  minReplicas: ${FAKE_HPA_MIN_TAG:-}${mins[$i]}
   maxReplicas: 8
 ---
 YAML
@@ -58,6 +59,7 @@ YAML
 $deployment_header
 metadata:
   name: recsys-$name
+  namespace: ${FAKE_DEPLOYMENT_NAMESPACE:-recsys}
   annotations:
     nested-lookalike: "kind: HorizontalPodAutoscaler"
 spec:
@@ -81,10 +83,10 @@ elif [[ "$args" == *" config view "* ]]; then
     "${FAKE_CURRENT_CONTEXT:-prod-us-west-2}" "${FAKE_CLUSTER_SERVER:-https://west.example.invalid}"
 elif [[ "$args" == *" get hpa "* ]]; then
   state=""; [ ! -e "$FAKE_CLUSTER_STATE" ] || state="$(cat "$FAKE_CLUSTER_STATE")"
-  if [ "$state" = warm ] || { { [ "$scenario" = "warm" ] || [ "$scenario" = "stateful" ] || [ "$scenario" = "apply-fail" ] || [ "$scenario" = "partial-apply" ]; } && [ -z "$state" ]; }; then
+  if [ "$state" = warm ] || { { [ "$scenario" = "warm" ] || [ "$scenario" = "stateful" ] || [ "$scenario" = "apply-fail" ] || [ "$scenario" = "partial-apply" ] || [ "$scenario" = "blocked-child" ]; } && [ -z "$state" ]; }; then
     printf 'recsys-api-gateway 1 8\nrecsys-catalog-serving 1 8\nrecsys-model-serving 2 8\nrecsys-online-serving 1 8\n'
   else
-    printf 'recsys-api-gateway 2 8\nrecsys-catalog-serving 2 8\nrecsys-model-serving 3 8\nrecsys-online-serving 2 8\n'
+    printf 'recsys-api-gateway %s 8\nrecsys-catalog-serving 2 8\nrecsys-model-serving 3 8\nrecsys-online-serving 2 8\n' "${FAKE_ACTIVE_API_MIN:-2}"
   fi
   [ "$scenario" != unrelated ] || printf 'unrelated-hpa 99 100\n'
   [ "$scenario" != max-mismatch ] || printf 'recsys-api-gateway 2 99\n'
@@ -104,6 +106,10 @@ assert set(names)=={"recsys-api-gateway","recsys-catalog-serving","recsys-model-
   fi
   printf 'applied\n'
 elif [[ "$args" == *" rollout status "* || "$args" == *" wait pod "* ]]; then
+  if [ "$scenario" = "blocked-child" ] && [[ "$args" == *" rollout status "* ]]; then
+    : >"${FAKE_BLOCK_MARKER:?}"
+    sleep 2
+  fi
   [ "$scenario" != "rollout-fail" ]
 elif [[ "$args" == *" get pdb "* ]]; then
   if [ "$scenario" = "pdb-fail" ]; then
@@ -159,7 +165,7 @@ SCRIPT="$ROOT/scripts/dr-standby-capacity.sh"
 PASS=0
 FAIL=0
 
-reset_case() { : >"$LOG"; rm -f "$FAKE_CLUSTER_STATE"; unset DR_WRITER_IDENTITY DR_REPLICATION_DIRECTION DR_REPLICATION_LAG_STATUS DR_TRAFFIC_TARGET DR_CAPACITY_READY FAKE_IMAGE_SEPARATOR FAKE_DUPLICATE_TOP_KEY; export DR_CONTEXT_IDENTITY_FILE="$CONTEXT_IDENTITIES" DR_DEPENDENCY_EVIDENCE_FILE="$TMP/dependency-evidence.json" FAKE_CLUSTER_SERVER=https://west.example.invalid FAKE_KUBECTL_SCENARIO=healthy FAKE_CURRENT_CONTEXT=prod-us-west-2 FAKE_IMAGE_DIGEST=sha256:aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa; make_dependency_evidence; : >"$LOG"; }
+reset_case() { : >"$LOG"; rm -f "$FAKE_CLUSTER_STATE"; unset DR_WRITER_IDENTITY DR_REPLICATION_DIRECTION DR_REPLICATION_LAG_STATUS DR_TRAFFIC_TARGET DR_CAPACITY_READY FAKE_IMAGE_SEPARATOR FAKE_DUPLICATE_TOP_KEY FAKE_ACTIVE_API_MIN FAKE_HPA_MIN_TAG FAKE_DEPLOYMENT_API FAKE_DEPLOYMENT_NAMESPACE; export DR_CONTEXT_IDENTITY_FILE="$CONTEXT_IDENTITIES" DR_DEPENDENCY_EVIDENCE_FILE="$TMP/dependency-evidence.json" FAKE_CLUSTER_SERVER=https://west.example.invalid FAKE_KUBECTL_SCENARIO=healthy FAKE_CURRENT_CONTEXT=prod-us-west-2 FAKE_IMAGE_DIGEST=sha256:aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa; make_dependency_evidence; : >"$LOG"; }
 ok() { PASS=$((PASS + 1)); printf 'ok - %s\n' "$1"; }
 bad() { FAIL=$((FAIL + 1)); printf 'not ok - %s\n' "$1" >&2; }
 run_ok() { local name="$1"; shift; reset_case; if "$SCRIPT" "$@" >"$TMP/out" 2>"$TMP/err"; then ok "$name"; else bad "$name"; sed -n '1,120p' "$TMP/err" >&2; fi; }
@@ -259,6 +265,18 @@ reset_case; export FAKE_KUBECTL_SCENARIO=duplicate-resource
 if "$SCRIPT" promote --context prod-us-west-2 --region us-west-2 --report "$TMP/duplicate-resource.json" >/dev/null 2>&1; then bad "duplicate resource identity rejected"; else ok "duplicate resource identity rejected"; fi
 no_mutation "duplicate resource rejected before mutation"
 
+reset_case; export FAKE_HPA_MIN_TAG='!unsafe '
+if "$SCRIPT" promote --context prod-us-west-2 --region us-west-2 --report "$TMP/tagged-scalar.json" >/dev/null 2>&1; then bad "custom tagged scalar rejected"; else ok "custom tagged scalar rejected"; fi
+
+reset_case; export FAKE_DEPLOYMENT_NAMESPACE='!unsafe recsys'
+if "$SCRIPT" promote --context prod-us-west-2 --region us-west-2 --report "$TMP/tagged-object.json" >/dev/null 2>&1; then bad "custom tagged object value rejected"; else ok "custom tagged object value rejected"; fi
+
+reset_case; export FAKE_DEPLOYMENT_API=apps/v1beta1
+if "$SCRIPT" promote --context prod-us-west-2 --region us-west-2 --report "$TMP/wrong-api.json" >/dev/null 2>&1; then bad "wrong Deployment API rejected"; else ok "wrong Deployment API rejected"; fi
+
+reset_case; export FAKE_DEPLOYMENT_NAMESPACE=other
+if "$SCRIPT" promote --context prod-us-west-2 --region us-west-2 --report "$TMP/wrong-namespace.json" >/dev/null 2>&1; then bad "wrong Deployment namespace rejected"; else ok "wrong Deployment namespace rejected"; fi
+
 reset_case
 if "$SCRIPT" promote --context prod-us-west-2 --region us-west-2 --report "$TMP/nested-lookalike.json" >/dev/null; then ok "nested kind lookalike does not alter structural classification"; else bad "nested kind lookalike does not alter structural classification"; fi
 
@@ -300,6 +318,11 @@ if [ "$(cat "$TMP/existing-report.json")" = "do-not-overwrite" ]; then ok "exist
 no_mutation "report identity conflict rejected before mutation"
 
 reset_case
+printf 'still-owned\n' >"$TMP/forged-lock-report.json"
+if DR_INHERITED_LOCK_FDS=1,2 "$SCRIPT" promote --context prod-us-west-2 --region us-west-2 --report "$TMP/forged-lock-report.json" >/dev/null 2>&1; then bad "plain environment cannot forge inherited lock ownership"; else ok "plain environment cannot forge inherited lock ownership"; fi
+if [ "$(cat "$TMP/forged-lock-report.json")" = still-owned ]; then ok "forged lock environment cannot overwrite report"; else bad "forged lock environment cannot overwrite report"; fi
+
+reset_case
 lock_key="$(printf '%s/%s' prod-us-west-2 recsys | shasum -a 256 | awk '{print $1}')"
 mkdir -p "${TMPDIR:-/tmp}/recsys-dr-locks"
 python3 - "${TMPDIR:-/tmp}/recsys-dr-locks/operation-$lock_key.lock" "$TMP/lock-held" <<'PY' &
@@ -314,6 +337,20 @@ for _ in 1 2 3 4 5 6 7 8 9 10; do [ -e "$TMP/lock-held" ] && break; sleep 0.05; 
 kill -9 "$lock_holder"
 wait "$lock_holder" 2>/dev/null || true
 if "$SCRIPT" promote --context prod-us-west-2 --region us-west-2 --dry-run --report "$TMP/recovered-lock.json" >/dev/null; then ok "kernel lock recovers after abnormal holder termination"; else bad "kernel lock recovers after abnormal holder termination"; fi
+
+reset_case; export FAKE_KUBECTL_SCENARIO=blocked-child FAKE_BLOCK_MARKER="$TMP/orphan-child-blocked"
+"$SCRIPT" promote --context prod-us-west-2 --region us-west-2 --report "$TMP/orphan-promote.json" >/dev/null 2>&1 &
+wrapper_pid=$!
+for _ in 1 2 3 4 5 6 7 8 9 10 11 12 13 14 15 16 17 18 19 20 21 22 23 24 25 26 27 28 29 30; do [ -e "$FAKE_BLOCK_MARKER" ] && break; sleep 0.05; done
+kill -9 "$wrapper_pid"
+wait "$wrapper_pid" 2>/dev/null || true
+"$SCRIPT" demote --context prod-us-west-2 --region us-west-2 --report "$TMP/orphan-demote.json" >/dev/null 2>&1 &
+opposite_pid=$!
+sleep 0.2
+if [ "$(cat "$FAKE_CLUSTER_STATE")" = promoted ] && kill -0 "$opposite_pid" 2>/dev/null; then ok "orphan child retains operation lock after wrapper SIGKILL"; else bad "orphan child retains operation lock after wrapper SIGKILL"; fi
+opposite_status=0; wait "$opposite_pid" || opposite_status=$?
+if [ "$opposite_status" -eq 0 ] && [ "$(cat "$FAKE_CLUSTER_STATE")" = warm ]; then ok "operation lock releases after orphan child exits"; else bad "operation lock releases after orphan child exits"; fi
+unset FAKE_BLOCK_MARKER
 
 reset_case; export FAKE_KUBECTL_SCENARIO=stateful
 "$SCRIPT" promote --context prod-us-west-2 --region us-west-2 --report "$TMP/first.json" >/dev/null
@@ -359,6 +396,10 @@ if "$SCRIPT" promote --context prod-us-west-2 --region us-west-2 --report "$TMP/
 
 reset_case; export FAKE_KUBECTL_SCENARIO=pod-placement-fail
 if "$SCRIPT" promote --context prod-us-west-2 --region us-west-2 --report "$TMP/pod-placement.json" >/dev/null 2>&1; then bad "target pods lacking cross-zone placement fail"; else ok "target pods lacking cross-zone placement fail"; fi
+
+reset_case; export FAKE_ACTIVE_API_MIN=3
+make_dependency_evidence; : >"$LOG"
+if "$SCRIPT" promote --context prod-us-west-2 --region us-west-2 --report "$TMP/manifest-minimum.json" >/dev/null 2>&1; then bad "placement follows raised desired HPA minimum"; else ok "placement follows raised desired HPA minimum"; fi
 
 reset_case; export DR_WRITER_IDENTITY=unknown DR_REPLICATION_DIRECTION=west-to-east DR_REPLICATION_LAG_STATUS=accepted DR_TRAFFIC_TARGET=us-west-2 DR_DEPENDENCY_HEALTH=healthy DR_CAPACITY_READY=ready
 make_evidence "$TMP/evidence-bad.json"
@@ -414,6 +455,23 @@ rows=open(sys.argv[1],"rb").read().splitlines()
 assert rows and all(b"kustomize" in row and b"--context" not in row for row in rows)
 PY
 then ok "verify only renders manifests"; else bad "verify only renders manifests"; fi
+
+reset_case
+printf 'immutable\n' >"$TMP/verify-existing.json"
+if "$SCRIPT" verify --report "$TMP/verify-existing.json" >/dev/null 2>&1; then bad "verify rejects existing report"; else ok "verify rejects existing report"; fi
+if [ "$(cat "$TMP/verify-existing.json")" = immutable ]; then ok "verify preserves existing report"; else bad "verify preserves existing report"; fi
+
+reset_case; export FAKE_KUBECTL_SCENARIO=blocked-child FAKE_BLOCK_MARKER="$TMP/shared-report-blocked"
+"$SCRIPT" promote --context prod-us-west-2 --region us-west-2 --report "$TMP/shared-report.json" >/dev/null 2>&1 &
+cluster_pid=$!
+for _ in 1 2 3 4 5 6 7 8 9 10 11 12 13 14 15 16 17 18 19 20 21 22 23 24 25 26 27 28 29 30; do [ -e "$FAKE_BLOCK_MARKER" ] && break; sleep 0.05; done
+"$SCRIPT" verify --report "$TMP/shared-report.json" >/dev/null 2>&1 &
+verify_pid=$!
+cluster_status=0; wait "$cluster_pid" || cluster_status=$?
+verify_status=0; wait "$verify_pid" || verify_status=$?
+if [ "$cluster_status" -eq 0 ] && [ "$verify_status" -ne 0 ]; then ok "concurrent verify cannot overwrite cluster report"; else bad "concurrent verify cannot overwrite cluster report"; fi
+json_assert "shared report retains cluster command identity" "$TMP/shared-report.json" 'd["command"] == "promote" and d["ready"] is True'
+unset FAKE_BLOCK_MARKER
 
 reset_case; export FAKE_KUBECTL_SCENARIO=healthy
 "$SCRIPT" demote --context prod-us-west-2 --region us-west-2 --report "$TMP/demote.json" >/dev/null
