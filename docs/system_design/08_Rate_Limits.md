@@ -4,9 +4,9 @@ An investigation of the five rate limiters in the system: one shared token-bucke
 primitive, three per-instance limiters that guard the gateway, the model service,
 and the LLM proxy, and one global cluster-wide ceiling backed by Redis. The unifying
 theme is **fail-open** — a disabled limiter admits traffic rather than dropping it,
-and an enabled Redis limiter degrades to a bounded local ceiling rather than an
-unlimited one — and the unifying question for each is *what is limited, by what key,
-and is the ceiling per-instance or global?*
+and an enabled Redis limiter with its emergency bucket configured degrades to a
+bounded local ceiling rather than an unlimited one — and the unifying question for
+each is *what is limited, by what key, and is the ceiling per-instance or global?*
 
 ## The big picture
 
@@ -24,15 +24,16 @@ Two facts shape everything below:
   their effective ceiling is `per-instance-limit × replica count` — they scale up as
   the fleet does.
 - **Only an enabled `RedisRateLimiter` is a true global ceiling** (state in Redis,
-  consulted on every enabled request), and it is the one that adds a dependency — so
-  it is also the one with an embedded circuit breaker and a **bounded** fail-open path.
+  consulted on every enabled request), and it is the one that adds a dependency. Its
+  fail-open path is bounded only when the emergency bucket is also configured.
 
 Every limiter **fails open**: setting a limit to `0` returns an unlimited decision.
-When `ONLINE_REDIS_RATE_LIMIT_QPS` is positive, an open breaker or Redis error falls
-back to one conservative per-replica emergency token bucket
-(`ONLINE_REDIS_EMERGENCY_*`), so the enabled global limiter's normal failure path is
-not unlimited. With the global QPS default of `0`, `RedisRateLimiter` is disabled and
-does not create an emergency bucket.
+The Redis emergency bucket exists only when a Redis executor is configured, QPS is
+positive, `ONLINE_REDIS_EMERGENCY_LIMIT_ENABLED` is true, and the emergency rate and
+burst are both positive. With that combination, an open breaker or Redis error falls
+back to the conservative per-replica bucket; otherwise the failure path is unlimited.
+With the global QPS default of `0`, `RedisRateLimiter` is disabled and does not create
+an emergency bucket.
 Rate limiting is the *first* gate in the overload stack (rate limit →
 admission → bulkhead — see [Fault Tolerance](18_Fault_Tolerance.md#gate-ordering)).
 
@@ -131,9 +132,10 @@ Because it adds a Redis dependency on the hot path, it is wrapped in an embedded
 consecutive failures → open for 30 s). An exception, malformed reply, or open circuit
 uses the conservative per-replica emergency token bucket and marks the decision
 `failOpen=true`; emergency exhaustion still returns `429` with a positive
-`Retry-After`. The emergency bucket is enabled by default only when the global QPS
-limit is enabled (`ONLINE_REDIS_RATE_LIMIT_QPS > 0`), but operators can set
-`ONLINE_REDIS_EMERGENCY_LIMIT_ENABLED=false` or a zero emergency rate/burst to restore
+`Retry-After`. The emergency bucket is instantiated only when a Redis executor is
+configured, `ONLINE_REDIS_RATE_LIMIT_QPS > 0`,
+`ONLINE_REDIS_EMERGENCY_LIMIT_ENABLED=true`, and the emergency rate and burst are both
+positive. Operators can set the flag to `false` or either value to zero to restore
 unlimited fail-open behavior for rollback. The limiter is consumed by the online
 serving path (7010) after local admission, and its state is exposed via `/online/ops`.
 The design and the NTP-synced-clock caveat (the ≈1× bound assumes synced wall
@@ -158,9 +160,9 @@ the design spec is
   *then* the load-shedder; the online path runs admission *then* the Redis global
   limiter.
 - **Fail-open everywhere.** Every limiter defaults to disabled (`0`) and admits when
-  off. When its global QPS limit is enabled, the Redis limiter's default emergency
-  configuration bounds a breaker-open or error path locally; unlimited Redis fail-open
-  is an explicit rollback setting, not the normal enabled-limiter outage behavior.
+  off. When its Redis executor, global QPS limit, emergency flag, rate, and burst are
+  all configured, the Redis limiter bounds a breaker-open or error path locally;
+  otherwise that failure path is unlimited.
 
 ## 7. Testing
 
@@ -189,11 +191,11 @@ the design spec is
    large-context call can cost hundreds of tokens.
 3. **The global limiter trusts the clock.** Its ≈1× bound assumes NTP-synced wall
    clocks across instances; badly skewed clocks widen the effective window.
-4. **Fail-open is a deliberate availability choice.** When global QPS limiting is
-   enabled, a Redis outage or breaker trip switches from the global ceiling to the
-   per-replica emergency bucket. That preserves availability without leaving the normal
-   failure path unlimited, but the effective ceiling still grows with replica count;
-   watch the breaker and emergency counters in `/online/ops`.
+4. **Fail-open is a deliberate availability choice.** When a Redis executor, global
+   QPS limit, emergency flag, rate, and burst are all configured, a Redis outage or
+   breaker trip switches from the global ceiling to the per-replica emergency bucket.
+   Otherwise the failure path is unlimited. The emergency ceiling still grows with
+   replica count; watch the breaker and emergency counters in `/online/ops`.
 5. **Everything is off by default.** Every limiter ships disabled (`0`); a deployment
    that never sets the env vars has no rate limiting at all — the limits are an opt-in
    operational control, not a built-in default.
