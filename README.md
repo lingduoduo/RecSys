@@ -2100,15 +2100,21 @@ curl -s http://localhost:7010/online/ops | jq '{overloaded: .capacity.overloaded
 
 ## JVM Tuning
 
-Three GC profiles at the repo root:
+Every service has a G1 profile and a `-zgc` variant under `config/jvm/`,
+selected by profile name:
 
 ```bash
 # G1 (default — balanced throughput and latency)
-java $(cat jvm-g1.options) -jar recsys-api-*.jar
+sh scripts/run-with-jvm-tuning.sh recsys-serving -- \
+  mvn exec:java -Dexec.mainClass=com.recsys.api.serving.RecSysServer
 
 # ZGC (sub-ms pauses — Java 21+)
-java $(cat jvm-zgc.options) -jar recsys-api-*.jar
+sh scripts/run-with-jvm-tuning.sh recsys-serving-zgc -- \
+  mvn exec:java -Dexec.mainClass=com.recsys.api.serving.RecSysServer
 ```
+
+In a container the flags come from `JAVA_OPTS` instead — the image entrypoint
+expands it, and `k8s/base/*.yaml` sets it per service (`256 m`–`2 g`).
 
 Per-service JVM profiles under `config/jvm/`:
 
