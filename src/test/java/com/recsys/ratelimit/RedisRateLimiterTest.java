@@ -20,6 +20,19 @@ import static org.mockito.Mockito.when;
 
 class RedisRateLimiterTest {
 
+    private static RedisExecutor failingRedis(String message) {
+        RedisExecutor exec = mock(RedisExecutor.class);
+        when(exec.execute(any())).thenThrow(new IllegalStateException(message));
+        return exec;
+    }
+
+    private static RedisRateLimiter limiter(RedisExecutor exec, long limit, int windowSeconds,
+                                            double emergencyRatePerSecond, int emergencyBurst,
+                                            java.util.function.LongSupplier tickerNanos) {
+        return new RedisRateLimiter(exec, "rate:test:", limit, windowSeconds,
+                100, 10_000L, emergencyRatePerSecond, emergencyBurst, tickerNanos, () -> 0L);
+    }
+
     @SuppressWarnings("unchecked")
     private static RedisExecutor execFor(RedisCommands<String, String> cmd) {
         RedisExecutor exec = mock(RedisExecutor.class);
@@ -113,6 +126,119 @@ class RedisRateLimiterTest {
 
         assertThat(decision.allowed()).isTrue();
         assertThat(decision.failOpen()).isTrue();
+    }
+
+    @Test
+    void redisFailureUsesBoundedEmergencyBudget() {
+        AtomicLong ticker = new AtomicLong();
+        RedisExecutor exec = failingRedis("redis down");
+        RedisRateLimiter limiter = limiter(exec, 100L, 1, 2.0, 2, ticker::get);
+
+        assertThat(limiter.tryAcquire("online").allowed()).isTrue();
+        assertThat(limiter.tryAcquire("online").allowed()).isTrue();
+        RedisRateLimiter.Decision rejected = limiter.tryAcquire("online");
+
+        assertThat(rejected.allowed()).isFalse();
+        assertThat(rejected.failOpen()).isTrue();
+        assertThat(rejected.source()).isEqualTo(RedisRateLimiter.Source.EMERGENCY);
+        assertThat(rejected.retryAfterSeconds()).isPositive();
+    }
+
+    @Test
+    void emergencyBudgetRefillsFromInjectedMonotonicTicker() {
+        AtomicLong ticker = new AtomicLong();
+        RedisRateLimiter limiter = limiter(failingRedis("redis down"), 100L, 1, 2.0, 2, ticker::get);
+
+        limiter.tryAcquire("online");
+        limiter.tryAcquire("online");
+        assertThat(limiter.tryAcquire("online").allowed()).isFalse();
+
+        ticker.set(500_000_000L);
+        assertThat(limiter.tryAcquire("online").allowed()).isTrue();
+        assertThat(limiter.tryAcquire("online").allowed()).isFalse();
+    }
+
+    @Test
+    void redisDecisionsAreAuthoritativeAndLeaveEmergencyBudgetUntouched() {
+        RedisCommands<String, String> cmd = mockCommands();
+        when(cmd.eval(any(String.class), any(ScriptOutputType.class), any(String[].class), any(String[].class)))
+                .thenReturn(List.of(1L, 99L, 0L));
+        RedisExecutor exec = mock(RedisExecutor.class);
+        when(exec.execute(any()))
+                .thenAnswer(i -> i.getArgument(0, Function.class).apply(cmd))
+                .thenThrow(new IllegalStateException("redis down"));
+        RedisRateLimiter limiter = limiter(exec, 100L, 1, 1.0, 2, () -> 0L);
+
+        RedisRateLimiter.Decision redis = limiter.tryAcquire("online");
+        assertThat(redis.allowed()).isTrue();
+        assertThat(redis.source()).isEqualTo(RedisRateLimiter.Source.REDIS);
+
+        assertThat(limiter.tryAcquire("online").allowed()).isTrue();
+        assertThat(limiter.tryAcquire("online").allowed()).isTrue();
+    }
+
+    @Test
+    void disabledGlobalLimiterReportsDisabledSource() {
+        RedisRateLimiter.Decision decision = RedisRateLimiter.disabled().tryAcquire("online");
+
+        assertThat(decision.allowed()).isTrue();
+        assertThat(decision.source()).isEqualTo(RedisRateLimiter.Source.DISABLED);
+    }
+
+    @Test
+    void zeroEmergencyRateExplicitlyRestoresUnlimitedFailOpen() {
+        RedisRateLimiter limiter = limiter(failingRedis("redis down"), 100L, 1, 0.0, 2, () -> 0L);
+
+        for (int i = 0; i < 4; i++) {
+            RedisRateLimiter.Decision decision = limiter.tryAcquire("online");
+            assertThat(decision.allowed()).isTrue();
+            assertThat(decision.source()).isEqualTo(RedisRateLimiter.Source.EMERGENCY);
+        }
+    }
+
+    @Test
+    void openCircuitSkipsRedisAndConsumesEmergencyBudget() {
+        RedisExecutor exec = failingRedis("redis down");
+        RedisRateLimiter limiter = new RedisRateLimiter(exec, "rate:test:", 100L, 1,
+                1, 10_000L, 1.0, 2, () -> 0L, () -> 0L);
+
+        assertThat(limiter.tryAcquire("online").allowed()).isTrue();
+        assertThat(limiter.tryAcquire("online").allowed()).isTrue();
+        assertThat(limiter.tryAcquire("online").allowed()).isFalse();
+        verify(exec, times(1)).execute(any());
+    }
+
+    @Test
+    void malformedRedisResultUsesEmergencyBudgetInsteadOfUnlimitedAllow() {
+        RedisCommands<String, String> cmd = mockCommands();
+        when(cmd.eval(any(String.class), any(ScriptOutputType.class), any(String[].class), any(String[].class)))
+                .thenReturn(List.of("not-an-allow-flag"));
+        RedisRateLimiter limiter = limiter(execFor(cmd), 100L, 1, 1.0, 2, () -> 0L);
+
+        assertThat(limiter.tryAcquire("online").source()).isEqualTo(RedisRateLimiter.Source.EMERGENCY);
+        assertThat(limiter.tryAcquire("online").allowed()).isTrue();
+        assertThat(limiter.tryAcquire("online").allowed()).isFalse();
+    }
+
+    @Test
+    void fractionalRedisReplyIsMalformedAndUsesEmergencyBudget() {
+        RedisCommands<String, String> cmd = mockCommands();
+        when(cmd.eval(any(String.class), any(ScriptOutputType.class), any(String[].class), any(String[].class)))
+                .thenReturn(List.of(1.5d, 99L, 0L));
+        RedisRateLimiter limiter = limiter(execFor(cmd), 100L, 1, 1.0, 1, () -> 0L);
+
+        RedisRateLimiter.Decision decision = limiter.tryAcquire("online");
+
+        assertThat(decision.source()).isEqualTo(RedisRateLimiter.Source.EMERGENCY);
+        assertThat(decision.failOpen()).isTrue();
+    }
+
+    @Test
+    void negativeEmergencySettingsAreRejected() {
+        assertThat(org.assertj.core.api.Assertions.catchThrowable(() -> new RedisRateLimiter(
+                mock(RedisExecutor.class), "rate:test:", 100L, 1,
+                1, 1L, -1.0, 1, () -> 0L, () -> 0L)))
+                .isInstanceOf(IllegalArgumentException.class);
     }
 
     // ── Circuit breaker (cache-avalanche / rate-limit degradation) ──────────
