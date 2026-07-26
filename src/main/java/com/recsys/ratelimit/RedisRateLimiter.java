@@ -3,12 +3,15 @@ package com.recsys.ratelimit;
 import com.recsys.config.EnvConfig;
 import com.recsys.infrastructure.redis.RedisExecutor;
 import com.recsys.resilience.CircuitBreaker;
+import io.micrometer.core.instrument.FunctionCounter;
+import io.micrometer.core.instrument.MeterRegistry;
 import io.lettuce.core.ScriptOutputType;
 import org.slf4j.Logger;
 import org.slf4j.LoggerFactory;
 
 import java.util.List;
 import java.util.Locale;
+import java.util.concurrent.atomic.LongAdder;
 import java.util.function.LongSupplier;
 
 /**
@@ -73,7 +76,13 @@ public final class RedisRateLimiter {
     private final LongSupplier nowMillis;
     private final CircuitBreaker circuit;
     private final boolean emergencyEnabled;
+    private final double emergencyRatePerSecond;
+    private final int emergencyBurst;
     private final TokenBucket emergencyBucket;
+    private final LongAdder redisAllowed = new LongAdder();
+    private final LongAdder redisRejected = new LongAdder();
+    private final LongAdder emergencyAllowed = new LongAdder();
+    private final LongAdder emergencyRejected = new LongAdder();
 
     public enum CircuitState { CLOSED, OPEN, HALF_OPEN }
 
@@ -157,6 +166,8 @@ public final class RedisRateLimiter {
         this.nowMillis = circuitClockMillis;
         this.emergencyEnabled = enabled && emergencyConfiguredEnabled
                 && emergencyRatePerSecond > 0 && emergencyBurst > 0;
+        this.emergencyRatePerSecond = emergencyRatePerSecond;
+        this.emergencyBurst = emergencyBurst;
         this.emergencyBucket = emergencyEnabled
                 ? new TokenBucket(emergencyRatePerSecond, emergencyBurst, tickerNanos)
                 : null;
@@ -173,7 +184,7 @@ public final class RedisRateLimiter {
         // CLOSED → proceed; OPEN → fail open; HALF_OPEN → only the probe winner proceeds.
         CircuitBreaker.Permit permit = circuit.tryAcquirePermit();
         if (permit == null) {
-            return emergencyDecision();
+            return observe(emergencyDecision());
         }
 
         String key = keyPrefix + normalizeBucket(bucket);
@@ -188,16 +199,23 @@ public final class RedisRateLimiter {
             if (decision == null) {
                 circuit.recordFailure(permit);
                 log.warn("Redis rate limiter returned malformed result for bucket '{}'", bucket);
-                return emergencyDecision();
+                return observe(emergencyDecision());
             }
             circuit.recordSuccess(permit);
-            return decision;
+            return observe(decision);
         } catch (Exception e) {
             circuit.recordFailure(permit);
             log.warn("Redis rate limiter failed open for bucket '{}' (failures={}): {}",
                     bucket, circuit.failureCount(), e.toString());
-            return emergencyDecision();
+            return observe(emergencyDecision());
         }
+    }
+
+    public void registerMetrics(MeterRegistry registry) {
+        registerCounter(registry, redisAllowed, "redis", "allowed");
+        registerCounter(registry, redisRejected, "redis", "rejected");
+        registerCounter(registry, emergencyAllowed, "emergency", "allowed");
+        registerCounter(registry, emergencyRejected, "emergency", "rejected");
     }
 
     public CircuitState circuitState() {
@@ -209,7 +227,19 @@ public final class RedisRateLimiter {
     }
 
     public Snapshot snapshot() {
-        return new Snapshot(enabled, limit, windowSeconds, circuitState());
+        return new Snapshot(
+                enabled,
+                limit,
+                windowSeconds,
+                circuitState(),
+                emergencyEnabled,
+                emergencyRatePerSecond,
+                emergencyBurst,
+                redisAllowed.sum(),
+                redisRejected.sum(),
+                emergencyAllowed.sum(),
+                emergencyRejected.sum()
+        );
     }
 
     public boolean isEnabled() {
@@ -230,6 +260,26 @@ public final class RedisRateLimiter {
         int retry = local.allowed() ? 0
                 : Math.max(1, (int) Math.ceil(local.retryAfter().toMillis() / 1000.0));
         return new Decision(local.allowed(), local.remaining(), retry, true, Source.EMERGENCY);
+    }
+
+    private Decision observe(Decision decision) {
+        LongAdder counter = switch (decision.source()) {
+            case REDIS -> decision.allowed() ? redisAllowed : redisRejected;
+            case EMERGENCY -> decision.allowed() ? emergencyAllowed : emergencyRejected;
+            case DISABLED -> null;
+        };
+        if (counter != null) counter.increment();
+        return decision;
+    }
+
+    private static void registerCounter(MeterRegistry registry, LongAdder counter,
+                                        String source, String result) {
+        FunctionCounter.builder(
+                        "recsys_online_rate_limit_decisions_total",
+                        counter,
+                        LongAdder::sum)
+                .tags("source", source, "result", result)
+                .register(registry);
     }
 
     private Decision parseRedisDecision(Object raw) {
@@ -345,6 +395,13 @@ public final class RedisRateLimiter {
             boolean enabled,
             long limit,
             int windowSeconds,
-            CircuitState circuitState
+            CircuitState circuitState,
+            boolean emergencyEnabled,
+            double emergencyRatePerSecond,
+            int emergencyBurst,
+            long redisAllowed,
+            long redisRejected,
+            long emergencyAllowed,
+            long emergencyRejected
     ) {}
 }

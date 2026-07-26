@@ -158,6 +158,7 @@ public final class OnlinePredictionServer {
             OnlineLoadShedder loadShedder = new OnlineLoadShedder();
             OnlineCapacityService capacityService = new OnlineCapacityService();
             RedisRateLimiter redisRateLimiter = new RedisRateLimiter(jedisPool);
+            redisRateLimiter.registerMetrics(registry);
 
             int shardCount = readIntEnv("SHARDED_RECORD_SHARD_COUNT", 2);
             long refreshMs = readIntEnv("SHARD_TOPOLOGY_REFRESH_SECONDS", 30) * 1000L;

@@ -1,12 +1,15 @@
 package com.recsys.ratelimit;
 
 import com.recsys.infrastructure.redis.RedisExecutor;
+import io.micrometer.core.instrument.Meter;
+import io.micrometer.core.instrument.simple.SimpleMeterRegistry;
 import io.lettuce.core.ScriptOutputType;
 import io.lettuce.core.api.sync.RedisCommands;
 import org.junit.jupiter.api.Test;
 import org.mockito.ArgumentCaptor;
 
 import java.util.List;
+import java.util.Set;
 import java.util.function.Function;
 import java.util.concurrent.atomic.AtomicLong;
 
@@ -376,5 +379,69 @@ class RedisRateLimiterTest {
         assertThat(java.util.Arrays.stream(RedisRateLimiter.Snapshot.class.getRecordComponents())
                 .map(java.lang.reflect.RecordComponent::getName))
                 .doesNotContain("localPassThreshold");
+    }
+
+    @Test
+    void registerMetrics_exposesOnlyFourBoundedDecisionOutcomesExactlyOnce() {
+        RedisCommands<String, String> cmd = mockCommands();
+        when(cmd.eval(any(String.class), any(ScriptOutputType.class), any(String[].class), any(String[].class)))
+                .thenReturn(List.of(1L, 99L, 0L))
+                .thenReturn(List.of(0L, 0L, 1L));
+        RedisExecutor exec = mock(RedisExecutor.class);
+        when(exec.execute(any()))
+                .thenAnswer(i -> i.getArgument(0, Function.class).apply(cmd))
+                .thenAnswer(i -> i.getArgument(0, Function.class).apply(cmd))
+                .thenThrow(new IllegalStateException("redis down"));
+        RedisRateLimiter limiter = limiter(exec, 100L, 1, 1.0, 1, () -> 0L);
+        SimpleMeterRegistry registry = new SimpleMeterRegistry();
+
+        limiter.registerMetrics(registry);
+        limiter.registerMetrics(registry);
+        assertThat(limiter.tryAcquire("user:one").allowed()).isTrue();
+        assertThat(limiter.tryAcquire("user:two").allowed()).isFalse();
+        assertThat(limiter.tryAcquire("user:three").allowed()).isTrue();
+        assertThat(limiter.tryAcquire("user:four").allowed()).isFalse();
+
+        List<Meter> meters = registry.getMeters().stream()
+                .filter(meter -> meter.getId().getName()
+                        .equals("recsys_online_rate_limit_decisions_total"))
+                .toList();
+        assertThat(meters).hasSize(4);
+        assertThat(meters).allSatisfy(meter -> assertThat(
+                        meter.getId().getTags().stream()
+                                .map(tag -> tag.getKey())
+                                .collect(java.util.stream.Collectors.toSet()))
+                .isEqualTo(Set.of("source", "result")));
+        assertThat(registry.get("recsys_online_rate_limit_decisions_total")
+                .tags("source", "redis", "result", "allowed").functionCounter().count())
+                .isEqualTo(1.0);
+        assertThat(registry.get("recsys_online_rate_limit_decisions_total")
+                .tags("source", "redis", "result", "rejected").functionCounter().count())
+                .isEqualTo(1.0);
+        assertThat(registry.get("recsys_online_rate_limit_decisions_total")
+                .tags("source", "emergency", "result", "allowed").functionCounter().count())
+                .isEqualTo(1.0);
+        assertThat(registry.get("recsys_online_rate_limit_decisions_total")
+                .tags("source", "emergency", "result", "rejected").functionCounter().count())
+                .isEqualTo(1.0);
+    }
+
+    @Test
+    void snapshot_exposesEmergencyConfigurationAndCumulativeDecisionCounters() {
+        RedisCommands<String, String> cmd = mockCommands();
+        when(cmd.eval(any(String.class), any(ScriptOutputType.class), any(String[].class), any(String[].class)))
+                .thenReturn(List.of(1L, 99L, 0L));
+        RedisRateLimiter limiter = limiter(execFor(cmd), 100L, 1, 2.5, 3, () -> 0L);
+
+        limiter.tryAcquire("online");
+        RedisRateLimiter.Snapshot snapshot = limiter.snapshot();
+
+        assertThat(snapshot.emergencyEnabled()).isTrue();
+        assertThat(snapshot.emergencyRatePerSecond()).isEqualTo(2.5);
+        assertThat(snapshot.emergencyBurst()).isEqualTo(3);
+        assertThat(snapshot.redisAllowed()).isEqualTo(1L);
+        assertThat(snapshot.redisRejected()).isZero();
+        assertThat(snapshot.emergencyAllowed()).isZero();
+        assertThat(snapshot.emergencyRejected()).isZero();
     }
 }
