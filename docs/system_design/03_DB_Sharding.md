@@ -57,8 +57,7 @@ idempotent and safe to retry.
 
 The HTTP façade
 ([`ShardedRecordService`](../../src/main/java/com/recsys/infrastructure/store/ShardedRecordService.java))
-mounts `/shards/` on port 7010; write/read curl lives in the README
-[Sharded Record Store](../../README.md#sharded-record-store) section.
+mounts `/shards/` on port 7010.
 
 ## 2. `ShardedTopKStore` — sharded trending
 

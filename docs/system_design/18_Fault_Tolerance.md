@@ -231,7 +231,7 @@ Redis is the hot dependency, so its failure paths are the most developed:
   latency, not availability. Sentinel
   ([`LettuceClientFactory`](../../src/main/java/com/recsys/infrastructure/redis/LettuceClientFactory.java))
   handles primary leader election; the router handles read fan-out. See
-  [Redis Read Replicas](../../README.md#redis-read-replicas).
+  [Replication](04_Replication.md#1-redis-read-replicas--az-aware-read-routing).
 - **Cache-stampede protection** —
   [`SingleFlight`](../../src/main/java/com/recsys/infrastructure/resilience/SingleFlight.java)
   dedupes concurrent same-key recomputations and **fails open** (independent
@@ -314,8 +314,8 @@ never drops in-flight requests. On `SIGTERM`:
 
 The model-serving `/health/ready` surface makes each drain / shed reason explicit
 (`"shutting down"`, `"overloaded"`, `"high failure rate"`, `"high inference
-latency"`), each returning `503` — see the
-[Port 8080 API reference](../../README.md#port-8080--model-serving-spring-boot).
+latency"`), each returning `503`; the controller and its health contract tests are
+the authoritative behavior source.
 
 ## 6. Multi-AZ and multi-region survival
 

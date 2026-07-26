@@ -66,8 +66,25 @@ and `ConsistencyMetrics` records every token validation and wait outcome
 delivery *convergent* rather than exactly-once: idempotent `SET_IF_NEWER` Lua
 scripts do **last-writer-by-`(eventTimeMillis, eventId)`-wins**, and top-K
 updates run in one atomic multi-key script ("every related update or none").
-Sagas (`domain/saga`, `SagaOrchestrators`) apply the same philosophy to
-multi-step workflows — compensation instead of distributed transactions.
+Sagas apply the same philosophy to multi-step workflows — compensation instead
+of distributed transactions.
+
+### 1a. Durable saga coordination
+
+[`SagaOrchestrators`](../../src/main/java/com/recsys/application/saga/SagaOrchestrators.java)
+offers two durable orchestration cores. `Standard` executes steps forward and
+best-effort compensates completed steps in reverse on failure; `Tcc` reserves every
+step, confirms all reservations, and cancels unconfirmed reservations in reverse on
+failure. Both persist each transition before publishing its event, so participants must
+use `sagaId + step name` (plus the TCC phase) as their idempotency key.
+
+The Step Functions renderers are definition generators, not a deployment mechanism:
+[`AwsStepFunctionsSagaDefinition`](../../src/main/java/com/recsys/application/saga/AwsStepFunctionsSagaDefinition.java)
+emits forward/compensation states, and
+[`AwsTccStepFunctionsSagaDefinition`](../../src/main/java/com/recsys/application/saga/AwsTccStepFunctionsSagaDefinition.java)
+emits Try/Confirm/Cancel states. Both render retry policies with exponential backoff,
+`MaxDelaySeconds: 30`, and `JitterStrategy: FULL`; callers remain responsible for
+deploying the generated Amazon States Language definition.
 
 ## 2. Every staleness window in the system
 

@@ -75,9 +75,10 @@ Supporting mechanisms:
 - `health/OnlineCapacityService` — **observability of static sizing
   assumptions**, not a controller. It surfaces constants (`ONLINE_TARGET_DAU`
   2,000,000 / `ONLINE_PEAK_QPS` 8,000 / `ONLINE_PEAK_TPS` 20,000) plus live
-  `qpsUtilization` / `headroomQps` / `overloaded` for `/health`. Peak TPS ≫ QPS
-  because Kafka absorbs bursty writes and Flink compacts them into Redis
-  aggregates, while stateless (HPA-scalable) instances serve peak read QPS.
+  `qpsUtilization` / `headroomQps` / `overloaded` on the operator-gated
+  `/online/ops` surface. Peak TPS ≫ QPS because Kafka absorbs bursty writes and
+  Flink compacts them into Redis aggregates, while stateless (HPA-scalable)
+  instances serve peak read QPS.
 
 ## 2. Overload protection — the layers that let it scale without collapsing
 

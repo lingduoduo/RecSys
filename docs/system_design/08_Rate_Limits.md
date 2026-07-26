@@ -108,8 +108,8 @@ pre-check in
 [`LlmProxyService`](../../src/main/java/com/recsys/application/gateway/LlmProxyService.java)
 after the cache lookup and before the circuit breaker; on limit it returns `429` with
 `Retry-After` / `x-ratelimit-*` and body `{"error":"<route> token budget exhausted …"}`.
-It sits inside the broader [LLM Gateway](../../README.md#llm-gateway) proxy (SSE, caching,
-circuit breaker).
+It sits inside the gateway's LLM proxy (SSE, caching, circuit breaker), whose streaming
+behavior is documented in [SSE Streaming](16_SSE_Streaming.md).
 
 ## 5. The global ceiling — `RedisRateLimiter`
 
@@ -126,14 +126,16 @@ consults Redis.
 
 Because it adds a Redis dependency on the hot path, it is wrapped in an embedded
 [`CircuitBreaker`](../../src/main/java/com/recsys/resilience/CircuitBreaker.java) (5
-consecutive failures → open for 30 s): when open it **admits without calling Redis**,
-and the disabled path, exception path, and malformed-reply path *all* return an
-`allowed(failOpen=true)` decision. A Redis outage therefore *admits* traffic rather
-than dropping it. It is consumed by the online serving path (7010) after local
-admission, returning `429` + `Retry-After` on deny, and its state is exposed via
-`/online/ops`. The design and the NTP-synced-clock caveat (the ≈1× bound assumes
-synced wall clocks) are covered in the
-[Fault Tolerance investigation](18_Fault_Tolerance.md#rate-limiters--fail-open-with-an-embedded-breaker);
+consecutive failures → open for 30 s). An exception, malformed reply, or open circuit
+uses the conservative per-replica emergency token bucket and marks the decision
+`failOpen=true`; emergency exhaustion still returns `429` with a positive
+`Retry-After`. The emergency bucket is enabled by default, but operators can set
+`ONLINE_REDIS_EMERGENCY_LIMIT_ENABLED=false` or a zero emergency rate/burst to restore
+unlimited fail-open behavior for rollback. The limiter is consumed by the online
+serving path (7010) after local admission, and its state is exposed via `/online/ops`.
+The design and the NTP-synced-clock caveat (the ≈1× bound assumes synced wall
+clocks) are covered in the [Fault Tolerance
+investigation](18_Fault_Tolerance.md#rate-limiters--fail-open-with-an-embedded-breaker);
 the design spec is
 [redis-rate-limiter-sliding-window](../superpowers/specs/2026-07-20-redis-rate-limiter-sliding-window-design.md).
 
@@ -153,9 +155,9 @@ the design spec is
   *then* the load-shedder; the online path runs admission *then* the Redis global
   limiter.
 - **Fail-open everywhere.** Every limiter defaults to disabled (`0`) and admits when
-  off; the Redis one additionally admits on breaker-open or error. Rate limiting here
-  never turns a limit misconfiguration or a dependency outage into an outage of its
-  own.
+  off. With its default emergency configuration, the Redis limiter bounds a breaker-open
+  or error path locally; unlimited Redis fail-open is an explicit rollback setting, not
+  the normal outage behavior.
 
 ## 7. Testing
 
@@ -183,10 +185,11 @@ the design spec is
    large-context call can cost hundreds of tokens.
 3. **The global limiter trusts the clock.** Its ≈1× bound assumes NTP-synced wall
    clocks across instances; badly skewed clocks widen the effective window.
-4. **Fail-open is a deliberate availability choice.** A Redis outage or a breaker
-   trip *raises* the effective rate to unlimited — good for availability, but it means
-   the global cap silently disappears during a Redis incident; watch the breaker state
-   in `/online/ops`.
+4. **Fail-open is a deliberate availability choice.** A Redis outage or breaker trip
+   switches from the global ceiling to the per-replica emergency bucket. That preserves
+   availability without leaving the normal failure path unlimited, but the effective
+   ceiling still grows with replica count; watch the breaker and emergency counters in
+   `/online/ops`.
 5. **Everything is off by default.** Every limiter ships disabled (`0`); a deployment
    that never sets the env vars has no rate limiting at all — the limits are an opt-in
    operational control, not a built-in default.
