@@ -1,6 +1,5 @@
 package com.recsys.resilience;
 
-import java.util.concurrent.atomic.AtomicBoolean;
 import java.util.concurrent.atomic.AtomicInteger;
 import java.util.concurrent.atomic.AtomicLong;
 import java.util.function.LongSupplier;
@@ -16,13 +15,16 @@ public final class CircuitBreaker {
 
     public enum State { CLOSED, OPEN, HALF_OPEN }
 
+    public record Permit(long generation, boolean probe) {}
+
     private final int failureThreshold;
     private final long cooldownMs;
     private final LongSupplier clockMs;
 
     private final AtomicInteger consecutiveFailures = new AtomicInteger(0);
     private final AtomicLong openedAtMs = new AtomicLong(0L);
-    private final AtomicBoolean probing = new AtomicBoolean(false);
+    private final AtomicLong generation = new AtomicLong();
+    private final AtomicLong probeGeneration = new AtomicLong(-1L);
 
     public CircuitBreaker(int failureThreshold, long cooldownMs) {
         this(failureThreshold, cooldownMs, System::currentTimeMillis);
@@ -42,24 +44,45 @@ public final class CircuitBreaker {
         return elapsed >= cooldownMs ? State.HALF_OPEN : State.OPEN;
     }
 
+    public Permit tryAcquirePermit() {
+        State current = state();
+        long observed = generation.get();
+        if (current == State.CLOSED) return new Permit(observed, false);
+        if (current == State.OPEN) return null;
+        return probeGeneration.compareAndSet(-1L, observed)
+                ? new Permit(observed, true)
+                : null;
+    }
+
+    public void recordSuccess(Permit permit) {
+        if (permit == null || permit.generation() != generation.get()) return;
+        if (state() == State.HALF_OPEN && !permit.probe()) return;
+        consecutiveFailures.set(0);
+        probeGeneration.set(-1L);
+    }
+
+    public void recordFailure(Permit permit) {
+        if (permit == null || permit.generation() != generation.get()) return;
+        State before = state();
+        if (before == State.HALF_OPEN && !permit.probe()) return;
+        if (consecutiveFailures.incrementAndGet() >= failureThreshold
+                && generation.compareAndSet(permit.generation(), permit.generation() + 1)) {
+            openedAtMs.set(clockMs.getAsLong());
+            probeGeneration.set(-1L);
+        }
+    }
+
     /** CLOSED → true; OPEN → false; HALF_OPEN → exactly one probe wins via CAS. */
     public boolean tryAcquire() {
-        State s = state();
-        if (s == State.CLOSED) return true;
-        if (s == State.OPEN)   return false;
-        return probing.compareAndSet(false, true);
+        return tryAcquirePermit() != null;
     }
 
     public void recordSuccess() {
-        consecutiveFailures.set(0);
-        probing.set(false);
+        recordSuccess(new Permit(generation.get(), state() == State.HALF_OPEN));
     }
 
     public void recordFailure() {
-        probing.set(false);
-        if (consecutiveFailures.incrementAndGet() >= failureThreshold) {
-            openedAtMs.set(clockMs.getAsLong());
-        }
+        recordFailure(new Permit(generation.get(), state() == State.HALF_OPEN));
     }
 
     public int failureCount() {
