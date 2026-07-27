@@ -20,7 +20,7 @@ deliberately chosen partition key:
 | Record sharding | Per-device event/feature/log records in Redis | `deviceId` on a consistent-hash ring | Co-locate a device's records; resize moves only ~1/N |
 | Top-K replica sharding | Each trending window's sorted set | `window` → N identical replica keys | Spread hot-key read QPS; absorb cache-expiry herds |
 | Kafka / Flink | The `movie_events_v2` event stream | `userId` | Per-user ordering on one partition; users spread across 24 |
-| Keyset pagination | A large ranked/relational result set | `(sort, id)` seek anchor | Stable pages that never skip/dup under churn |
+| Keyset pagination | A large ranked/relational result set | `(sort, id)` seek anchor | Flat sequential-page cost with explicit live or snapshot semantics |
 | A/B bucketing | Users into experiment variants | `userId` via the same FNV-1a primitive | Stable, uniform assignment (see [`StableBucketer`]) |
 
 Two principles recur:
@@ -209,57 +209,28 @@ events/sec** target.
 ## 4. Keyset / cursor pagination — partitioning a result set
 
 Deep pagination is a partitioning problem: split a large ordered result into
-stable pages **without** an `OFFSET` scan, so inserts, exclusions, or re-scores
-between requests never skip or duplicate rows. The system uses `(sort, id)` seek
-anchors in three places.
+pages without forcing a deep `OFFSET` scan. The repository uses deterministic
+`(sort, id)` seek anchors for recommendation and catalog traversal. Because
+recommendation rankings are recomputed, they have live-feed rather than snapshot
+semantics: rank changes can still move items across a cursor boundary.
 
 ### In-memory ranked list — `/v2/recommend`
 
-`POST /v2/recommend` (on 6010 via
-[`RecommendationOrchestrator`](../../src/main/java/com/recsys/application/recommendation/RecommendationOrchestrator.java))
-returns an opaque **seek cursor** anchored on the last item's `(score, itemId)` —
-*not* an absolute offset.
-[`CursorPaginationService`](../../src/main/java/com/recsys/application/pagination/CursorPaginationService.java)
-resumes after the anchor item if it is still present, else seeks by the
-`(score desc, itemId asc)` predicate, so a shifting ranked list or a changing
-`excludedItemIds` never silently skips. Recall is bounded to a fresh window of
-`limit × recallMultiplier` (default 5) candidates recomputed each request — this
-paginates within a fresh recall window, not over a frozen snapshot. The
-[`RankedListCursor`](../../src/main/java/com/recsys/application/pagination/RankedListCursor.java)
-wire format is `base64url("v2:<score>:<itemId>")`.
-
-> **Cursor vs. exclusion — two models, don't mix them.** For a *fixed* result set
-> (catalog-style browse) keep `excludedItemIds` constant and advance the cursor
-> until `nextCursor` is `null`. For an *ever-fresh* "For You" feed, omit the
-> cursor and accumulate seen IDs into `excludedItemIds` — each call re-recalls and
-> excludes what's seen, picking up live trending/learner changes. The seek cursor
-> tolerates a changing exclusion set, but a saved cursor *plus* a growing
-> exclusion set conflates the two. The contract is intentionally compact: callers
-> send the normal recommendation query with an optional opaque cursor and use a
-> `null` `nextCursor` as the terminal-page signal.
-
-Note the two `/v2/recommend` implementations differ: the 6010 route
-(`RecommendationOrchestrator`) does real keyset paging; the 7010 route
-([`OnlineBlendingPipeline`](../../src/main/java/com/recsys/application/online/OnlineBlendingPipeline.java))
-assigns positional scores and returns a `null` next cursor.
+The current 6010 route uses an unsigned `(score DESC, itemId ASC)` cursor over a
+fresh bounded ranking window. The current online-serving route does not yet
+paginate. The approved optimization unifies both routes behind a signed,
+query-bound, forward-only live-keyset contract with exact lookahead metadata.
 
 ### Relational catalog — HMAC-signed, filter-bound cursors
 
-The MySQL catalog browse
-([`CatalogCursorCodec`](../../src/main/java/com/recsys/application/catalog/CatalogCursorCodec.java))
-uses a keyset position on `(popularity_score, movieId)` that is **HMAC-SHA256
-signed and bound to the genre filter**: the wire format is
-`base64(payload).base64(HMAC(payload))`, verified with a constant-time compare and
-rebound to the expected genre on decode, so a tampered cursor or a filter change
-returns `400`. The signing key `MYSQL_CURSOR_SIGNING_KEY` must be ≥32 UTF-8 bytes
-when MySQL is enabled. The generic SQL toolkit
-([`MillionScalePaginationSql`](../../src/main/java/com/recsys/application/pagination/MillionScalePaginationSql.java))
-emits the covering-index, keyset (`(sort > ? OR (sort = ? AND id > ?))`), and
-delayed-join (index-only key walk + outer join for deep offset) variants that back
-these reads — the *index-access* angle (which B-tree each pattern rides, plan
-pinning, contract tests) is covered in the
-[DB Indexing investigation](13_DB_Indexing.md#3-index-access-patterns-via-millionscalepaginationsql),
-which also owns the catalog index inventory.
+The MySQL catalog already uses an HMAC-signed, genre-bound keyset on
+`(popularity_score DESC, id DESC)` with `limit + 1` lookahead. Its composite-index
+access path remains documented in
+[DB Indexing](13_DB_Indexing.md#3-index-access-patterns-via-millionscalepaginationsql).
+
+The authoritative current-state and planned pagination contracts, cursor
+security, offset trade-offs, and rollout are consolidated in
+[Pagination](19_Pagination.md).
 
 ## 5. Testing partitioning
 

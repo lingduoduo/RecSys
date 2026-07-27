@@ -304,6 +304,12 @@ Update the configuration guide and relevant architecture/API documentation with:
 - Recall-budget behavior.
 - Consistent `nextCursor` and `hasMore` response fields.
 
+The durable documentation is consolidated in
+`docs/system_design/19_Pagination.md`. The README documentation map links to it,
+while the indexing, partitioning, and scalability investigations retain only
+their domain-specific summaries and cross-links. Documentation must distinguish
+current behavior from approved but not-yet-implemented behavior.
+
 Recommended rollout:
 
 1. Deploy signed issuance with legacy decoding enabled.

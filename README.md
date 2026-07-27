@@ -448,6 +448,8 @@ Architecture:
   entry points, deployment model, and communication.
 - [Fault tolerance](docs/system_design/18_Fault_Tolerance.md) — resilience
   contracts, graceful drain, failure-path evidence, and status.
+- [Pagination](docs/system_design/19_Pagination.md) — current keyset and offset
+  implementations plus the approved signed live-keyset recommendation design.
 
 Operational runbooks:
 
@@ -462,7 +464,8 @@ Operational runbooks:
 
 The documentation map is intentionally curated. Browse `docs/system_design/`
 for caching, sharding, replication, messaging, indexing, consistency, CDN, and
-scalability investigations rather than duplicating their content here.
+scalability investigations rather than duplicating their content here. Pagination
+details are consolidated in the dedicated investigation linked above.
 
 ## Before opening a pull request
 
