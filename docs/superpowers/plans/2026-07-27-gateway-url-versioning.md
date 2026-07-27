@@ -381,7 +381,7 @@ import static org.assertj.core.api.Assertions.assertThat;
 - [ ] **Step 2: Run the tests to verify they fail**
 
 ```bash
-JAVA_HOME=$(/usr/libexec/java_home -v 17) mvn test -Dtest=GatewayServerIntegrationTest+GatewayAuthenticatorTest
+JAVA_HOME=$(/usr/libexec/java_home -v 17) mvn test -Dtest='GatewayServerIntegrationTest,GatewayAuthenticatorTest'
 ```
 
 Expected: FAIL — `versionedPathProxiesIdenticallyToUnversioned` gets `404` (no route matches `/api/v1/movies/...`) and `unsupportedVersionIsRejectedWith400` gets `404` instead of `400`.
@@ -417,7 +417,7 @@ The rest of the method is unchanged — `route.rewrite(path, ctx.query())` alrea
 - [ ] **Step 4: Run the tests to verify they pass**
 
 ```bash
-JAVA_HOME=$(/usr/libexec/java_home -v 17) mvn test -Dtest=GatewayServerIntegrationTest+GatewayAuthenticatorTest
+JAVA_HOME=$(/usr/libexec/java_home -v 17) mvn test -Dtest='GatewayServerIntegrationTest,GatewayAuthenticatorTest'
 ```
 
 Expected: PASS, including all pre-existing tests in both classes.
@@ -592,7 +592,7 @@ import com.recsys.application.gateway.ApiVersion;
 - [ ] **Step 6: Run the tests to verify they pass**
 
 ```bash
-JAVA_HOME=$(/usr/libexec/java_home -v 17) mvn test -Dtest=GatewayServerIntegrationTest+RecommendationGatewayServiceTest+LlmProxyServiceTest
+JAVA_HOME=$(/usr/libexec/java_home -v 17) mvn test -Dtest='GatewayServerIntegrationTest,RecommendationGatewayServiceTest,LlmProxyServiceTest'
 ```
 
 Expected: PASS, including all pre-existing tests in those classes.
@@ -949,7 +949,7 @@ with the import `com.recsys.application.gateway.ApiDeprecationDecorator`. Then a
 - [ ] **Step 7: Run the full gateway suite**
 
 ```bash
-JAVA_HOME=$(/usr/libexec/java_home -v 17) mvn test -Dtest='*Gateway*+ApiVersionTest+ApiDeprecationDecoratorTest'
+JAVA_HOME=$(/usr/libexec/java_home -v 17) mvn test -Dtest='*Gateway*,ApiVersionTest,ApiDeprecationDecoratorTest'
 ```
 
 Expected: PASS.
