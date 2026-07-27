@@ -187,4 +187,32 @@ class GatewayServerIntegrationTest {
         assertThat(result.rejected()).isTrue();
         assertThat(result.rejection().aggregate().join().status()).isEqualTo(HttpStatus.UNAUTHORIZED);
     }
+
+    @Test
+    void versionedPathProxiesIdenticallyToUnversioned() {
+        AggregatedHttpResponse unversioned = gateway.blockingWebClient().get("/api/recsys/health");
+        AggregatedHttpResponse versioned = gateway.blockingWebClient().get("/api/v1/recsys/health");
+
+        assertThat(versioned.status()).isEqualTo(unversioned.status());
+        // The upstream echoes the path it was called with: the version segment must be gone.
+        assertThat(versioned.contentUtf8()).isEqualTo(unversioned.contentUtf8());
+        assertThat(versioned.contentUtf8()).contains("\"path\":\"/health\"");
+    }
+
+    @Test
+    void unsupportedVersionIsRejectedWith400() {
+        AggregatedHttpResponse response = gateway.blockingWebClient().get("/api/v2/recsys/health");
+
+        assertThat(response.status()).isEqualTo(HttpStatus.BAD_REQUEST);
+        assertThat(response.contentUtf8()).contains("unsupported API version: v2");
+        assertThat(response.contentUtf8()).contains("supported: v1");
+    }
+
+    @Test
+    void pathThatMerelyLooksLikeAVersionIsNotStripped() {
+        // "/api/v1x" is a resource segment, not v1 — it must not be stripped, so no route matches.
+        AggregatedHttpResponse response = gateway.blockingWebClient().get("/api/v1x/recsys/health");
+
+        assertThat(response.status()).isEqualTo(HttpStatus.NOT_FOUND);
+    }
 }
