@@ -19,6 +19,20 @@ public record RankedListCursor(double score, String itemId) {
     /** Sentinel meaning "begin at the head of the ranked list" (no anchor yet). */
     public static final RankedListCursor START = new RankedListCursor(Double.NaN, null);
 
+    public RankedListCursor {
+        if (itemId != null) {
+            if (!Double.isFinite(score)) {
+                throw new IllegalArgumentException("score must be finite");
+            }
+            if (itemId.isBlank()) {
+                throw new IllegalArgumentException("itemId must not be blank");
+            }
+            if (itemId.codePointCount(0, itemId.length()) > 512) {
+                throw new IllegalArgumentException("itemId is too long");
+            }
+        }
+    }
+
     /** True when this cursor has no anchor and paging should start from the first item. */
     public boolean isStart() {
         return itemId == null;
