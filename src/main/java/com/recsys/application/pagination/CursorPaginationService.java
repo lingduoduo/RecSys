@@ -6,64 +6,82 @@ import java.util.function.ToDoubleFunction;
 
 /**
  * Slices an already-ranked list into a page using a {@link RankedListCursor} seek anchor.
- *
- * <p>Because the anchor is the previous page's last {@code (score, itemId)} rather than an absolute
- * offset, the ranked list may legitimately change between requests — items excluded via
- * {@code excludedItemIds}, new trending entries, online-learner re-scores — without skipping or
- * duplicating results. The caller supplies extractors so paging stays generic over the item type.
  */
 public class CursorPaginationService {
 
     public <T> Page<T> page(List<T> rankedItems,
-                            String cursor,
+                            RankedListCursor anchor,
                             int limit,
                             ToDoubleFunction<T> scoreOf,
                             Function<T, String> idOf) {
-        if (rankedItems == null || rankedItems.isEmpty() || limit <= 0) {
-            return new Page<>(List.of(), null);
+        if (limit <= 0) {
+            throw new IllegalArgumentException("limit must be positive");
+        }
+        if (rankedItems == null || rankedItems.isEmpty()) {
+            return new Page<>(List.of(), null, false);
         }
 
-        RankedListCursor anchor = RankedListCursor.decode(cursor);
-        int start = anchor.isStart() ? 0 : firstAfterAnchor(rankedItems, anchor, scoreOf, idOf);
-        if (start >= rankedItems.size()) {
-            return new Page<>(List.of(), null);
+        validateRankedItems(rankedItems, scoreOf, idOf);
+        RankedListCursor position = anchor == null ? RankedListCursor.START : anchor;
+        int start = position.isStart() ? 0 : firstAfterAnchor(rankedItems, position, scoreOf, idOf);
+        int available = rankedItems.size() - start;
+        if (available == 0) {
+            return new Page<>(List.of(), null, false);
         }
 
-        int endExclusive = Math.min(rankedItems.size(), start + limit);
-        String nextCursor = null;
-        if (endExclusive < rankedItems.size()) {
+        boolean hasMore = available > limit;
+        int endExclusive = start + Math.min(available, limit);
+        RankedListCursor nextPosition = null;
+        if (hasMore) {
             T last = rankedItems.get(endExclusive - 1);
-            nextCursor = new RankedListCursor(scoreOf.applyAsDouble(last), idOf.apply(last)).encode();
+            nextPosition = new RankedListCursor(scoreOf.applyAsDouble(last), idOf.apply(last));
         }
-        return new Page<>(rankedItems.subList(start, endExclusive), nextCursor);
+        return new Page<>(rankedItems.subList(start, endExclusive), nextPosition, hasMore);
     }
 
-    /**
-     * Index of the first item ranked strictly after the anchor in (score desc, itemId asc) order.
-     *
-     * <p>Fast path: if the anchor item is still present, resume immediately after it — exact and
-     * free of floating-point comparison. Fallback (anchor excluded or re-ranked out of the window):
-     * seek by the {@code (score, itemId)} predicate to the correct insertion point so no item is
-     * skipped or repeated.
-     */
+    private static <T> void validateRankedItems(List<T> items,
+                                                ToDoubleFunction<T> scoreOf,
+                                                Function<T, String> idOf) {
+        double previousScore = Double.NaN;
+        String previousId = null;
+        for (int index = 0; index < items.size(); index++) {
+            T item = items.get(index);
+            double score = scoreOf.applyAsDouble(item);
+            String id = idOf.apply(item);
+            if (!Double.isFinite(score)) {
+                throw new IllegalArgumentException("ranked item score must be finite");
+            }
+            if (id == null || id.isBlank()) {
+                throw new IllegalArgumentException("ranked item id must not be blank");
+            }
+            if (index > 0 && !isStrictlyBefore(previousScore, previousId, score, id)) {
+                throw new IllegalArgumentException("ranked items must be strictly ordered");
+            }
+            previousScore = score;
+            previousId = id;
+        }
+    }
+
+    private static boolean isStrictlyBefore(double score, String id, double nextScore, String nextId) {
+        return Double.compare(score, nextScore) > 0
+                || (Double.compare(score, nextScore) == 0 && id.compareTo(nextId) < 0);
+    }
+
     private static <T> int firstAfterAnchor(List<T> items,
                                             RankedListCursor anchor,
                                             ToDoubleFunction<T> scoreOf,
                                             Function<T, String> idOf) {
-        for (int i = 0; i < items.size(); i++) {
-            if (anchor.itemId().equals(idOf.apply(items.get(i)))) {
-                return i + 1;
-            }
-        }
-        for (int i = 0; i < items.size(); i++) {
-            double score = scoreOf.applyAsDouble(items.get(i));
-            String id = idOf.apply(items.get(i));
-            boolean afterAnchor = score < anchor.score()
-                    || (score == anchor.score() && id.compareTo(anchor.itemId()) > 0);
-            if (afterAnchor) {
-                return i;
+        for (int index = 0; index < items.size(); index++) {
+            T item = items.get(index);
+            if (isAfter(scoreOf.applyAsDouble(item), idOf.apply(item), anchor)) {
+                return index;
             }
         }
         return items.size();
+    }
+
+    private static boolean isAfter(double score, String id, RankedListCursor anchor) {
+        return Double.compare(score, anchor.score()) < 0
+                || (Double.compare(score, anchor.score()) == 0 && id.compareTo(anchor.itemId()) > 0);
     }
 }

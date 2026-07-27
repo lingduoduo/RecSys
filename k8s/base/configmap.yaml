@@ -47,6 +47,11 @@ data:
   RECSYS_RECOMMENDATION_CACHE_ENABLED: "true"
   RECSYS_RECOMMENDATION_CACHE_TTL_SECONDS: "300"
   RECSYS_RECOMMENDATION_CACHE_MAX_ENTRIES: "10000"
+  # All recommendation-serving workloads/regions share these non-secret cursor settings.
+  # Active and previous key material comes from the same recsys-secrets keys in each workload.
+  RECOMMENDATION_CURSOR_MAX_AGE_SECONDS: "900"
+  RECOMMENDATION_CURSOR_ACCEPT_LEGACY: "true"
+  RECOMMENDATION_PAGINATION_MAX_CANDIDATES: "500"
   RECSYS_HEALTH_MAX_CONCURRENT_REQUESTS: "64"
   RECSYS_HEALTH_MAX_IN_FLIGHT_UTILIZATION: "0.95"
   # RecSys Serving (6010) concurrency admission (mirrors ONLINE_MAX_CONCURRENT_REQUESTS).

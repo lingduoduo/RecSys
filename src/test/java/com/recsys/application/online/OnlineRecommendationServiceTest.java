@@ -82,7 +82,7 @@ class OnlineRecommendationServiceTest {
     void recallLimitHasHeadroomForSmallK() {
         when(recallService.recall(any(RecommendationQuery.class), anyInt())).thenReturn(List.of());
         service.recommend(new OnlineRecommendationRequest(USER.userId(), "last_hour", 1));
-        // recallLimit = max(k*4, 12) = 12
+        // The service keeps the historical floor of 12 for small direct callers.
         verify(recallService).recall(any(RecommendationQuery.class), eq(12));
     }
 
@@ -165,11 +165,10 @@ class OnlineRecommendationServiceTest {
     }
 
     @Test
-    void recallLimitClampedToHundredForLargeK() {
+    void recallLimitUsesCallerBoundedWindowAboveLegacyCeiling() {
         when(recallService.recall(any(RecommendationQuery.class), anyInt())).thenReturn(List.of());
-        service.recommend(new OnlineRecommendationRequest(USER.userId(), "last_hour", 30));
-        // k=30 → unclamped would be 120; must be clamped to 100
-        verify(recallService).recall(any(RecommendationQuery.class), eq(100));
+        service.recommend(new OnlineRecommendationRequest(USER.userId(), "last_hour", 500));
+        verify(recallService).recall(any(RecommendationQuery.class), eq(500));
     }
 
     @Test

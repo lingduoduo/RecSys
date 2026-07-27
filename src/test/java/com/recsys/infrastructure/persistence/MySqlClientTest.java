@@ -104,7 +104,7 @@ class MySqlClientTest {
     }
 
     @Test
-    void queryPage_returnsNextCursorWhenRowsEqualPageSize() throws Exception {
+    void queryPage_exactTerminalPageDoesNotEmitCursor() throws Exception {
         var m = mockQuery();
         when(m.resultSet().next()).thenReturn(true, true, false);
         when(m.resultSet().getInt("id")).thenReturn(10, 20);
@@ -112,19 +112,54 @@ class MySqlClientTest {
 
         record Row(int id, String createdAt) {}
         var plan = new MillionScalePaginationSql.SqlPlan(
-                "SELECT id, created_at FROM movies LIMIT ?", List.of(2));
+                "SELECT id, created_at FROM movies LIMIT ?", List.of(3));
 
         MySqlClient.PageResult<Row> result = new MySqlClient(MySqlConnectionSettings.disabled())
                 .queryPage(m.connection(), plan, 2,
                         row -> new MillionScalePaginationSql.SeekCursor(row.createdAt(), row.id()),
                         rs -> new Row(rs.getInt("id"), rs.getString("created_at")));
 
-        assertThat(result.rows()).hasSize(2);
+        assertThat(result.rows()).extracting(Row::id).containsExactly(10, 20);
+        assertThat(result.hasMore()).isFalse();
+        assertThat(result.nextCursor()).isNull();
+    }
+
+    @Test
+    void queryPage_lookaheadIsTrimmedAndCursorUsesLastReturnedRow() throws Exception {
+        var m = mockQuery();
+        when(m.resultSet().next()).thenReturn(true, true, true, false);
+        when(m.resultSet().getInt("id")).thenReturn(10, 20, 30);
+        when(m.resultSet().getString("created_at")).thenReturn("2026-01-01", "2026-01-02", "2026-01-03");
+
+        record Row(int id, String createdAt) {}
+        var plan = new MillionScalePaginationSql.SqlPlan(
+                "SELECT id, created_at FROM movies LIMIT ?", List.of(3));
+
+        MySqlClient.PageResult<Row> result = new MySqlClient(MySqlConnectionSettings.disabled())
+                .queryPage(m.connection(), plan, 2,
+                        row -> new MillionScalePaginationSql.SeekCursor(row.createdAt(), row.id()),
+                        rs -> new Row(rs.getInt("id"), rs.getString("created_at")));
+
+        assertThat(result.rows()).extracting(Row::id).containsExactly(10, 20);
         assertThat(result.hasMore()).isTrue();
-        assertThat(result.nextCursor()).isNotNull();
         var decoded = MillionScalePaginationSql.SeekCursor.decode(result.nextCursor());
         assertThat(decoded.id()).isEqualTo(20);
         assertThat(decoded.sortValue()).isEqualTo("2026-01-02");
+    }
+
+    @Test
+    void queryPage_rejectsMoreThanPageSizePlusOneRows() throws Exception {
+        var m = mockQuery();
+        when(m.resultSet().next()).thenReturn(true, true, true, true, false);
+        when(m.resultSet().getInt("id")).thenReturn(1, 2, 3, 4);
+        var plan = new MillionScalePaginationSql.SqlPlan("SELECT id FROM movies LIMIT ?", List.of(3));
+
+        assertThatThrownBy(() -> new MySqlClient(MySqlConnectionSettings.disabled())
+                .queryPage(m.connection(), plan, 2,
+                        row -> new MillionScalePaginationSql.SeekCursor("2026-01-01", row),
+                        rs -> rs.getInt("id")))
+                .isInstanceOf(IllegalStateException.class)
+                .hasMessageContaining("pageSize + 1");
     }
 
     @Test
@@ -151,10 +186,10 @@ class MySqlClientTest {
     @Test
     void queryPage_returnsNullNextCursorWhenExtractorReturnsNull() throws Exception {
         var m = mockQuery();
-        when(m.resultSet().next()).thenReturn(true, true, false);
-        when(m.resultSet().getInt("id")).thenReturn(1, 2);
+        when(m.resultSet().next()).thenReturn(true, true, true, false);
+        when(m.resultSet().getInt("id")).thenReturn(1, 2, 3);
 
-        var plan = new MillionScalePaginationSql.SqlPlan("SELECT id FROM movies LIMIT ?", List.of(2));
+        var plan = new MillionScalePaginationSql.SqlPlan("SELECT id FROM movies LIMIT ?", List.of(3));
 
         MySqlClient.PageResult<Integer> result = new MySqlClient(MySqlConnectionSettings.disabled())
                 .queryPage(m.connection(), plan, 2,

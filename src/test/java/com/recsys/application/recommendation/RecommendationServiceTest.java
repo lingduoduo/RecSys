@@ -3,27 +3,41 @@ import com.recsys.application.experiment.VariantRuntimeResolver;
 import com.recsys.application.model.ModelRuntime;
 import com.recsys.application.recommendation.RecommendationService;
 import com.recsys.application.experiment.ABTestService;
+import com.recsys.application.model.OnnxInferencePipeline;
 import com.recsys.application.model.ModelRuntimeProvider;
 import com.recsys.application.model.ModelArtifactService;
+import com.recsys.application.pagination.CursorPaginationService;
+import com.recsys.application.pagination.RecommendationCursorCodec;
+import com.recsys.application.pagination.RecommendationPaginationConfig;
+import com.recsys.application.pagination.RecommendationPaginationCoordinator;
+import com.recsys.application.pagination.RecommendationPaginationMetrics;
 import com.recsys.application.retrieval.UserTowerInferenceService;
 import com.recsys.application.feature.FeatureEncoder;
 import com.recsys.application.ranking.RankingStage;
 import com.recsys.application.retrieval.ModelRetrievalStage;
 
 import com.recsys.domain.item.MovieCandidate;
+import com.recsys.domain.recommendation.RecommendationQuery;
+import com.recsys.domain.recommendation.RecommendationResult;
 import com.recsys.infrastructure.featureflags.FeatureFlagService;
 import com.recsys.infrastructure.featureflags.Flags;
 import com.recsys.config.RecommendationCacheProperties;
 import com.recsys.api.request.RecommendRequest;
 import com.recsys.api.response.RecommendResponse;
 import com.recsys.domain.prediction.ScoredItem;
+import io.micrometer.core.instrument.simple.SimpleMeterRegistry;
 import org.junit.jupiter.api.BeforeEach;
 import org.junit.jupiter.api.Test;
 
+import java.time.Clock;
+import java.time.Duration;
+import java.time.Instant;
+import java.time.ZoneOffset;
 import java.util.List;
 import java.util.Map;
 import java.util.Optional;
 import java.util.Set;
+import java.util.stream.IntStream;
 
 import static org.assertj.core.api.Assertions.assertThat;
 import static org.assertj.core.api.Assertions.assertThatThrownBy;
@@ -124,6 +138,81 @@ class RecommendationServiceTest {
         assertThat(response.modelVersion()).isEqualTo("v1");
         assertThat(response.recommendations()).hasSize(2);
         assertThat(response.recommendations().get(0).itemId()).isEqualTo("1");
+    }
+
+    @Test
+    void recommendWindowUsesTheExactCandidateBudgetBeyondThePublicPageLimit() {
+        var encoded = new FeatureEncoder.EncodedFeatures(1L);
+        var candidates = List.of(
+                new MovieCandidate("1", 0.9, "embedding", Map.of()),
+                new MovieCandidate("2", 0.8, "embedding", Map.of()));
+        var ranked = List.of(
+                new ScoredItem("1", 0.95),
+                new ScoredItem("2", 0.80));
+        ABTestService.Assignment assignment =
+                new ABTestService.Assignment("training", -1, "default", false);
+
+        when(artifactService.getUserVocab()).thenReturn(Map.of("123", 1));
+        when(featureEncoder.encode(any())).thenReturn(encoded);
+        when(retrievalStage.retrieve(any(), anyInt())).thenReturn(candidates);
+        when(rankingStage.rank(eq(encoded), eq(candidates), anyInt())).thenReturn(ranked);
+        when(artifactService.getModelVersion()).thenReturn("v1");
+
+        RecommendationWindow window =
+                service.recommendWindow(request("123", 100), assignment, 500);
+
+        assertThat(window.response().recommendations()).containsExactlyElementsOf(ranked);
+        assertThat(window.sourceTruncated()).isFalse();
+        verify(retrievalStage).retrieve(any(), eq(500));
+        verify(rankingStage).rank(eq(encoded), eq(candidates), eq(500));
+    }
+
+    @Test
+    void recommendWindowUsesTheConfiguredBudgetForColdStartUsers() {
+        var encoded = new FeatureEncoder.EncodedFeatures(0L);
+        List<MovieCandidate> candidates = IntStream.range(0, 150)
+                .mapToObj(index -> new MovieCandidate(
+                        Integer.toString(index),
+                        200.0 - index,
+                        "cold",
+                        Map.of()))
+                .toList();
+        List<ScoredItem> ranked = candidates.stream()
+                .map(candidate -> new ScoredItem(candidate.itemId(), candidate.score()))
+                .toList();
+        ABTestService.Assignment assignment =
+                new ABTestService.Assignment("training", -1, "default", false);
+
+        when(artifactService.getUserVocab()).thenReturn(Map.of("__UNK__", 0));
+        when(featureEncoder.encode(any())).thenReturn(encoded);
+        when(retrievalStage.retrieve(any(), anyInt())).thenReturn(candidates);
+        when(rankingStage.rank(eq(encoded), eq(candidates), anyInt())).thenReturn(ranked);
+        when(artifactService.getModelVersion()).thenReturn("v1");
+        when(abTestService.getAssignmentForUser("new-user")).thenReturn(assignment);
+
+        RecommendationWindow window =
+                service.recommendWindow(request("new-user", 100), assignment, 500);
+        OnnxInferencePipeline pipeline = new OnnxInferencePipeline(
+                service,
+                abTestService,
+                paginationCoordinator(500),
+                500);
+        RecommendationResult first = pipeline.recommend(
+                new RecommendationQuery("new-user", 100, Set.of(), null));
+        RecommendationResult second = pipeline.recommend(
+                new RecommendationQuery("new-user", 100, Set.of(), first.nextCursor()));
+
+        assertThat(window.response().recommendations()).hasSize(150);
+        assertThat(window.sourceTruncated()).isFalse();
+        assertThat(first.items()).hasSize(100);
+        assertThat(first.hasMore()).isTrue();
+        assertThat(first.nextCursor()).isNotBlank();
+        assertThat(second.items()).hasSize(50);
+        assertThat(second.hasMore()).isFalse();
+        assertThat(second.nextCursor()).isNull();
+        assertThat(second.trace()).doesNotContainKey("paginationBudgetExhausted");
+        verify(retrievalStage).retrieve(any(), eq(500));
+        verify(rankingStage).rank(eq(encoded), eq(candidates), eq(500));
     }
 
     @Test
@@ -304,5 +393,23 @@ class RecommendationServiceTest {
         req.setUserId(userId);
         req.setK(k);
         return req;
+    }
+
+    private static RecommendationPaginationCoordinator paginationCoordinator(int maxCandidates) {
+        RecommendationPaginationConfig config =
+                new RecommendationPaginationConfig(
+                        "test-only-cursor-signing-key-0001",
+                        null,
+                        Duration.ofMinutes(15),
+                        false,
+                        maxCandidates);
+        return new RecommendationPaginationCoordinator(
+                new RecommendationCursorCodec(
+                        config,
+                        Clock.fixed(
+                                Instant.parse("2026-07-27T12:00:00Z"),
+                                ZoneOffset.UTC)),
+                new CursorPaginationService(),
+                new RecommendationPaginationMetrics(new SimpleMeterRegistry()));
     }
 }

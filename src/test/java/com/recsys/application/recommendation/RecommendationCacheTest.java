@@ -33,11 +33,15 @@ class RecommendationCacheTest {
                 } catch (InterruptedException e) {
                     Thread.currentThread().interrupt();
                 }
-                return List.of(new ScoredItem("1", 0.9));
+                return new RecommendationCache.RankedWindow(
+                        List.of(new ScoredItem("1", 0.9)), false);
             }));
 
             assertThat(loaderEntered.await(1, TimeUnit.SECONDS)).isTrue();
-            assertThatThrownBy(() -> cache.getOrCompute(key, () -> List.of(new ScoredItem("2", 0.1))))
+            assertThatThrownBy(() -> cache.getOrCompute(
+                    key,
+                    () -> new RecommendationCache.RankedWindow(
+                            List.of(new ScoredItem("2", 0.1)), false)))
                     .isInstanceOf(IllegalStateException.class)
                     .hasMessageContaining("Timed out");
         } finally {

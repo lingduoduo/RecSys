@@ -110,6 +110,35 @@ public class RecommendationService {
      * is not recalculated on the error path.
      */
     public RecommendResponse recommend(RecommendRequest request, ABTestService.Assignment assignment) {
+        int candidateBudget =
+                Math.min(Math.max(request.getK() * RECALL_MULTIPLIER, MIN_RECALL_SIZE), MAX_RECALL_LIMIT);
+        return computeWindow(request, assignment, candidateBudget).response();
+    }
+
+    /**
+     * Produces the bounded ranked window consumed by cursor pagination. The public page size stays
+     * capped at 100, while this internal path may inspect a larger configured candidate budget.
+     */
+    public RecommendationWindow recommendWindow(
+            RecommendRequest pageRequest,
+            ABTestService.Assignment assignment,
+            int candidateBudget
+    ) {
+        if (candidateBudget < 1 || candidateBudget > 10_000) {
+            throw new IllegalArgumentException("candidateBudget must be between 1 and 10000");
+        }
+        RecommendRequest windowRequest = new RecommendRequest();
+        windowRequest.setUserId(pageRequest.getUserId());
+        windowRequest.setK(candidateBudget);
+        windowRequest.setExcludeItemIds(pageRequest.getExcludeItemIds());
+        return computeWindow(windowRequest, assignment, candidateBudget);
+    }
+
+    private RecommendationWindow computeWindow(
+            RecommendRequest request,
+            ABTestService.Assignment assignment,
+            int candidateBudget
+    ) {
         VariantRuntimeResolver.Resolved resolved =
                 variantRuntimeResolver.resolve(assignment.variant(), abTestService.defaultVariant());
         ModelRuntime runtime = resolved.runtime();
@@ -121,18 +150,26 @@ public class RecommendationService {
                 request.getUserId(), request.getK(), excludedItemIds, servedVariant, modelVersion);
 
         // getOrCompute ensures concurrent misses for the same key share a single computation.
-        List<ScoredItem> items = cache.getOrCompute(cacheKey, () -> {
+        RecommendationCache.RankedWindow rankedWindow = cache.getOrCompute(cacheKey, () -> {
             // Cold-start requires BOTH the static property (fast kill switch) AND
             // the dynamic feature flag (supports per-user gradual rollout via PostHog).
             if (cache.isColdStartEnabled()
                     && isColdStartUser(request.getUserId(), runtime)
                     && featureFlagService.isEnabled(Flags.COLD_START_ENABLED, request.getUserId())) {
-                return coldStartItems(request, runtime, servedVariant, modelVersion, excludedItemIds);
+                return coldStartItems(
+                        request,
+                        runtime,
+                        servedVariant,
+                        modelVersion,
+                        excludedItemIds,
+                        candidateBudget);
             }
-            return computeRecommendations(request, runtime, excludedItemIds);
+            return computeRecommendations(request, runtime, excludedItemIds, candidateBudget);
         });
 
-        return converter.toResponse(request, modelVersion, servedVariant, items);
+        RecommendResponse response =
+                converter.toResponse(request, modelVersion, servedVariant, rankedWindow.items());
+        return new RecommendationWindow(response, rankedWindow.sourceTruncated());
     }
 
     /** Returns a human-readable snapshot of cache hit/miss rates for monitoring. */
@@ -178,67 +215,90 @@ public class RecommendationService {
         // the normal path keys on servedVariant, and these two must stay consistent per their own runtime.
         var cacheKey = new RecommendationCache.RecommendationKey(
                 request.getUserId(), request.getK(), excludedItemIds, assignment.variant(), modelVersion);
-        List<ScoredItem> items = cache.get(cacheKey);
-        if (items != null) {
-            return Optional.of(converter.toResponse(request, modelVersion, assignment.variant(), items));
+        RecommendationCache.RankedWindow rankedWindow = cache.get(cacheKey);
+        if (rankedWindow != null) {
+            return Optional.of(converter.toResponse(
+                    request, modelVersion, assignment.variant(), rankedWindow.items()));
         }
 
         if (cache.isColdStartEnabled()) {
-            var coldStartKey = new RecommendationCache.ColdStartKey(assignment.variant(), modelVersion);
-            List<ScoredItem> pool = cache.getColdStart(coldStartKey);
+            int candidateBudget =
+                    Math.min(Math.max(request.getK() * RECALL_MULTIPLIER, MIN_RECALL_SIZE), MAX_RECALL_LIMIT);
+            int poolBudget = Math.max(cache.coldStartMaxK(), candidateBudget);
+            var coldStartKey =
+                    new RecommendationCache.ColdStartKey(
+                            assignment.variant(), modelVersion, poolBudget);
+            RecommendationCache.RankedWindow pool = cache.getColdStart(coldStartKey);
             if (pool != null) {
                 return Optional.of(converter.toResponse(request, modelVersion, assignment.variant(),
-                        limitAndExclude(pool, excludedItemIds, request.getK())));
+                        limitAndExclude(pool.items(), excludedItemIds, request.getK())));
             }
         }
         return Optional.empty();
     }
 
-    private List<ScoredItem> coldStartItems(
+    private RecommendationCache.RankedWindow coldStartItems(
             RecommendRequest request,
             ModelRuntime runtime,
             String servedVariant,
             String modelVersion,
-            List<String> excludedItemIds
+            List<String> excludedItemIds,
+            int candidateBudget
     ) {
-        var coldStartKey = new RecommendationCache.ColdStartKey(servedVariant, modelVersion);
-        // All unknown users share one pool per variant+modelVersion; compute it once.
-        List<ScoredItem> pool = cache.getOrComputeColdStart(coldStartKey,
-                () -> computeColdStartPool(request, runtime));
-        return limitAndExclude(pool, excludedItemIds, request.getK());
+        int poolBudget = Math.max(cache.coldStartMaxK(), candidateBudget);
+        var coldStartKey =
+                new RecommendationCache.ColdStartKey(servedVariant, modelVersion, poolBudget);
+        // All unknown users share one pool for each variant, model version, and acquisition budget.
+        RecommendationCache.RankedWindow pool = cache.getOrComputeColdStart(
+                coldStartKey,
+                () -> computeColdStartPool(request, runtime, poolBudget));
+        return new RecommendationCache.RankedWindow(
+                limitAndExclude(pool.items(), excludedItemIds, request.getK()),
+                pool.sourceTruncated());
     }
 
-    private List<ScoredItem> computeRecommendations(
+    private RecommendationCache.RankedWindow computeRecommendations(
             RecommendRequest request,
             ModelRuntime runtime,
-            List<String> excludedItemIds
+            List<String> excludedItemIds,
+            int candidateBudget
     ) {
         FeatureEncoder.EncodedFeatures encoded = runtime.featureEncoder().encode(request);
         Set<String> excluded = excludedItemIds.isEmpty() ? Set.of() : new HashSet<>(excludedItemIds);
-        int recallLimit = Math.min(Math.max(request.getK() * RECALL_MULTIPLIER, MIN_RECALL_SIZE), MAX_RECALL_LIMIT);
-        var query = new RecommendationQuery(request.getUserId(), recallLimit, excluded, null);
+        int queryPageLimit = Math.min(candidateBudget, MAX_RECALL_LIMIT);
+        var query = new RecommendationQuery(request.getUserId(), queryPageLimit, excluded, null);
 
-        List<MovieCandidate> candidates = runtime.retrievalStage().retrieve(query, recallLimit);
+        List<MovieCandidate> candidates = runtime.retrievalStage().retrieve(query, candidateBudget);
         if (candidates.isEmpty()) {
             candidates = fallbackCandidates(runtime, parseUserId(request.getUserId()), excluded);
         }
-        return runtime.rankingStage().rank(encoded, candidates, request.getK());
+        boolean sourceTruncated = candidates.size() >= candidateBudget;
+        List<ScoredItem> ranked = runtime.rankingStage().rank(encoded, candidates, request.getK());
+        return new RecommendationCache.RankedWindow(ranked, sourceTruncated);
     }
 
-    private List<ScoredItem> computeColdStartPool(RecommendRequest request, ModelRuntime runtime) {
+    private RecommendationCache.RankedWindow computeColdStartPool(
+            RecommendRequest request,
+            ModelRuntime runtime,
+            int candidateBudget
+    ) {
         var coldStartRequest = new RecommendRequest();
         coldStartRequest.setUserId(request.getUserId());
-        coldStartRequest.setK(cache.coldStartMaxK());
+        coldStartRequest.setK(candidateBudget);
 
         FeatureEncoder.EncodedFeatures encoded = runtime.featureEncoder().encode(coldStartRequest);
-        int recallLimit = Math.min(Math.max(cache.coldStartMaxK(), MIN_RECALL_SIZE), MAX_RECALL_LIMIT);
-        var query = new RecommendationQuery(request.getUserId(), recallLimit, Set.of(), null);
+        int queryPageLimit = Math.min(candidateBudget, MAX_RECALL_LIMIT);
+        var query = new RecommendationQuery(request.getUserId(), queryPageLimit, Set.of(), null);
 
-        List<MovieCandidate> candidates = runtime.retrievalStage().retrieve(query, recallLimit);
+        List<MovieCandidate> candidates =
+                runtime.retrievalStage().retrieve(query, candidateBudget);
         if (candidates.isEmpty()) {
             candidates = fallbackCandidates(runtime, null, Set.of());
         }
-        return runtime.rankingStage().rank(encoded, candidates, cache.coldStartMaxK());
+        boolean sourceTruncated = candidates.size() >= candidateBudget;
+        List<ScoredItem> ranked =
+                runtime.rankingStage().rank(encoded, candidates, candidateBudget);
+        return new RecommendationCache.RankedWindow(ranked, sourceTruncated);
     }
 
     /**

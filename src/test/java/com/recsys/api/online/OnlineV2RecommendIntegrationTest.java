@@ -2,6 +2,11 @@ package com.recsys.api.online;
 
 import com.recsys.application.online.OnlineBlendingPipeline;
 import com.recsys.application.online.OnlineServices;
+import com.recsys.application.pagination.CursorPaginationService;
+import com.recsys.application.pagination.RecommendationCursorCodec;
+import com.recsys.application.pagination.RecommendationPaginationConfig;
+import com.recsys.application.pagination.RecommendationPaginationCoordinator;
+import com.recsys.application.pagination.RecommendationPaginationMetrics;
 import com.recsys.domain.online.OnlineRecommendationResult;
 import com.recsys.application.online.OnlineRecommendationService;
 
@@ -19,19 +24,30 @@ import com.recsys.domain.item.Movie;
 import com.recsys.domain.recommendation.RecommendationQuery;
 import com.recsys.domain.user.User;
 import com.recsys.application.recommendation.RecommendationPipeline;
+import io.micrometer.core.instrument.simple.SimpleMeterRegistry;
 import org.junit.jupiter.api.Test;
 import org.junit.jupiter.api.extension.RegisterExtension;
 
+import java.time.Clock;
+import java.time.Duration;
+import java.time.Instant;
+import java.time.ZoneOffset;
 import java.util.List;
 import java.util.Set;
 
 import static org.assertj.core.api.Assertions.assertThat;
 import static org.mockito.ArgumentMatchers.any;
 import static org.mockito.Mockito.mock;
+import static org.mockito.Mockito.clearInvocations;
+import static org.mockito.Mockito.never;
+import static org.mockito.Mockito.verify;
 import static org.mockito.Mockito.when;
 
 class OnlineV2RecommendIntegrationTest {
 
+    static final int MAX_CANDIDATES = 500;
+    static final Clock FIXED_CLOCK = Clock.fixed(
+            Instant.parse("2026-07-27T12:00:00Z"), ZoneOffset.UTC);
     static final ObjectMapper MAPPER = new ObjectMapper();
     static final OnlineRecommendationService mockService =
             mock(OnlineRecommendationService.class);
@@ -48,7 +64,8 @@ class OnlineV2RecommendIntegrationTest {
     static final ServerExtension server = new ServerExtension() {
         @Override
         protected void configure(ServerBuilder sb) {
-            RecommendationPipeline pipeline = new OnlineBlendingPipeline(mockService);
+            RecommendationPipeline pipeline =
+                    new OnlineBlendingPipeline(mockService, pagination(), MAX_CANDIDATES);
             sb.service("/v2/recommend", new OnlineServices.RecommendV2(pipeline));
         }
     };
@@ -66,6 +83,7 @@ class OnlineV2RecommendIntegrationTest {
 
         assertThat(r.status()).isEqualTo(HttpStatus.OK);
         assertThat(r.contentUtf8()).contains("\"userId\":\"1\"");
+        assertThat(r.contentUtf8()).contains("\"hasMore\":false");
         assertThat(r.contentUtf8()).contains("\"strategy\"");
         assertThat(r.contentUtf8()).contains("\"window\"");
     }
@@ -82,5 +100,37 @@ class OnlineV2RecommendIntegrationTest {
                         HttpData.ofUtf8(body)));
 
         assertThat(r.status()).isEqualTo(HttpStatus.BAD_REQUEST);
+    }
+
+    @Test
+    void invalidCursorReturnsGeneric400BeforeOnlineSourceWork() throws Exception {
+        clearInvocations(mockService);
+        String body = MAPPER.writeValueAsString(
+                new RecommendationQuery("1", 5, Set.of(), "not-a-valid-cursor"));
+
+        AggregatedHttpResponse response = server.blockingWebClient()
+                .execute(HttpRequest.of(
+                        RequestHeaders.of(
+                                HttpMethod.POST, "/v2/recommend",
+                                HttpHeaderNames.CONTENT_TYPE, "application/json"),
+                        HttpData.ofUtf8(body)));
+
+        assertThat(response.status()).isEqualTo(HttpStatus.BAD_REQUEST);
+        assertThat(response.contentUtf8())
+                .isEqualTo("{\"error\":\"Invalid recommendation cursor\"}");
+        verify(mockService, never()).recommend(any());
+    }
+
+    private static RecommendationPaginationCoordinator pagination() {
+        RecommendationPaginationConfig config = new RecommendationPaginationConfig(
+                "online-v2-integration-signing-key".repeat(2),
+                null,
+                Duration.ofMinutes(15),
+                false,
+                MAX_CANDIDATES);
+        return new RecommendationPaginationCoordinator(
+                new RecommendationCursorCodec(config, FIXED_CLOCK),
+                new CursorPaginationService(),
+                new RecommendationPaginationMetrics(new SimpleMeterRegistry()));
     }
 }

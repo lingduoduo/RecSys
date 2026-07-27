@@ -22,8 +22,8 @@ class RecommendationCache {
     private final boolean enabled;
     private final boolean coldStartEnabled;
     private final int coldStartMaxK;
-    private final TtlLruCache<RecommendationKey, List<ScoredItem>> recommendations;
-    private final TtlLruCache<ColdStartKey, List<ScoredItem>> coldStarts;
+    private final TtlLruCache<RecommendationKey, RankedWindow> recommendations;
+    private final TtlLruCache<ColdStartKey, RankedWindow> coldStarts;
 
     RecommendationCache(RecommendationCacheProperties properties) {
         this(properties, Clock.systemUTC());
@@ -60,13 +60,13 @@ class RecommendationCache {
         return coldStartMaxK;
     }
 
-    List<ScoredItem> get(RecommendationKey key) {
+    RankedWindow get(RecommendationKey key) {
         return enabled ? recommendations.get(key) : null;
     }
 
-    void put(RecommendationKey key, List<ScoredItem> items) {
+    void put(RecommendationKey key, RankedWindow window) {
         if (enabled) {
-            recommendations.put(key, List.copyOf(items));
+            recommendations.put(key, window);
         }
     }
 
@@ -74,27 +74,27 @@ class RecommendationCache {
      * Returns a cached result or, on miss, runs {@code loader} exactly once even under concurrent
      * requests for the same key (thundering-herd protection via in-flight deduplication).
      */
-    List<ScoredItem> getOrCompute(RecommendationKey key, Supplier<List<ScoredItem>> loader) {
+    RankedWindow getOrCompute(RecommendationKey key, Supplier<RankedWindow> loader) {
         if (!enabled) return loader.get();
-        return recommendations.getOrCompute(key, () -> List.copyOf(loader.get()));
+        return recommendations.getOrCompute(key, loader);
     }
 
-    List<ScoredItem> getColdStart(ColdStartKey key) {
+    RankedWindow getColdStart(ColdStartKey key) {
         return isColdStartEnabled() ? coldStarts.get(key) : null;
     }
 
-    void putColdStart(ColdStartKey key, List<ScoredItem> items) {
+    void putColdStart(ColdStartKey key, RankedWindow window) {
         if (isColdStartEnabled()) {
-            coldStarts.put(key, List.copyOf(items));
+            coldStarts.put(key, window);
         }
     }
 
     /**
      * Same deduplication guarantee as {@link #getOrCompute} but for the shared cold-start pool.
      */
-    List<ScoredItem> getOrComputeColdStart(ColdStartKey key, Supplier<List<ScoredItem>> loader) {
+    RankedWindow getOrComputeColdStart(ColdStartKey key, Supplier<RankedWindow> loader) {
         if (!isColdStartEnabled()) return loader.get();
-        return coldStarts.getOrCompute(key, () -> List.copyOf(loader.get()));
+        return coldStarts.getOrCompute(key, loader);
     }
 
     CacheStats recommendationStats() {
@@ -129,7 +129,13 @@ class RecommendationCache {
         }
     }
 
-    record ColdStartKey(String variant, String modelVersion) {
+    record ColdStartKey(String variant, String modelVersion, int candidateBudget) {
+    }
+
+    record RankedWindow(List<ScoredItem> items, boolean sourceTruncated) {
+        RankedWindow {
+            items = items == null || items.isEmpty() ? List.of() : List.copyOf(items);
+        }
     }
 
     private static final class TtlLruCache<K, V> {

@@ -14,14 +14,22 @@ import com.recsys.domain.online.OnlineRecommendationResult;
 import com.recsys.application.online.OnlineRecommendationService;
 import com.recsys.application.recommendation.RecommendationHydrator;
 import com.recsys.application.pagination.CursorPaginationService;
-import com.recsys.application.pagination.Page;
+import com.recsys.application.pagination.RecommendationCursorCodec;
+import com.recsys.application.pagination.RecommendationPaginationConfig;
+import com.recsys.application.pagination.RecommendationPaginationCoordinator;
+import com.recsys.application.pagination.RecommendationPaginationMetrics;
 import com.recsys.application.ranking.CandidateRanker;
 import com.recsys.application.retrieval.multichannel.MultiChannelRecallService;
 import com.recsys.application.retrieval.multichannel.RecallResult;
+import io.micrometer.core.instrument.simple.SimpleMeterRegistry;
 import org.junit.jupiter.api.Tag;
 import org.junit.jupiter.api.Test;
 import org.junit.jupiter.api.Timeout;
 
+import java.time.Clock;
+import java.time.Duration;
+import java.time.Instant;
+import java.time.ZoneOffset;
 import java.util.*;
 import java.util.concurrent.*;
 import java.util.concurrent.atomic.AtomicInteger;
@@ -35,6 +43,9 @@ import static org.mockito.Mockito.when;
 @Tag("load")
 class V2CrossPathLoadTest {
 
+    private static final int MAX_CANDIDATES = 500;
+    private static final Clock FIXED_CLOCK = Clock.fixed(
+            Instant.parse("2026-07-27T12:00:00Z"), ZoneOffset.UTC);
     private static final int CONCURRENCY  = 15;
     private static final int TOTAL        = 150;
     private static final long TIMEOUT_S   = 60L;
@@ -50,10 +61,13 @@ class V2CrossPathLoadTest {
         ABTestService abTest = mock(ABTestService.class);
         when(abTest.getAssignmentForUser(any())).thenReturn(
                 new ABTestService.Assignment("training", 0, "default", true));
-        when(onnxService.recommend(any(), any())).thenReturn(
-                new RecommendResponse("1", "v1", "training",
-                        List.of(new ScoredItem("42", 0.9))));
-        RecommendationPipeline onnx = new OnnxInferencePipeline(onnxService, abTest);
+        when(onnxService.recommendWindow(any(), any(), anyInt())).thenReturn(
+                new RecommendationWindow(
+                        new RecommendResponse("1", "v1", "training",
+                                List.of(new ScoredItem("42", 0.9))),
+                        false));
+        RecommendationPipeline onnx =
+                new OnnxInferencePipeline(onnxService, abTest, pagination(), MAX_CANDIDATES);
 
         // Path 3 — online blending pipeline
         OnlineRecommendationService onlineService = mock(OnlineRecommendationService.class);
@@ -62,20 +76,20 @@ class V2CrossPathLoadTest {
                         new User(1, "Alice"), "last_hour", "online",
                         List.of(), List.of(),
                         List.of(new Movie(7, "Film", 2020, List.of()))));
-        RecommendationPipeline online = new OnlineBlendingPipeline(onlineService);
+        RecommendationPipeline online =
+                new OnlineBlendingPipeline(onlineService, pagination(), MAX_CANDIDATES);
 
         // Path 1 — orchestrator
         MultiChannelRecallService recall = mock(MultiChannelRecallService.class);
         CandidateRanker ranker = mock(CandidateRanker.class);
-        CursorPaginationService pagination = mock(CursorPaginationService.class);
         // The orchestrator reads recallDetailed, not recall; an unstubbed mock
         // returns null and every embedding-path request fails with an NPE.
         when(recall.recallDetailed(any(), anyInt())).thenReturn(new RecallResult(
                 List.of(), java.util.Set.of(), RecallResult.DegradationOutcome.HEALTHY));
         when(ranker.rank(any(), any(), anyInt())).thenReturn(List.of());
-        when(pagination.page(any(), any(), anyInt(), any(), any())).thenReturn(new Page<>(List.of(), null));
         RecommendationPipeline embedding = new RecommendationOrchestrator(
-                recall, ranker, RecommendationHydrator.IDENTITY, pagination);
+                recall, ranker, RecommendationHydrator.IDENTITY,
+                pagination(), MAX_CANDIDATES);
 
         List<RecommendationPipeline> pipelines = List.of(embedding, onnx, online);
         ConcurrentLinkedQueue<Long> latencies = new ConcurrentLinkedQueue<>();
@@ -123,5 +137,14 @@ class V2CrossPathLoadTest {
 
         assertThat(p95).as("P95 latency").isLessThanOrEqualTo(MAX_P95_MS);
         assertThat(successRate).as("success rate").isGreaterThanOrEqualTo(MIN_SUCCESS);
+    }
+
+    private static RecommendationPaginationCoordinator pagination() {
+        RecommendationPaginationConfig config = new RecommendationPaginationConfig(
+                "a".repeat(32), null, Duration.ofMinutes(15), false, MAX_CANDIDATES);
+        return new RecommendationPaginationCoordinator(
+                new RecommendationCursorCodec(config, FIXED_CLOCK),
+                new CursorPaginationService(),
+                new RecommendationPaginationMetrics(new SimpleMeterRegistry()));
     }
 }

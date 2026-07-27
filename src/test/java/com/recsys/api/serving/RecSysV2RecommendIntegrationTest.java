@@ -31,6 +31,7 @@ class RecSysV2RecommendIntegrationTest {
                 new RecommendationResult("1",
                         List.of(new RankedMovie("42", 0.9, 1, Map.of())),
                         null,
+                        false,
                         Map.of("candidateCount", "10", "rankedCount", "5")));
     }
 

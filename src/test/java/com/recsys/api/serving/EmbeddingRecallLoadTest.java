@@ -3,16 +3,22 @@ package com.recsys.api.serving;
 import com.recsys.domain.recommendation.RecommendationQuery;
 import com.recsys.application.recommendation.RecommendationHydrator;
 import com.recsys.application.pagination.CursorPaginationService;
-import com.recsys.application.pagination.Page;
+import com.recsys.application.pagination.RecommendationCursorCodec;
+import com.recsys.application.pagination.RecommendationPaginationConfig;
+import com.recsys.application.pagination.RecommendationPaginationCoordinator;
+import com.recsys.application.pagination.RecommendationPaginationMetrics;
 import com.recsys.application.ranking.CandidateRanker;
 import com.recsys.application.recommendation.RecommendationOrchestrator;
 import com.recsys.application.recommendation.RecommendationPipeline;
 import com.recsys.application.retrieval.multichannel.MultiChannelRecallService;
 import com.recsys.application.retrieval.multichannel.RecallResult;
+import io.micrometer.core.instrument.simple.SimpleMeterRegistry;
 import org.junit.jupiter.api.Tag;
 import org.junit.jupiter.api.Test;
 import org.junit.jupiter.api.Timeout;
 
+import java.time.Clock;
+import java.time.Duration;
 import java.util.*;
 import java.util.concurrent.*;
 import java.util.concurrent.atomic.AtomicInteger;
@@ -26,6 +32,7 @@ import static org.mockito.Mockito.when;
 @Tag("load")
 class EmbeddingRecallLoadTest {
 
+    private static final int MAX_CANDIDATES = 500;
     private static final int CONCURRENCY   = 20;
     private static final int TOTAL         = 200;
     private static final long TIMEOUT_S    = 60L;
@@ -37,16 +44,15 @@ class EmbeddingRecallLoadTest {
     void concurrentRequests_p95Under500ms() throws InterruptedException {
         MultiChannelRecallService recall = mock(MultiChannelRecallService.class);
         CandidateRanker ranker = mock(CandidateRanker.class);
-        CursorPaginationService pagination = mock(CursorPaginationService.class);
         // The orchestrator reads recallDetailed, not recall; an unstubbed mock
         // returns null and every request fails with an NPE.
         when(recall.recallDetailed(any(), anyInt())).thenReturn(
                 new RecallResult(List.of(), Set.of(), RecallResult.DegradationOutcome.HEALTHY));
         when(ranker.rank(any(), any(), anyInt())).thenReturn(List.of());
-        when(pagination.page(any(), any(), anyInt(), any(), any())).thenReturn(new Page<>(List.of(), null));
 
         RecommendationPipeline pipeline = new RecommendationOrchestrator(
-                recall, ranker, RecommendationHydrator.IDENTITY, pagination);
+                recall, ranker, RecommendationHydrator.IDENTITY,
+                pagination(), MAX_CANDIDATES);
 
         ConcurrentLinkedQueue<Long> latencies = new ConcurrentLinkedQueue<>();
         AtomicInteger errors = new AtomicInteger();
@@ -91,5 +97,14 @@ class EmbeddingRecallLoadTest {
 
         assertThat(p95).as("P95 latency").isLessThanOrEqualTo(MAX_P95_MS);
         assertThat(successRate).as("success rate").isGreaterThanOrEqualTo(MIN_SUCCESS);
+    }
+
+    private static RecommendationPaginationCoordinator pagination() {
+        RecommendationPaginationConfig config = new RecommendationPaginationConfig(
+                "a".repeat(32), null, Duration.ofMinutes(15), false, MAX_CANDIDATES);
+        return new RecommendationPaginationCoordinator(
+                new RecommendationCursorCodec(config, Clock.systemUTC()),
+                new CursorPaginationService(),
+                new RecommendationPaginationMetrics(new SimpleMeterRegistry()));
     }
 }

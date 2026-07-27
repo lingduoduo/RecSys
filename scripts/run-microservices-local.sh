@@ -1,6 +1,10 @@
 #!/usr/bin/env sh
 set -eu
 
+: "${RECOMMENDATION_CURSOR_SIGNING_KEY:?
+Set RECOMMENDATION_CURSOR_SIGNING_KEY before starting recommendation services.
+Generate one with: export RECOMMENDATION_CURSOR_SIGNING_KEY=\"\$(openssl rand -hex 32)\"}"
+
 mkdir -p logs
 pids=""
 
@@ -29,6 +33,7 @@ start_service() {
 # When enabled, MYSQL_URL/USER/PASSWORD and a >=32-byte MYSQL_CURSOR_SIGNING_KEY are all
 # required — the server fails fast at startup if any is missing.
 start_service recsys-serving env PORT=6010 \
+  RECOMMENDATION_CURSOR_SIGNING_KEY="$RECOMMENDATION_CURSOR_SIGNING_KEY" \
   MYSQL_ENABLED="${MYSQL_ENABLED:-false}" \
   MYSQL_URL="${MYSQL_URL:-jdbc:mysql://localhost:3306/recsys?useSSL=false&serverTimezone=UTC}" \
   MYSQL_USER="${MYSQL_USER:-recsys}" \
@@ -38,10 +43,12 @@ start_service recsys-serving env PORT=6010 \
   mvn exec:java -Dexec.mainClass=com.recsys.api.serving.RecSysServer
 
 start_service model-serving env SERVER_PORT=8080 \
+  RECOMMENDATION_CURSOR_SIGNING_KEY="$RECOMMENDATION_CURSOR_SIGNING_KEY" \
   sh scripts/run-with-jvm-tuning.sh model-serving -- \
   mvn spring-boot:run
 
 start_service online-serving env ONLINE_DEMO_PORT=7010 \
+  RECOMMENDATION_CURSOR_SIGNING_KEY="$RECOMMENDATION_CURSOR_SIGNING_KEY" \
   sh scripts/run-with-jvm-tuning.sh online-serving -- \
   mvn exec:java -Dexec.mainClass=com.recsys.api.online.OnlinePredictionServer
 

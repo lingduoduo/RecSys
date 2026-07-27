@@ -192,10 +192,12 @@ public class MySqlClient implements AutoCloseable {
     /**
      * Executes a cursor-page query and automatically extracts the next-page token from the last row.
      *
-     * <p>{@link PageResult#nextCursor()} is {@code null} when fewer than {@code pageSize} rows were
-     * returned, signalling the last page.
+     * <p>The supplied plan must request {@code pageSize + 1} rows. The extra row is used only to
+     * determine whether a following page exists; it is not included in {@link PageResult#rows()}.
+     * {@link PageResult#nextCursor()} is {@code null} when no lookahead row was returned,
+     * signalling the last page.
      *
-     * @param pageSize            expected page size; used to detect whether more rows exist
+     * @param pageSize            number of rows to return; the plan must request one additional row
      * @param cursorExtractor     extracts the stable (sortValue, id) position from a mapped row;
      *                            return {@code null} to suppress next-cursor generation for that row
      * @param queryTimeoutSeconds JDBC query timeout; non-positive values use the configured deadline
@@ -211,9 +213,16 @@ public class MySqlClient implements AutoCloseable {
         if (pageSize <= 0) {
             throw new IllegalArgumentException("pageSize must be >= 1");
         }
-        List<T> rows = query(connection, plan, mapper, queryTimeoutSeconds);
+        List<T> fetched = query(connection, plan, mapper, queryTimeoutSeconds);
+        if (fetched.size() > (long) pageSize + 1) {
+            throw new IllegalStateException("page query returned more than pageSize + 1 rows");
+        }
+        boolean hasMore = fetched.size() > pageSize;
+        List<T> rows = hasMore
+                ? new ArrayList<>(fetched.subList(0, pageSize))
+                : fetched;
         String nextCursor = null;
-        if (rows.size() == pageSize) {
+        if (hasMore) {
             MillionScalePaginationSql.SeekCursor pos = cursorExtractor.apply(rows.get(rows.size() - 1));
             if (pos != null) {
                 nextCursor = pos.encode();

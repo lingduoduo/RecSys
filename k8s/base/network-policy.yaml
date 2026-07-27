@@ -56,6 +56,15 @@ spec:
               app: recsys-api-gateway
       ports:
         - port: 6010
+    - from:
+        - namespaceSelector:
+            matchLabels:
+              kubernetes.io/metadata.name: monitoring
+          podSelector:
+            matchLabels:
+              app.kubernetes.io/name: prometheus
+      ports:
+        - port: 6010
   egress:
     - to:
         - podSelector:
