@@ -1,4 +1,5 @@
 package com.recsys.api.gateway;
+import com.recsys.application.gateway.ApiDeprecationDecorator;
 import com.recsys.application.gateway.ApiVersion;
 import com.recsys.application.gateway.GatewayProxyService;
 import com.recsys.application.gateway.GatewayRequestForwarder;
@@ -141,6 +142,16 @@ public final class MicroserviceGatewayServer {
         GatewayOriginSecret originSecret = GatewayOriginSecret.fromEnvironment(System::getenv);
         if (originSecret.isEnabled()) {
             sb.decorator(GatewayOriginSecret.newDecorator(originSecret, meterRegistry));
+        }
+
+        // Deprecation signalling for unversioned spellings and back-compat alias routes.
+        // Registered as a server-wide decorator so every entry point — catch-all, canonical
+        // recommend, and the LLM routes — is covered from one place. No-op when
+        // GATEWAY_DEPRECATION_SUNSET is unset.
+        ApiDeprecationDecorator deprecation =
+                ApiDeprecationDecorator.fromEnvironment(System::getenv);
+        if (deprecation.isEnabled()) {
+            sb.decorator(deprecation.newDecorator());
         }
 
         // Health endpoint — exposes per-route circuit state and upstream reachability.

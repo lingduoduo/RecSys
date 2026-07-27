@@ -1,4 +1,5 @@
 package com.recsys.api.gateway;
+import com.recsys.application.gateway.ApiDeprecationDecorator;
 import com.recsys.application.gateway.GatewayHealthService;
 import com.recsys.application.gateway.GatewayProxyService;
 import com.recsys.application.gateway.GatewayRequestForwarder;
@@ -93,6 +94,12 @@ class GatewayServerIntegrationTest {
 
             RecommendationGatewayService recommendationService =
                     new RecommendationGatewayService(routes, forwarder, auth);
+
+            // Server-wide, with an explicit sunset so the headers are live in this harness.
+            sb.decorator(ApiDeprecationDecorator.fromEnvironment(
+                    name -> "GATEWAY_DEPRECATION_SUNSET".equals(name) ? "2027-07-27" : null)
+                    .newDecorator());
+
             sb.service("/health", new GatewayHealthService(routes, timeout, cbs, GATEWAY_SELF_PORT))
               .service("/api/recommend", recommendationService)
               // Mirrors MicroserviceGatewayServer: the canonical endpoint is an exact Armeria
@@ -311,5 +318,41 @@ class GatewayServerIntegrationTest {
 
         assertThat(response.status()).isEqualTo(HttpStatus.BAD_REQUEST);
         assertThat(response.contentUtf8()).contains("unsupported API version: v2");
+    }
+
+    @Test
+    void unversionedPathCarriesDeprecationHeadersAndSuccessorLink() {
+        AggregatedHttpResponse r = gateway.blockingWebClient().get("/api/recsys/health");
+
+        assertThat(r.headers().get("deprecation")).isEqualTo("true");
+        assertThat(r.headers().get("sunset")).isEqualTo("Tue, 27 Jul 2027 00:00:00 GMT");
+        assertThat(r.headers().get("link"))
+                .isEqualTo("</api/v1/recsys/health>; rel=\"successor-version\"");
+    }
+
+    @Test
+    void versionedPathCarriesNoDeprecationHeaders() {
+        AggregatedHttpResponse r = gateway.blockingWebClient().get("/api/v1/recsys/health");
+
+        assertThat(r.headers().get("deprecation")).isNull();
+        assertThat(r.headers().get("sunset")).isNull();
+        assertThat(r.headers().get("link")).isNull();
+    }
+
+    @Test
+    void aliasRouteStaysDeprecatedWhenVersionedButCarriesNoSuccessorLink() {
+        // /api/model is a back-compat alias, deprecated for a different reason than the
+        // unversioned spelling — and it has no mechanically equivalent successor.
+        AggregatedHttpResponse r = gateway.blockingWebClient().get("/api/v1/model/health");
+
+        assertThat(r.headers().get("deprecation")).isEqualTo("true");
+        assertThat(r.headers().get("link")).isNull();
+    }
+
+    @Test
+    void healthIsExemptFromDeprecationHeaders() {
+        AggregatedHttpResponse r = gateway.blockingWebClient().get("/health");
+
+        assertThat(r.headers().get("deprecation")).isNull();
     }
 }
