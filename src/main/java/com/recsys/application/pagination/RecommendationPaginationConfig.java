@@ -5,6 +5,7 @@ import com.recsys.config.EnvVars;
 import java.nio.charset.StandardCharsets;
 import java.time.Duration;
 import java.util.Locale;
+import java.util.Objects;
 
 public record RecommendationPaginationConfig(
         String activeSigningKey,
@@ -13,22 +14,12 @@ public record RecommendationPaginationConfig(
         boolean acceptLegacy,
         int maxCandidates
 ) {
-    public static RecommendationPaginationConfig fromEnvironment() {
-        return fromEnvironment(System::getenv);
-    }
-
-    static RecommendationPaginationConfig fromEnvironment(EnvVars.EnvReader env) {
-        String active = requireKey(env.get("RECOMMENDATION_CURSOR_SIGNING_KEY"),
-                "RECOMMENDATION_CURSOR_SIGNING_KEY");
-        String previous = optionalKey(env.get("RECOMMENDATION_CURSOR_PREVIOUS_KEY"),
+    public RecommendationPaginationConfig {
+        activeSigningKey = requireKey(activeSigningKey, "RECOMMENDATION_CURSOR_SIGNING_KEY");
+        previousVerificationKey = optionalKey(previousVerificationKey,
                 "RECOMMENDATION_CURSOR_PREVIOUS_KEY");
-        long maxAgeSeconds = EnvVars.readLong(env,
-                "RECOMMENDATION_CURSOR_MAX_AGE_SECONDS", 900);
-        int maxCandidates = EnvVars.readInt(env,
-                "RECOMMENDATION_PAGINATION_MAX_CANDIDATES", 500);
-        boolean acceptLegacy = strictBoolean(env,
-                "RECOMMENDATION_CURSOR_ACCEPT_LEGACY", true);
-        if (maxAgeSeconds < 1 || maxAgeSeconds > 86_400) {
+        maxAge = Objects.requireNonNull(maxAge, "maxAge must not be null");
+        if (maxAge.getSeconds() < 1 || maxAge.getSeconds() > 86_400) {
             throw new IllegalArgumentException(
                     "RECOMMENDATION_CURSOR_MAX_AGE_SECONDS must be between 1 and 86400");
         }
@@ -36,7 +27,22 @@ public record RecommendationPaginationConfig(
             throw new IllegalArgumentException(
                     "RECOMMENDATION_PAGINATION_MAX_CANDIDATES must be between 101 and 10000");
         }
-        return new RecommendationPaginationConfig(active, previous,
+    }
+
+    public static RecommendationPaginationConfig fromEnvironment() {
+        return fromEnvironment(System::getenv);
+    }
+
+    static RecommendationPaginationConfig fromEnvironment(EnvVars.EnvReader env) {
+        long maxAgeSeconds = EnvVars.readLong(env,
+                "RECOMMENDATION_CURSOR_MAX_AGE_SECONDS", 900);
+        int maxCandidates = EnvVars.readInt(env,
+                "RECOMMENDATION_PAGINATION_MAX_CANDIDATES", 500);
+        boolean acceptLegacy = strictBoolean(env,
+                "RECOMMENDATION_CURSOR_ACCEPT_LEGACY", true);
+        return new RecommendationPaginationConfig(
+                env.get("RECOMMENDATION_CURSOR_SIGNING_KEY"),
+                env.get("RECOMMENDATION_CURSOR_PREVIOUS_KEY"),
                 Duration.ofSeconds(maxAgeSeconds), acceptLegacy, maxCandidates);
     }
 

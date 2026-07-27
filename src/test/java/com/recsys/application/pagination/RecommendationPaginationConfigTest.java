@@ -32,6 +32,16 @@ class RecommendationPaginationConfigTest {
     }
 
     @Test
+    void defaultsOptionalEnvironmentValues() {
+        var config = RecommendationPaginationConfig.fromEnvironment(
+                name -> name.equals("RECOMMENDATION_CURSOR_SIGNING_KEY") ? "a".repeat(32) : null);
+
+        assertEquals(Duration.ofSeconds(900), config.maxAge());
+        assertTrue(config.acceptLegacy());
+        assertEquals(500, config.maxCandidates());
+    }
+
+    @Test
     void rejectsMissingAndShortActiveSigningKeys() {
         IllegalArgumentException missing = assertThrows(IllegalArgumentException.class,
                 () -> RecommendationPaginationConfig.fromEnvironment(name -> null));
@@ -74,6 +84,14 @@ class RecommendationPaginationConfigTest {
     }
 
     @Test
+    void acceptsMaximumAgeBoundaryValues() {
+        assertEquals(Duration.ofSeconds(1),
+                configWith("RECOMMENDATION_CURSOR_MAX_AGE_SECONDS", "1").maxAge());
+        assertEquals(Duration.ofSeconds(86_400),
+                configWith("RECOMMENDATION_CURSOR_MAX_AGE_SECONDS", "86400").maxAge());
+    }
+
+    @Test
     void rejectsMaximumCandidatesOutsideAllowedRange() {
         assertEquals("RECOMMENDATION_PAGINATION_MAX_CANDIDATES must be between 101 and 10000",
                 assertThrows(IllegalArgumentException.class,
@@ -84,10 +102,42 @@ class RecommendationPaginationConfigTest {
     }
 
     @Test
+    void acceptsMaximumCandidatesBoundaryValues() {
+        assertEquals(101,
+                configWith("RECOMMENDATION_PAGINATION_MAX_CANDIDATES", "101").maxCandidates());
+        assertEquals(10_000,
+                configWith("RECOMMENDATION_PAGINATION_MAX_CANDIDATES", "10000").maxCandidates());
+    }
+
+    @Test
     void parsesOnlyCaseInsensitiveTrueAndFalseForAcceptLegacy() {
         assertFalse(configWith("RECOMMENDATION_CURSOR_ACCEPT_LEGACY", "FALSE").acceptLegacy());
         assertThrows(IllegalArgumentException.class,
                 () -> configWith("RECOMMENDATION_CURSOR_ACCEPT_LEGACY", "yes"));
+    }
+
+    @Test
+    void validatesComponentsWhenConstructedDirectly() {
+        assertThrows(IllegalArgumentException.class,
+                () -> new RecommendationPaginationConfig("short", null, Duration.ofSeconds(900), true, 500));
+        assertThrows(IllegalArgumentException.class,
+                () -> new RecommendationPaginationConfig("a".repeat(32), "short", Duration.ofSeconds(900), true, 500));
+        assertThrows(NullPointerException.class,
+                () -> new RecommendationPaginationConfig("a".repeat(32), null, null, true, 500));
+        assertThrows(IllegalArgumentException.class,
+                () -> new RecommendationPaginationConfig("a".repeat(32), null, Duration.ZERO, true, 500));
+        assertThrows(IllegalArgumentException.class,
+                () -> new RecommendationPaginationConfig("a".repeat(32), null, Duration.ofSeconds(900), true, 100));
+    }
+
+    @Test
+    void acceptsMultibyteKeyWithAtLeastThirtyTwoUtf8Bytes() {
+        String multibyteKey = "é".repeat(16);
+
+        var config = RecommendationPaginationConfig.fromEnvironment(name ->
+                name.equals("RECOMMENDATION_CURSOR_SIGNING_KEY") ? multibyteKey : null);
+
+        assertEquals(multibyteKey, config.activeSigningKey());
     }
 
     private static RecommendationPaginationConfig configWith(String name, String value) {
