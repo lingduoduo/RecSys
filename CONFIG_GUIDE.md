@@ -22,6 +22,14 @@ The artifact-dependent four-service path runs
 explicit development-only authentication choice. Redis connection and
 per-service port overrides are in the next two sections.
 
+Catalog and online recommendation serving require a shared cursor signing key.
+For local development, generate one before starting either service or the
+four-service launcher:
+
+```bash
+export RECOMMENDATION_CURSOR_SIGNING_KEY="$(openssl rand -hex 32)"
+```
+
 | Setting | Default | Use |
 |---|---|---|
 | `RECSYS_MAIN_CLASS` | `com.recsys.api.gateway.MicroserviceGatewayServer` in the image | Selects the Java main class for the shared container image. Local Maven commands invoke their main class directly. |
@@ -91,6 +99,11 @@ corresponding Service, probe, and gateway upstream configuration.
 | `LOCAL_EMBEDDING_CACHE_MAX_ENTRIES` | `100000` | JVM LRU capacity for catalog embeddings. |
 | `RECALL_CHANNEL_TIMEOUT_MS` | `200` | Per-channel recall deadline shared by catalog and online serving. |
 | `RECALL_BULKHEAD_QUEUE_CAPACITY` | four times the recall pool size | Bounded recall queue shared by catalog and online serving. |
+| `RECOMMENDATION_CURSOR_SIGNING_KEY` | none (required) | Active HMAC key used by catalog and online recommendation serving. Must contain at least 32 UTF-8 bytes. Provision it through a Secret; never place key material in a ConfigMap. |
+| `RECOMMENDATION_CURSOR_PREVIOUS_KEY` | unset | Optional previous HMAC key accepted during rotation. When set, it must contain at least 32 UTF-8 bytes. Keep it in the same Secret as the active key and remove it after the rotation window. |
+| `RECOMMENDATION_CURSOR_MAX_AGE_SECONDS` | `900` | Signed-cursor lifetime in whole seconds. Required range: 1–86400. The base ConfigMap sets `900`. |
+| `RECOMMENDATION_CURSOR_ACCEPT_LEGACY` | `true` | Temporarily accepts unsigned `v2` recommendation cursors. Only exact case-insensitive `true` or `false` is valid; other nonblank values stop startup. The base ConfigMap sets `true`. |
+| `RECOMMENDATION_PAGINATION_MAX_CANDIDATES` | `500` | Per-request recall/ranking candidate ceiling shared by catalog and online recommendation paths. Required integer range: 101–10000. The base ConfigMap sets `500`. |
 | `CATALOG_MAX_CONCURRENT_REQUESTS` | `64` | Catalog in-flight admission cap. Base ConfigMap sets `64`. |
 | `CATALOG_DRAIN_UTILIZATION` | `0.90` | Catalog utilization threshold for drain readiness. Base ConfigMap sets `0.90`. |
 | `ONLINE_REQUEST_TIMEOUT_MS` | `500` | Online-serving request deadline. Base ConfigMap sets `500`. |

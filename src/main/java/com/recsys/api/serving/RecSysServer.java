@@ -26,11 +26,7 @@ import com.recsys.infrastructure.vectordb.CandidateGenerator;
 import com.recsys.resilience.FaultInjector;
 import com.recsys.resilience.WorkerBulkhead;
 import com.recsys.application.recommendation.RecommendationHydrator;
-import com.recsys.application.pagination.CursorPaginationService;
-import com.recsys.application.pagination.RecommendationCursorCodec;
-import com.recsys.application.pagination.RecommendationPaginationConfig;
-import com.recsys.application.pagination.RecommendationPaginationCoordinator;
-import com.recsys.application.pagination.RecommendationPaginationMetrics;
+import com.recsys.application.pagination.RecommendationPaginationRuntime;
 import com.recsys.application.ranking.ScoreRanker;
 import com.recsys.application.recommendation.RecommendationOrchestrator;
 import com.recsys.application.retrieval.channels.Channels;
@@ -131,19 +127,15 @@ public class RecSysServer {
                             .recallMetrics(recallMetrics)
                             .build());
 
-            RecommendationPaginationConfig paginationConfig =
-                    RecommendationPaginationConfig.fromEnvironment();
-            RecommendationPaginationCoordinator pagination =
-                    new RecommendationPaginationCoordinator(
-                            new RecommendationCursorCodec(paginationConfig, Clock.systemUTC()),
-                            new CursorPaginationService(),
-                            new RecommendationPaginationMetrics(registry));
+            RecommendationPaginationRuntime pagination =
+                    RecommendationPaginationRuntime.fromEnvironment(
+                            registry, Clock.systemUTC());
             RecommendationOrchestrator orchestrator = new RecommendationOrchestrator(
                     recallService,
                     new ScoreRanker(),
                     RecommendationHydrator.IDENTITY,
-                    pagination,
-                    paginationConfig.maxCandidates()
+                    pagination.coordinator(),
+                    pagination.maxCandidates()
             );
 
             CatalogService.Movies movieService = new CatalogService.Movies(dataManager);

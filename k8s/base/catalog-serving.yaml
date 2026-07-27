@@ -45,6 +45,17 @@ spec:
               value: com.recsys.api.serving.RecSysServer
             - name: PORT
               value: "6010"
+            - name: RECOMMENDATION_CURSOR_SIGNING_KEY
+              valueFrom:
+                secretKeyRef:
+                  name: recsys-secrets
+                  key: recommendation-cursor-signing-key
+            - name: RECOMMENDATION_CURSOR_PREVIOUS_KEY
+              valueFrom:
+                secretKeyRef:
+                  name: recsys-secrets
+                  key: recommendation-cursor-previous-key
+                  optional: true
             - name: JAVA_OPTS
               value: "-Xms512m -Xmx1g"
           ports:

@@ -60,6 +60,12 @@ Build the application without running tests:
 mvn package -DskipTests
 ```
 
+Generate a local recommendation cursor signing key:
+
+```bash
+export RECOMMENDATION_CURSOR_SIGNING_KEY="$(openssl rand -hex 32)"
+```
+
 Start catalog/recommendation serving:
 
 ```bash
@@ -140,6 +146,7 @@ After supplying the artifacts, start the infrastructure and four services:
 
 ```bash
 docker compose -f docker-compose.streaming.yml up -d
+export RECOMMENDATION_CURSOR_SIGNING_KEY="$(openssl rand -hex 32)"
 GATEWAY_ALLOW_ANONYMOUS=true sh scripts/run-microservices-local.sh
 ```
 
@@ -162,6 +169,13 @@ Press `Ctrl-C` in the script terminal to terminate its four child processes.
 Run one command per terminal. Start Redis first for the catalog and online
 services. Start all three backends before the gateway if you want the gateway
 aggregate health check to return success.
+
+Generate and export one signing key for every catalog and online instance in
+the local topology:
+
+```bash
+export RECOMMENDATION_CURSOR_SIGNING_KEY="$(openssl rand -hex 32)"
+```
 
 Catalog and recommendation serving:
 
@@ -341,7 +355,9 @@ for the maintained commands and artifact paths.
 The clean-clone quick start uses the catalog port and Redis defaults. The
 artifact-dependent full-stack command explicitly sets
 `GATEWAY_ALLOW_ANONYMOUS=true` for local development; its script supplies the
-standard service ports and local gateway upstreams.
+standard service ports and local gateway upstreams. Catalog and online
+recommendation serving also require `RECOMMENDATION_CURSOR_SIGNING_KEY`; the
+quick-start and full-stack commands generate a local key with OpenSSL.
 
 The local settings most often overridden are:
 

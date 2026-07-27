@@ -3,11 +3,7 @@ package com.recsys.api.online;
 import com.recsys.application.online.OnlineServices;
 import com.recsys.application.online.OnlineBlendingPipeline;
 import com.recsys.application.online.OnlineRecommendationService;
-import com.recsys.application.pagination.CursorPaginationService;
-import com.recsys.application.pagination.RecommendationCursorCodec;
-import com.recsys.application.pagination.RecommendationPaginationConfig;
-import com.recsys.application.pagination.RecommendationPaginationCoordinator;
-import com.recsys.application.pagination.RecommendationPaginationMetrics;
+import com.recsys.application.pagination.RecommendationPaginationRuntime;
 import com.recsys.application.consistency.ConsistencyTokenCodec;
 import com.recsys.application.consistency.ConsistencyWaiter;
 import com.recsys.application.consistency.RedisLineageReader;
@@ -142,15 +138,13 @@ public final class OnlinePredictionServer {
             OnlineRecommendationService recommendationService = new OnlineRecommendationService(
                     dataManager, recallService, onlineFeatureStore, topkStore, onlineLearner);
             PrometheusMeterRegistry registry = PrometheusMeterRegistries.defaultRegistry();
-            RecommendationPaginationConfig paginationConfig =
-                    RecommendationPaginationConfig.fromEnvironment();
-            RecommendationPaginationCoordinator pagination =
-                    new RecommendationPaginationCoordinator(
-                            new RecommendationCursorCodec(paginationConfig, Clock.systemUTC()),
-                            new CursorPaginationService(),
-                            new RecommendationPaginationMetrics(registry));
+            RecommendationPaginationRuntime pagination =
+                    RecommendationPaginationRuntime.fromEnvironment(
+                            registry, Clock.systemUTC());
             OnlineBlendingPipeline blendingPipeline = new OnlineBlendingPipeline(
-                    recommendationService, pagination, paginationConfig.maxCandidates());
+                    recommendationService,
+                    pagination.coordinator(),
+                    pagination.maxCandidates());
             learnerFlushScheduler =
                     new LearnerFlushScheduler(onlineLearner, jedisPool, "bias:item", 30L);
             learnerFlushScheduler.start();

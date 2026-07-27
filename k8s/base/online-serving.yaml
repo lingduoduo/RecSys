@@ -49,6 +49,17 @@ spec:
               value: com.recsys.api.online.OnlinePredictionServer
             - name: ONLINE_DEMO_PORT
               value: "7010"
+            - name: RECOMMENDATION_CURSOR_SIGNING_KEY
+              valueFrom:
+                secretKeyRef:
+                  name: recsys-secrets
+                  key: recommendation-cursor-signing-key
+            - name: RECOMMENDATION_CURSOR_PREVIOUS_KEY
+              valueFrom:
+                secretKeyRef:
+                  name: recsys-secrets
+                  key: recommendation-cursor-previous-key
+                  optional: true
             # Operator token for the introspection/bulk surfaces (POST /shards/topology,
             # GET /shards/shard, GET /online/ops). When unset these surfaces fail closed (403).
             # optional: true keeps the pod schedulable before the Secret is provisioned; create it
