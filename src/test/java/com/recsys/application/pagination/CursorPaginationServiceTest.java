@@ -20,80 +20,136 @@ class CursorPaginationServiceTest {
         return new RankedMovie(id, score, 1, Map.of());
     }
 
-    private Page<RankedMovie> page(List<RankedMovie> ranked, String cursor, int limit) {
-        return svc.page(ranked, cursor, limit, RankedMovie::score, RankedMovie::itemId);
+    private Page<RankedMovie> page(List<RankedMovie> ranked, RankedListCursor position, int limit) {
+        return svc.page(ranked, position, limit, RankedMovie::score, RankedMovie::itemId);
     }
 
-    private static List<String> ids(Page<RankedMovie> p) {
-        return p.items().stream().map(RankedMovie::itemId).toList();
-    }
-
-    @Test
-    void firstPageStartsAtHeadAndEmitsAnchorCursor() {
-        Page<RankedMovie> p = page(List.of(m("a", 0.9), m("b", 0.8), m("c", 0.7)), null, 2);
-        assertEquals(List.of("a", "b"), ids(p));
-        // anchor is the last returned item (b), not an offset
-        assertEquals(new RankedListCursor(0.8, "b"), RankedListCursor.decode(p.nextCursor()));
+    private static List<String> ids(Page<RankedMovie> page) {
+        return page.items().stream().map(RankedMovie::itemId).toList();
     }
 
     @Test
-    void lastPageHasNullCursor() {
-        Page<RankedMovie> p = page(List.of(m("a", 0.9), m("b", 0.8)), null, 5);
-        assertEquals(List.of("a", "b"), ids(p));
-        assertNull(p.nextCursor());
+    void exactTerminalPageHasNoNextPosition() {
+        Page<RankedMovie> page = page(List.of(m("a", .9), m("b", .8)), RankedListCursor.START, 2);
+
+        assertEquals(List.of("a", "b"), ids(page));
+        assertFalse(page.hasMore());
+        assertNull(page.nextPosition());
     }
 
-    /**
-     * The core fix: an item ranked BEFORE the anchor is excluded between pages (the list shifts
-     * left). A seek cursor must still resume right after the anchor — an offset cursor would have
-     * skipped "c" here and returned only ["d"].
-     */
     @Test
-    void excludingAnItemBeforeTheAnchorDoesNotSkipResults() {
-        Page<RankedMovie> p1 = page(
-                List.of(m("a", 0.9), m("b", 0.8), m("c", 0.7), m("d", 0.6)), null, 2);
-        assertEquals(List.of("a", "b"), ids(p1));
+    void lookaheadProducesPositionFromLastReturnedItem() {
+        Page<RankedMovie> page = page(
+                List.of(m("a", .9), m("b", .8), m("c", .7)), RankedListCursor.START, 2);
 
-        // Next request re-recalls with "a" excluded — the ranked list no longer contains it.
-        Page<RankedMovie> p2 = page(
-                List.of(m("b", 0.8), m("c", 0.7), m("d", 0.6)), p1.nextCursor(), 2);
-        assertEquals(List.of("c", "d"), ids(p2));
-        assertNull(p2.nextCursor());
+        assertTrue(page.hasMore());
+        assertEquals(new RankedListCursor(.8, "b"), page.nextPosition());
     }
 
-    /**
-     * Fallback path: the anchor item itself is excluded between pages. With no exact id match the
-     * service seeks by (score, itemId) to the correct insertion point — still no skip, no repeat.
-     */
     @Test
-    void excludingTheAnchorItemFallsBackToScoreSeek() {
-        // Anchor at (0.8, "b"); next list drops "b" entirely.
-        String cursor = new RankedListCursor(0.8, "b").encode();
-        Page<RankedMovie> p = page(
-                List.of(m("a", 0.9), m("c", 0.7), m("d", 0.6)), cursor, 2);
-        assertEquals(List.of("c", "d"), ids(p));
+    void legacyStringAdapterDelegatesToTuplePaging() {
+        Page<RankedMovie> page = svc.page(
+                List.of(m("a", .9), m("b", .8), m("c", .7)),
+                new RankedListCursor(.9, "a").encode(), 2, RankedMovie::score, RankedMovie::itemId);
+
+        assertEquals(List.of("b", "c"), ids(page));
+        assertNull(page.nextCursor());
+    }
+
+    @Test
+    void legacyPageConstructorDecodesItsNextPosition() {
+        String cursor = new RankedListCursor(.8, "b").encode();
+
+        Page<RankedMovie> page = new Page<>(List.of(m("a", .9)), cursor);
+
+        assertTrue(page.hasMore());
+        assertEquals(new RankedListCursor(.8, "b"), page.nextPosition());
+        assertEquals(cursor, page.nextCursor());
+    }
+
+    @Test
+    void changedAnchorScoreUsesFullTupleInsteadOfIdFastPath() {
+        Page<RankedMovie> page = page(
+                List.of(m("a", .9), m("b", .6), m("c", .5)), new RankedListCursor(.8, "b"), 2);
+
+        assertEquals(List.of("b", "c"), ids(page));
+    }
+
+    @Test
+    void tiedScoresResumeAtTheLexicallyNextId() {
+        Page<RankedMovie> page = page(
+                List.of(m("a", .9), m("b", .9), m("c", .8)), new RankedListCursor(.9, "a"), 2);
+
+        assertEquals(List.of("b", "c"), ids(page));
+    }
+
+    @Test
+    void insertedItemBeforeAnchorIsNotRepeated() {
+        Page<RankedMovie> page = page(
+                List.of(m("new", 1.0), m("a", .9), m("b", .8), m("c", .7)),
+                new RankedListCursor(.8, "b"), 2);
+
+        assertEquals(List.of("c"), ids(page));
+    }
+
+    @Test
+    void insertedItemAfterAnchorIsIncluded() {
+        Page<RankedMovie> page = page(
+                List.of(m("a", .9), m("b", .8), m("new", .75), m("c", .7)),
+                new RankedListCursor(.8, "b"), 2);
+
+        assertEquals(List.of("new", "c"), ids(page));
+    }
+
+    @Test
+    void removedAnchorResumesAtItsTupleInsertionPoint() {
+        Page<RankedMovie> page = page(
+                List.of(m("a", .9), m("c", .7), m("d", .6)), new RankedListCursor(.8, "b"), 2);
+
+        assertEquals(List.of("c", "d"), ids(page));
     }
 
     @Test
     void anchorPastEndYieldsEmptyTerminalPage() {
-        String cursor = new RankedListCursor(0.1, "z").encode();
-        Page<RankedMovie> p = page(List.of(m("a", 0.9), m("b", 0.8)), cursor, 2);
-        assertTrue(p.items().isEmpty());
-        assertNull(p.nextCursor());
+        Page<RankedMovie> page = page(
+                List.of(m("a", .9), m("b", .8)), new RankedListCursor(.1, "z"), 2);
+
+        assertTrue(page.items().isEmpty());
+        assertFalse(page.hasMore());
+        assertNull(page.nextPosition());
     }
 
     @Test
-    void invalidCursorIsRejected() {
+    void nonPositiveLimitIsRejected() {
         assertThrows(IllegalArgumentException.class,
-                () -> page(List.of(m("a", 0.9)), "<nextCursor>", 2));
+                () -> page(List.of(m("a", .9)), RankedListCursor.START, 0));
     }
 
     @Test
-    void cursorRoundTripsAndBlankIsStart() {
-        RankedListCursor c = new RankedListCursor(0.42, "movie:7");
-        assertEquals(c, RankedListCursor.decode(c.encode()));
-        assertTrue(RankedListCursor.decode("").isStart());
-        assertTrue(RankedListCursor.decode(null).isStart());
-        assertFalse(c.isStart());
+    void duplicateTupleIsRejected() {
+        assertThrows(IllegalArgumentException.class, () -> page(
+                List.of(m("a", .9), m("a", .9)), RankedListCursor.START, 2));
+    }
+
+    @Test
+    void unorderedInputIsRejected() {
+        assertThrows(IllegalArgumentException.class, () -> page(
+                List.of(m("a", .8), m("b", .9)), RankedListCursor.START, 2));
+    }
+
+    @Test
+    void nonFiniteScoresAndBlankIdsAreRejected() {
+        assertThrows(IllegalArgumentException.class, () -> page(
+                List.of(m("a", Double.NaN)), RankedListCursor.START, 1));
+        assertThrows(IllegalArgumentException.class, () -> page(
+                List.of(m(" ", .9)), RankedListCursor.START, 1));
+    }
+
+    @Test
+    void pageRequiresHasMoreAndNextPositionToAgree() {
+        assertThrows(IllegalArgumentException.class,
+                () -> new Page<>(List.of(m("a", .9)), null, true));
+        assertThrows(IllegalArgumentException.class,
+                () -> new Page<>(List.of(m("a", .9)), new RankedListCursor(.9, "a"), false));
     }
 }
