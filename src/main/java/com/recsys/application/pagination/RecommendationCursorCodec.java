@@ -18,6 +18,7 @@ import java.util.Objects;
 /** Encodes and validates signed, query-bound recommendation cursor positions. */
 public final class RecommendationCursorCodec {
     private static final int MAX_TOKEN_LENGTH = 2_048;
+    private static final int MAX_TEXT_UTF8_BYTES = 512;
     private static final String VERSION = "3";
     private static final String LEGACY_PREFIX = "v2:";
     private static final String INVALID_MESSAGE = "Invalid recommendation cursor";
@@ -46,13 +47,17 @@ public final class RecommendationCursorCodec {
         String payload = String.join("\n",
                 VERSION,
                 Long.toString(clock.instant().getEpochSecond()),
-                encodeText(query.userId()),
+                encodeText(query.userId(), "userId"),
                 RecommendationQueryFingerprint.of(query),
                 Double.toHexString(position.score()),
-                encodeText(position.itemId()));
-        byte[] payloadBytes = payload.getBytes(StandardCharsets.UTF_8);
-        return BASE64_ENCODER.encodeToString(payloadBytes) + "."
+                encodeText(position.itemId(), "itemId"));
+        byte[] payloadBytes = RecommendationQueryFingerprint.utf8Bytes(payload, "cursor payload");
+        String token = BASE64_ENCODER.encodeToString(payloadBytes) + "."
                 + BASE64_ENCODER.encodeToString(sign(payloadBytes, activeKey));
+        if (token.length() > MAX_TOKEN_LENGTH) {
+            throw new IllegalArgumentException("recommendation cursor is too long");
+        }
+        return token;
     }
 
     public DecodedCursor decode(RecommendationQuery query, String token) {
@@ -95,10 +100,10 @@ public final class RecommendationCursorCodec {
             throw invalid(CursorFailureReason.UNSUPPORTED);
         }
         long issuedAt = parseEpochSecond(fields[1]);
-        String userId = decodeText(fields[2]);
+        String userId = decodeText(fields[2], "userId");
         String fingerprint = fields[3];
         double score = parseFiniteScore(fields[4]);
-        String itemId = decodeText(fields[5]);
+        String itemId = decodeText(fields[5], "itemId");
         RankedListCursor position = new RankedListCursor(score, itemId);
 
         Instant expiry = Instant.ofEpochSecond(issuedAt).plus(config.maxAge());
@@ -150,12 +155,20 @@ public final class RecommendationCursorCodec {
         }
     }
 
-    private static String encodeText(String value) {
-        return BASE64_ENCODER.encodeToString(value.getBytes(StandardCharsets.UTF_8));
+    private static String encodeText(String value, String fieldName) {
+        byte[] bytes = RecommendationQueryFingerprint.utf8Bytes(value, fieldName);
+        if (bytes.length > MAX_TEXT_UTF8_BYTES) {
+            throw new IllegalArgumentException(fieldName + " exceeds " + MAX_TEXT_UTF8_BYTES + " UTF-8 bytes");
+        }
+        return BASE64_ENCODER.encodeToString(bytes);
     }
 
-    private static String decodeText(String value) throws CharacterCodingException {
-        return decodeUtf8(BASE64_DECODER.decode(value));
+    private static String decodeText(String value, String fieldName) throws CharacterCodingException {
+        byte[] bytes = BASE64_DECODER.decode(value);
+        if (bytes.length > MAX_TEXT_UTF8_BYTES) {
+            throw invalid(CursorFailureReason.MALFORMED);
+        }
+        return decodeUtf8(bytes);
     }
 
     private static String decodeUtf8(byte[] bytes) throws CharacterCodingException {

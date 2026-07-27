@@ -114,7 +114,42 @@ class RecommendationCursorCodecTest {
         assertThatIllegalArgumentException().isThrownBy(() -> new RankedListCursor(Double.POSITIVE_INFINITY, "42"));
         assertThatIllegalArgumentException().isThrownBy(() -> new RankedListCursor(0.75, " "));
         assertThatIllegalArgumentException().isThrownBy(() -> new RankedListCursor(0.75, "x".repeat(513)));
+        assertThatIllegalArgumentException().isThrownBy(() -> new RankedListCursor(0.75, null));
+        assertThatIllegalArgumentException().isThrownBy(() -> new RankedListCursor(Double.POSITIVE_INFINITY, null));
         assertThat(RankedListCursor.START.isStart()).isTrue();
+    }
+
+    @Test
+    void encodeRejectsLoneSurrogatesRatherThanReplacingThem() {
+        assertThatIllegalArgumentException()
+                .isThrownBy(() -> codec.encode(query("\ud800", Set.of("seen")), new RankedListCursor(0.75, "42")));
+        assertThatIllegalArgumentException()
+                .isThrownBy(() -> codec.encode(query, new RankedListCursor(0.75, "\ud800")));
+    }
+
+    @Test
+    void byteBoundedFieldsAlwaysProduceDecodableTokens() {
+        String maxByteUser = "u".repeat(512);
+        String maxByteItem = "\ud83d\ude00".repeat(128);
+        RecommendationQuery boundedQuery = query(maxByteUser, Set.of("seen"));
+        RankedListCursor position = new RankedListCursor(0.75, maxByteItem);
+
+        String token = codec.encode(boundedQuery, position);
+
+        assertThat(token).hasSizeLessThanOrEqualTo(2_048);
+        assertThat(codec.decode(boundedQuery, token).position()).isEqualTo(position);
+    }
+
+    @Test
+    void rejectsValuesWhoseUtf8BytesCannotFitInASignedToken() {
+        String maxCodePointItem = "\ud83d\ude00".repeat(512);
+        assertThat(new RankedListCursor(0.75, maxCodePointItem).itemId()
+                .codePointCount(0, maxCodePointItem.length())).isEqualTo(512);
+        assertThatIllegalArgumentException()
+                .isThrownBy(() -> codec.encode(query, new RankedListCursor(0.75, maxCodePointItem)));
+        assertThatIllegalArgumentException()
+                .isThrownBy(() -> codec.encode(query("u".repeat(513), Set.of("seen")),
+                        new RankedListCursor(0.75, "42")));
     }
 
     @Test

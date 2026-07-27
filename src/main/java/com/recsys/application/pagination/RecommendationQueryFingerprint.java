@@ -3,6 +3,9 @@ package com.recsys.application.pagination;
 import com.recsys.domain.recommendation.RecommendationQuery;
 
 import java.nio.ByteBuffer;
+import java.nio.CharBuffer;
+import java.nio.charset.CharacterCodingException;
+import java.nio.charset.CodingErrorAction;
 import java.nio.charset.StandardCharsets;
 import java.security.MessageDigest;
 import java.security.NoSuchAlgorithmException;
@@ -30,10 +33,10 @@ public final class RecommendationQueryFingerprint {
     }
 
     private static byte[] canonicalBytes(RecommendationQuery query) {
-        byte[] user = query.userId().getBytes(StandardCharsets.UTF_8);
+        byte[] user = utf8Bytes(query.userId(), "userId");
         List<byte[]> exclusions = new ArrayList<>(query.excludedItemIds().size());
         for (String excludedItemId : query.excludedItemIds()) {
-            exclusions.add(excludedItemId.getBytes(StandardCharsets.UTF_8));
+            exclusions.add(utf8Bytes(excludedItemId, "excludedItemId"));
         }
         exclusions.sort(Comparator.comparing(RecommendationQueryFingerprint::byteArrayKey));
 
@@ -58,6 +61,21 @@ public final class RecommendationQueryFingerprint {
     private static void putLengthPrefixed(ByteBuffer target, byte[] value) {
         target.putInt(value.length);
         target.put(value);
+    }
+
+    static byte[] utf8Bytes(String value, String fieldName) {
+        Objects.requireNonNull(value, fieldName);
+        try {
+            ByteBuffer encoded = StandardCharsets.UTF_8.newEncoder()
+                    .onMalformedInput(CodingErrorAction.REPORT)
+                    .onUnmappableCharacter(CodingErrorAction.REPORT)
+                    .encode(CharBuffer.wrap(value));
+            byte[] bytes = new byte[encoded.remaining()];
+            encoded.get(bytes);
+            return bytes;
+        } catch (CharacterCodingException e) {
+            throw new IllegalArgumentException(fieldName + " must be well-formed UTF-8", e);
+        }
     }
 
     private static String byteArrayKey(byte[] value) {

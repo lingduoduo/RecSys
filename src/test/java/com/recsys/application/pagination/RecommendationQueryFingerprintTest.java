@@ -6,6 +6,7 @@ import org.junit.jupiter.api.Test;
 import java.util.Set;
 
 import static org.assertj.core.api.Assertions.assertThat;
+import static org.assertj.core.api.Assertions.assertThatIllegalArgumentException;
 
 class RecommendationQueryFingerprintTest {
 
@@ -29,6 +30,16 @@ class RecommendationQueryFingerprintTest {
     void fingerprintIsLowercaseSha256Hex() {
         assertThat(RecommendationQueryFingerprint.of(query("u1", Set.of("seen"))))
                 .matches("[0-9a-f]{64}");
+    }
+
+    @Test
+    void rejectsLoneSurrogatesInsteadOfReplacingThemWithQuestionMarks() {
+        assertThat(RecommendationQueryFingerprint.of(query("?", Set.of("seen"))))
+                .matches("[0-9a-f]{64}");
+        assertThatIllegalArgumentException()
+                .isThrownBy(() -> RecommendationQueryFingerprint.of(query("\ud800", Set.of("seen"))));
+        assertThatIllegalArgumentException()
+                .isThrownBy(() -> RecommendationQueryFingerprint.of(query("u1", Set.of("\ud800"))));
     }
 
     private static RecommendationQuery query(String userId, Set<String> exclusions) {

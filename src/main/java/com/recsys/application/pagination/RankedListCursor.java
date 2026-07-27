@@ -20,7 +20,11 @@ public record RankedListCursor(double score, String itemId) {
     public static final RankedListCursor START = new RankedListCursor(Double.NaN, null);
 
     public RankedListCursor {
-        if (itemId != null) {
+        if (itemId == null) {
+            if (!Double.isNaN(score)) {
+                throw new IllegalArgumentException("only START may have a null itemId");
+            }
+        } else {
             if (!Double.isFinite(score)) {
                 throw new IllegalArgumentException("score must be finite");
             }
@@ -44,7 +48,7 @@ public record RankedListCursor(double score, String itemId) {
         }
         String raw = PREFIX + Double.toString(score) + ":" + itemId;
         return Base64.getUrlEncoder().withoutPadding()
-                .encodeToString(raw.getBytes(StandardCharsets.UTF_8));
+                .encodeToString(RecommendationQueryFingerprint.utf8Bytes(raw, "cursor"));
     }
 
     public static RankedListCursor decode(String token) {
