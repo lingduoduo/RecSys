@@ -450,6 +450,10 @@ Architecture:
   contracts, graceful drain, failure-path evidence, and status.
 - [Pagination](docs/system_design/19_Pagination.md) — current keyset and offset
   implementations plus the approved signed live-keyset recommendation design.
+- [AuthN / AuthZ](docs/system_design/20_AuthN_AuthZ.md) — the six credentials, why
+  the gateway is the only front door, fail-closed startup, credential stripping and
+  identity injection, the operator-token tier, and the service-local submit and
+  session tokens.
 
 Operational runbooks:
 

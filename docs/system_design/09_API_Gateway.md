@@ -107,7 +107,9 @@ This holds identically for the service proxy and the LLM proxy. Designs:
 
 ## 3. Authentication
 
-Edge authentication is the gateway's slice of the broader AuthN/AuthZ concern.
+Edge authentication is the gateway's slice of the broader AuthN/AuthZ concern; the
+whole picture — every credential, the operator-token tier, and the service-local
+tokens on 8080 — is in the [AuthN/AuthZ investigation](20_AuthN_AuthZ.md).
 [`GatewayAuthenticator`](../../src/main/java/com/recsys/application/gateway/GatewayAuthenticator.java)
 accepts **either** a static API key (`GATEWAY_API_KEYS`, constant-time compare, via
 `X-API-Key` or `Authorization: Bearer`) **or** a Cognito RS256 JWT
