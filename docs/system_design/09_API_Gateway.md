@@ -125,8 +125,10 @@ URL-versus-header choice is constrained by the CDN cache key — see
 `GATEWAY_PUBLIC_PATHS` and `PROTECTED_PREFIXES` lists, which would each need a new
 entry per version.
 
-Versioning *is* applied rigorously to non-HTTP contracts: the `v2:` pagination cursor
-prefix ([19_Pagination §1](19_Pagination.md#1-current-recommendation-pagination)), the
+Versioning *is* applied rigorously to non-HTTP contracts: the signed recommendation
+cursor, whose payload leads with a format version and whose predecessor `v2:` tokens
+are accepted only behind a compatibility flag
+([19_Pagination §4](19_Pagination.md#4-implemented-recommendation-optimization)), the
 `sr:g{version}:` shard generations with a bounded dual-read window
 ([14_Partitioning](14_Partitioning.md#versioned-topology-and-online-reshard)), and
 model-artifact versions keyed into the result caches
@@ -157,7 +159,9 @@ This holds identically for the service proxy and the LLM proxy. Designs:
 
 ## 3. Authentication
 
-Edge authentication is the gateway's slice of the broader AuthN/AuthZ concern.
+Edge authentication is the gateway's slice of the broader AuthN/AuthZ concern; the
+whole picture — every credential, the operator-token tier, and the service-local
+tokens on 8080 — is in the [AuthN/AuthZ investigation](20_AuthN_AuthZ.md).
 [`GatewayAuthenticator`](../../src/main/java/com/recsys/application/gateway/GatewayAuthenticator.java)
 accepts **either** a static API key (`GATEWAY_API_KEYS`, constant-time compare, via
 `X-API-Key` or `Authorization: Bearer`) **or** a Cognito RS256 JWT
