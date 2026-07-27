@@ -7,6 +7,7 @@ import com.linecorp.armeria.server.Route;
 import com.linecorp.armeria.server.Server;
 import com.linecorp.armeria.server.ServerBuilder;
 import com.linecorp.armeria.server.cors.CorsService;
+import com.linecorp.armeria.server.metric.PrometheusExpositionService;
 import com.linecorp.armeria.common.metric.PrometheusMeterRegistries;
 import com.recsys.config.EnvConfig;
 import com.recsys.infrastructure.dataloading.DataLoader;
@@ -38,6 +39,7 @@ import com.recsys.application.retrieval.multichannel.RecallConfig;
 import com.recsys.application.retrieval.multichannel.RecallDegradationMetrics;
 import com.recsys.infrastructure.store.TrendingStore;
 import io.micrometer.core.instrument.MeterRegistry;
+import io.micrometer.prometheus.PrometheusMeterRegistry;
 import org.slf4j.Logger;
 import org.slf4j.LoggerFactory;
 import java.time.Clock;
@@ -107,7 +109,7 @@ public class RecSysServer {
             WorkerBulkhead recallBulkhead = new WorkerBulkhead("recall-catalog", recallPoolSize,
                     EnvConfig.readInt("RECALL_BULKHEAD_QUEUE_CAPACITY", recallPoolSize * 4));
             ExecutorService executor = recallBulkhead.asExecutorService();
-            MeterRegistry registry = PrometheusMeterRegistries.defaultRegistry();
+            PrometheusMeterRegistry registry = PrometheusMeterRegistries.defaultRegistry();
             RecallDegradationMetrics recallMetrics = createRecallMetrics(registry);
 
             MultiChannelRecallService recallService = MultiChannelRecallService.from(
@@ -149,8 +151,9 @@ public class RecSysServer {
                     EnvConfig.readInt("CATALOG_MAX_CONCURRENT_REQUESTS", 64),
                     EnvConfig.readDouble("CATALOG_DRAIN_UTILIZATION", 0.90));
 
-            ServerBuilder sb = Server.builder()
-                    .http(port)
+            ServerBuilder sb = Server.builder();
+            registerMetricsEndpoint(sb, registry);
+            sb.http(port)
                     .service(ROUTE_ITEM, movieService)
                     .service(ROUTE_ITEM_ALIAS, movieService)
                     .service(ROUTE_USER, userService)
@@ -249,5 +252,15 @@ public class RecSysServer {
         RecallDegradationMetrics metrics = new RecallDegradationMetrics();
         metrics.registerMetrics(registry);
         return metrics;
+    }
+
+    static void registerMetricsEndpoint(
+            ServerBuilder builder,
+            PrometheusMeterRegistry registry
+    ) {
+        builder.meterRegistry(registry)
+                .service(
+                        "/metrics",
+                        PrometheusExpositionService.of(registry.getPrometheusRegistry()));
     }
 }

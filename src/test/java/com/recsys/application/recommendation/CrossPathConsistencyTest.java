@@ -230,10 +230,16 @@ class CrossPathConsistencyTest {
         ABTestService abTest = mock(ABTestService.class);
         when(abTest.getAssignmentForUser(any())).thenReturn(
                 new ABTestService.Assignment("training", 0, "default", true));
-        when(onnxService.recommend(any(), any())).thenReturn(
-                new RecommendResponse("1", "v1", "training",
-                        List.of(new ScoredItem("42", 0.8))));
-        RecommendationPipeline path2 = new OnnxInferencePipeline(onnxService, abTest);
+        when(onnxService.recommendWindow(any(), any(), anyInt())).thenReturn(
+                new RecommendationWindow(
+                        new RecommendResponse("1", "v1", "training",
+                                List.of(new ScoredItem("42", 0.8))),
+                        false));
+        RecommendationPipeline path2 = new OnnxInferencePipeline(
+                onnxService,
+                abTest,
+                pagination(false, MAX_CANDIDATES, new SimpleMeterRegistry()),
+                MAX_CANDIDATES);
         RecommendationResult r2 = path2.recommend(query);
 
         OnlineRecommendationService onlineService = mock(OnlineRecommendationService.class);

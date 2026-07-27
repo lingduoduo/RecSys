@@ -61,10 +61,13 @@ class V2CrossPathLoadTest {
         ABTestService abTest = mock(ABTestService.class);
         when(abTest.getAssignmentForUser(any())).thenReturn(
                 new ABTestService.Assignment("training", 0, "default", true));
-        when(onnxService.recommend(any(), any())).thenReturn(
-                new RecommendResponse("1", "v1", "training",
-                        List.of(new ScoredItem("42", 0.9))));
-        RecommendationPipeline onnx = new OnnxInferencePipeline(onnxService, abTest);
+        when(onnxService.recommendWindow(any(), any(), anyInt())).thenReturn(
+                new RecommendationWindow(
+                        new RecommendResponse("1", "v1", "training",
+                                List.of(new ScoredItem("42", 0.9))),
+                        false));
+        RecommendationPipeline onnx =
+                new OnnxInferencePipeline(onnxService, abTest, pagination(), MAX_CANDIDATES);
 
         // Path 3 — online blending pipeline
         OnlineRecommendationService onlineService = mock(OnlineRecommendationService.class);

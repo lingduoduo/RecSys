@@ -61,6 +61,17 @@ spec:
               value: "-Xms1g -Xmx2g -XX:MaxDirectMemorySize=512m"
             - name: MANAGEMENT_ENDPOINTS_EXPOSURE
               value: "health,info,prometheus"
+            - name: RECOMMENDATION_CURSOR_SIGNING_KEY
+              valueFrom:
+                secretKeyRef:
+                  name: recsys-secrets
+                  key: recommendation-cursor-signing-key
+            - name: RECOMMENDATION_CURSOR_PREVIOUS_KEY
+              valueFrom:
+                secretKeyRef:
+                  name: recsys-secrets
+                  key: recommendation-cursor-previous-key
+                  optional: true
           ports:
             - name: http
               containerPort: 8080
@@ -105,6 +116,8 @@ kind: Service
 metadata:
   name: recsys-model-serving
   namespace: recsys
+  labels:
+    app: recsys-model-serving
 spec:
   type: ClusterIP
   selector:

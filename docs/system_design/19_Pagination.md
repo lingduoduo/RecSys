@@ -21,10 +21,12 @@ between requests, rows can move across the cursor boundary.
 
 ## 1. Current recommendation pagination
 
-The catalog/model and online-serving `POST /v2/recommend` paths share
+The catalog-serving (`6010`), Spring model-serving (`8080`), and online-serving
+(`7010`) `POST /v2/recommend` paths share
 [`RecommendationPaginationCoordinator`](../../src/main/java/com/recsys/application/pagination/RecommendationPaginationCoordinator.java).
-Both validate the cursor before recall, rank a bounded candidate window, and
-seek strictly after the final returned `(score DESC, itemId ASC)` tuple.
+All three validate the cursor before recall or model work, rank a bounded
+candidate window, and seek strictly after the final returned
+`(score DESC, itemId ASC)` tuple.
 
 Current wire format:
 
@@ -39,6 +41,9 @@ binds eligibility inputs such as exclusions while allowing callers to change
 finite scores, expiry, query binding, and constant-time signature comparison.
 
 An active key signs new tokens. An optional previous key supports rotation.
+All recommendation-serving workloads and regions use the same key pair; the
+[cursor key-rotation runbook](../runbooks/recommendation-cursor-key-rotation.md)
+defines the required two-stage rolling sequence.
 Unsigned `v2` tokens remain temporarily accepted when
 `RECOMMENDATION_CURSOR_ACCEPT_LEGACY=true`; a request that uses one receives a
 signed cursor if another page exists. Responses expose `hasMore`, and the
@@ -161,10 +166,12 @@ A `RecommendationPaginationCoordinator` owns:
 - Encoding the next signed cursor.
 - Cursor, page, rotation, and bounded-source metrics.
 
-`RecommendationOrchestrator` and `OnlineBlendingPipeline` use the same
-coordinator contract and apply the same configured candidate ceiling. A shared
+`RecommendationOrchestrator`, `OnnxInferencePipeline`, and
+`OnlineBlendingPipeline` use the same coordinator contract and configured
+candidate ceiling. The ONNX path obtains an internal ranked window rather than
+conflating the public page limit with its source-work budget. A shared
 `RecommendationPaginationRuntime` factory constructs the configuration, codec,
-metrics, and coordinator for both server processes so adapters do not re-read
+metrics, and coordinator for each server process so adapters do not re-read
 environment variables independently.
 
 ## 5. Live-feed semantics
@@ -220,7 +227,9 @@ Rollout order:
 
 1. Issue signed cursors while accepting legacy cursors.
 2. Observe legacy-use and failure metrics for at least one maximum cursor age.
-3. Exercise previous-key verification in a non-production rotation.
+3. Exercise the
+   [two-stage shared-key rotation](../runbooks/recommendation-cursor-key-rotation.md)
+   in a non-production multi-replica, multi-region environment.
 4. Disable legacy decoding.
 5. Remove the legacy path in a later cleanup.
 
@@ -235,8 +244,9 @@ The implementation is covered by:
 - Cross-serving contract tests proving model and online paths traverse the same
   tuples, reject changed users or exclusions before source work, allow a changed
   limit, upgrade legacy cursors, and terminate honestly at the candidate budget.
-- Direct HTTP tests proving invalid online cursors return only the generic
-  `400` message without invoking recommendation recall.
+- Direct HTTP tests proving invalid online and Spring model cursors return only
+  the generic `400` message without invoking recommendation or model source
+  work, plus model endpoint continuation across multiple pages.
 - Resource-bound tests proving cursor validation precedes recall and recall
   exhaustion terminates honestly.
 - Generic MySQL lookahead tests.

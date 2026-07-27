@@ -355,9 +355,11 @@ for the maintained commands and artifact paths.
 The clean-clone quick start uses the catalog port and Redis defaults. The
 artifact-dependent full-stack command explicitly sets
 `GATEWAY_ALLOW_ANONYMOUS=true` for local development; its script supplies the
-standard service ports and local gateway upstreams. Catalog and online
-recommendation serving also require `RECOMMENDATION_CURSOR_SIGNING_KEY`; the
-quick-start and full-stack commands generate a local key with OpenSSL.
+standard service ports and local gateway upstreams. Catalog, Spring model, and
+online recommendation serving also require
+`RECOMMENDATION_CURSOR_SIGNING_KEY`; the quick-start and full-stack commands
+generate a local key with OpenSSL. Production rotations follow the
+[shared-key runbook](docs/runbooks/recommendation-cursor-key-rotation.md).
 
 The local settings most often overridden are:
 

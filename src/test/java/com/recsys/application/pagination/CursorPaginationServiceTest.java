@@ -47,27 +47,6 @@ class CursorPaginationServiceTest {
     }
 
     @Test
-    void legacyStringAdapterDelegatesToTuplePaging() {
-        Page<RankedMovie> page = svc.page(
-                List.of(m("a", .9), m("b", .8), m("c", .7)),
-                new RankedListCursor(.9, "a").encode(), 2, RankedMovie::score, RankedMovie::itemId);
-
-        assertEquals(List.of("b", "c"), ids(page));
-        assertNull(page.nextCursor());
-    }
-
-    @Test
-    void legacyPageConstructorDecodesItsNextPosition() {
-        String cursor = new RankedListCursor(.8, "b").encode();
-
-        Page<RankedMovie> page = new Page<>(List.of(m("a", .9)), cursor);
-
-        assertTrue(page.hasMore());
-        assertEquals(new RankedListCursor(.8, "b"), page.nextPosition());
-        assertEquals(cursor, page.nextCursor());
-    }
-
-    @Test
     void changedAnchorScoreUsesFullTupleInsteadOfIdFastPath() {
         Page<RankedMovie> page = page(
                 List.of(m("a", .9), m("b", .6), m("c", .5)), new RankedListCursor(.8, "b"), 2);
@@ -79,6 +58,16 @@ class CursorPaginationServiceTest {
     void tiedScoresResumeAtTheLexicallyNextId() {
         Page<RankedMovie> page = page(
                 List.of(m("a", .9), m("b", .9), m("c", .8)), new RankedListCursor(.9, "a"), 2);
+
+        assertEquals(List.of("b", "c"), ids(page));
+    }
+
+    @Test
+    void signedZeroScoresUseTheSameTupleOrderForValidationAndSeek() {
+        Page<RankedMovie> page = page(
+                List.of(m("a", +0.0), m("b", -0.0), m("c", -1.0)),
+                new RankedListCursor(+0.0, "a"),
+                2);
 
         assertEquals(List.of("b", "c"), ids(page));
     }

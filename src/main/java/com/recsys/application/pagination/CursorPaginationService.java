@@ -9,20 +9,6 @@ import java.util.function.ToDoubleFunction;
  */
 public class CursorPaginationService {
 
-    /**
-     * @deprecated Use {@link #page(List, RankedListCursor, int, ToDoubleFunction, Function)}.
-     * Retained only while callers migrate to tuple cursors.
-     */
-    @Deprecated
-    public <T> Page<T> page(List<T> rankedItems,
-                            String cursor,
-                            int limit,
-                            ToDoubleFunction<T> scoreOf,
-                            Function<T, String> idOf,
-                            Object... ignoredCompatibilityArguments) {
-        return page(rankedItems, RankedListCursor.decode(cursor), limit, scoreOf, idOf);
-    }
-
     public <T> Page<T> page(List<T> rankedItems,
                             RankedListCursor anchor,
                             int limit,
@@ -95,7 +81,7 @@ public class CursorPaginationService {
     }
 
     private static boolean isAfter(double score, String id, RankedListCursor anchor) {
-        return score < anchor.score()
+        return Double.compare(score, anchor.score()) < 0
                 || (Double.compare(score, anchor.score()) == 0 && id.compareTo(anchor.itemId()) > 0);
     }
 }

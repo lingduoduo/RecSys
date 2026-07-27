@@ -199,11 +199,13 @@ definitely-absent IDs).
 
 `application/pagination/MillionScalePaginationSql` — keyset seek / covering-index
 / delayed-join with `FORCE INDEX` and a **1000-row page cap** avoids the OFFSET
-deep-scan cliff, keeping page latency flat to 10M+ rows. `/v2/recommend` uses
-`(score, itemId)` live-keyset cursors (`RankedListCursor`,
-`CursorPaginationService`) over a recomputed bounded ranking window; catalog
-cursors are HMAC-signed, filter-bound tokens. Current limitations and the approved
-cross-serving signed-cursor optimization are documented in
+deep-scan cliff, keeping page latency flat to 10M+ rows. `/v2/recommend` uses an
+HMAC-signed, query-bound `(score, itemId)` live-keyset cursor over a recomputed
+bounded ranking window. Catalog, Spring model, and online serving share
+validation-before-source-work, deterministic tuple seek, and exact
+`hasMore`/`nextCursor` semantics; MySQL catalog cursors remain separately
+HMAC-signed and filter-bound. Current behavior, live-feed limitations, and
+rotation operations are documented in
 [Pagination](19_Pagination.md).
 
 ### Caching / CDN offload
