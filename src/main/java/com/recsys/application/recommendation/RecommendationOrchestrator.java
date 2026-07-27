@@ -76,6 +76,7 @@ public class RecommendationOrchestrator implements RecommendationPipeline {
             trace.put("degradationOutcome", recall.outcome().wireValue());
         }
 
-        return new RecommendationResult(query.userId(), hydrated, page.nextCursor(), trace);
+        return new RecommendationResult(
+                query.userId(), hydrated, page.nextCursor(), page.nextCursor() != null, trace);
     }
 }

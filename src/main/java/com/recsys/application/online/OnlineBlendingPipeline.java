@@ -35,7 +35,7 @@ public final class OnlineBlendingPipeline implements RecommendationPipeline {
                 "strategy", online.strategy() != null ? online.strategy() : "online",
                 "window",   online.window()   != null ? online.window()   : "");
         return new RecommendationResult(
-                query.userId(), toRanked(online.recommendations()), null, trace);
+                query.userId(), toRanked(online.recommendations()), null, false, trace);
     }
 
     private static List<RankedMovie> toRanked(List<Movie> movies) {

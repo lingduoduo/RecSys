@@ -54,6 +54,6 @@ public final class OnnxInferencePipeline implements RecommendationPipeline {
         Map<String, String> trace = Map.of(
                 "abTestVariant", assignmentVariant != null ? assignmentVariant : "",
                 "modelVersion",  response.modelVersion()  != null ? response.modelVersion()  : "");
-        return new RecommendationResult(userId, items, null, trace);
+        return new RecommendationResult(userId, items, null, false, trace);
     }
 }

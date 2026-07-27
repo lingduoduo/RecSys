@@ -25,7 +25,7 @@ class RecommendationV2DegradedHeaderTest {
     void setsHeaderWhenDegradedChannelsInTrace() throws Exception {
         RecommendationPipeline pipeline = mock(RecommendationPipeline.class);
         when(pipeline.recommend(any())).thenReturn(new RecommendationResult(
-                "1", List.<RankedMovie>of(), null,
+                "1", List.<RankedMovie>of(), null, false,
                 Map.of("degradedChannels", "momentum,trending",
                         "degradationOutcome", "all_channels")));
 
@@ -47,7 +47,7 @@ class RecommendationV2DegradedHeaderTest {
     void noHeaderWhenNoDegradedChannelsInTrace() throws Exception {
         RecommendationPipeline pipeline = mock(RecommendationPipeline.class);
         when(pipeline.recommend(any())).thenReturn(new RecommendationResult(
-                "1", List.<RankedMovie>of(), null, Map.of("candidateCount", "0")));
+                "1", List.<RankedMovie>of(), null, false, Map.of("candidateCount", "0")));
 
         RecommendationService.V2 v2 = new RecommendationService.V2(pipeline);
         HttpRequest req = HttpRequest.of(
