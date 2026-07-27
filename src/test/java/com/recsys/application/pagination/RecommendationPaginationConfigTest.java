@@ -127,6 +127,12 @@ class RecommendationPaginationConfigTest {
         assertThrows(IllegalArgumentException.class,
                 () -> new RecommendationPaginationConfig("a".repeat(32), null, Duration.ZERO, true, 500));
         assertThrows(IllegalArgumentException.class,
+                () -> new RecommendationPaginationConfig("a".repeat(32), null,
+                        Duration.ofSeconds(1, 1), true, 500));
+        assertThrows(IllegalArgumentException.class,
+                () -> new RecommendationPaginationConfig("a".repeat(32), null,
+                        Duration.ofSeconds(86_400, 1), true, 500));
+        assertThrows(IllegalArgumentException.class,
                 () -> new RecommendationPaginationConfig("a".repeat(32), null, Duration.ofSeconds(900), true, 100));
     }
 

@@ -19,7 +19,7 @@ public record RecommendationPaginationConfig(
         previousVerificationKey = optionalKey(previousVerificationKey,
                 "RECOMMENDATION_CURSOR_PREVIOUS_KEY");
         maxAge = Objects.requireNonNull(maxAge, "maxAge must not be null");
-        if (maxAge.getSeconds() < 1 || maxAge.getSeconds() > 86_400) {
+        if (maxAge.getNano() != 0 || maxAge.getSeconds() < 1 || maxAge.getSeconds() > 86_400) {
             throw new IllegalArgumentException(
                     "RECOMMENDATION_CURSOR_MAX_AGE_SECONDS must be between 1 and 86400");
         }
