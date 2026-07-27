@@ -27,6 +27,10 @@ import com.recsys.resilience.FaultInjector;
 import com.recsys.resilience.WorkerBulkhead;
 import com.recsys.application.recommendation.RecommendationHydrator;
 import com.recsys.application.pagination.CursorPaginationService;
+import com.recsys.application.pagination.RecommendationCursorCodec;
+import com.recsys.application.pagination.RecommendationPaginationConfig;
+import com.recsys.application.pagination.RecommendationPaginationCoordinator;
+import com.recsys.application.pagination.RecommendationPaginationMetrics;
 import com.recsys.application.ranking.ScoreRanker;
 import com.recsys.application.recommendation.RecommendationOrchestrator;
 import com.recsys.application.retrieval.channels.Channels;
@@ -40,6 +44,7 @@ import com.recsys.infrastructure.store.TrendingStore;
 import io.micrometer.core.instrument.MeterRegistry;
 import org.slf4j.Logger;
 import org.slf4j.LoggerFactory;
+import java.time.Clock;
 import java.util.List;
 import java.util.concurrent.ExecutorService;
 
@@ -106,8 +111,8 @@ public class RecSysServer {
             WorkerBulkhead recallBulkhead = new WorkerBulkhead("recall-catalog", recallPoolSize,
                     EnvConfig.readInt("RECALL_BULKHEAD_QUEUE_CAPACITY", recallPoolSize * 4));
             ExecutorService executor = recallBulkhead.asExecutorService();
-            RecallDegradationMetrics recallMetrics = createRecallMetrics(
-                    PrometheusMeterRegistries.defaultRegistry());
+            MeterRegistry registry = PrometheusMeterRegistries.defaultRegistry();
+            RecallDegradationMetrics recallMetrics = createRecallMetrics(registry);
 
             MultiChannelRecallService recallService = MultiChannelRecallService.from(
                     RecallConfig.builder()
@@ -126,11 +131,19 @@ public class RecSysServer {
                             .recallMetrics(recallMetrics)
                             .build());
 
+            RecommendationPaginationConfig paginationConfig =
+                    RecommendationPaginationConfig.fromEnvironment();
+            RecommendationPaginationCoordinator pagination =
+                    new RecommendationPaginationCoordinator(
+                            new RecommendationCursorCodec(paginationConfig, Clock.systemUTC()),
+                            new CursorPaginationService(),
+                            new RecommendationPaginationMetrics(registry));
             RecommendationOrchestrator orchestrator = new RecommendationOrchestrator(
                     recallService,
                     new ScoreRanker(),
                     RecommendationHydrator.IDENTITY,
-                    new CursorPaginationService()
+                    pagination,
+                    paginationConfig.maxCandidates()
             );
 
             CatalogService.Movies movieService = new CatalogService.Movies(dataManager);

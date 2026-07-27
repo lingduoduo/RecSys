@@ -17,12 +17,18 @@ import com.recsys.domain.online.OnlineRecommendationResult;
 import com.recsys.application.online.OnlineRecommendationService;
 import com.recsys.application.recommendation.RecommendationHydrator;
 import com.recsys.application.pagination.CursorPaginationService;
-import com.recsys.application.pagination.Page;
+import com.recsys.application.pagination.RecommendationCursorCodec;
+import com.recsys.application.pagination.RecommendationPaginationConfig;
+import com.recsys.application.pagination.RecommendationPaginationCoordinator;
+import com.recsys.application.pagination.RecommendationPaginationMetrics;
 import com.recsys.application.ranking.CandidateRanker;
 import com.recsys.application.retrieval.multichannel.MultiChannelRecallService;
 import com.recsys.application.retrieval.multichannel.RecallResult;
+import io.micrometer.core.instrument.simple.SimpleMeterRegistry;
 import org.junit.jupiter.api.Test;
 
+import java.time.Clock;
+import java.time.Duration;
 import java.util.List;
 import java.util.Map;
 import java.util.Set;
@@ -34,6 +40,7 @@ import static org.mockito.Mockito.mock;
 import static org.mockito.Mockito.when;
 
 class CrossPathConsistencyTest {
+    private static final int MAX_CANDIDATES = 500;
 
     @Test
     void allThreePipelines_returnNonEmptyResultForSameUserId() {
@@ -42,14 +49,13 @@ class CrossPathConsistencyTest {
         // Path 1 — embedding recall via orchestrator
         MultiChannelRecallService recall = mock(MultiChannelRecallService.class);
         CandidateRanker ranker = mock(CandidateRanker.class);
-        CursorPaginationService pagination = mock(CursorPaginationService.class);
         RankedMovie rm = new RankedMovie("10", 0.9, 1, Map.of());
         when(recall.recallDetailed(any(), anyInt())).thenReturn(new RecallResult(
                 List.of(mock(com.recsys.domain.item.MovieCandidate.class)), Set.of()));
         when(ranker.rank(any(), any(), anyInt())).thenReturn(List.of(rm));
-        when(pagination.page(any(), any(), anyInt(), any(), any())).thenReturn(new Page<>(List.of(rm), null));
         RecommendationPipeline path1 = new RecommendationOrchestrator(
-                recall, ranker, RecommendationHydrator.IDENTITY, pagination);
+                recall, ranker, RecommendationHydrator.IDENTITY,
+                pagination(), MAX_CANDIDATES);
         RecommendationResult r1 = path1.recommend(query);
 
         // Path 2 — ONNX pipeline via mocked service
@@ -80,5 +86,14 @@ class CrossPathConsistencyTest {
             assertThat(result.items()).isNotEmpty();
             assertThat(result.items().get(0).rank()).isEqualTo(1);
         }
+    }
+
+    private static RecommendationPaginationCoordinator pagination() {
+        RecommendationPaginationConfig config = new RecommendationPaginationConfig(
+                "a".repeat(32), null, Duration.ofMinutes(15), false, MAX_CANDIDATES);
+        return new RecommendationPaginationCoordinator(
+                new RecommendationCursorCodec(config, Clock.systemUTC()),
+                new CursorPaginationService(),
+                new RecommendationPaginationMetrics(new SimpleMeterRegistry()));
     }
 }
