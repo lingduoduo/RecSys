@@ -8,6 +8,7 @@ public record RecommendationResult(
         String userId,
         List<RankedMovie> items,
         String nextCursor,
+        boolean hasMore,
         Map<String, String> trace
 ) {
     public RecommendationResult {
@@ -16,6 +17,9 @@ public record RecommendationResult(
         }
         items = items == null || items.isEmpty() ? List.of() : List.copyOf(items);
         nextCursor = nextCursor == null || nextCursor.isBlank() ? null : nextCursor.trim();
+        if (hasMore != (nextCursor != null)) {
+            throw new IllegalArgumentException("hasMore and nextCursor must agree");
+        }
         trace = trace == null || trace.isEmpty() ? Map.of() : Map.copyOf(trace);
     }
 }

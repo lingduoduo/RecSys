@@ -1,8 +1,8 @@
 # Pagination in Recsys-Backend-Service
 
 An investigation of pagination across recommendation feeds, the MySQL catalog,
-and the reusable SQL layer. This document separates behavior that exists today
-from the approved optimization that has not yet been implemented.
+and the reusable SQL layer. This document describes the implemented behavior,
+its live-feed guarantees, and the remaining legacy-cursor retirement sequence.
 
 ## The big picture
 
@@ -21,32 +21,33 @@ between requests, rows can move across the cursor boundary.
 
 ## 1. Current recommendation pagination
 
-The catalog/model-serving `POST /v2/recommend` path ranks a fresh candidate window
-and passes it to
-[`CursorPaginationService`](../../src/main/java/com/recsys/application/pagination/CursorPaginationService.java).
-The cursor anchors the final returned `(score DESC, itemId ASC)` tuple.
+The catalog-serving (`6010`), Spring model-serving (`8080`), and online-serving
+(`7010`) `POST /v2/recommend` paths share
+[`RecommendationPaginationCoordinator`](../../src/main/java/com/recsys/application/pagination/RecommendationPaginationCoordinator.java).
+All three validate the cursor before recall or model work, rank a bounded
+candidate window, and seek strictly after the final returned
+`(score DESC, itemId ASC)` tuple.
 
 Current wire format:
 
 ```text
-base64url("v2:<score>:<itemId>")
+base64url(v3 payload) + "." + base64url(HMAC-SHA256 signature)
 ```
 
-The implementation first looks for the anchor item ID and otherwise finds the
-first tuple strictly after the anchor. It emits `nextCursor` when more items exist
-inside the ranked window.
+The signed payload contains a format version, issued-at timestamp, user ID,
+normalized query fingerprint, anchor score, and anchor item ID. The fingerprint
+binds eligibility inputs such as exclusions while allowing callers to change
+`limit`. Decoding enforces a 2 KiB token limit, bounded strict UTF-8 text,
+finite scores, expiry, query binding, and constant-time signature comparison.
 
-Important current limitations:
-
-- The cursor is encoded but not signed, so clients can alter its contents.
-- Non-finite floating-point scores and oversized tokens are not rejected
-  explicitly.
-- Recall is bounded to `limit * recallMultiplier` (default `5 * limit`), so the
-  cursor traverses only a newly computed window rather than a complete result set.
-- The ID fast path ignores an anchor score change.
-- The online-serving implementation currently ignores `cursor` and
-  `excludedItemIds` and returns `nextCursor = null`.
-- Recommendation responses do not expose an explicit `hasMore` field.
+An active key signs new tokens. An optional previous key supports rotation.
+All recommendation-serving workloads and regions use the same key pair; the
+[cursor key-rotation runbook](../runbooks/recommendation-cursor-key-rotation.md)
+defines the required two-stage rolling sequence.
+Unsigned `v2` tokens remain temporarily accepted when
+`RECOMMENDATION_CURSOR_ACCEPT_LEGACY=true`; a request that uses one receives a
+signed cursor if another page exists. Responses expose `hasMore`, and the
+invariant is exact: `hasMore=true` if and only if `nextCursor` is present.
 
 This is a **live feed**, not a frozen snapshot. Re-ranking between requests can
 move items before or after the anchor, so the API must not claim absolute
@@ -116,16 +117,15 @@ currently exposes this mode.
 Use keyset pagination for next/previous traversal. Reserve delayed join for an
 explicit product requirement such as an administrative “jump to page 1000.”
 
-## 4. Approved recommendation optimization
+## 4. Implemented recommendation optimization
 
-The approved design introduces one forward-only signed live-keyset contract for
-both model and online serving. This section is **planned**, not current behavior.
-The full approved specification is
+The implementation provides one forward-only signed live-keyset contract for
+both catalog/model and online serving. The complete design record is
 [Pagination Optimization Design](../superpowers/specs/2026-07-27-pagination-optimization-design.md).
 
 ### Shared contract
 
-Each request will:
+Each request:
 
 1. Validate and bind the cursor before recall work.
 2. Recompute the current eligible ranking.
@@ -139,7 +139,7 @@ ordering/eligibility input invalidates the cursor.
 
 ### Signed recommendation cursor
 
-The new token will contain:
+The token contains:
 
 - Format version.
 - User ID.
@@ -147,28 +147,32 @@ The new token will contain:
 - Anchor score and item ID.
 - Issued-at timestamp.
 
-HMAC-SHA256 authenticates the payload. Decoding will enforce token and item-ID
+HMAC-SHA256 authenticates the payload. Decoding enforces token and item-ID
 bounds, strict UTF-8, finite scores, expiry, query binding, and constant-time
 signature comparison. An active key signs new tokens; an optional previous key
 supports rotation.
 
 Existing unsigned `v2` tokens can be accepted temporarily behind an explicit
-compatibility flag. They will receive strict structural validation, increment a
+compatibility flag. They receive strict structural validation, increment a
 legacy-use metric, and upgrade to a signed token on the next page.
 
 ### Shared coordinator
 
-A `RecommendationPaginationCoordinator` will own:
+A `RecommendationPaginationCoordinator` owns:
 
-- Query normalization and fingerprinting.
 - Cursor decoding before expensive work.
-- Bounded candidate retrieval.
 - Stable ordering and seek pagination.
 - Lookahead and response invariants.
 - Encoding the next signed cursor.
+- Cursor, page, rotation, and bounded-source metrics.
 
-`RecommendationOrchestrator` and `OnlineBlendingPipeline` will use the same
-coordinator, eliminating their current contract mismatch.
+`RecommendationOrchestrator`, `OnnxInferencePipeline`, and
+`OnlineBlendingPipeline` use the same coordinator contract and configured
+candidate ceiling. The ONNX path obtains an internal ranked window rather than
+conflating the public page limit with its source-work budget. A shared
+`RecommendationPaginationRuntime` factory constructs the configuration, codec,
+metrics, and coordinator for each server process so adapters do not re-read
+environment variables independently.
 
 ## 5. Live-feed semantics
 
@@ -193,7 +197,7 @@ database snapshot identifier and are outside the approved scope.
 
 ## 6. Resource bounds and exact termination
 
-Recommendation recall and ranking will have a configurable per-request ceiling.
+Recommendation recall and ranking have a configurable per-request ceiling.
 This prevents forged or deep cursors from causing unbounded CPU and memory work.
 Only returned items are hydrated.
 
@@ -201,7 +205,7 @@ One-item lookahead proves `hasMore` within the bounded source. If the source
 cannot inspect enough candidates to prove that another result exists, it
 terminates with `hasMore=false` rather than issuing a speculative cursor.
 
-The reusable `MySqlClient.queryPage` will use the same lookahead rule: its SQL
+The reusable `MySqlClient.queryPage` uses the same lookahead rule: its SQL
 plan returns at most `pageSize + 1`, it trims the extra row, and it extracts the
 next cursor from the final returned row only when the extra row exists.
 
@@ -211,7 +215,7 @@ Invalid, oversized, expired, tampered, non-finite, or query-mismatched cursors
 return a generic `400 Bad Request`. Responses and logs do not reveal cursor
 payloads, user identifiers, signing keys, or validation internals.
 
-Bounded metrics will count:
+Bounded metrics count:
 
 - Decode failures by safe reason.
 - Legacy cursor acceptance.
@@ -223,19 +227,26 @@ Rollout order:
 
 1. Issue signed cursors while accepting legacy cursors.
 2. Observe legacy-use and failure metrics for at least one maximum cursor age.
-3. Exercise previous-key verification in a non-production rotation.
+3. Exercise the
+   [two-stage shared-key rotation](../runbooks/recommendation-cursor-key-rotation.md)
+   in a non-production multi-replica, multi-region environment.
 4. Disable legacy decoding.
 5. Remove the legacy path in a later cleanup.
 
 ## 8. Testing
 
-The optimization requires:
+The implementation is covered by:
 
 - Codec tests for signing, tampering, expiry, rotation, malformed input, finite
   scores, query binding, and legacy migration.
 - Pagination tests for ties, removed anchors, score changes, insertions,
   exclusions, exact terminal pages, and ordering validation.
-- Cross-serving contract tests proving model and online paths agree.
+- Cross-serving contract tests proving model and online paths traverse the same
+  tuples, reject changed users or exclusions before source work, allow a changed
+  limit, upgrade legacy cursors, and terminate honestly at the candidate budget.
+- Direct HTTP tests proving invalid online and Spring model cursors return only
+  the generic `400` message without invoking recommendation or model source
+  work, plus model endpoint continuation across multiple pages.
 - Resource-bound tests proving cursor validation precedes recall and recall
   exhaustion terminates honestly.
 - Generic MySQL lookahead tests.

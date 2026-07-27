@@ -60,6 +60,12 @@ Build the application without running tests:
 mvn package -DskipTests
 ```
 
+Generate a local recommendation cursor signing key:
+
+```bash
+export RECOMMENDATION_CURSOR_SIGNING_KEY="$(openssl rand -hex 32)"
+```
+
 Start catalog/recommendation serving:
 
 ```bash
@@ -140,6 +146,7 @@ After supplying the artifacts, start the infrastructure and four services:
 
 ```bash
 docker compose -f docker-compose.streaming.yml up -d
+export RECOMMENDATION_CURSOR_SIGNING_KEY="$(openssl rand -hex 32)"
 GATEWAY_ALLOW_ANONYMOUS=true sh scripts/run-microservices-local.sh
 ```
 
@@ -162,6 +169,13 @@ Press `Ctrl-C` in the script terminal to terminate its four child processes.
 Run one command per terminal. Start Redis first for the catalog and online
 services. Start all three backends before the gateway if you want the gateway
 aggregate health check to return success.
+
+Generate and export one signing key for every catalog and online instance in
+the local topology:
+
+```bash
+export RECOMMENDATION_CURSOR_SIGNING_KEY="$(openssl rand -hex 32)"
+```
 
 Catalog and recommendation serving:
 
@@ -341,7 +355,11 @@ for the maintained commands and artifact paths.
 The clean-clone quick start uses the catalog port and Redis defaults. The
 artifact-dependent full-stack command explicitly sets
 `GATEWAY_ALLOW_ANONYMOUS=true` for local development; its script supplies the
-standard service ports and local gateway upstreams.
+standard service ports and local gateway upstreams. Catalog, Spring model, and
+online recommendation serving also require
+`RECOMMENDATION_CURSOR_SIGNING_KEY`; the quick-start and full-stack commands
+generate a local key with OpenSSL. Production rotations follow the
+[shared-key runbook](docs/runbooks/recommendation-cursor-key-rotation.md).
 
 The local settings most often overridden are:
 
@@ -444,12 +462,18 @@ Architecture:
   `docs/system_design/README.md` index.
 - [API gateway](docs/system_design/09_API_Gateway.md) — route ownership,
   authentication, health aggregation, circuit breakers, and metrics.
+- [API versioning](docs/system_design/09_API_Gateway.md#api-versioning-and-deprecation)
+  — why the public surface is unversioned, the three internal URL conventions, why
+  `/v2` means "different pipeline" rather than "next generation", and the absent
+  deprecation policy. Edge cache-key constraints are in
+  [12_CDNS §1](docs/system_design/12_CDNS.md#1-what-is-cached-and-what-isnt).
 - [Microservices](docs/system_design/10_MicroServices.md) — service boundaries,
   entry points, deployment model, and communication.
 - [Fault tolerance](docs/system_design/18_Fault_Tolerance.md) — resilience
   contracts, graceful drain, failure-path evidence, and status.
 - [Pagination](docs/system_design/19_Pagination.md) — current keyset and offset
-  implementations plus the approved signed live-keyset recommendation design.
+  implementations, including the shared signed live-keyset recommendation
+  contract used by model and online serving.
 - [AuthN / AuthZ](docs/system_design/20_AuthN_AuthZ.md) — the six credentials, why
   the gateway is the only front door, fail-closed startup, credential stripping and
   identity injection, the operator-token tier, and the service-local submit and

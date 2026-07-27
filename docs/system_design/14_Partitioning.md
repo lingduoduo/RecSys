@@ -216,10 +216,10 @@ semantics: rank changes can still move items across a cursor boundary.
 
 ### In-memory ranked list — `/v2/recommend`
 
-The current 6010 route uses an unsigned `(score DESC, itemId ASC)` cursor over a
-fresh bounded ranking window. The current online-serving route does not yet
-paginate. The approved optimization unifies both routes behind a signed,
-query-bound, forward-only live-keyset contract with exact lookahead metadata.
+The 6010 and online-serving routes share a signed, query-bound
+`(score DESC, itemId ASC)` cursor over a fresh bounded ranking window. Both use
+the forward-only live-keyset contract and exact lookahead metadata described in
+the pagination investigation.
 
 ### Relational catalog — HMAC-signed, filter-bound cursors
 

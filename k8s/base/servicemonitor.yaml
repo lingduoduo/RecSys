@@ -21,3 +21,26 @@ spec:
       interval: 15s
       scrapeTimeout: 10s
       scheme: http
+---
+apiVersion: monitoring.coreos.com/v1
+kind: ServiceMonitor
+metadata:
+  name: recsys-catalog-serving
+  namespace: recsys
+  labels:
+    app: recsys-catalog-serving
+    # Must match the Prometheus CR's serviceMonitorSelector; adjust for your cluster.
+    release: kube-prometheus-stack
+spec:
+  namespaceSelector:
+    matchNames:
+      - recsys
+  selector:
+    matchLabels:
+      app: recsys-catalog-serving
+  endpoints:
+    - port: http
+      path: /metrics
+      interval: 15s
+      scrapeTimeout: 10s
+      scheme: http

@@ -82,6 +82,58 @@ A single retry (`maxTotalAttempts=2`, fixed 50 ms backoff) covers transient
 deregistration windows. `GatewayProxyService.gatewayError` emits `{"error":...}` JSON
 with `Cache-Control: no-store` so CloudFront never caches an error.
 
+### API versioning and deprecation
+
+The public surface is **unversioned**. Every prefix in `MicroserviceRoute.defaults()`
+is `/api/<resource>` with no version segment, and there is no header-based scheme
+either — no `Accept-Version`, no `X-API-Version`, and no versioned media type
+(every `produces` is plain `application/json`). Version numbers exist only on the
+*internal* hop after prefix-strip, where three conventions coexist:
+
+| Convention | Service | Examples |
+|---|---:|---|
+| Root `/v1/…` `/v2/…` | 6010, 7010 | `/v1/models/recmodel:predict`, `/v1/catalog/movies`, `/v2/recommend` |
+| Spring `/api/v1/…` | 8080 | `/api/v1/recommend`, `/api/v1/auth`, `/api/v1/model/versions` |
+| Spring root `/v2/…` | 8080 | `/v2/recommend`, `/v2/sequential/recommend` |
+| Unversioned | 6010, 7010 | `/getrecommendation`, `/similar`, `/item`, `/online/features` |
+
+Three consequences follow from keeping the version *behind* the edge:
+
+- **`/v2` denotes a pipeline variant, not an API generation.** On 6010,
+  `RecommendationService.V1` serves `/getrecommendation` while `V2` serves
+  `/v2/recommend` — but V2 is the orchestrator pipeline (recall → rank → hydrate →
+  paginate with a cursor), not a compatible successor to V1. The same split exists on
+  7010 and 8080. At the edge, selection is done by the JSON `strategy` field instead,
+  so content-based routing occupies the slot a version selector would.
+- **A version segment lands mid-path whenever it is exposed.** Prefix-strip passes the
+  suffix through verbatim, so the model service's version-management API is reachable
+  only as `/api/model/api/v1/model/versions`. Paths with no matching prefix —
+  `/api/v1/auth/login` among them — fall through to the catch-all and get
+  `404 "no route found"`.
+- **Deprecation is documentation-only.** `/api/catalog`, `/api/model`, and
+  `/api/online` are marked back-compat aliases in the table above, but no
+  `Deprecation` or `Sunset` response header is emitted anywhere. That was a deliberate
+  deferral: the
+  [canonical entry-point design](../superpowers/specs/2026-07-10-canonical-recommendation-gateway-entry-point-design.md)
+  declined to add one because doing it consistently "would require a separate
+  compatibility policy and removal schedule". That policy has not been written.
+
+There is no OpenAPI/springdoc artifact and no cross-version contract test, so nothing
+machine-readable defines what `v1` is. If versioning ever moves to the edge, the
+URL-versus-header choice is constrained by the CDN cache key — see
+[12_CDNS §1](12_CDNS.md#1-what-is-cached-and-what-isnt) — and by the exact-path
+`GATEWAY_PUBLIC_PATHS` and `PROTECTED_PREFIXES` lists, which would each need a new
+entry per version.
+
+Versioning *is* applied rigorously to non-HTTP contracts: the signed recommendation
+cursor, whose payload leads with a format version and whose predecessor `v2:` tokens
+are accepted only behind a compatibility flag
+([19_Pagination §4](19_Pagination.md#4-implemented-recommendation-optimization)), the
+`sr:g{version}:` shard generations with a bounded dual-read window
+([14_Partitioning](14_Partitioning.md#versioned-topology-and-online-reshard)), and
+model-artifact versions keyed into the result caches
+([02_Caching §3](02_Caching.md#3-recommendationcache--result-and-cold-start-caching)).
+
 ## 2. Identity propagation and credential stripping
 
 The gateway is the **trust boundary**, and
@@ -219,3 +271,11 @@ publish through the same registry.
 5. **`502` vs `503` is a real distinction.** `503` means the gateway declined
    (circuit open / no healthy endpoint / rate limit); `502` means it tried and the
    upstream was unreachable. They point at different problems during an incident.
+6. **A higher `/v2` does not mean more protection.** The canonical `POST /api/recommend`
+   with the default `model` strategy forwards to `/v2/recommend` on 8080
+   (`RecommendationV2Controller`), which is a thin `pipeline.recommend(query)`
+   passthrough. The `/api/v1/recommend` controller it bypasses is the one carrying the
+   per-user `ModelRateLimiter`, the submit-token CSRF check, A/B exposure logging, and
+   the degradation headers. Only `LoginInterceptor` (bearer parsing for `@NeedLogin`)
+   is global on 8080, so the edge's own limiter and breaker are the sole request-tier
+   controls on the canonical path.

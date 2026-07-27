@@ -1,9 +1,11 @@
 package com.recsys.api.rest;
 
+import com.recsys.application.model.ModelRuntimeProvider;
 import org.junit.jupiter.api.Test;
 import org.springframework.beans.factory.annotation.Autowired;
 import org.springframework.boot.test.autoconfigure.web.servlet.AutoConfigureMockMvc;
 import org.springframework.boot.test.context.SpringBootTest;
+import org.springframework.boot.test.mock.mockito.MockBean;
 import org.springframework.http.MediaType;
 import org.springframework.test.web.servlet.MockMvc;
 
@@ -16,6 +18,7 @@ import static org.springframework.test.web.servlet.result.MockMvcResultMatchers.
 class SequentialStubIntegrationTest {
 
     @Autowired MockMvc mockMvc;
+    @MockBean ModelRuntimeProvider modelRuntimeProvider;
 
     @Test
     void sequentialEndpoint_returns501NotImplemented() throws Exception {

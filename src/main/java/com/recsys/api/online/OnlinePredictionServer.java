@@ -3,6 +3,7 @@ package com.recsys.api.online;
 import com.recsys.application.online.OnlineServices;
 import com.recsys.application.online.OnlineBlendingPipeline;
 import com.recsys.application.online.OnlineRecommendationService;
+import com.recsys.application.pagination.RecommendationPaginationRuntime;
 import com.recsys.application.consistency.ConsistencyTokenCodec;
 import com.recsys.application.consistency.ConsistencyWaiter;
 import com.recsys.application.consistency.RedisLineageReader;
@@ -136,11 +137,17 @@ public final class OnlinePredictionServer {
                             .build());
             OnlineRecommendationService recommendationService = new OnlineRecommendationService(
                     dataManager, recallService, onlineFeatureStore, topkStore, onlineLearner);
-            OnlineBlendingPipeline blendingPipeline = new OnlineBlendingPipeline(recommendationService);
+            PrometheusMeterRegistry registry = PrometheusMeterRegistries.defaultRegistry();
+            RecommendationPaginationRuntime pagination =
+                    RecommendationPaginationRuntime.fromEnvironment(
+                            registry, Clock.systemUTC());
+            OnlineBlendingPipeline blendingPipeline = new OnlineBlendingPipeline(
+                    recommendationService,
+                    pagination.coordinator(),
+                    pagination.maxCandidates());
             learnerFlushScheduler =
                     new LearnerFlushScheduler(onlineLearner, jedisPool, "bias:item", 30L);
             learnerFlushScheduler.start();
-            PrometheusMeterRegistry registry = PrometheusMeterRegistries.defaultRegistry();
             MySqlOutboxRepository metricsOutboxRepository = outboxRepository;
             ConsistencyMetrics consistencyMetrics = metricsOutboxRepository == null
                     ? new ConsistencyMetrics(registry)

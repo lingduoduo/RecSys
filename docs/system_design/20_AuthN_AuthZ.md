@@ -23,8 +23,9 @@ the rest are narrower gates or receipts.
 Three structural facts shape everything below:
 
 - **The gateway is the only front door.** `k8s/base/network-policy.yaml` restricts
-  ingress on 6010/7010/8080 to the `recsys-api-gateway` pod selector (model serving
-  additionally admits Prometheus from the `monitoring` namespace), so the backends'
+  ingress on 6010/7010/8080 to the `recsys-api-gateway` pod selector; catalog and
+  model serving additionally admit Prometheus from the `monitoring` namespace for
+  their `/metrics` scrape, and online serving admits nothing else. The backends'
   lack of their own authentication is a deliberate consequence, not an oversight.
 - **There is no authorization *model*.** No roles, no scopes, no per-resource
   ownership checks. A caller is authenticated or not; the single exception is the
@@ -197,9 +198,19 @@ the repo's best-shaped token: a **versioned** header (`{"alg":"HS256","typ":"ECT
 and a constructor that rejects a secret under 32 UTF-8 bytes. Semantics live in
 [15_Eventual_Consistency](15_Eventual_Consistency.md).
 
-By contrast the pagination cursor is encoded but **not** signed — see
-[19_Pagination §1](19_Pagination.md#1-current-recommendation-pagination) for the
-approved signing design.
+[`RecommendationCursorCodec`](../../src/main/java/com/recsys/application/pagination/RecommendationCursorCodec.java)
+is the same shape applied to pagination: an HMAC-SHA256 signature over a versioned
+(`VERSION = "3"`), user- and query-bound payload, with constant-time comparison, an
+issued-at expiry, a 2048-character ceiling, and an active/previous key pair for
+rotation. Unsigned `v2:` tokens are accepted only behind an explicit compatibility
+flag and upgrade on the next page. Mechanics are in
+[19_Pagination §4](19_Pagination.md#4-implemented-recommendation-optimization);
+key rotation is in
+[recommendation-cursor-key-rotation.md](../runbooks/recommendation-cursor-key-rotation.md).
+
+Neither token authenticates a caller — both bind data to a subject that the gateway
+already authenticated. They are the two places in the repo where a signed wire format
+is done properly, and worth copying from.
 
 ## 8. Testing
 

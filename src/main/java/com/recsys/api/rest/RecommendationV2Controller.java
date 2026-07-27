@@ -2,11 +2,9 @@ package com.recsys.api.rest;
 
 import com.recsys.domain.recommendation.RecommendationQuery;
 import com.recsys.domain.recommendation.RecommendationResult;
-import com.recsys.application.experiment.ABTestService;
-import com.recsys.application.model.OnnxInferencePipeline;
-import com.recsys.application.recommendation.RecommendationService;
 import com.recsys.application.recommendation.RecommendationPipeline;
 import com.recsys.application.recommendation.SequentialRecommendationPipeline;
+import org.springframework.beans.factory.annotation.Qualifier;
 import org.springframework.http.MediaType;
 import org.springframework.http.ResponseEntity;
 import org.springframework.web.bind.annotation.*;
@@ -17,9 +15,9 @@ public class RecommendationV2Controller {
     private final RecommendationPipeline onnxPipeline;
     private final RecommendationPipeline sequentialPipeline;
 
-    public RecommendationV2Controller(RecommendationService recommendationService,
-                                       ABTestService abTestService) {
-        this.onnxPipeline = new OnnxInferencePipeline(recommendationService, abTestService);
+    public RecommendationV2Controller(
+            @Qualifier("onnxRecommendationPipeline") RecommendationPipeline onnxPipeline) {
+        this.onnxPipeline = onnxPipeline;
         this.sequentialPipeline = new SequentialRecommendationPipeline();
     }
 
