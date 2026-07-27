@@ -69,7 +69,8 @@ class V2CrossPathLoadTest {
                         new User(1, "Alice"), "last_hour", "online",
                         List.of(), List.of(),
                         List.of(new Movie(7, "Film", 2020, List.of()))));
-        RecommendationPipeline online = new OnlineBlendingPipeline(onlineService);
+        RecommendationPipeline online =
+                new OnlineBlendingPipeline(onlineService, pagination(), MAX_CANDIDATES);
 
         // Path 1 — orchestrator
         MultiChannelRecallService recall = mock(MultiChannelRecallService.class);

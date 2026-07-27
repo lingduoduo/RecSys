@@ -4,6 +4,7 @@ import com.recsys.domain.prediction.ScoredItem;
 import com.recsys.api.request.RecommendRequest;
 import com.recsys.api.response.RecommendResponse;
 import com.recsys.application.experiment.ABTestService;
+import com.recsys.application.model.ModelRuntimeProvider;
 import com.recsys.application.recommendation.RecommendationService;
 import org.junit.jupiter.api.Test;
 import org.springframework.beans.factory.annotation.Autowired;
@@ -27,6 +28,7 @@ class ModelV2RecommendIntegrationTest {
     @Autowired MockMvc mockMvc;
     @MockBean RecommendationService recommendationService;
     @MockBean ABTestService abTestService;
+    @MockBean ModelRuntimeProvider modelRuntimeProvider;
 
     @Test
     void validRequest_returns200WithRecommendationResult() throws Exception {
@@ -42,6 +44,7 @@ class ModelV2RecommendIntegrationTest {
                 .andExpect(status().isOk())
                 .andExpect(jsonPath("$.userId").value("u1"))
                 .andExpect(jsonPath("$.items[0].itemId").value("42"))
+                .andExpect(jsonPath("$.hasMore").value(false))
                 .andExpect(jsonPath("$.trace.abTestVariant").value("training"));
     }
 

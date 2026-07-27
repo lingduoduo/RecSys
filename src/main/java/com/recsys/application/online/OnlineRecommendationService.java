@@ -70,7 +70,7 @@ public final class OnlineRecommendationService {
     private OnlineRecommendationResult recommend(OnlineRecommendationRequest request, boolean primaryFeatureRead) {
         User user = requireUser(request.userId());
         int k = Math.max(1, request.k());
-        int recallLimit = Math.min(Math.max(k * 4, 12), 100);
+        int recallLimit = Math.min(Math.max(k, 12), 10_000);
         String window = normalizeWindow(request.window());
 
         List<Integer> recentIds = primaryFeatureRead
@@ -80,7 +80,8 @@ public final class OnlineRecommendationService {
         for (int id : recentIds) excluded.add(String.valueOf(id));
 
         RecommendationQuery query =
-                new RecommendationQuery(String.valueOf(request.userId()), recallLimit, excluded, null);
+                new RecommendationQuery(
+                        String.valueOf(request.userId()), Math.min(k, 100), excluded, null);
         List<MovieCandidate> candidates = primaryFeatureRead
                 ? recallService.recallPrimary(query, recallLimit)
                 : recallService.recall(query, recallLimit);

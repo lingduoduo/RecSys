@@ -2,6 +2,11 @@ package com.recsys.api.online;
 
 import com.recsys.application.online.OnlineBlendingPipeline;
 import com.recsys.application.online.OnlineServices;
+import com.recsys.application.pagination.CursorPaginationService;
+import com.recsys.application.pagination.RecommendationCursorCodec;
+import com.recsys.application.pagination.RecommendationPaginationConfig;
+import com.recsys.application.pagination.RecommendationPaginationCoordinator;
+import com.recsys.application.pagination.RecommendationPaginationMetrics;
 import com.recsys.domain.online.OnlineRecommendationResult;
 import com.recsys.application.online.OnlineRecommendationService;
 
@@ -19,9 +24,12 @@ import com.recsys.domain.item.Movie;
 import com.recsys.domain.recommendation.RecommendationQuery;
 import com.recsys.domain.user.User;
 import com.recsys.application.recommendation.RecommendationPipeline;
+import io.micrometer.core.instrument.simple.SimpleMeterRegistry;
 import org.junit.jupiter.api.Test;
 import org.junit.jupiter.api.extension.RegisterExtension;
 
+import java.time.Clock;
+import java.time.Duration;
 import java.util.List;
 import java.util.Set;
 
@@ -32,6 +40,7 @@ import static org.mockito.Mockito.when;
 
 class OnlineV2RecommendIntegrationTest {
 
+    static final int MAX_CANDIDATES = 500;
     static final ObjectMapper MAPPER = new ObjectMapper();
     static final OnlineRecommendationService mockService =
             mock(OnlineRecommendationService.class);
@@ -48,7 +57,8 @@ class OnlineV2RecommendIntegrationTest {
     static final ServerExtension server = new ServerExtension() {
         @Override
         protected void configure(ServerBuilder sb) {
-            RecommendationPipeline pipeline = new OnlineBlendingPipeline(mockService);
+            RecommendationPipeline pipeline =
+                    new OnlineBlendingPipeline(mockService, pagination(), MAX_CANDIDATES);
             sb.service("/v2/recommend", new OnlineServices.RecommendV2(pipeline));
         }
     };
@@ -66,6 +76,7 @@ class OnlineV2RecommendIntegrationTest {
 
         assertThat(r.status()).isEqualTo(HttpStatus.OK);
         assertThat(r.contentUtf8()).contains("\"userId\":\"1\"");
+        assertThat(r.contentUtf8()).contains("\"hasMore\":false");
         assertThat(r.contentUtf8()).contains("\"strategy\"");
         assertThat(r.contentUtf8()).contains("\"window\"");
     }
@@ -82,5 +93,18 @@ class OnlineV2RecommendIntegrationTest {
                         HttpData.ofUtf8(body)));
 
         assertThat(r.status()).isEqualTo(HttpStatus.BAD_REQUEST);
+    }
+
+    private static RecommendationPaginationCoordinator pagination() {
+        RecommendationPaginationConfig config = new RecommendationPaginationConfig(
+                "online-v2-integration-signing-key".repeat(2),
+                null,
+                Duration.ofMinutes(15),
+                false,
+                MAX_CANDIDATES);
+        return new RecommendationPaginationCoordinator(
+                new RecommendationCursorCodec(config, Clock.systemUTC()),
+                new CursorPaginationService(),
+                new RecommendationPaginationMetrics(new SimpleMeterRegistry()));
     }
 }

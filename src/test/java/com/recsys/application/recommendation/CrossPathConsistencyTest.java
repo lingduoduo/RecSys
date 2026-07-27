@@ -77,7 +77,8 @@ class CrossPathConsistencyTest {
                         new User(1, "Alice"), "last_hour", "online",
                         List.of(), List.of(),
                         List.of(new Movie(7, "Film", 2020, List.of()))));
-        RecommendationPipeline path3 = new OnlineBlendingPipeline(onlineService);
+        RecommendationPipeline path3 =
+                new OnlineBlendingPipeline(onlineService, pagination(), MAX_CANDIDATES);
         RecommendationResult r3 = path3.recommend(query);
 
         // All three must return the same userId and non-empty items
