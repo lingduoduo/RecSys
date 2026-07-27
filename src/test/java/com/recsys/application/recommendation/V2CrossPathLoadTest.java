@@ -28,6 +28,8 @@ import org.junit.jupiter.api.Timeout;
 
 import java.time.Clock;
 import java.time.Duration;
+import java.time.Instant;
+import java.time.ZoneOffset;
 import java.util.*;
 import java.util.concurrent.*;
 import java.util.concurrent.atomic.AtomicInteger;
@@ -42,6 +44,8 @@ import static org.mockito.Mockito.when;
 class V2CrossPathLoadTest {
 
     private static final int MAX_CANDIDATES = 500;
+    private static final Clock FIXED_CLOCK = Clock.fixed(
+            Instant.parse("2026-07-27T12:00:00Z"), ZoneOffset.UTC);
     private static final int CONCURRENCY  = 15;
     private static final int TOTAL        = 150;
     private static final long TIMEOUT_S   = 60L;
@@ -136,7 +140,7 @@ class V2CrossPathLoadTest {
         RecommendationPaginationConfig config = new RecommendationPaginationConfig(
                 "a".repeat(32), null, Duration.ofMinutes(15), false, MAX_CANDIDATES);
         return new RecommendationPaginationCoordinator(
-                new RecommendationCursorCodec(config, Clock.systemUTC()),
+                new RecommendationCursorCodec(config, FIXED_CLOCK),
                 new CursorPaginationService(),
                 new RecommendationPaginationMetrics(new SimpleMeterRegistry()));
     }

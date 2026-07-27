@@ -232,7 +232,11 @@ The implementation is covered by:
   scores, query binding, and legacy migration.
 - Pagination tests for ties, removed anchors, score changes, insertions,
   exclusions, exact terminal pages, and ordering validation.
-- Cross-serving contract tests proving model and online paths agree.
+- Cross-serving contract tests proving model and online paths traverse the same
+  tuples, reject changed users or exclusions before source work, allow a changed
+  limit, upgrade legacy cursors, and terminate honestly at the candidate budget.
+- Direct HTTP tests proving invalid online cursors return only the generic
+  `400` message without invoking recommendation recall.
 - Resource-bound tests proving cursor validation precedes recall and recall
   exhaustion terminates honestly.
 - Generic MySQL lookahead tests.

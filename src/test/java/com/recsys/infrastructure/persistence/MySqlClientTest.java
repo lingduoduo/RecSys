@@ -119,7 +119,7 @@ class MySqlClientTest {
                         row -> new MillionScalePaginationSql.SeekCursor(row.createdAt(), row.id()),
                         rs -> new Row(rs.getInt("id"), rs.getString("created_at")));
 
-        assertThat(result.rows()).hasSize(2);
+        assertThat(result.rows()).extracting(Row::id).containsExactly(10, 20);
         assertThat(result.hasMore()).isFalse();
         assertThat(result.nextCursor()).isNull();
     }

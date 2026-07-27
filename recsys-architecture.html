@@ -127,7 +127,7 @@
 <rect x="38" y="148" width="398" height="76" rx="6" fill="rgba(6,78,59,.4)" stroke="#34d399" stroke-width="1.6"/>
 <text x="237" y="167" fill="#f8fafc" font-family="'JetBrains Mono',monospace" font-size="11" font-weight="700" text-anchor="middle">RecSysServer  :6010  (Armeria)</text>
 <text x="237" y="182" fill="#94a3b8" font-family="'JetBrains Mono',monospace" font-size="8" text-anchor="middle">GET /health /getuser /user /getmovie /item /movie  ·  /v1/catalog/movies?genre&amp;limit&amp;cursor (MySQL opt-in)</text>
-<text x="237" y="195" fill="#64748b" font-family="'JetBrains Mono',monospace" font-size="8" text-anchor="middle">GET /getrecommendation /recommendation?userId[&amp;k][&amp;seedMovieId][&amp;mode]  ·  POST /v2/recommend (seek-cursor 5×limit window)</text>
+<text x="237" y="195" fill="#64748b" font-family="'JetBrains Mono',monospace" font-size="8" text-anchor="middle">GET /getrecommendation /recommendation?userId[&amp;k][&amp;seedMovieId][&amp;mode]  ·  POST /v2/recommend (signed bounded live-keyset)</text>
 <text x="237" y="208" fill="#64748b" font-family="'JetBrains Mono',monospace" font-size="8" text-anchor="middle">GET /similar?movieId&amp;k  ·  POST /v1/models/recmodel:predict  ·  POST /setembedding  POST /setuserembedding (6-dim, TTL)</text>
 <text x="237" y="218" fill="#64748b" font-family="'JetBrains Mono',monospace" font-size="8" text-anchor="middle">Seeds Redis from classpath if empty · warm/cold probe u2vEmb · CATALOG_MAX_CONCURRENT_REQUESTS=64 · CATALOG_DRAIN_UTILIZATION=0.90</text>
 
@@ -157,7 +157,7 @@
 <rect x="38" y="362" width="398" height="86" rx="6" fill="#0f172a"/>
 <rect x="38" y="362" width="398" height="86" rx="6" fill="rgba(6,78,59,.3)" stroke="#34d399" stroke-width="1.4"/>
 <text x="237" y="381" fill="#f8fafc" font-family="'JetBrains Mono',monospace" font-size="10" font-weight="700" text-anchor="middle">POST /v2/recommend  ·  MySQL browse  ·  MillionScalePaginationSql</text>
-<text x="237" y="395" fill="#94a3b8" font-family="'JetBrains Mono',monospace" font-size="8" text-anchor="middle">seek cursor (score, itemId) keyset · RecommendationOrchestrator · 5×limit recall window · nextCursor null = end</text>
+<text x="237" y="395" fill="#94a3b8" font-family="'JetBrains Mono',monospace" font-size="8" text-anchor="middle">signed (score, itemId) keyset · bounded candidate window · exact lookahead · hasMore ↔ nextCursor</text>
 <text x="237" y="408" fill="#64748b" font-family="'JetBrains Mono',monospace" font-size="8" text-anchor="middle">Unknown non-blank userId → cold recall (no 404) · trace: candidateCount / rankedCount</text>
 <text x="237" y="421" fill="#64748b" font-family="'JetBrains Mono',monospace" font-size="8" text-anchor="middle">MySQL opt-in: MYSQL_ENABLED · MYSQL_CURSOR_SIGNING_KEY (≥32B HMAC) · Flyway migrations · idx_movies_genre_popularity_id</text>
 <text x="237" y="434" fill="#64748b" font-family="'JetBrains Mono',monospace" font-size="8" text-anchor="middle">cursorPage / delayedJoinPage / countWithCoveringIndex · MYSQL_QUERY_TIMEOUT_SECONDS=2 · status: 400/503/504/500</text>

@@ -30,17 +30,24 @@ import org.junit.jupiter.api.extension.RegisterExtension;
 
 import java.time.Clock;
 import java.time.Duration;
+import java.time.Instant;
+import java.time.ZoneOffset;
 import java.util.List;
 import java.util.Set;
 
 import static org.assertj.core.api.Assertions.assertThat;
 import static org.mockito.ArgumentMatchers.any;
 import static org.mockito.Mockito.mock;
+import static org.mockito.Mockito.clearInvocations;
+import static org.mockito.Mockito.never;
+import static org.mockito.Mockito.verify;
 import static org.mockito.Mockito.when;
 
 class OnlineV2RecommendIntegrationTest {
 
     static final int MAX_CANDIDATES = 500;
+    static final Clock FIXED_CLOCK = Clock.fixed(
+            Instant.parse("2026-07-27T12:00:00Z"), ZoneOffset.UTC);
     static final ObjectMapper MAPPER = new ObjectMapper();
     static final OnlineRecommendationService mockService =
             mock(OnlineRecommendationService.class);
@@ -95,6 +102,25 @@ class OnlineV2RecommendIntegrationTest {
         assertThat(r.status()).isEqualTo(HttpStatus.BAD_REQUEST);
     }
 
+    @Test
+    void invalidCursorReturnsGeneric400BeforeOnlineSourceWork() throws Exception {
+        clearInvocations(mockService);
+        String body = MAPPER.writeValueAsString(
+                new RecommendationQuery("1", 5, Set.of(), "not-a-valid-cursor"));
+
+        AggregatedHttpResponse response = server.blockingWebClient()
+                .execute(HttpRequest.of(
+                        RequestHeaders.of(
+                                HttpMethod.POST, "/v2/recommend",
+                                HttpHeaderNames.CONTENT_TYPE, "application/json"),
+                        HttpData.ofUtf8(body)));
+
+        assertThat(response.status()).isEqualTo(HttpStatus.BAD_REQUEST);
+        assertThat(response.contentUtf8())
+                .isEqualTo("{\"error\":\"Invalid recommendation cursor\"}");
+        verify(mockService, never()).recommend(any());
+    }
+
     private static RecommendationPaginationCoordinator pagination() {
         RecommendationPaginationConfig config = new RecommendationPaginationConfig(
                 "online-v2-integration-signing-key".repeat(2),
@@ -103,7 +129,7 @@ class OnlineV2RecommendIntegrationTest {
                 false,
                 MAX_CANDIDATES);
         return new RecommendationPaginationCoordinator(
-                new RecommendationCursorCodec(config, Clock.systemUTC()),
+                new RecommendationCursorCodec(config, FIXED_CLOCK),
                 new CursorPaginationService(),
                 new RecommendationPaginationMetrics(new SimpleMeterRegistry()));
     }

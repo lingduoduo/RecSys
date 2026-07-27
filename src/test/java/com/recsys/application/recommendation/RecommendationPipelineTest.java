@@ -20,6 +20,8 @@ import org.junit.jupiter.api.Test;
 
 import java.time.Clock;
 import java.time.Duration;
+import java.time.Instant;
+import java.time.ZoneOffset;
 import java.util.List;
 import java.util.Map;
 import java.util.Set;
@@ -32,6 +34,8 @@ import static org.mockito.Mockito.when;
 
 class RecommendationPipelineTest {
     private static final int MAX_CANDIDATES = 500;
+    private static final Clock FIXED_CLOCK = Clock.fixed(
+            Instant.parse("2026-07-27T12:00:00Z"), ZoneOffset.UTC);
 
     @Test
     void orchestratorImplementsPipelineInterface() {
@@ -61,7 +65,7 @@ class RecommendationPipelineTest {
         RecommendationPaginationConfig config = new RecommendationPaginationConfig(
                 "a".repeat(32), null, Duration.ofMinutes(15), false, MAX_CANDIDATES);
         return new RecommendationPaginationCoordinator(
-                new RecommendationCursorCodec(config, Clock.systemUTC()),
+                new RecommendationCursorCodec(config, FIXED_CLOCK),
                 new CursorPaginationService(),
                 new RecommendationPaginationMetrics(new SimpleMeterRegistry()));
     }

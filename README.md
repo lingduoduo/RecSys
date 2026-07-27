@@ -465,7 +465,8 @@ Architecture:
 - [Fault tolerance](docs/system_design/18_Fault_Tolerance.md) — resilience
   contracts, graceful drain, failure-path evidence, and status.
 - [Pagination](docs/system_design/19_Pagination.md) — current keyset and offset
-  implementations plus the approved signed live-keyset recommendation design.
+  implementations, including the shared signed live-keyset recommendation
+  contract used by model and online serving.
 
 Operational runbooks:
 
