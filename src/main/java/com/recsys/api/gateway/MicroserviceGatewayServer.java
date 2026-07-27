@@ -157,13 +157,7 @@ public final class MicroserviceGatewayServer {
                     authenticator);
         }
 
-        // Canonical recommendation endpoint — exact path takes precedence over the catch-all.
-        // Both spellings are registered because this is an exact Armeria route, not a route-table
-        // entry: the catch-all would normalize /api/v1/recommend to /api/recommend, which matches
-        // no route-table prefix and would 404.
-        sb.service("/api/recommend", recommendationService);
-        sb.service(ApiVersion.versioned(ApiVersion.DEFAULT_VERSION, "/api/recommend"),
-                recommendationService);
+        registerRecommendRoutes(sb, recommendationService);
 
         // Catch-all proxy — handles all non-LLM routes using the same forwarding pipeline.
         sb.service("prefix:/",
@@ -225,6 +219,17 @@ public final class MicroserviceGatewayServer {
                 .idleTimeout(Duration.ofMillis(idleMs))
                 .pingIntervalMillis(pingMs)
                 .build();
+    }
+
+    // Canonical recommendation endpoint — exact path takes precedence over the catch-all. Both
+    // spellings are registered because this is an exact Armeria route, not a route-table entry:
+    // the catch-all would normalize /api/v1/recommend to /api/recommend, which matches no
+    // route-table prefix and would 404. Extracted (mirroring registerLlmRoutes) so the
+    // registration can be exercised directly in MicroserviceGatewayServerTest.
+    static void registerRecommendRoutes(ServerBuilder sb, RecommendationGatewayService recommendationService) {
+        sb.service("/api/recommend", recommendationService);
+        sb.service(ApiVersion.versioned(ApiVersion.DEFAULT_VERSION, "/api/recommend"),
+                recommendationService);
     }
 
     static void registerLlmRoutes(
