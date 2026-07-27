@@ -140,7 +140,7 @@ unlimited fail-open behavior for rollback. The limiter is consumed by the online
 serving path (7010) after local admission, and its state is exposed via `/online/ops`.
 The design and the NTP-synced-clock caveat (the ≈1× bound assumes synced wall
 clocks) are covered in the [Fault Tolerance
-investigation](18_Fault_Tolerance.md#rate-limiters--fail-open-with-an-embedded-breaker);
+investigation](18_Fault_Tolerance.md#rate-limiters--bounded-fail-open-with-an-embedded-breaker);
 the design spec is
 [redis-rate-limiter-sliding-window](../superpowers/specs/2026-07-20-redis-rate-limiter-sliding-window-design.md).
 
