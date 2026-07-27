@@ -319,20 +319,18 @@ Append to `src/test/java/com/recsys/api/gateway/GatewayServerIntegrationTest.jav
 ```java
     @Test
     void versionedPathProxiesIdenticallyToUnversioned() {
-        AggregatedHttpResponse unversioned = gateway.blockingWebClient()
-                .get("/api/movies/movie?id=1");
-        AggregatedHttpResponse versioned = gateway.blockingWebClient()
-                .get("/api/v1/movies/movie?id=1");
+        AggregatedHttpResponse unversioned = gateway.blockingWebClient().get("/api/recsys/health");
+        AggregatedHttpResponse versioned = gateway.blockingWebClient().get("/api/v1/recsys/health");
 
         assertThat(versioned.status()).isEqualTo(unversioned.status());
         // The upstream echoes the path it was called with: the version segment must be gone.
         assertThat(versioned.contentUtf8()).isEqualTo(unversioned.contentUtf8());
-        assertThat(versioned.contentUtf8()).contains("\"path\":\"/movie\"");
+        assertThat(versioned.contentUtf8()).contains("\"path\":\"/health\"");
     }
 
     @Test
     void unsupportedVersionIsRejectedWith400() {
-        AggregatedHttpResponse response = gateway.blockingWebClient().get("/api/v2/movies/movie?id=1");
+        AggregatedHttpResponse response = gateway.blockingWebClient().get("/api/v2/recsys/health");
 
         assertThat(response.status()).isEqualTo(HttpStatus.BAD_REQUEST);
         assertThat(response.contentUtf8()).contains("unsupported API version: v2");
@@ -341,8 +339,8 @@ Append to `src/test/java/com/recsys/api/gateway/GatewayServerIntegrationTest.jav
 
     @Test
     void pathThatMerelyLooksLikeAVersionIsNotStripped() {
-        // "/api/v1x" is a resource segment, not v1 — it must not match any route.
-        AggregatedHttpResponse response = gateway.blockingWebClient().get("/api/v1x/movies");
+        // "/api/v1x" is a resource segment, not v1 — it must not be stripped, so no route matches.
+        AggregatedHttpResponse response = gateway.blockingWebClient().get("/api/v1x/recsys/health");
 
         assertThat(response.status()).isEqualTo(HttpStatus.NOT_FOUND);
     }
@@ -451,30 +449,38 @@ The catch-all handled Task 2. These two entry points are registered as their own
 
 - [ ] **Step 1: Write the failing test**
 
-Append to `GatewayServerIntegrationTest`:
+**First**, register the versioned twin in the harness. `GatewayServerIntegrationTest` builds its own `ServerBuilder` rather than calling `MicroserviceGatewayServer`, so it must mirror the twin registration or these tests cannot pass. Replace the final registration block in the gateway `ServerExtension.configure`:
+
+```java
+            RecommendationGatewayService recommendationService =
+                    new RecommendationGatewayService(routes, forwarder, auth);
+            sb.service("/health", new GatewayHealthService(routes, timeout, cbs, GATEWAY_SELF_PORT))
+              .service("/api/recommend", recommendationService)
+              // Mirrors MicroserviceGatewayServer: the canonical endpoint is an exact Armeria
+              // route, so the versioned spelling needs its own registration.
+              .service("/api/v1/recommend", recommendationService)
+              .service("prefix:/", new GatewayProxyService(routes, forwarder, auth));
+```
+
+**Then** append the tests:
 
 ```java
     @Test
     void versionedCanonicalRecommendBehavesLikeUnversioned() {
-        AggregatedHttpResponse response = gateway.blockingWebClient().execute(
-                com.linecorp.armeria.common.RequestHeaders.of(
-                        HttpMethod.POST, "/api/v1/recommend",
-                        com.linecorp.armeria.common.HttpHeaderNames.CONTENT_TYPE, "application/json"),
-                "{\"userId\":\"1\",\"strategy\":\"online\"}");
+        AggregatedHttpResponse response = gateway.blockingWebClient().post(
+                "/api/v1/recommend", "{\"userId\":42,\"strategy\":\"online\"}");
 
         assertThat(response.status()).isEqualTo(HttpStatus.OK);
         // Dispatched to the online backend, and the strategy selector was stripped from the body.
         assertThat(response.contentUtf8()).contains("\"upstream\":\"online\"");
+        assertThat(response.contentUtf8()).contains("\"path\":\"/v2/recommend\"");
         assertThat(response.contentUtf8()).doesNotContain("strategy");
     }
 
     @Test
     void versionedCanonicalRecommendRejectsUnsupportedVersion() {
-        AggregatedHttpResponse response = gateway.blockingWebClient().execute(
-                com.linecorp.armeria.common.RequestHeaders.of(
-                        HttpMethod.POST, "/api/v2/recommend",
-                        com.linecorp.armeria.common.HttpHeaderNames.CONTENT_TYPE, "application/json"),
-                "{\"userId\":\"1\"}");
+        AggregatedHttpResponse response = gateway.blockingWebClient().post(
+                "/api/v2/recommend", "{\"userId\":42}");
 
         assertThat(response.status()).isEqualTo(HttpStatus.BAD_REQUEST);
         assertThat(response.contentUtf8()).contains("unsupported API version: v2");
@@ -484,10 +490,10 @@ Append to `GatewayServerIntegrationTest`:
 - [ ] **Step 2: Run the test to verify it fails**
 
 ```bash
-JAVA_HOME=$(/usr/libexec/java_home -v 17) mvn test -Dtest=GatewayServerIntegrationTest#versionedCanonicalRecommendBehavesLikeUnversioned+versionedCanonicalRecommendRejectsUnsupportedVersion
+JAVA_HOME=$(/usr/libexec/java_home -v 17) mvn test -Dtest='GatewayServerIntegrationTest#versionedCanonicalRecommend*'
 ```
 
-Expected: FAIL. `/api/v1/recommend` falls through to the catch-all, which normalizes it to `/api/recommend` — a path with no matching *route-table* entry — so it returns `404 "no route found"` rather than dispatching by strategy.
+Expected: FAIL — `versionedCanonicalRecommendRejectsUnsupportedVersion` gets `200` instead of `400`, because `RecommendationGatewayService` does not yet reject unsupported versions.
 
 - [ ] **Step 3: Implement — normalize in `RecommendationGatewayService`**
 
@@ -888,19 +894,55 @@ Add the import:
 import com.recsys.application.gateway.ApiDeprecationDecorator;
 ```
 
-- [ ] **Step 6: Add the integration assertion**
+- [ ] **Step 6: Add integration coverage**
 
-Append to `GatewayServerIntegrationTest`:
+The harness must actually register the decorator, or these assertions prove nothing. In the
+gateway `ServerExtension.configure`, before the service registrations, add:
+
+```java
+            // Server-wide, with an explicit sunset so the headers are live in this harness.
+            sb.decorator(ApiDeprecationDecorator.fromEnvironment(
+                    name -> "GATEWAY_DEPRECATION_SUNSET".equals(name) ? "2027-07-27" : null)
+                    .newDecorator());
+```
+
+with the import `com.recsys.application.gateway.ApiDeprecationDecorator`. Then append:
 
 ```java
     @Test
-    void deprecationHeadersAreAbsentWhenSunsetIsNotConfigured() {
-        // The test gateway is built without GATEWAY_DEPRECATION_SUNSET, so the decorator is a
-        // no-op. This pins the default: no half-promise without a published sunset date.
-        AggregatedHttpResponse response = gateway.blockingWebClient().get("/api/movies/movie?id=1");
+    void unversionedPathCarriesDeprecationHeadersAndSuccessorLink() {
+        AggregatedHttpResponse r = gateway.blockingWebClient().get("/api/recsys/health");
 
-        assertThat(response.headers().get("deprecation")).isNull();
-        assertThat(response.headers().get("sunset")).isNull();
+        assertThat(r.headers().get("deprecation")).isEqualTo("true");
+        assertThat(r.headers().get("sunset")).isEqualTo("Tue, 27 Jul 2027 00:00:00 GMT");
+        assertThat(r.headers().get("link"))
+                .isEqualTo("</api/v1/recsys/health>; rel=\"successor-version\"");
+    }
+
+    @Test
+    void versionedPathCarriesNoDeprecationHeaders() {
+        AggregatedHttpResponse r = gateway.blockingWebClient().get("/api/v1/recsys/health");
+
+        assertThat(r.headers().get("deprecation")).isNull();
+        assertThat(r.headers().get("sunset")).isNull();
+        assertThat(r.headers().get("link")).isNull();
+    }
+
+    @Test
+    void aliasRouteStaysDeprecatedWhenVersionedButCarriesNoSuccessorLink() {
+        // /api/model is a back-compat alias, deprecated for a different reason than the
+        // unversioned spelling — and it has no mechanically equivalent successor.
+        AggregatedHttpResponse r = gateway.blockingWebClient().get("/api/v1/model/health");
+
+        assertThat(r.headers().get("deprecation")).isEqualTo("true");
+        assertThat(r.headers().get("link")).isNull();
+    }
+
+    @Test
+    void healthIsExemptFromDeprecationHeaders() {
+        AggregatedHttpResponse r = gateway.blockingWebClient().get("/health");
+
+        assertThat(r.headers().get("deprecation")).isNull();
     }
 ```
 
