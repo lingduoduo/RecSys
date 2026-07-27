@@ -462,6 +462,11 @@ Architecture:
   `docs/system_design/README.md` index.
 - [API gateway](docs/system_design/09_API_Gateway.md) — route ownership,
   authentication, health aggregation, circuit breakers, and metrics.
+- [API versioning](docs/system_design/09_API_Gateway.md#api-versioning-and-deprecation)
+  — why the public surface is unversioned, the three internal URL conventions, why
+  `/v2` means "different pipeline" rather than "next generation", and the absent
+  deprecation policy. Edge cache-key constraints are in
+  [12_CDNS §1](docs/system_design/12_CDNS.md#1-what-is-cached-and-what-isnt).
 - [Microservices](docs/system_design/10_MicroServices.md) — service boundaries,
   entry points, deployment model, and communication.
 - [Fault tolerance](docs/system_design/18_Fault_Tolerance.md) — resilience

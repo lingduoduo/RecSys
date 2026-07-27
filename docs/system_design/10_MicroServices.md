@@ -132,6 +132,11 @@ The economy of one codebase shows up as genuinely shared building blocks:
   `/health` + `/health/ready`, online `/health/live` + `/health/ready` + `/online/ops`
   + `/metrics`, model `/health/live` + `/health/ready` + `/actuator/prometheus`. The
   probes in each Deployment match its service's surface.
+- **URL versioning is per-service, not shared** — 6010 and 7010 use root `/v1/…` and
+  `/v2/…` next to unversioned legacy routes, while 8080 (Spring) uses both `/api/v1/…`
+  and root `/v2/…`. The gateway's own prefixes carry no version at all, so the edge
+  contract and the backend contracts version independently — or, in practice, don't.
+  See [09_API_Gateway §1](09_API_Gateway.md#1-routing-and-prefix-strip).
 
 ## 6. Testing and module structure
 
@@ -148,6 +153,8 @@ compile-excludes rather than an automated rule.
 1. **One image is a coupling as well as an economy.** All four services ship from the
    same JAR, so a dependency bump or a shared-code change redeploys everyone; the win
    is no drift between services, the cost is no independent dependency versioning.
+   API versioning is uncoupled in the opposite direction: each service picked its own
+   URL convention and nothing reconciles them at the edge.
 2. **Layering is conventional, not enforced.** Without an ArchUnit guard, an
    `api → infrastructure` shortcut or a `domain → application` back-edge would compile;
    the Package Map and review are the only backstop.

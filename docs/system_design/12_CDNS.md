@@ -54,7 +54,14 @@ Both cached behaviors are **GET/HEAD only**, `redirect-to-https`, `Compress: tru
   cache arbitrarily and act as an origin-DoS amplifier.
 - **`HeaderBehavior: none`** — `Authorization` is **not** part of the cache key on
   cached routes (a JWT-keyed cache would fragment per user and never hit). This is
-  what forces the "these routes must be public" decision in §2.
+  what forces the "these routes must be public" decision in §2. It also means **no
+  request header can vary a cached response**: a header-based API version
+  (`Accept-Version`, `X-API-Version`) would be invisible to the cache key, so a v1
+  and a v2 client would collide on one cached object and whichever missed first would
+  pin its body for every other version. The repo has no header versioning today
+  ([09_API_Gateway §1](09_API_Gateway.md#1-routing-and-prefix-strip)), and this cache
+  behavior is the concrete reason a version belongs in the path — a distinct URL is a
+  distinct cache key for free.
 - **`CookieBehavior: none`.**
 
 TTL comes from the origin's `Cache-Control: s-maxage`
@@ -252,3 +259,10 @@ POPs), and coarser whole-cache invalidation. See
 5. **Everything is out-of-band.** No IaC — the distribution, WebACL, prefix-list
    pinning, and DNS are script/console-managed, so drift is possible and the
    runbooks are the source of truth.
+6. **A new API version is a new edge config, not just a new route.** Because the two
+   cache behaviors are pinned to the literal `/api/catalog/item*` and
+   `/api/catalog/similar*` patterns, and `GATEWAY_PUBLIC_PATHS` lists exact paths, a
+   versioned `/api/v2/catalog/item` stays uncached and non-public until both the
+   configmap and the distribution are updated — configmap first. Adding the cache
+   behavior first makes CloudFront drop `Authorization` on a path the origin still
+   requires it for, which turns every request into a `401`.
