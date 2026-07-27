@@ -1316,6 +1316,39 @@ In `CONFIG_GUIDE.md`, in the "Gateway, authentication, and LLM integration" tabl
 | `GATEWAY_DEPRECATION_SUNSET` | unset | ISO-8601 date published as the `Sunset` header on unversioned `/api` paths and the `/api/catalog`, `/api/model`, `/api/online` aliases. Unset or unparseable disables deprecation headers. Base ConfigMap sets `2027-07-27`. |
 ```
 
+- [ ] **Step 4b: Update `12_CDNS.md` — in the SAME commit as the config above**
+
+Moved here from Task 5. These edits describe the four cache behaviors, so they must land with the
+configuration that creates them — never before it, or the doc is false at that commit.
+
+In the §1 cache-behavior table, add two rows so all four behaviors appear:
+
+```markdown
+| `/api/v1/catalog/item*` | `recsys-item` (Cache) | 3600s (1h) | 86400s (24h) | `id` |
+| `/api/v1/catalog/similar*` | `recsys-similar` (Cache) | 300s (5min) | 3600s (1h) | `movieId`, `k` |
+```
+
+Then fix **both** now-stale sentences in that subsection — there are two, and missing the second is
+the specific defect the Task 5 review caught:
+
+- The sentence saying every route is uncacheable "unless it matches one of **two** explicit cache
+  behaviors" → four.
+- The sentence beginning "**Both** cached behaviors are GET/HEAD only, `redirect-to-https`,
+  `Compress: true`..." → all four; reword so it no longer implies a pair.
+
+Then replace sharp edge 6 — which currently *predicts* this work — with the shipped state:
+
+```markdown
+6. **A versioned path is a separate cache key, and a separate behavior.** The versioned and
+   unversioned catalog reads are four distinct CloudFront behaviors over the same two cache
+   policies, so they occupy separate cache entries and warm independently. Adding a future
+   `/api/v2/...` means new behaviors again — the gateway normalizes the version away, but
+   the edge does not. Deploy order is one-way-dangerous: **gateway first, distribution
+   second.** Adding a cache behavior before the gateway can normalize that path makes
+   CloudFront drop `Authorization` on a path the origin still treats as private, turning
+   every request into a `401` on a cached behavior.
+```
+
 - [ ] **Step 5: Verify the nginx template parses**
 
 ```bash
@@ -1349,7 +1382,7 @@ that asserted on gateway paths.
 - [ ] **Step 8: Commit**
 
 ```bash
-git add scripts/create-cdn-distribution.sh docker/cdn/default.conf.template \
+git add scripts/create-cdn-distribution.sh docker/cdn/default.conf.template docs/system_design/12_CDNS.md \
         k8s/base/configmap.yaml CONFIG_GUIDE.md
 git commit -m "feat(cdn): cache the versioned catalog reads and publish the sunset date"
 ```

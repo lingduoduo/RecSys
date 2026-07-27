@@ -38,15 +38,12 @@ and
 
 The distribution is **default-deny**: `DefaultCacheBehavior` uses the managed
 `CachingDisabled` policy, so every route is uncacheable unless it matches one of
-the four explicit cache behaviors below — the versioned and unversioned catalog
-reads, each over the same two cache policies.
+two explicit cache behaviors.
 
 | Path pattern | Policy | `DefaultTTL` | `MaxTTL` | Cache key (query whitelist) |
 |---|---|---:|---:|---|
 | `/api/catalog/item*` | `recsys-item` (Cache) | 3600s (1h) | 86400s (24h) | `id` |
 | `/api/catalog/similar*` | `recsys-similar` (Cache) | 300s (5min) | 3600s (1h) | `movieId`, `k` |
-| `/api/v1/catalog/item*` | `recsys-item` (Cache) | 3600s (1h) | 86400s (24h) | `id` |
-| `/api/v1/catalog/similar*` | `recsys-similar` (Cache) | 300s (5min) | 3600s (1h) | `movieId`, `k` |
 | everything else, incl. `POST /api/recommend`, `/api/catalog/user` | `CachingDisabled` | — | — | — |
 
 Both cached behaviors are **GET/HEAD only**, `redirect-to-https`, `Compress: true`
@@ -262,11 +259,10 @@ POPs), and coarser whole-cache invalidation. See
 5. **Everything is out-of-band.** No IaC — the distribution, WebACL, prefix-list
    pinning, and DNS are script/console-managed, so drift is possible and the
    runbooks are the source of truth.
-6. **A versioned path is a separate cache key, and a separate behavior.** The versioned and
-   unversioned catalog reads are four distinct CloudFront behaviors over the same two cache
-   policies, so they occupy separate cache entries and warm independently. Adding a future
-   `/api/v2/...` means new behaviors again — the gateway normalizes the version away, but
-   the edge does not. Deploy order is one-way-dangerous: **gateway first, distribution
-   second.** Adding a cache behavior before the gateway can normalize that path makes
-   CloudFront drop `Authorization` on a path the origin still treats as private, turning
-   every request into a `401` on a cached behavior.
+6. **A new API version is a new edge config, not just a new route.** Because the two
+   cache behaviors are pinned to the literal `/api/catalog/item*` and
+   `/api/catalog/similar*` patterns, and `GATEWAY_PUBLIC_PATHS` lists exact paths, a
+   versioned `/api/v2/catalog/item` stays uncached and non-public until both the
+   configmap and the distribution are updated — configmap first. Adding the cache
+   behavior first makes CloudFront drop `Authorization` on a path the origin still
+   requires it for, which turns every request into a `401`.
