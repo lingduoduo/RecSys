@@ -38,15 +38,17 @@ and
 
 The distribution is **default-deny**: `DefaultCacheBehavior` uses the managed
 `CachingDisabled` policy, so every route is uncacheable unless it matches one of
-two explicit cache behaviors.
+four explicit cache behaviors.
 
 | Path pattern | Policy | `DefaultTTL` | `MaxTTL` | Cache key (query whitelist) |
 |---|---|---:|---:|---|
 | `/api/catalog/item*` | `recsys-item` (Cache) | 3600s (1h) | 86400s (24h) | `id` |
+| `/api/v1/catalog/item*` | `recsys-item` (Cache) | 3600s (1h) | 86400s (24h) | `id` |
 | `/api/catalog/similar*` | `recsys-similar` (Cache) | 300s (5min) | 3600s (1h) | `movieId`, `k` |
+| `/api/v1/catalog/similar*` | `recsys-similar` (Cache) | 300s (5min) | 3600s (1h) | `movieId`, `k` |
 | everything else, incl. `POST /api/recommend`, `/api/catalog/user` | `CachingDisabled` | — | — | — |
 
-Both cached behaviors are **GET/HEAD only**, `redirect-to-https`, `Compress: true`
+All four cached behaviors are **GET/HEAD only**, `redirect-to-https`, `Compress: true`
 (gzip + brotli), and set three cache-key behaviors that matter:
 
 - **`QueryStringBehavior: whitelist`** — only the listed params form the cache key.
@@ -194,8 +196,9 @@ Ordered rollout, rollback, and the SG/prefix-list commands are in
 ## 5. Local CDN stand-in
 
 [`docker-compose.cdn.yml`](../../docker-compose.cdn.yml) runs an `nginx:1.27-alpine`
-container on **`:8090`** that mirrors the three CloudFront behaviors one-for-one, so
-the caching semantics can be run and observed with no AWS account.
+container on **`:8090`** that mirrors the five CloudFront behaviors one-for-one (the
+default-deny behavior plus the four cached catalog behaviors), so the caching
+semantics can be run and observed with no AWS account.
 
 ```bash
 # 1. Gateway + backends on the host (gateway listens on :8010)
@@ -211,10 +214,13 @@ curl -sI -X POST localhost:8090/api/recommend | grep -i x-cache                 
 
 The [nginx template](../../docker/cdn/default.conf.template) reproduces the CloudFront
 semantics deliberately: `location /` is a default-deny mirror
-(`proxy_cache_bypass 1; proxy_no_cache 1;` → `X-Cache: BYPASS`); the two catalog
-locations set `proxy_cache_key "$uri|$arg_id"` and `"$uri|$arg_movieId|$arg_k"`
-(only the whitelisted params) and deliberately omit `proxy_cache_valid` so lifetime
-comes only from the origin's `s-maxage`; every location injects the
+(`proxy_cache_bypass 1; proxy_no_cache 1;` → `X-Cache: BYPASS`); the four catalog
+locations (versioned and unversioned item, versioned and unversioned similar) set
+`proxy_cache_key "$uri|$arg_id"` for both item spellings and
+`"$uri|$arg_movieId|$arg_k"` for both similar spellings (only the whitelisted params;
+`$uri` keeps the versioned and unversioned spellings in separate cache entries) and
+deliberately omit `proxy_cache_valid` so lifetime comes only from the origin's
+`s-maxage`; every location injects the
 `x-origin-secret` header (`CDN_ORIGIN_SECRET` must match `GATEWAY_ORIGIN_SECRET` or
 every request 403s). Purge with `./scripts/invalidate-local-cdn.sh` (whole cache —
 nginx OSS has no path-scoped invalidation).
@@ -259,10 +265,11 @@ POPs), and coarser whole-cache invalidation. See
 5. **Everything is out-of-band.** No IaC — the distribution, WebACL, prefix-list
    pinning, and DNS are script/console-managed, so drift is possible and the
    runbooks are the source of truth.
-6. **A new API version is a new edge config, not just a new route.** Because the two
-   cache behaviors are pinned to the literal `/api/catalog/item*` and
-   `/api/catalog/similar*` patterns, and `GATEWAY_PUBLIC_PATHS` lists exact paths, a
-   versioned `/api/v2/catalog/item` stays uncached and non-public until both the
-   configmap and the distribution are updated — configmap first. Adding the cache
-   behavior first makes CloudFront drop `Authorization` on a path the origin still
-   requires it for, which turns every request into a `401`.
+6. **A versioned path is a separate cache key, and a separate behavior.** The versioned and
+   unversioned catalog reads are four distinct CloudFront behaviors over the same two cache
+   policies, so they occupy separate cache entries and warm independently. Adding a future
+   `/api/v2/...` means new behaviors again — the gateway normalizes the version away, but
+   the edge does not. Deploy order is one-way-dangerous: **gateway first, distribution
+   second.** Adding a cache behavior before the gateway can normalize that path makes
+   CloudFront drop `Authorization` on a path the origin still treats as private, turning
+   every request into a `401` on a cached behavior.

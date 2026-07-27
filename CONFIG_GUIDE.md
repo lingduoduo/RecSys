@@ -163,6 +163,7 @@ and host; malformed values stop gateway startup.
 | `GATEWAY_ALLOW_ANONYMOUS` | `false` | Explicit local-development escape hatch when neither API keys nor Cognito is configured. Do not enable in production. The base ConfigMap sets `true`; the EKS patch changes it to `false`. |
 | `GATEWAY_PUBLIC_PATHS` | `/health` | Comma-separated boundary-matched public paths. Base adds two non-sensitive catalog reads; do not use a broad catalog prefix. |
 | `GATEWAY_ORIGIN_SECRET` | unset | Comma-separated accepted origin secrets; enables direct-origin rejection. Keep in a Secret. |
+| `GATEWAY_DEPRECATION_SUNSET` | unset | ISO-8601 date published as the `Sunset` header on unversioned `/api` paths and the `/api/catalog`, `/api/model`, `/api/online` aliases. Unset or unparseable disables deprecation headers. Base ConfigMap sets `2027-07-27`. |
 | `GATEWAY_UPSTREAM_HEALTHCHECK_ENABLED` / `GATEWAY_UPSTREAM_HEALTHCHECK_INTERVAL_MS` | `true` / `10000` | Enables and schedules gateway upstream health checks. |
 | `RECSYS_LOGIN_API_KEYS` (Spring `recsys.login.api-keys`) | empty | Comma-separated API keys for model-serving `/api/v1/auth/login`; empty disables that login endpoint. Keep keys in a Secret. This is separate from gateway authentication. |
 | `RECSYS_SUBMIT_TOKEN_ENABLED` / `RECSYS_SUBMIT_TOKEN_TTL_SECONDS` / `RECSYS_SUBMIT_TOKEN_KEY_PREFIX` | `false` / `300` / `submit_token:` | Optional one-use Redis token protection for model-serving recommendation submits. TTL must be `1..86400`; a blank prefix resets to `submit_token:`. |
