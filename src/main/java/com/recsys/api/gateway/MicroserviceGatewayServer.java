@@ -1,4 +1,5 @@
 package com.recsys.api.gateway;
+import com.recsys.application.gateway.ApiVersion;
 import com.recsys.application.gateway.GatewayProxyService;
 import com.recsys.application.gateway.GatewayRequestForwarder;
 import com.recsys.application.gateway.LlmProxyService;
@@ -157,7 +158,12 @@ public final class MicroserviceGatewayServer {
         }
 
         // Canonical recommendation endpoint — exact path takes precedence over the catch-all.
+        // Both spellings are registered because this is an exact Armeria route, not a route-table
+        // entry: the catch-all would normalize /api/v1/recommend to /api/recommend, which matches
+        // no route-table prefix and would 404.
         sb.service("/api/recommend", recommendationService);
+        sb.service(ApiVersion.versioned(ApiVersion.DEFAULT_VERSION, "/api/recommend"),
+                recommendationService);
 
         // Catch-all proxy — handles all non-LLM routes using the same forwarding pipeline.
         sb.service("prefix:/",
@@ -243,9 +249,17 @@ public final class MicroserviceGatewayServer {
                     maxRetryWaitMs,
                     authenticator,
                     llmClientFactory);
+            // LLM routes are filtered out of proxyRoutes, so the catch-all cannot serve them.
+            // Register the versioned twin explicitly or /api/v1/llm/... would 404.
             sb.service(
                     com.linecorp.armeria.server.Route.builder()
                             .pathPrefix(llmRoute.prefix() + "/")
+                            .build(),
+                    llmProxyService);
+            sb.service(
+                    com.linecorp.armeria.server.Route.builder()
+                            .pathPrefix(ApiVersion.versioned(
+                                    ApiVersion.DEFAULT_VERSION, llmRoute.prefix()) + "/")
                             .build(),
                     llmProxyService);
         }

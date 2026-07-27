@@ -91,8 +91,13 @@ class GatewayServerIntegrationTest {
             GatewayRequestForwarder forwarder =
                     new GatewayRequestForwarder(routes, timeout, cbs, rateLimiter);
 
+            RecommendationGatewayService recommendationService =
+                    new RecommendationGatewayService(routes, forwarder, auth);
             sb.service("/health", new GatewayHealthService(routes, timeout, cbs, GATEWAY_SELF_PORT))
-              .service("/api/recommend", new RecommendationGatewayService(routes, forwarder, auth))
+              .service("/api/recommend", recommendationService)
+              // Mirrors MicroserviceGatewayServer: the canonical endpoint is an exact Armeria
+              // route, so the versioned spelling needs its own registration.
+              .service("/api/v1/recommend", recommendationService)
               .service("prefix:/", new GatewayProxyService(routes, forwarder, auth));
         }
     };
@@ -285,5 +290,26 @@ class GatewayServerIntegrationTest {
                 .execute(headers);
 
         assertThat(response.status()).isNotEqualTo(HttpStatus.UNAUTHORIZED);
+    }
+
+    @Test
+    void versionedCanonicalRecommendBehavesLikeUnversioned() {
+        AggregatedHttpResponse response = gateway.blockingWebClient().post(
+                "/api/v1/recommend", "{\"userId\":42,\"strategy\":\"online\"}");
+
+        assertThat(response.status()).isEqualTo(HttpStatus.OK);
+        // Dispatched to the online backend, and the strategy selector was stripped from the body.
+        assertThat(response.contentUtf8()).contains("\"upstream\":\"online\"");
+        assertThat(response.contentUtf8()).contains("\"path\":\"/v2/recommend\"");
+        assertThat(response.contentUtf8()).doesNotContain("strategy");
+    }
+
+    @Test
+    void versionedCanonicalRecommendRejectsUnsupportedVersion() {
+        AggregatedHttpResponse response = gateway.blockingWebClient().post(
+                "/api/v2/recommend", "{\"userId\":42}");
+
+        assertThat(response.status()).isEqualTo(HttpStatus.BAD_REQUEST);
+        assertThat(response.contentUtf8()).contains("unsupported API version: v2");
     }
 }
