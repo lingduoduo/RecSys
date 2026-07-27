@@ -83,6 +83,24 @@ class ApiVersionTest {
     }
 
     @Test
+    void parse_handlesBareApiRootWithTrailingSlash() {
+        ApiVersion v = ApiVersion.parse("/api/");
+        assertThat(v.version()).isEqualTo(1);
+        assertThat(v.path()).isEqualTo("/api/");
+        assertThat(v.explicit()).isFalse();
+        assertThat(v.supported()).isTrue();
+    }
+
+    @Test
+    void parse_handlesBareApiRoot() {
+        ApiVersion v = ApiVersion.parse("/api");
+        assertThat(v.version()).isEqualTo(1);
+        assertThat(v.path()).isEqualTo("/api");
+        assertThat(v.explicit()).isFalse();
+        assertThat(v.supported()).isTrue();
+    }
+
+    @Test
     void unsupportedMessage_namesTheSupportedVersions() {
         assertThat(ApiVersion.parse("/api/v2/users").unsupportedMessage())
                 .isEqualTo("unsupported API version: v2; supported: v1");

@@ -231,7 +231,7 @@ public record ApiVersion(int version, String path, boolean explicit) {
             return implicit(normalized);
         }
         int digitsStart = API_PREFIX.length() + 1;
-        if (normalized.charAt(API_PREFIX.length()) != 'v') {
+        if (normalized.length() <= API_PREFIX.length() || normalized.charAt(API_PREFIX.length()) != 'v') {
             return implicit(normalized);
         }
         int cursor = digitsStart;
