@@ -463,10 +463,14 @@ Architecture:
 - [API gateway](docs/system_design/09_API_Gateway.md) — route ownership,
   authentication, health aggregation, circuit breakers, and metrics.
 - [API versioning](docs/system_design/09_API_Gateway.md#api-versioning-and-deprecation)
-  — why the public surface is unversioned, the three internal URL conventions, why
-  `/v2` means "different pipeline" rather than "next generation", and the absent
-  deprecation policy. Edge cache-key constraints are in
+  — the gateway-owned `/api/v{n}` path version, why an unversioned `/api` path is
+  implicit v1, why `/v2` on the internal services means "different pipeline" rather
+  than "next generation", and the `Deprecation`/`Sunset`/`Link` headers. Edge
+  cache-key constraints are in
   [12_CDNS §1](docs/system_design/12_CDNS.md#1-what-is-cached-and-what-isnt).
+- [API compatibility policy](docs/api-compatibility-policy.md) — what counts as a
+  breaking change, the two-version support window, twelve-month deprecation notice,
+  and the `Deprecation` / `Sunset` headers clients should watch.
 - [Microservices](docs/system_design/10_MicroServices.md) — service boundaries,
   entry points, deployment model, and communication.
 - [Fault tolerance](docs/system_design/18_Fault_Tolerance.md) — resilience

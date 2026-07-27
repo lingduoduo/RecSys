@@ -84,55 +84,56 @@ with `Cache-Control: no-store` so CloudFront never caches an error.
 
 ### API versioning and deprecation
 
-The public surface is **unversioned**. Every prefix in `MicroserviceRoute.defaults()`
-is `/api/<resource>` with no version segment, and there is no header-based scheme
-either — no `Accept-Version`, no `X-API-Version`, and no versioned media type
-(every `produces` is plain `application/json`). Version numbers exist only on the
-*internal* hop after prefix-strip, where three conventions coexist:
+The public surface is versioned in the path, immediately after `/api`:
+`POST /api/v1/recommend`, `GET /api/v1/catalog/item`. The **gateway owns the version** —
+backends keep their existing internal paths, so four services do not each reimplement
+versioning.
 
-| Convention | Service | Examples |
-|---|---:|---|
-| Root `/v1/…` `/v2/…` | 6010, 7010 | `/v1/models/recmodel:predict`, `/v1/catalog/movies`, `/v2/recommend` |
-| Spring `/api/v1/…` | 8080 | `/api/v1/recommend`, `/api/v1/auth`, `/api/v1/model/versions` |
-| Spring root `/v2/…` | 8080 | `/v2/recommend`, `/v2/sequential/recommend` |
-| Unversioned | 6010, 7010 | `/getrecommendation`, `/similar`, `/item`, `/online/features` |
+**Edge paths carry API versions; internal paths carry pipeline names.** `/api/v1/recommend`
+is API version 1. `/v2/recommend` on 6010, 7010, and 8080 is the *v2 pipeline* — the shared
+recall → rank → hydrate → paginate contract that `CrossPathConsistencyTest` pins — and is
+**not** API version 2. Internal paths are not part of the public contract and are
+unreachable from outside the cluster.
 
-Three consequences follow from keeping the version *behind* the edge:
+[`ApiVersion`](../../src/main/java/com/recsys/application/gateway/ApiVersion.java) strips a
+leading `/api/v{n}` segment, where `{n}` is one to four digits ending at a segment boundary.
+Anything else is an ordinary path segment: `/api/version/x` and `/api/v1x/foo` are untouched.
+An unversioned `/api` path is **implicit v1**, which is what keeps every existing client
+working. An explicit unsupported version returns `400`
+(`{"error":"unsupported API version: v2; supported: v1"}`) rather than `404`, matching the
+precedent already set by the canonical `/api/recommend` strategy validation.
 
-- **`/v2` denotes a pipeline variant, not an API generation.** On 6010,
-  `RecommendationService.V1` serves `/getrecommendation` while `V2` serves
-  `/v2/recommend` — but V2 is the orchestrator pipeline (recall → rank → hydrate →
-  paginate with a cursor), not a compatible successor to V1. The same split exists on
-  7010 and 8080. At the edge, selection is done by the JSON `strategy` field instead,
-  so content-based routing occupies the slot a version selector would.
-- **A version segment lands mid-path whenever it is exposed.** Prefix-strip passes the
-  suffix through verbatim, so the model service's version-management API is reachable
-  only as `/api/model/api/v1/model/versions`. Paths with no matching prefix —
-  `/api/v1/auth/login` among them — fall through to the catch-all and get
-  `404 "no route found"`.
-- **Deprecation is documentation-only.** `/api/catalog`, `/api/model`, and
-  `/api/online` are marked back-compat aliases in the table above, but no
-  `Deprecation` or `Sunset` response header is emitted anywhere. That was a deliberate
-  deferral: the
-  [canonical entry-point design](../superpowers/specs/2026-07-10-canonical-recommendation-gateway-entry-point-design.md)
-  declined to add one because doing it consistently "would require a separate
-  compatibility policy and removal schedule". That policy has not been written.
+**Normalization strictly precedes authorization**, at all three entry points
+(`GatewayProxyService`, `RecommendationGatewayService`, `LlmProxyService`). `/api/v1/users`
+becomes `/api/users` before `authenticator.check` runs, so `PROTECTED_PREFIXES` and
+`GATEWAY_PUBLIC_PATHS` keep working with **no versioned entries** and a version segment
+cannot be used to slip past the never-public guard. The route table, rate-limit keys, and
+circuit-breaker names are likewise unchanged, because route matching still sees
+`/api/users`. Registering versioned prefixes in the route table instead would have required
+a versioned twin in each of those lists, where a missed entry is a silent auth bypass.
 
-There is no OpenAPI/springdoc artifact and no cross-version contract test, so nothing
-machine-readable defines what `v1` is. If versioning ever moves to the edge, the
-URL-versus-header choice is constrained by the CDN cache key — see
-[12_CDNS §1](12_CDNS.md#1-what-is-cached-and-what-isnt) — and by the exact-path
-`GATEWAY_PUBLIC_PATHS` and `PROTECTED_PREFIXES` lists, which would each need a new
-entry per version.
+Two entry points need explicit versioned twin registrations, because they are exact/prefix
+Armeria routes rather than route-table entries: the canonical `/api/recommend`, and each LLM
+route (LLM routes are filtered out of `proxyRoutes`, so the catch-all cannot serve them).
 
-Versioning *is* applied rigorously to non-HTTP contracts: the signed recommendation
-cursor, whose payload leads with a format version and whose predecessor `v2:` tokens
-are accepted only behind a compatibility flag
-([19_Pagination §4](19_Pagination.md#4-implemented-recommendation-optimization)), the
-`sr:g{version}:` shard generations with a bounded dual-read window
-([14_Partitioning](14_Partitioning.md#versioned-topology-and-online-reshard)), and
-model-artifact versions keyed into the result caches
-([02_Caching §3](02_Caching.md#3-recommendationcache--result-and-cold-start-caching)).
+[`ApiDeprecationDecorator`](../../src/main/java/com/recsys/application/gateway/ApiDeprecationDecorator.java)
+is a single server-wide decorator adding `Deprecation: true` and `Sunset` to two classes:
+
+| Class | Example | `Link: rel="successor-version"` |
+|---|---|---|
+| Unversioned spelling | `/api/catalog/item` | yes — `</api/v1/catalog/item>` |
+| Back-compat alias route | `/api/v1/catalog/item` | no |
+
+The alias routes (`/api/catalog`, `/api/model`, `/api/online`) stay deprecated even when
+versioned, because their deprecation is a different one: they duplicate the
+resource-oriented routes. No `Link` is emitted for them — they strip to different backend
+paths, so there is no mechanically equivalent successor to advertise. `/health` and
+`/metrics` are exempt. The decorator is a no-op when `GATEWAY_DEPRECATION_SUNSET` is unset,
+so a `Deprecation` header is never emitted without a published expiry.
+
+The contract itself — breaking vs additive, the two-version support window, the twelve-month
+notice, and why removal is never automatic — is in the
+[API compatibility policy](../api-compatibility-policy.md).
 
 ## 2. Identity propagation and credential stripping
 

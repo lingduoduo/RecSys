@@ -120,6 +120,13 @@ That boundary rule is also the trap: a bare `/api/catalog` entry *would* match
   have exposed a protected prefix — the guard silently saving you is itself a
   misconfiguration worth fixing.
 
+Version segments cannot be used to evade either mechanism. The gateway normalizes
+`/api/v1/users` to `/api/users` *before* `authenticator.check` runs (see
+[09_API_Gateway §1](09_API_Gateway.md#api-versioning-and-deprecation)), so `PROTECTED_PREFIXES`
+and `GATEWAY_PUBLIC_PATHS` are matched against version-free paths and need no versioned
+entries. Had versioned prefixes instead been registered in the route table, every entry in
+both lists would need a twin, and a missing one would be a silent auth bypass.
+
 The production value lists the two catalog reads as **exact paths**, because
 CloudFront drops `Authorization` on exactly those cache behaviors. That coupling is
 covered from the caching side in

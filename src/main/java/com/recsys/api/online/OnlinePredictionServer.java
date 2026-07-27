@@ -215,6 +215,8 @@ public final class OnlinePredictionServer {
                               redisRateLimiter, asyncEventPublisher)
                               .decorate(AdminTokenGuard.newDecorator(
                                       new AdminTokenGuard(System.getenv("SHARD_ADMIN_TOKEN")))))
+              // "v2" is the PIPELINE name (recall -> rank -> hydrate -> paginate), not API version 2.
+              // API versions live only at the gateway edge as /api/v{n} — see docs/api-compatibility-policy.md.
               .service("/v2/recommend", new OnlineServices.RecommendV2(blendingPipeline))
               .service(Route.builder().pathPrefix("/shards/").build(),
                       new ShardedRecordService(shardedRecordStore, topologyStore,
