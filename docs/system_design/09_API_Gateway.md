@@ -124,16 +124,20 @@ is a single server-wide decorator adding `Deprecation: true` and `Sunset` to two
 | Unversioned spelling | `/api/catalog/item` | yes — `</api/v1/catalog/item>` |
 | Back-compat alias route | `/api/v1/catalog/item` | no |
 
-The alias routes (`/api/catalog`, `/api/model`, `/api/online`) stay deprecated even when
-versioned, because their deprecation is a different one: they duplicate the
-resource-oriented routes. No `Link` is emitted for them — they strip to different backend
-paths, so there is no mechanically equivalent successor to advertise. `/health` and
-`/metrics` are exempt. The decorator is a no-op when `GATEWAY_DEPRECATION_SUNSET` is unset,
-so a `Deprecation` header is never emitted without a published expiry.
+Back-compat alias routes stay deprecated even when versioned, because their deprecation is a
+different one: they duplicate the resource-oriented routes. No `Link` is emitted for them —
+they strip to different backend paths, so there is no mechanically equivalent successor to
+advertise. `/health` and `/metrics` are exempt. The decorator is a no-op when
+`GATEWAY_DEPRECATION_SUNSET` is unset, so a `Deprecation` header is never emitted without a
+published expiry.
 
-The contract itself — breaking vs additive, the two-version support window, the twelve-month
-notice, and why removal is never automatic — is in the
-[API compatibility policy](../api-compatibility-policy.md).
+**Which routes are currently deprecated, and what replaces each, is not listed here.** That
+is a client-facing commitment rather than a gateway implementation detail, and it lives in
+one place — the "Deprecated today" table in the
+[API compatibility policy](../api-compatibility-policy.md#deprecated-today). Duplicating the
+list here would give it two homes and one of them would eventually be wrong. The rest of the
+contract — breaking vs additive, the two-version support window, the twelve-month notice,
+and why removal is never automatic — is in that same document.
 
 ## 2. Identity propagation and credential stripping
 

@@ -32,7 +32,15 @@ class DocumentationIndexTest {
     private static final Path REPO = Path.of("");
     private static final Path README = REPO.resolve("README.md");
 
+    /**
+     * {@code markdownFilesIn} uses {@link Files#list} rather than {@code walk}, so listing
+     * {@code docs} itself covers only root-level documents and does not pull in
+     * {@code docs/superpowers/}. Root is indexed because a document parked there — today only
+     * {@code api-compatibility-policy.md} — was in a blind spot: the README-link direction
+     * caught a *dangling* link, but nothing caught the file simply never being linked at all.
+     */
     private static final List<Path> INDEXED_DIRECTORIES = List.of(
+            Path.of("docs"),
             Path.of("docs", "system_design"),
             Path.of("docs", "runbooks"));
 
