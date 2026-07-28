@@ -42,7 +42,7 @@
 | `src/main/java/com/recsys/config/ModelRecommendationPipelineConfig.java` | Wraps the returned pipeline in the decorator. |
 | `src/main/java/com/recsys/api/online/OnlinePredictionServer.java:220` | Wraps `/v2/recommend` in `OnlineAdmissionControl`. |
 | `src/test/java/com/recsys/api/rest/ModelV2RecommendIntegrationTest.java` | v2 traffic moves metrics; sequential stays unwrapped. |
-| `src/test/java/com/recsys/api/online/OnlineV2RecommendIntegrationTest.java` | v2 sheds to 503. |
+| `src/test/java/com/recsys/api/online/OnlineV2RecommendIntegrationTest.java` | v2 sheds to **429** (this row said 503 while planning; `OnlineAdmissionControl` sheds `429` + `Retry-After`). |
 | `docs/system_design/09_API_Gateway.md` | Sharp edge 6 currently asserts the gap this change closes. |
 | `docs/system_design/18_Fault_Tolerance.md`, `docs/runbooks/overload-protection.md` | Record the readiness-signal change. |
 
@@ -460,6 +460,12 @@ public final class ProtectedRecommendationPipeline implements RecommendationPipe
             metrics.recordSuccess(elapsedMs(startNs), effectiveVariant, modelVersion);
             exposureLogger.log(query.userId(), assignment, effectiveVariant, fellBack, modelVersion);
             return result;
+        } catch (IllegalArgumentException e) {
+            // ADDED BY PR #235, not part of this plan as written. Bad input is not an inference
+            // failure — the V1 controller carves the same exception out. Omitting it here meant
+            // client 400s (notably cursor rejections, which only the v2 path reaches) counted
+            // toward the readiness failure rate this plan set out to make trustworthy.
+            throw e;
         } catch (RuntimeException e) {
             metrics.recordFailure(elapsedMs(startNs), assignment.variant());
             throw e;

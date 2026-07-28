@@ -1403,3 +1403,8 @@ The `/v2/recommend` protection gap — 7010's `/v2/recommend` is not wrapped in
 `OnlineAdmissionControl` although `/online/recommendation` beside it is, and 8080's has no
 rate limiter, submit token, load shedder, A/B exposure logging, or metrics, unlike
 `/api/v1/recommend`. That is a live correctness issue and gets its own spec.
+
+> ✅ **Done — PR #234 (2026-07-28)**, followed by PR #235 which corrected client `400`s being
+> recorded as inference failures. Plan:
+> [2026-07-27-v2-recommend-protection-parity.md](2026-07-27-v2-recommend-protection-parity.md).
+> Note 6010's `/v2/recommend` was already `OnlineAdmissionControl`-wrapped and needed no change.
