@@ -8,21 +8,28 @@ import io.lettuce.core.ScanArgs;
 import io.lettuce.core.ScoredValue;
 
 import java.util.List;
+import java.util.function.LongSupplier;
 
 /**
  * Assigns shard-scoped monotonic sequence numbers via Redis INCR.
  *
- * Each shard has its own counter at {prefix}seq:{shardIndex}.
+ * Each shard has its own counter at {prefix}{generation}seq:{shardIndex}.
  * Sequence numbers are shard-scoped (not globally unique across shards).
  */
 public final class SequenceGenerator {
 
     private final RedisExecutor exec;
     private final String prefix;
+    private final LongSupplier clockMs;
 
     public SequenceGenerator(RedisExecutor exec, String prefix) {
-        this.exec   = exec;
-        this.prefix = prefix;
+        this(exec, prefix, System::currentTimeMillis);
+    }
+
+    SequenceGenerator(RedisExecutor exec, String prefix, LongSupplier clockMs) {
+        this.exec    = exec;
+        this.prefix  = prefix;
+        this.clockMs = clockMs;
     }
 
     /** Next sequence for (version, shard). Always >= 1. */
@@ -36,27 +43,41 @@ public final class SequenceGenerator {
     }
 
     /**
-     * Guards against a stale counter after a Redis partial flush.
-     * Scans all device ZSets for the shard and resets the counter to max(score)+1
-     * unconditionally if the current counter is lower.
+     * Guards against a stale counter after a Redis partial flush: a counter behind the
+     * highest sequence number still present reissues that number, the device index's
+     * {@code ZADD NX} becomes a no-op, and the record is silently dropped.
      *
-     * Call once at startup per shard before accepting writes.
+     * <p>Scans the device ZSets of one shard <em>in the given topology generation</em> and
+     * raises the counter to {@code max(score) + 1} when it is behind. The counter is only
+     * ever raised, never lowered.
+     *
+     * <p>The scan is bounded by {@code budgetMs} of wall-clock time. A truncated scan can
+     * only <em>under</em>-estimate the true maximum, so a partial run degrades to less
+     * repair rather than to a wrong counter — which is why exceeding the budget is a
+     * warning, not a failure.
+     *
+     * <p>Expensive: one SCAN pass plus a ZREVRANGEBYSCORE per device key. Call it off the
+     * request path and off the startup thread.
+     *
+     * @return {@code true} if the scan completed, {@code false} if the budget truncated it
      */
-    public void ensureCounterValid(int shardIndex, int shardCount) {
-        long maxSeq = findMaxSeqInShard(shardIndex);
-        if (maxSeq <= 0) return;
+    public boolean ensureCounterValid(int version, int shardIndex, long budgetMs) {
+        ScanResult scan = findMaxSeqInShard(version, shardIndex, budgetMs);
+        if (scan.maxSeq() <= 0) return scan.completed();
 
-        String key = seqKey(1, shardIndex);
+        String key = seqKey(version, shardIndex);
         String current = exec.execute(c -> c.get(key));
         long currentVal = current == null ? 0L : Long.parseLong(current);
-        if (currentVal < maxSeq) {
-            exec.execute(c -> c.set(key, String.valueOf(maxSeq + 1)));
+        if (currentVal < scan.maxSeq()) {
+            exec.execute(c -> c.set(key, String.valueOf(scan.maxSeq() + 1)));
         }
+        return scan.completed();
     }
 
-    private long findMaxSeqInShard(int shardIndex) {
-        String pattern = prefix + "dev:" + shardIndex + ":*";
+    private ScanResult findMaxSeqInShard(int version, int shardIndex, long budgetMs) {
+        String pattern = prefix + Generations.keyPrefix(version) + "dev:" + shardIndex + ":*";
         ScanArgs params = ScanArgs.Builder.matches(pattern).limit(200);
+        long deadline = clockMs.getAsLong() + Math.max(1L, budgetMs);
 
         return exec.execute(c -> {
             long maxSeq = 0L;
@@ -69,14 +90,17 @@ public final class SequenceGenerator {
                         maxSeq = Math.max(maxSeq, (long) top.get(0).getScore());
                     }
                 }
-                if (cursor.isFinished()) break;
+                if (cursor.isFinished()) return new ScanResult(maxSeq, true);
+                if (clockMs.getAsLong() >= deadline) return new ScanResult(maxSeq, false);
                 cursor = c.scan(cursor, params);
             }
-            return maxSeq;
         });
     }
 
     private String seqKey(int version, int shardIndex) {
         return prefix + Generations.keyPrefix(version) + "seq:" + shardIndex;
     }
+
+    /** Outcome of one bounded scan: the highest score seen, and whether the scan finished. */
+    private record ScanResult(long maxSeq, boolean completed) {}
 }
