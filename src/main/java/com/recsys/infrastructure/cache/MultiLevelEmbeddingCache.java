@@ -1,10 +1,13 @@
 package com.recsys.infrastructure.cache;
 
+import com.github.benmanes.caffeine.cache.Cache;
+import com.github.benmanes.caffeine.cache.Caffeine;
 import com.recsys.infrastructure.resilience.HotKeyDetector;
 import com.recsys.infrastructure.vectordb.EmbeddingStore;
 import org.slf4j.Logger;
 import org.slf4j.LoggerFactory;
 
+import java.time.Duration;
 import java.util.Collection;
 import java.util.Collections;
 import java.util.HashMap;
@@ -32,6 +35,10 @@ import java.util.concurrent.atomic.AtomicLong;
  * │      Used when L2 is unavailable.  May be {@code null}.                    │
  * └─────────────────────────────────────────────────────────────────────────────┘
  *
+ * The negative cache of confirmed-absent IDs is a bounded Caffeine cache
+ * ({@code EMBEDDING_NULL_SENTINEL_MAX_ENTRIES}, default 10 000, 30 s TTL), so a sweep over
+ * many absent IDs cannot grow the heap without limit.
+ *
  * Per-tier CacheStats expose hit rates so operators can tune capacity and decide
  * whether a Redis cluster issue is causing abnormal L3 traffic.
  *
@@ -44,11 +51,14 @@ public final class MultiLevelEmbeddingCache implements EmbeddingStore {
     private static final Logger log = LoggerFactory.getLogger(MultiLevelEmbeddingCache.class);
 
     static final int DEFAULT_L1_CAPACITY = 10_000;
+    static final int DEFAULT_NULL_SENTINEL_CAPACITY = 10_000;
     private static final long NULL_SENTINEL_TTL_MS = 30_000L;
 
     // L1: JVM ConcurrentHashMap, capped at l1Capacity entries.
     private final ConcurrentHashMap<Integer, float[]> l1;
-    private final ConcurrentHashMap<Integer, Long> nullSentinels = new ConcurrentHashMap<>();
+    // Bounded negative cache. expireAfterWrite supplies the TTL semantics that the stored
+    // expiry timestamp used to carry, so membership alone means "recently confirmed absent".
+    private final Cache<Integer, Boolean> nullSentinels;
     private final int l1Capacity;
 
     // L2: typically Redis-backed (may throw on connection failure)
@@ -68,21 +78,26 @@ public final class MultiLevelEmbeddingCache implements EmbeddingStore {
 
     /** Full constructor — use {@link Builder} for ergonomic construction. */
     MultiLevelEmbeddingCache(EmbeddingStore l2, EmbeddingStore l3,
-                              int l1Capacity, HotKeyDetector hotKeyDetector) {
+                              int l1Capacity, HotKeyDetector hotKeyDetector,
+                              int nullSentinelCapacity) {
         this.l2             = l2;
         this.l3             = l3;
         this.l1Capacity     = Math.max(1, l1Capacity);
         this.hotKeyDetector = hotKeyDetector;
         this.l1             = new ConcurrentHashMap<>(Math.min(l1Capacity, 1 << 14));
+        this.nullSentinels  = Caffeine.newBuilder()
+                .maximumSize(Math.max(1, nullSentinelCapacity))
+                .expireAfterWrite(Duration.ofMillis(NULL_SENTINEL_TTL_MS))
+                .executor(Runnable::run) // synchronous maintenance -> deterministic size
+                .build();
     }
 
     // ── Read path ──────────────────────────────────────────────────────────────────
 
     @Override
     public float[] getEmbedding(int id) {
-        long now = System.currentTimeMillis();
-        Long nullExpiry = nullSentinels.get(id);
-        if (nullExpiry != null && nullExpiry > now) {
+        // Presence is sufficient: Caffeine has already dropped it if the sentinel TTL passed.
+        if (nullSentinels.getIfPresent(id) != null) {
             misses.incrementAndGet();
             return null;
         }
@@ -120,7 +135,7 @@ public final class MultiLevelEmbeddingCache implements EmbeddingStore {
         }
 
         misses.incrementAndGet();
-        nullSentinels.put(id, now + NULL_SENTINEL_TTL_MS);
+        nullSentinels.put(id, Boolean.TRUE);
         return null;
     }
 
@@ -135,12 +150,10 @@ public final class MultiLevelEmbeddingCache implements EmbeddingStore {
 
         Map<Integer, float[]> result = new HashMap<>(ids.size() * 4 / 3 + 1);
         Set<Integer> l1Misses = new LinkedHashSet<>();
-        long now = System.currentTimeMillis();
 
         // L1 batch check
         for (int id : ids) {
-            Long nullExpiry = nullSentinels.get(id);
-            if (nullExpiry != null && nullExpiry > now) {
+            if (nullSentinels.getIfPresent(id) != null) {
                 misses.incrementAndGet();
                 continue;
             }
@@ -161,7 +174,7 @@ public final class MultiLevelEmbeddingCache implements EmbeddingStore {
                 float[] v = l2Result.get(id);
                 if (v != null) {
                     l2Hits.incrementAndGet();
-                    nullSentinels.remove(id);
+                    nullSentinels.invalidate(id);
                     promoteToL1IfEligible(id, v);
                     result.put(id, v);
                 } else {
@@ -182,12 +195,12 @@ public final class MultiLevelEmbeddingCache implements EmbeddingStore {
                     float[] v = l3Result.get(id);
                     if (v != null) {
                         l3Hits.incrementAndGet();
-                        nullSentinels.remove(id);
+                        nullSentinels.invalidate(id);
                         promoteToL1IfEligible(id, v);
                         result.put(id, v);
                     } else {
                         misses.incrementAndGet();
-                        nullSentinels.put(id, now + NULL_SENTINEL_TTL_MS);
+                        nullSentinels.put(id, Boolean.TRUE);
                     }
                 }
             } catch (Exception e) {
@@ -197,7 +210,7 @@ public final class MultiLevelEmbeddingCache implements EmbeddingStore {
         } else {
             misses.addAndGet(l2Misses.size());
             for (int id : l2Misses) {
-                nullSentinels.put(id, now + NULL_SENTINEL_TTL_MS);
+                nullSentinels.put(id, Boolean.TRUE);
             }
         }
 
@@ -208,7 +221,7 @@ public final class MultiLevelEmbeddingCache implements EmbeddingStore {
 
     @Override
     public void setEmbedding(int id, float[] vector, long ttlSeconds) {
-        nullSentinels.remove(id);
+        nullSentinels.invalidate(id);
         l1.put(id, vector);                         // write-through to L1
         l2.setEmbedding(id, vector, ttlSeconds);    // write-through to L2
         if (l3 != null) {                           // best-effort write to L3
@@ -221,7 +234,7 @@ public final class MultiLevelEmbeddingCache implements EmbeddingStore {
         if (vectors == null || vectors.isEmpty()) return;
         vectors.forEach((id, vec) -> {
             if (id != null && vec != null) {
-                nullSentinels.remove(id);
+                nullSentinels.invalidate(id);
                 l1.put(id, vec);
             }
         });
@@ -260,6 +273,9 @@ public final class MultiLevelEmbeddingCache implements EmbeddingStore {
 
     /** Number of entries currently in the L1 JVM cache. */
     public int l1Size() { return l1.size(); }
+
+    /** Number of entries currently in the bounded negative cache. */
+    public int nullSentinelSize() { return (int) nullSentinels.estimatedSize(); }
 
     /**
      * Snapshot of per-tier hit counts and derived hit rates.
@@ -300,15 +316,28 @@ public final class MultiLevelEmbeddingCache implements EmbeddingStore {
         private EmbeddingStore l3;
         private int l1Capacity = DEFAULT_L1_CAPACITY;
         private HotKeyDetector detector = new HotKeyDetector();
+        private int nullSentinelCapacity =
+                readIntEnv("EMBEDDING_NULL_SENTINEL_MAX_ENTRIES", DEFAULT_NULL_SENTINEL_CAPACITY);
 
         public Builder(EmbeddingStore l2) { this.l2 = l2; }
 
         public Builder l3(EmbeddingStore l3)            { this.l3 = l3; return this; }
         public Builder l1Capacity(int cap)              { this.l1Capacity = cap; return this; }
         public Builder hotKeyDetector(HotKeyDetector d) { this.detector = d; return this; }
+        public Builder nullSentinelCapacity(int cap)    { this.nullSentinelCapacity = cap; return this; }
 
         public MultiLevelEmbeddingCache build() {
-            return new MultiLevelEmbeddingCache(l2, l3, l1Capacity, detector);
+            return new MultiLevelEmbeddingCache(l2, l3, l1Capacity, detector, nullSentinelCapacity);
+        }
+    }
+
+    private static int readIntEnv(String envName, int defaultValue) {
+        String raw = System.getenv(envName);
+        if (raw == null || raw.isBlank()) return defaultValue;
+        try {
+            return Integer.parseInt(raw.trim());
+        } catch (NumberFormatException e) {
+            return defaultValue;
         }
     }
 }

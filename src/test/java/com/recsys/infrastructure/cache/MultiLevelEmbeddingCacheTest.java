@@ -260,4 +260,19 @@ class MultiLevelEmbeddingCacheTest {
         String str = s.toString();
         assertThat(str).contains("l1=5").contains("l2=3").contains("l3=1").contains("misses=1");
     }
+
+    // ── Bounded negative cache ────────────────────────────────────────────────────
+
+    @Test
+    void nullSentinels_stayBoundedUnderFarMoreAbsentIdsThanTheCap() {
+        // An empty L2 makes every lookup a miss, which is what records a sentinel.
+        MultiLevelEmbeddingCache cache = new MultiLevelEmbeddingCache.Builder(storeWith(Map.of()))
+                .nullSentinelCapacity(100)
+                .build();
+
+        for (int id = 0; id < 10_000; id++) cache.getEmbedding(id);
+
+        assertThat(cache.nullSentinelSize()).isLessThanOrEqualTo(100);
+        assertThat(cache.tierStats().misses()).isEqualTo(10_000L);
+    }
 }
