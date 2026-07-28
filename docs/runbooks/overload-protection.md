@@ -31,6 +31,10 @@ and how to tune it. Design: `docs/superpowers/specs/2026-07-08-overload-protecti
 > before treating it as a regression.
 >
 > Note the asymmetry when writing alerts: 7010 sheds with `429` + `Retry-After`, 8080 with `503`.
+>
+> When triaging a `high failure rate` readiness reason, you can rule out client input as the
+> cause: rejected requests (`400`, e.g. a malformed pagination cursor) are deliberately not
+> recorded as inference failures, so the rate reflects real inference trouble only.
 
 ## Key caveats
 

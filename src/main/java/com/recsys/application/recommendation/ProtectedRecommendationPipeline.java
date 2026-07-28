@@ -96,6 +96,14 @@ public class ProtectedRecommendationPipeline implements RecommendationPipeline {
             metrics.recordSuccess(elapsedMs(startNs), effectiveVariant, modelVersion);
             exposureLogger.log(query.userId(), assignment, effectiveVariant, fellBack, modelVersion);
             return result;
+        } catch (IllegalArgumentException e) {
+            // Bad input, not an inference failure — GlobalExceptionHandler maps this to 400. The
+            // V1 controller carves the same exception out of its failure recording for the same
+            // reason; this path additionally reaches the pagination cursor codec, whose rejections
+            // are entirely client-driven. Recording them would let a client looping malformed
+            // cursors push recentFailureRate toward 1.0 and report a healthy instance degraded,
+            // corrupting the very readiness signal this wrapper exists to make trustworthy.
+            throw e;
         } catch (RuntimeException e) {
             metrics.recordFailure(elapsedMs(startNs), assignment.variant());
             throw e;
