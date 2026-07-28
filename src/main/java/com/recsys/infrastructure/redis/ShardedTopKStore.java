@@ -2,41 +2,41 @@ package com.recsys.infrastructure.redis;
 
 import com.recsys.infrastructure.resilience.HotKeyDetector;
 import com.recsys.infrastructure.store.TrendingStore;
-import io.lettuce.core.LettuceFutures;
-import io.lettuce.core.RedisFuture;
 import io.lettuce.core.ScriptOutputType;
-import org.slf4j.Logger;
-import org.slf4j.LoggerFactory;
 
-import java.time.Duration;
-import java.util.ArrayList;
 import java.util.List;
-import java.util.Map;
 import java.util.concurrent.CompletableFuture;
 import java.util.concurrent.ConcurrentHashMap;
 import java.util.concurrent.ExecutionException;
-import java.util.concurrent.ThreadLocalRandom;
 import java.util.concurrent.TimeUnit;
 import java.util.concurrent.TimeoutException;
 import java.util.concurrent.atomic.AtomicLong;
 
 /**
- * Read-replica sharding for Redis top-K sorted-set keys (hot-key sharding).
+ * Trending top-K reads, served from a short-lived JVM cache in front of Redis.
  *
  * Problem: a handful of trending-window keys ({@code topk:last_hour}, {@code topk:last_day},
- * etc.) are read on every recommendation request across all JVM instances.  When the
- * 2-second JVM cache expires all instances simultaneously rush to Redis, saturating a
- * single key (and its hash-slot owner in a Redis Cluster).
+ * etc.) are read on every recommendation request across all JVM instances.
  *
- * Solution — N read replicas per window:
- *   Physical keys: {@code {prefix}{window}:s0}, {@code :s1}, …, {@code :s(N-1)}
- *   All shards hold identical data; each is written by {@link #seedAllShards}.
- *   On a JVM-cache miss, one shard is chosen at random → N-fold reduction in per-key QPS.
+ * What protects them, in order:
+ *   1. Local JVM cache — ConcurrentHashMap keyed by window, 2-second fresh TTL, which
+ *      absorbs the vast majority of reads.
+ *   2. Per-window singleflight — on a cache miss only the first thread in this JVM
+ *      fetches; the rest wait on its result.
+ *   3. Serve-stale — a Redis failure within the 60-second stale window returns the last
+ *      known value rather than propagating the error.
  *
- * Local JVM cache (hot-key local cache):
- *   Identical to {@link RedisTopKStore}: ConcurrentHashMap keyed by window, 2-second TTL,
- *   per-window singleflight deduplication.  The local cache absorbs the vast majority of
- *   reads; sharding only affects the infrequent Redis refreshes.
+ * Read path on a cache miss: evaluate {@link #READ_CANONICAL_SNAPSHOT} against the
+ * canonical snapshot written atomically by the Flink job ({@code topk:{window}:value},
+ * guarded by {@code topk:{window}:version}). If no canonical snapshot exists — a cold
+ * Redis before Flink's first write — fall back to the unversioned {@code topk:<window>}
+ * key and count it in {@link #legacyFallbackFetches()}.
+ *
+ * <p>This class previously fanned each window out to N identical replica keys
+ * ({@code topk:<window>:s0..sN}) to spread hot-key read QPS. That machinery was removed
+ * on 2026-07-28: nothing had written those keys since the canonical snapshot path landed
+ * in {@code 01870d2}, so every read already resolved via the canonical key. See
+ * {@code docs/superpowers/specs/2026-07-28-kv-store-sharp-edges-design.md}.
  *
  * Hit-rate metrics and {@link HotKeyDetector} integration expose which windows are
  * hottest and how effectively the local cache is absorbing load.
@@ -50,22 +50,18 @@ public final class ShardedTopKStore implements TrendingStore {
             return ids
             """;
 
-    private static final Logger log = LoggerFactory.getLogger(ShardedTopKStore.class);
-
     static final long DEFAULT_CACHE_TTL_MS     = 2_000L;
     static final long DEFAULT_STALE_TTL_MS     = 60_000L;
-    static final int  DEFAULT_SHARD_COUNT      = 4;
     static final int  MAX_FULL_CACHE_SIZE      = 100;
     private static final long FETCH_WAIT_TIMEOUT_MS = 2_000L;
 
     private final RedisExecutor writeExec;
     private final RedisExecutor readExec;
     private final String keyPrefix;   // e.g. "topk:"
-    private final int shardCount;
     private final long cacheTtlMs;
     private final long staleTtlMs;
 
-    // Local hot-data cache: window → CachedIds.  Keyed by logical window, not by shard.
+    // Local hot-data cache: window → CachedIds.
     private final ConcurrentHashMap<String, CachedIds> hotCache   = new ConcurrentHashMap<>();
     // Singleflight: deduplicates concurrent cache misses within this JVM.
     private final ConcurrentHashMap<String, CompletableFuture<CachedIds>> inflight = new ConcurrentHashMap<>();
@@ -78,38 +74,35 @@ public final class ShardedTopKStore implements TrendingStore {
     private final HotKeyDetector hotKeyDetector;
 
     /**
-     * Single-pool constructor — reads and writes use the same Redis connection.
-     * Preserved for backwards compatibility and non-replicated deployments.
+     * Single-executor constructor — reads and writes use the same Redis connection.
+     * This is what all three production call sites use.
      */
     public ShardedTopKStore(RedisExecutor exec, String keyPrefix) {
-        this(exec, exec, keyPrefix, DEFAULT_SHARD_COUNT,
+        this(exec, exec, keyPrefix,
                 readLongEnv("ONLINE_TOPK_CACHE_TTL_MS", DEFAULT_CACHE_TTL_MS),
                 readLongEnv("ONLINE_TOPK_STALE_TTL_MS", DEFAULT_STALE_TTL_MS), new HotKeyDetector());
     }
 
     /**
-     * AZ-aware constructor — writes (seedAllShards) go to {@code writePool}
-     * (primary), reads (getTopKIds) go to {@code readPool} (AZ-local replica).
+     * AZ-aware constructor — primary-only reads ({@link #getTopKIdsPrimary}) go to
+     * {@code writeExec}, cached reads go to {@code readExec} (an AZ-local replica).
      */
     public ShardedTopKStore(RedisExecutor writeExec, RedisExecutor readExec, String keyPrefix) {
-        this(writeExec, readExec, keyPrefix, DEFAULT_SHARD_COUNT,
+        this(writeExec, readExec, keyPrefix,
                 readLongEnv("ONLINE_TOPK_CACHE_TTL_MS", DEFAULT_CACHE_TTL_MS),
                 readLongEnv("ONLINE_TOPK_STALE_TTL_MS", DEFAULT_STALE_TTL_MS), new HotKeyDetector());
     }
 
     ShardedTopKStore(RedisExecutor writeExec, RedisExecutor readExec, String keyPrefix,
-                     int shardCount, long cacheTtlMs, HotKeyDetector hotKeyDetector) {
-        this(writeExec, readExec, keyPrefix, shardCount, cacheTtlMs,
-                DEFAULT_STALE_TTL_MS, hotKeyDetector);
+                     long cacheTtlMs, HotKeyDetector hotKeyDetector) {
+        this(writeExec, readExec, keyPrefix, cacheTtlMs, DEFAULT_STALE_TTL_MS, hotKeyDetector);
     }
 
     ShardedTopKStore(RedisExecutor writeExec, RedisExecutor readExec, String keyPrefix,
-                     int shardCount, long cacheTtlMs, long staleTtlMs,
-                     HotKeyDetector hotKeyDetector) {
+                     long cacheTtlMs, long staleTtlMs, HotKeyDetector hotKeyDetector) {
         this.writeExec      = writeExec;
         this.readExec       = readExec;
         this.keyPrefix      = keyPrefix;
-        this.shardCount     = Math.max(1, shardCount);
         this.cacheTtlMs     = Math.max(0L, cacheTtlMs);
         this.staleTtlMs     = Math.max(this.cacheTtlMs, staleTtlMs);
         this.hotKeyDetector = hotKeyDetector;
@@ -119,7 +112,7 @@ public final class ShardedTopKStore implements TrendingStore {
 
     /**
      * Returns the top {@code k} IDs for {@code window}, served from the local JVM cache
-     * or from a randomly selected Redis shard on cache miss.
+     * or from Redis on cache miss.
      */
     @Override
     public List<String> getTopKIds(String window, int k) {
@@ -139,7 +132,7 @@ public final class ShardedTopKStore implements TrendingStore {
 
         if (existing == null) {
             try {
-                CachedIds fresh = fetchFromRandomShard(window, k, now);
+                CachedIds fresh = fetchFromRedis(window, k, now);
                 myFuture.complete(fresh);
                 return slice(fresh.ids, k);
             } catch (RuntimeException ex) {
@@ -159,7 +152,7 @@ public final class ShardedTopKStore implements TrendingStore {
         } catch (TimeoutException | InterruptedException | ExecutionException ex) {
             if (ex instanceof InterruptedException) Thread.currentThread().interrupt();
             // Fail-open: fetch independently rather than returning empty.
-            return slice(fetchFromRandomShard(window, k, now).ids, k);
+            return slice(fetchFromRedis(window, k, now).ids, k);
         }
     }
 
@@ -173,23 +166,17 @@ public final class ShardedTopKStore implements TrendingStore {
         return canonical == null ? List.of() : List.copyOf(canonical);
     }
 
-    private CachedIds fetchFromRandomShard(String window, int k, long now) {
-        // Random shard selection: spreads Redis read load across N keys/hash-slots.
-        int shard = ThreadLocalRandom.current().nextInt(shardCount);
-        String key = shardKey(window, shard);
+    private CachedIds fetchFromRedis(String window, int k, long now) {
         int fetchSize = Math.max(k, MAX_FULL_CACHE_SIZE);
 
         return readExec.executeRead(c -> {
             CanonicalSnapshot snapshot = readCanonicalSnapshot(c, window, fetchSize);
             List<String> ids = snapshot.ids;
             if (!snapshot.present) {
-                List<String> shardIds = c.zrevrange(key, 0, fetchSize - 1);
-                ids = shardIds == null ? List.of() : List.copyOf(shardIds);
-                if (ids.isEmpty()) {
-                    List<String> oldIds = c.zrevrange(legacyKey(window), 0, fetchSize - 1);
-                    ids = oldIds == null ? List.of() : List.copyOf(oldIds);
-                    if (!ids.isEmpty()) legacyFallbackFetches.incrementAndGet();
-                }
+                // Cold Redis, before the Flink job's first canonical write.
+                List<String> oldIds = c.zrevrange(legacyKey(window), 0, fetchSize - 1);
+                ids = oldIds == null ? List.of() : List.copyOf(oldIds);
+                if (!ids.isEmpty()) legacyFallbackFetches.incrementAndGet();
             }
             redisFetches.incrementAndGet();
             CachedIds result = new CachedIds(ids, now + cacheTtlMs, now + staleTtlMs);
@@ -218,50 +205,7 @@ public final class ShardedTopKStore implements TrendingStore {
                 .map(String::valueOf).toList());
     }
 
-    // ── Write path (fan-out to all shards) ────────────────────────────────────────
-
-    /**
-     * Fan-out write: stores {@code memberScores} in all N shard keys so every shard
-     * returns consistent data.  Typically called by Flink or a scheduled sync job
-     * when trending data is refreshed.
-     *
-     * Invalidates the local JVM cache so the next read picks up fresh data.
-     *
-     * @param window       the window name, e.g. {@code "last_hour"}
-     * @param memberScores map of {@code memberId → score} (higher score = higher rank)
-     */
-    public void seedAllShards(String window, Map<String, Double> memberScores) {
-        if (memberScores == null || memberScores.isEmpty()) return;
-        // Single pipelined round-trip: queue a ZADD for every shard plus the legacy key,
-        // then sync once (was N+1 sequential round-trips, one connection each).
-        @SuppressWarnings("unchecked")
-        io.lettuce.core.ScoredValue<String>[] scoredValues =
-                memberScores.entrySet().stream()
-                        .map(e -> io.lettuce.core.ScoredValue.just(e.getValue(), e.getKey()))
-                        .toArray(io.lettuce.core.ScoredValue[]::new);
-        try {
-            writeExec.executePipelined(conn -> {
-                var async = conn.async();
-                List<RedisFuture<?>> futures = new ArrayList<>(shardCount + 1);
-                for (int shard = 0; shard < shardCount; shard++) {
-                    futures.add(async.zadd(shardKey(window, shard), scoredValues));
-                }
-                futures.add(async.zadd(legacyKey(window), scoredValues));
-                conn.flushCommands();
-                LettuceFutures.awaitAll(Duration.ofSeconds(5), futures.toArray(new RedisFuture[0]));
-            });
-        } catch (Exception e) {
-            log.warn("Failed to seed shards for window {}: {}", window, e.toString());
-        }
-        hotCache.remove(window); // invalidate so next read reflects new data
-    }
-
     // ── Accessors & diagnostics ───────────────────────────────────────────────────
-
-    /** Physical Redis key for a given logical window and shard index. */
-    public String shardKey(String window, int shard) {
-        return keyPrefix + window + ":s" + shard;
-    }
 
     /** Number of entries currently in the local JVM cache. */
     public int hotCacheSize() { return hotCache.size(); }
@@ -269,10 +213,13 @@ public final class ShardedTopKStore implements TrendingStore {
     /** Cumulative local (JVM) cache hits since construction. */
     public long localHits() { return localHits.get(); }
 
-    /** Cumulative Redis fetches (shard reads) since construction. */
+    /** Cumulative Redis fetches since construction. */
     public long redisFetches() { return redisFetches.get(); }
 
-    /** Cumulative reads served from the legacy unsharded key because a shard was empty. */
+    /**
+     * Cumulative reads served from the legacy unsharded key because no canonical snapshot
+     * existed. A non-zero value means the Flink job has not written {@code topk:{window}:value}.
+     */
     public long legacyFallbackFetches() { return legacyFallbackFetches.get(); }
 
     /** Local cache hit rate: {@code localHits / (localHits + redisFetches)}. */
