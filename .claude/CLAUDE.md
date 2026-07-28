@@ -58,6 +58,9 @@ Key env vars: `REDIS_HOST`, `REDIS_PORT`, `PORT`/`ONLINE_DEMO_PORT`/`GATEWAY_POR
 10000) cap the embedding caches' bounded Caffeine maps — note `LogicalExpiryEmbeddingCache`'s
 value map is bounded by size only, deliberately: a time-based eviction there would break
 serve-stale,
+`SHARDED_RECORD_SEQ_REPAIR_ENABLED` (default true) / `SHARDED_RECORD_SEQ_REPAIR_TIMEOUT_MS`
+(default 30000) control the background shard sequence-counter repair `OnlinePredictionServer`
+runs at startup on a daemon thread (never the boot thread — it SCANs every device ZSet),
 `RECALL_BULKHEAD_QUEUE_CAPACITY` (bounded recall queue on 6010/7010). Overload-protection layers
 are documented in `docs/runbooks/overload-protection.md`.
 `GATEWAY_ORIGIN_SECRET` (default unset = disabled; accepts a comma-separated SET of secrets so
@@ -136,7 +139,7 @@ sub-packages.
 - `shard:topology` — authoritative versioned shard-topology snapshot (JSON); instances refresh every 30s
 - `svc:registry:<serviceName>` — opt-in service registry (`SERVICE_REGISTRY_ENABLED`): advertised address string, TTL-renewed by each backend's heartbeat (all four services register — the Armeria ones directly, the Spring model service via `ServiceRegistryConfig`); liveness = key present, gateway MGETs known services and falls back to static route addresses. When enabled, the gateway `/health` response includes a `registry` section reporting each service's resolution `source` (`registry` vs `static` fallback) and the snapshot age. The gateway also exposes Prometheus at `/metrics`; when the registry is enabled it publishes `gateway_registry_services_total`, `gateway_registry_services_resolved`, `gateway_registry_snapshot_age_seconds`, and `gateway_registry_refresh_total` / `_failures_total`.
 - `sr:rec:{shard}:{seq}` / `sr:dev:{shard}:{id}` / `sr:stream:{shard}` / `sr:seq:{shard}` — generation 1 (unversioned)
-- `sr:g{version}:rec:…` etc. — generation ≥2 keys after a reshard; reads dual-read the previous generation for one max-TTL window
+- `sr:g{version}:rec:…` etc. — generation ≥2 keys after a reshard; reads dual-read the previous generation for one max-TTL window. The startup sequence-counter repair (`SequenceGenerator.ensureCounterValid`) follows the *active* generation — both the `seq:` key and the `dev:` scan pattern go through `Generations.keyPrefix`
 - Shard-level reads (`GET /shards/shard`, `readAllShards`) are generation-current — during a migration window they do not dual-read the previous generation (device reads do).
 
 ## JVM Tuning

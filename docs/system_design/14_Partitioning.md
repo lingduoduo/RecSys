@@ -89,6 +89,22 @@ per-`(version, shard)` `INCR`
 ([`SequenceGenerator`](../../src/main/java/com/recsys/infrastructure/redis/sharding/SequenceGenerator.java)) —
 shard-scoped, not globally unique.
 
+**Sequence-counter repair at startup.** A Redis partial flush can leave a shard's
+`{prefix}{generation}seq:{shard}` counter *behind* the highest sequence number still
+present in that shard's device ZSets. The next write then reissues an existing number,
+the device index's `ZADD NX` returns 0, the write is classified `DUPLICATE`, and the
+record is silently dropped — the idempotency that makes retries safe becomes the thing
+that loses data. `ensureCounterValid` scans the shard's device ZSets for the true
+maximum and raises the counter past it, only ever raising, never lowering.
+
+`OnlinePredictionServer` runs it for every shard of the current generation at startup,
+on a daemon thread. Deliberately not on the boot thread: the scan issues one
+`ZREVRANGEBYSCORE` per device key, so a synchronous run would block startup in
+proportion to keyspace size. It is bounded by `SHARDED_RECORD_SEQ_REPAIR_TIMEOUT_MS`
+(default 30000) and can be disabled with `SHARDED_RECORD_SEQ_REPAIR_ENABLED=false`.
+Exceeding the budget logs a warning rather than failing: a truncated scan can only
+*under*-estimate the maximum, so it repairs less, never wrongly.
+
 ### Versioned topology and online reshard
 
 The live topology is an authoritative versioned snapshot in Redis
@@ -244,7 +260,11 @@ The partition invariants are exercised, not just asserted:
   vnodes), `HashingTest` (FNV-1a/`fmix64` constant characterization),
   `ShardTopologyProviderTest` (last-good on refresh failure),
   `ShardTopologyStoreTest` (`@Tag("docker")`: bootstrap `SETNX` + reshard Lua),
-  `SequenceGeneratorTest`.
+  `SequenceGeneratorTest` (`@Tag("docker")`), and
+  **`SequenceGeneratorGenerationTest`** — the non-docker counterpart covering
+  generation-prefixed keying, raise-only semantics, and budget truncation. It exists
+  separately because the PR gate excludes `@Tag("docker")`, so docker-tagged
+  assertions cannot block a merge.
 - **Record store** — `ShardedRecordStoreGenerationKeyTest` (generation
   prefixing), **`ShardedRecordStoreDualReadTest`** (the dual-read merge/dedupe
   window), `ShardedRecordStoreReplicaRoutingTest`, and
