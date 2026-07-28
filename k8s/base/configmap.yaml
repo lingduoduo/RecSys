@@ -44,7 +44,7 @@ data:
   # See docs/superpowers/specs/2026-07-14-cdn-edge-acceleration-design.md.
   GATEWAY_PUBLIC_PATHS: "/health,/api/catalog/item,/api/catalog/similar"
   # Twelve months' notice for unversioned /api paths and the backend-oriented alias routes.
-  # Unset disables deprecation headers entirely — see docs/api-compatibility-policy.md.
+  # Unset disables deprecation headers entirely — see docs/system_design/09_API_Gateway.md#the-compatibility-contract.
   GATEWAY_DEPRECATION_SUNSET: "2027-07-27"
   SPRING_APPLICATION_NAME: "recsys-model-serving"
   RECSYS_RECOMMENDATION_CACHE_ENABLED: "true"

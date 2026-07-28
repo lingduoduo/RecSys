@@ -59,7 +59,7 @@ public class RecSysServer {
     private static final String ROUTE_HEALTH = "/health";
     private static final String ROUTE_PREDICT = "/v1/models/recmodel:predict";
     // "v2" is the PIPELINE name (recall -> rank -> hydrate -> paginate), not API version 2.
-    // API versions live only at the gateway edge as /api/v{n} — see docs/api-compatibility-policy.md.
+    // API versions live only at the gateway edge as /api/v{n} — see docs/system_design/09_API_Gateway.md#the-compatibility-contract.
     private static final String ROUTE_V2_RECOMMEND = "/v2/recommend";
     private static final String ROUTE_MOVIE_CATALOG = "/v1/catalog/movies";
     // REST-style aliases used when requests arrive via the API gateway
