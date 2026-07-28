@@ -174,6 +174,38 @@ top-K defaults to **4 replica shards**
 and each record shard's stream is approx-trimmed at **1,000,000** entries — so lever 1
 also multiplies total retained replay capacity, not just spread.
 
+### Lever 3 in detail — the cache is doing most of the work
+
+For the trending windows the JVM cache, not the sharding, is the primary scaling
+mechanism: a **2 s** cache TTL (`ONLINE_TOPK_CACHE_TTL_MS`) with **60 s**
+serve-stale-on-error (`ONLINE_TOPK_STALE_TTL_MS`) plus inline single-flight means Redis
+sees only refreshes. The 4 replica shards spread *those refreshes*. Read the two together:
+sharding raises the ceiling for the traffic the cache fails to absorb, which is exactly
+the cold-start and stampede case.
+
+### Lever 4 in detail — replica routing
+
+[`RedisReadReplicaRouter`](../../src/main/java/com/recsys/infrastructure/redis/RedisReadReplicaRouter.java)
++ `RoutingRedisExecutor` send writes to the primary and reads to the **same-AZ** replica —
+lowest latency, and it survives loss of the primary's AZ. Replicas are declared via
+`REDIS_REPLICA_NODES` (`host:port@az`) against `AWS_AZ`, each with its own connection pool
+(`REDIS_POOL_MAX_TOTAL`, default **50**). Consistency implications are
+[04_Replication](04_Replication.md)'s subject, not this doc's.
+
+### Keeping cache misses from capping scale
+
+Read levers only pay off if a miss storm cannot undo them. Three guards, all in
+`infrastructure/resilience`:
+
+- **`SingleFlight`** — per-key miss dedup, so N concurrent misses become one backend read.
+- **`HotKeyDetector`** — flags keys above **500 accesses/s**, tracking up to **100,000**
+  keys.
+- **`BloomFilterGuard`** — skips Redis entirely for definitely-absent IDs, so lookups for
+  nonexistent items never reach the store.
+
+Without these, adding shards or replicas raises the ceiling while a single cold hot key
+still concentrates load on one shard.
+
 ### What sharding here does *not* buy
 
 Levers 1 and 2 do **not** add nodes. Both stores hold a single `RedisExecutor`, and the

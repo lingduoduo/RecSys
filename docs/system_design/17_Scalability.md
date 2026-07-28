@@ -165,21 +165,25 @@ degraded-cache`) and only throws `ServiceOverloadedException` (latency-derived
 ### Record sharding
 
 `infrastructure/redis/sharding/ConsistentHashRing` — 150 virtual nodes per shard,
-FNV1a-64 hashing, O(log n) `TreeMap.ceilingEntry` lookup, immutable/lock-free
-after construction. Adding a shard remaps only ~1/N of keys. A runtime-swappable
-**versioned topology** (`shard:topology`, 30s refresh, last-good fallback on Redis
-error) lets an operator **reshard live (e.g. 4→8)** via an atomic Lua RMW; the
-previous generation stays readable via a bounded dual-read window
-(`previousIfActive`). Per-shard `INCR` sequence counters avoid global write
-contention. Resharding is operator-triggered, not automatic/elastic.
+FNV1a-64 hashing. Adding a shard remaps only ~1/N of keys, and a runtime-swappable
+**versioned topology** lets an operator **reshard live (e.g. 4→8)** with a bounded
+dual-read window. Per-shard `INCR` counters avoid global write contention.
+Resharding is operator-triggered, not automatic/elastic.
+
+Mechanics, key schema, and the reshard procedure:
+[03_DB_Scaling_Sharding §1 and §3](03_DB_Scaling_Sharding.md#1-shardedrecordstore--the-sharded-record-database).
 
 ### Hot trending keys
 
 `infrastructure/redis/ShardedTopKStore` — the few trending windows
-(`topk:last_hour`, `topk:last_day`) are read on every request across all JVMs. It
-replicates each window across **4 identical shards** (`s0..s3`) read at random →
-N× per-key read QPS headroom, with a **2s JVM cache** + inline single-flight
-absorbing the bulk so Redis sees only refreshes (60s serve-stale-on-error).
+(`topk:last_hour`, `topk:last_day`) are read on every request across all JVMs. Each
+window is replicated across **4 identical shards** (`s0..s3`) read at random, with a
+short JVM cache and inline single-flight absorbing the bulk so Redis sees only
+refreshes.
+
+Cache TTLs, the guards that stop a miss storm undoing this, and why the cache — not
+the sharding — is the primary mechanism:
+[03_DB_Scaling_Sharding §6](03_DB_Scaling_Sharding.md#6-scaling--the-levers-and-what-each-actually-buys).
 
 ### Kafka / Flink
 
@@ -195,11 +199,13 @@ per-user ordering; a startup validator fails fast if the partition count drifts.
 
 `infrastructure/redis/RedisReadReplicaRouter` + `RoutingRedisExecutor` — writes to
 primary, reads to the **same-AZ replica** (lowest latency, survives primary-AZ
-loss), each replica backed by its own 50-connection pool. `REDIS_REPLICA_NODES`
-(`host:port@az`) + `AWS_AZ` drive routing. Anti-stampede guards keep cache misses
-from limiting scale: `SingleFlight` (per-key miss dedup), `HotKeyDetector` (500
-acc/s threshold, 100k tracked keys), and `BloomFilterGuard` (skip Redis for
-definitely-absent IDs).
+loss), each replica backed by its own connection pool. Anti-stampede guards
+(`SingleFlight`, `HotKeyDetector`, `BloomFilterGuard`) keep cache misses from
+capping the gain.
+
+Routing config, pool sizing, and guard thresholds:
+[03_DB_Scaling_Sharding §6](03_DB_Scaling_Sharding.md#6-scaling--the-levers-and-what-each-actually-buys).
+Consistency and lag: [04_Replication](04_Replication.md).
 
 ### Pagination at scale
 
@@ -229,7 +235,7 @@ design).
 | Lever | Effect |
 |---|---|
 | More service replicas (HPA) | Linear read/serve throughput; stateless instances, per-instance gates scale with them |
-| More record shards (reshard) | Spreads keys across more Redis hash-slots/nodes; ~1/N remap; per-shard counters avoid write contention |
+| More record shards (reshard) | Spreads keys across more **logical shards on the same primary** — not hash slots or nodes; ~1/N remap; per-shard counters avoid write contention. Raises the contention ceiling, not node capacity ([03 §6](03_DB_Scaling_Sharding.md#6-scaling--the-levers-and-what-each-actually-buys)) |
 | More top-K shards | N× per-key read QPS for hot trending windows |
 | More Kafka partitions + Flink parallelism | More parallel ingest up to key cardinality; 50k events/s target |
 | More Redis read replicas | Spreads read load off primary, each +50 connections, cuts cross-AZ cost |
