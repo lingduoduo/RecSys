@@ -272,11 +272,18 @@ publish through the same registry.
 5. **`502` vs `503` is a real distinction.** `503` means the gateway declined
    (circuit open / no healthy endpoint / rate limit); `502` means it tried and the
    upstream was unreachable. They point at different problems during an incident.
-6. **A higher `/v2` does not mean more protection.** The canonical `POST /api/recommend`
-   with the default `model` strategy forwards to `/v2/recommend` on 8080
-   (`RecommendationV2Controller`), which is a thin `pipeline.recommend(query)`
-   passthrough. The `/api/v1/recommend` controller it bypasses is the one carrying the
-   per-user `ModelRateLimiter`, the submit-token CSRF check, A/B exposure logging, and
-   the degradation headers. Only `LoginInterceptor` (bearer parsing for `@NeedLogin`)
-   is global on 8080, so the edge's own limiter and breaker are the sole request-tier
-   controls on the canonical path.
+6. **`/v2` is a pipeline name, and it is now protected like V1.** The canonical
+   `POST /api/recommend` with the default `model` strategy forwards to `/v2/recommend` on
+   8080, which used to be a bare `pipeline.recommend(query)` passthrough while
+   `/api/v1/recommend` carried every request-tier control. Both paths now share them:
+   [`ProtectedRecommendationPipeline`](../../src/main/java/com/recsys/application/recommendation/ProtectedRecommendationPipeline.java)
+   wraps the `onnxRecommendationPipeline` bean with the per-user `ModelRateLimiter`, the
+   `LoadShedder`, `InferenceMetricsService`, and A/B exposure logging, throwing the same
+   exceptions so the 429/503 contract is identical to V1's. On 7010, `/v2/recommend` is
+   wrapped in `OnlineAdmissionControl` like `/online/recommendation` beside it.
+   **The two services shed differently** — 7010 returns `429` + `Retry-After` from
+   `OnlineAdmissionControl`, 8080 returns `503` from `ServiceOverloadedException`. Both are
+   load shedding; a client seeing one must not assume the other.
+   `/v2/sequential/recommend` is deliberately left unwrapped: it is a stub that always returns
+   `501`, and recording a failure per call would corrupt the readiness signal.
+   Still V1-only, by choice: the submit-token CSRF check and the degraded-cache fallback.

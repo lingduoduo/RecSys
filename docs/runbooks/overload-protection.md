@@ -20,6 +20,18 @@ and how to tune it. Design: `docs/superpowers/specs/2026-07-08-overload-protecti
 | 6010 & 7010 | recall WorkerBulkhead (bounded queue) | per instance | `RECALL_BULKHEAD_QUEUE_CAPACITY` (default poolSize×4) | per-channel empty result |
 | all serving | request/recall timeouts | per request | `ONLINE_REQUEST_TIMEOUT_MS`=500, `RECALL_CHANNEL_TIMEOUT_MS`=200 | bounded work |
 
+> **Changed 2026-07-27 — `/v2/recommend` is now covered on both services.** That is the route
+> `POST /api/recommend` reaches, and it previously bypassed every gate in the table above while
+> its siblings were protected. The Model 8080 and Online 7010 rows now apply to it too.
+>
+> If model-serving readiness starts flapping after this change, check whether the instance was
+> always overloaded and simply not measuring it: `InferenceMetricsService` previously recorded
+> only `/api/v1/recommend`, so the `high failure rate` and `high inference latency` readiness
+> reasons excluded all canonical traffic. Compare `/health/load` against the pre-change baseline
+> before treating it as a regression.
+>
+> Note the asymmetry when writing alerts: 7010 sheds with `429` + `Retry-After`, 8080 with `503`.
+
 ## Key caveats
 
 - **Online QPS is a single GLOBAL ceiling** (bucket `rate:online:global`), not per-caller —

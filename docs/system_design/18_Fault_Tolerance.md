@@ -106,6 +106,21 @@ collapsing: a request that can't be served promptly is rejected fast
 (`429`/`503` with `Retry-After`), trading a few rejected requests for bounded
 latency and protected capacity for the rest.
 
+> **Changed 2026-07-27 — the canonical path is now measured.** `/v2/recommend`, the route
+> `POST /api/recommend` actually reaches, was previously unguarded on both 8080 and 7010 while
+> its siblings (`/api/v1/recommend`, `/online/recommendation`) were fully protected. It now
+> carries admission control on both services, plus the per-user rate limiter and inference
+> metrics on 8080. Two consequences worth knowing before you read a graph:
+>
+> - **`InferenceMetricsService` previously recorded only `/api/v1/recommend`**, so the
+>   `high failure rate` and `high inference latency` reasons behind model-serving readiness were
+>   computed with none of the canonical traffic in the sample. Readiness may now report degraded
+>   where it previously looked healthy — that is the signal being measured correctly for the first
+>   time, not a new fault.
+> - **The two services shed with different status codes.** 7010's `OnlineAdmissionControl`
+>   returns `429` + `Retry-After`; 8080's `ProtectedRecommendationPipeline` throws
+>   `ServiceOverloadedException` → `503`. Both mean "shed"; do not alert on only one.
+
 ### Admission control (concurrency gates)
 
 [`OnlineLoadShedder`](../../src/main/java/com/recsys/loadshed/OnlineLoadShedder.java) is
