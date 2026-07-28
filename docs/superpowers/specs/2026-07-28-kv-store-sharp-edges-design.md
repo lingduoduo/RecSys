@@ -125,10 +125,20 @@ Convert each to a size-capped Caffeine cache with `expireAfterWrite`, matching t
 
 | Map | Bound |
 |---|---|
-| `LogicalExpiry.cache` | `maximumSize` + `expireAfterWrite(softTtl × 2)` |
+| `LogicalExpiry.cache` | `maximumSize` **only** — see below |
 | `LogicalExpiry.nullSentinels` | `maximumSize` + `expireAfterWrite(nullSentinelTtl)` |
 | `LogicalExpiry.refreshing` | `maximumSize` + short `expireAfterWrite`, which doubles as a stuck-refresh backstop |
 | `MultiLevel.nullSentinels` | `maximumSize` + `expireAfterWrite(30 s)` |
+
+**Correction made during implementation.** This table originally gave
+`LogicalExpiry.cache` an `expireAfterWrite(softTtl × 2)` alongside its size cap. That
+is wrong, and four existing tests caught it. The whole point of logical expiry is that
+an entry past its soft expiry is *still served* while one background refresh runs; a
+time-based eviction there means that when the backing store is down, entries evaporate
+after two soft windows and every reader cold-misses — reintroducing the exact
+thundering herd the class exists to prevent. Unboundedness was a *size* problem, so
+`maximumSize` alone is the correct fix. The other three maps are genuinely TTL-shaped
+and keep their `expireAfterWrite`.
 
 Sizes are env-configurable, defaulting to `10_000` to match the existing
 `ONLINE_FEATURE_CACHE_MAX_USERS` precedent:

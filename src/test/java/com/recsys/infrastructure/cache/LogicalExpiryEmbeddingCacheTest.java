@@ -161,6 +161,29 @@ class LogicalExpiryEmbeddingCacheTest {
     }
 
     @Test
+    void cache_staysBoundedUnderFarMoreDistinctIdsThanTheCap() {
+        // Every id resolves, so nothing limits growth except the cap itself.
+        var backing = new TrackingStore();
+        for (int id = 0; id < 10_000; id++) backing.put(id, new float[]{id});
+        var cache = new LogicalExpiryEmbeddingCache(backing, 60_000L, 60_000L, SYNC_EXECUTOR, 100);
+
+        for (int id = 0; id < 10_000; id++) cache.getEmbedding(id);
+
+        assertThat(cache.cacheSize()).isLessThanOrEqualTo(100);
+    }
+
+    @Test
+    void nullSentinels_stayBoundedUnderFarMoreAbsentIdsThanTheCap() {
+        // Nothing is put into the store, so every lookup records a negative-cache entry.
+        var backing = new TrackingStore();
+        var cache = new LogicalExpiryEmbeddingCache(backing, 60_000L, 60_000L, SYNC_EXECUTOR, 100);
+
+        for (int id = 0; id < 10_000; id++) cache.getEmbedding(id);
+
+        assertThat(cache.nullSentinelSize()).isLessThanOrEqualTo(100);
+    }
+
+    @Test
     void absentId_isNegativeCached_andNotRefetchedWithinSentinelTtl() {
         var backing = new TrackingStore(); // id 7 absent
         var cache = new LogicalExpiryEmbeddingCache(backing, 60_000L, 60_000L, SYNC_EXECUTOR);
