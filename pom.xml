@@ -337,6 +337,11 @@
                 <include>**/outbox/OutboxRetryPolicyTest.java</include>
                 <include>**/saga/*OrchestratorTest.java</include>
                 <include>**/*DegradedHeaderTest.java</include>
+                <!-- Not a resilience test. This profile is what the PR gate runs
+                     (.github/workflows/resilience-pr.yml), so it is the only place a
+                     deterministic check can block a merge. DocumentationIndexTest is pure
+                     file reading — no Redis, no Docker, no timing — so it is safe here. -->
+                <include>**/docs/DocumentationIndexTest.java</include>
               </includes>
               <excludedGroups>load,docker</excludedGroups>
             </configuration>

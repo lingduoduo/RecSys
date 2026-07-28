@@ -123,7 +123,7 @@ mounts `/shards/` on 7010; the reshard endpoint `POST /shards/topology` is
 `AdminTokenGuard`-gated and **fails closed** (`403`) unless `SHARD_ADMIN_TOKEN` is
 set and the `X-Admin-Token` header matches. Operational usage — write/read curl
 and the reshard call — is owned by [Database
-Sharding](03_DB_Sharding.md#3-versioned-topology--online-reshard).
+Sharding](03_DB_Scaling_Sharding.md#3-versioned-topology--online-reshard).
 
 | Env var | Default | Partitions |
 |---|---:|---|

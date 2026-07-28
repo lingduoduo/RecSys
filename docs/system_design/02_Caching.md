@@ -126,7 +126,7 @@ streaming-vs-buffered behavior is owned by [SSE Streaming](16_SSE_Streaming.md).
   independent compute rather than blocking ([18_Fault_Tolerance](18_Fault_Tolerance.md#redis-resilience)).
 - **Infra serve-stale caches** — `OnlineFeatureStore` (5 s fresh / 60 s stale) and
   `ShardedTopKStore` (2 s / 60 s) implement the same fresh+stale+single-flight lifecycle
-  inline; see [03_DB_Sharding §2](03_DB_Sharding.md#2-shardedtopkstore--sharded-trending).
+  inline; see [03_DB_Scaling_Sharding §2](03_DB_Scaling_Sharding.md#2-shardedtopkstore--sharded-trending).
 - **CloudFront edge cache** — the outermost cache tier, for the two catalog reads, is the
   [CDN Edge investigation](12_CDNS.md#1-what-is-cached-and-what-isnt).
 
