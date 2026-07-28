@@ -210,6 +210,14 @@ each PR, not a follow-up — an ungated regression test provides no protection.
 
 ## Out of scope
 
+> **Resolved 2026-07-28.** All three were subsequently repaired — see
+> `2026-07-28-kv-store-deferred-findings-design.md`. Investigating them changed the
+> severity ordering below on two of the three: `ShardCursor` turned out to return **500 on
+> ordinary user input**, the pipeline issue turned out to let a failed batch's writes
+> **execute later against an unrelated request**, and `readAllShards` turned out to have
+> no production caller at all rather than backing the admin endpoint. The original
+> characterisations are left unedited below as a record of what the first pass believed.
+
 Recorded from the same audit, deliberately not addressed here:
 
 - **`readAllShards` is unbounded.** `ShardedRecordStore.java:209-225` drains every shard
