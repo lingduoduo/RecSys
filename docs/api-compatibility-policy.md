@@ -75,6 +75,11 @@ but no `Link`, because from there the true replacement (`/api/v1/movies/...` or
 `/api/v1/recommend`) is not mechanically derivable — there is no version segment left to
 strip.
 
+The mechanism behind these headers — the single server-wide `ApiDeprecationDecorator`, which
+path classes it applies to, and the exemptions — is described in
+[09_API_Gateway §"API versioning and deprecation"](system_design/09_API_Gateway.md#api-versioning-and-deprecation).
+That document deliberately does not restate the table below; this is its only home.
+
 ## Deprecated today
 
 | Deprecated | Replacement | Notes |
