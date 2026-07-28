@@ -23,8 +23,16 @@ import java.util.Objects;
  *
  * <p>Throws the same exceptions the V1 controller throws, so {@code GlobalExceptionHandler}
  * maps them to 429 and 503 without any new mapping code.
+ *
+ * <p>Deliberately not {@code final}: {@code ModelRecommendationPipelineConfig} returns this from
+ * a {@code @Bean} method, and {@code TraceIdAspect}'s {@code execution(* com.recsys..*(..))}
+ * pointcut matches {@link #recommend}. Spring Boot's AOP autoconfiguration defaults
+ * {@code spring.aop.proxy-target-class=true}, so the auto-proxy creator CGLIB-subclasses this
+ * bean regardless of the config class's own {@code proxyBeanMethods=false} (that setting only
+ * governs inter-@Bean-method calls within the configuration class, not AOP proxying of the
+ * returned instance) — and CGLIB cannot subclass a final class.
  */
-public final class ProtectedRecommendationPipeline implements RecommendationPipeline {
+public class ProtectedRecommendationPipeline implements RecommendationPipeline {
 
     private static final String TRACE_VARIANT = "abTestVariant";
     private static final String TRACE_MODEL_VERSION = "modelVersion";
