@@ -130,8 +130,19 @@ A reshard is online because of two mechanisms:
   (`readDevice`) read *both* `current()` and `previousIfActive()` and merge them
   (dedupe by `device:seq`, current wins), so records written before the change are
   still served until they TTL out and the previous generation self-heals away.
-  Shard-level scans (`readShard` / `readAllShards`, behind `GET /shards/shard`)
+  Shard-level scans (`readShard`, behind `GET /shards/shard`)
   are generation-current and do **not** dual-read.
+
+**The two read endpoints page different cursor spaces, and they are not
+interchangeable.** `GET /shards/device` pages by device ZSet score (a bare integer,
+e.g. `42`); `GET /shards/shard` pages by Redis stream ID (`<millis>-<seq>`, e.g.
+`1690000000000-0`). Both accept an opaque `cursor` query parameter, so handing one
+endpoint's cursor to the other is an easy mistake — it used to reach Redis and return
+`500`. [`ShardCursor`](../../src/main/java/com/recsys/infrastructure/redis/sharding/ShardCursor.java)
+now derives its kind from the value's shape (a stream ID always contains `-`, a
+sequence number never does) and each handler asserts the space it pages, so a
+cross-fed or malformed cursor is a `400` naming the expected space. The wire format is
+unchanged, so cursors already held by clients keep working.
 
 The HTTP façade
 ([`ShardedRecordService`](../../src/main/java/com/recsys/infrastructure/store/ShardedRecordService.java))
@@ -292,7 +303,7 @@ The partition invariants are exercised, not just asserted:
    a Kafka partition increase is a planned cutover
    ([kafka-partition-cutover.md](../runbooks/kafka-partition-cutover.md)).
 3. **Shard-level scans don't dual-read.** During a reshard window, per-device
-   reads merge both generations but `GET /shards/shard` / `readAllShards` are
+   reads merge both generations but `GET /shards/shard` (`readShard`) is
    generation-current — an operator scanning shards mid-migration sees only the
    new generation.
 4. **Top-K does not partition at all, despite the class name.** Each window is one

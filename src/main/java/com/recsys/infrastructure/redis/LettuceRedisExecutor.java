@@ -109,9 +109,28 @@ public final class LettuceRedisExecutor implements RedisExecutor {
         }
     }
 
+    /**
+     * {@inheritDoc}
+     *
+     * <p>A connection whose pipeline lifecycle was interrupted is <em>destroyed</em>, not
+     * returned to the pool. Two failure modes make reuse unsafe:
+     *
+     * <ul>
+     *   <li>If the callback throws after queueing commands but before {@code flushCommands()},
+     *       those commands are still buffered — {@code setAutoFlushCommands(true)} does not
+     *       flush them. Returning the connection would let the next borrower's flush execute
+     *       a failed batch's writes against an unrelated request.</li>
+     *   <li>If {@code setAutoFlushCommands(false)} itself throws, auto-flush is never
+     *       restored, and the next borrower's commands would buffer and never flush.</li>
+     * </ul>
+     *
+     * <p>The cost is one dropped connection per failed pipeline, which is the right trade
+     * against silently replaying a write the caller was told had failed.
+     */
     @Override
     public void executePipelined(Consumer<StatefulRedisConnection<String, String>> fn) {
         StatefulRedisConnection<String, String> conn = null;
+        boolean corrupt = false;
         try {
             conn = pool.borrowObject();
             conn.setAutoFlushCommands(false);
@@ -121,11 +140,32 @@ public final class LettuceRedisExecutor implements RedisExecutor {
                 conn.setAutoFlushCommands(true);
             }
         } catch (RuntimeException e) {
+            corrupt = true;
             throw e;
         } catch (Exception e) {
+            corrupt = true;
             throw new IllegalStateException("Pipelined Redis batch failed", e);
         } finally {
-            if (conn != null) pool.returnObject(conn);
+            if (conn != null) {
+                if (corrupt) {
+                    invalidateQuietly(conn);
+                } else {
+                    try {
+                        pool.returnObject(conn);
+                    } catch (RuntimeException returnFailure) {
+                        invalidateQuietly(conn);
+                    }
+                }
+            }
+        }
+    }
+
+    /** Destroying a pooled connection is best-effort: never mask the original outcome. */
+    private void invalidateQuietly(StatefulRedisConnection<String, String> conn) {
+        try {
+            pool.invalidateObject(conn);
+        } catch (Exception ignored) {
+            // The pool could not destroy it; there is nothing further we can do here.
         }
     }
 

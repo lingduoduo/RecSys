@@ -132,9 +132,11 @@ public final class ShardedRecordStore {
     /**
      * Device-level read: dual-read across current + previous generation when a migration window
      * is active. Captures current and previousIfActive exactly once (avoids torn reads on a
-     * mid-call topology shift). readShard/readAllShards remain current-generation only.
+     * mid-call topology shift). readShard remains current-generation only.
      */
     public Page<ShardedRecord> readDevice(String deviceId, ShardCursor cursor, int limit) {
+        // Reject a stream-ID cursor here rather than letting Double.parseDouble throw below.
+        cursor.requireKind(ShardCursor.Kind.SEQ);
         ShardTopology cur  = provider.current();
         ShardTopology prev = provider.previousIfActive();
 
@@ -162,7 +164,7 @@ public final class ShardedRecordStore {
         List<Long> seqNums = tuples.stream().map(t -> (long) t.getScore()).toList();
         List<ShardedRecord> records = fetchRecords(version, shardIndex, seqNums);
         long lastSeq = (long) tuples.get(tuples.size() - 1).getScore();
-        ShardCursor next = tuples.size() < limit ? null : ShardCursor.of(String.valueOf(lastSeq));
+        ShardCursor next = tuples.size() < limit ? null : ShardCursor.seq(lastSeq);
         return new Page<>(records, next);
     }
 
@@ -183,6 +185,8 @@ public final class ShardedRecordStore {
     }
 
     public Page<ShardedRecord> readShard(int shardIndex, ShardCursor cursor, int limit) {
+        // Reject a sequence-number cursor here rather than letting XREAD fail on a bad ID.
+        cursor.requireKind(ShardCursor.Kind.STREAM);
         int version = provider.current().version();
         String streamKey = streamKey(version, shardIndex);
 
@@ -201,27 +205,9 @@ public final class ShardedRecordStore {
         List<ShardedRecord> records = fetchRecords(version, shardIndex, seqNums);
 
         ShardCursor next = hasMore
-                ? ShardCursor.of(page.get(page.size() - 1).getId())
+                ? ShardCursor.stream(page.get(page.size() - 1).getId())
                 : null;
         return new Page<>(records, next);
-    }
-
-    public List<Page<ShardedRecord>> readAllShards(ShardCursor cursor, int limitPerShard) {
-        int shardCount = provider.current().shardCount();
-        List<Page<ShardedRecord>> pages = new ArrayList<>();
-        for (int i = 0; i < shardCount; i++) {
-            // Drain the shard fully, merging all pages into one result Page.
-            List<ShardedRecord> all = new ArrayList<>();
-            ShardCursor cur = cursor;
-            Page<ShardedRecord> p;
-            do {
-                p = readShard(i, cur, limitPerShard);
-                all.addAll(p.records());
-                cur = p.next();
-            } while (p.hasMore());
-            pages.add(new Page<>(all, null));
-        }
-        return pages;
     }
 
     // Pipelined multi-HGETALL — one Redis round-trip for up to `limit` records.
