@@ -353,6 +353,7 @@
                      of any <include> above, so listing one would imply coverage the gate
                      does not actually provide. -->
                 <include>**/docs/DocumentationIndexTest.java</include>
+                <include>**/docs/DocumentedMechanismTest.java</include>
               </includes>
               <excludedGroups>load,docker</excludedGroups>
             </configuration>

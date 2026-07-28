@@ -129,11 +129,20 @@ binds every request value as a positional parameter.
 
 ## 3. Index-access patterns via `MillionScalePaginationSql`
 
+> **What is live here, and what is not.** The builder methods below are a **reference
+> implementation** of the access patterns — nothing in `src/main` calls them. The live
+> catalog path,
+> [`MovieCatalogRepository`](../../src/main/java/com/recsys/infrastructure/persistence/MovieCatalogRepository.java),
+> hand-writes its two `FORCE INDEX` statements as tuned constants and constructs a
+> `SqlPlan` directly; it borrows the `SqlPlan` / `SeekCursor` *types* from this class but
+> none of its SQL generation. So editing a builder method below will not change any query
+> the service issues. This is asserted by `DocumentedMechanismTest`.
+
 [`MillionScalePaginationSql`](../../src/main/java/com/recsys/application/pagination/MillionScalePaginationSql.java)
-is the reusable builder that turns a table + index into MySQL-friendly SQL. Every
+is a reusable builder that turns a table + index into MySQL-friendly SQL. Every
 request value is a bind parameter; only identifiers are validated (regex-checked),
 predicates rejecting blank/`;` fragments, page size bounded 1–1000, and a `SqlPlan`
-record that enforces placeholder-count == bind-count. It emits three access
+record that enforces placeholder-count == bind-count. It demonstrates three access
 patterns, each mapped to how it rides an index:
 
 - **Covering-index count** — `countWithCoveringIndex(...)` emits
