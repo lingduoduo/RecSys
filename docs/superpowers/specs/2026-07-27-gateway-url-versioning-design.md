@@ -50,11 +50,12 @@ Make the version a routing dimension the **gateway owns**, so that:
   contract all three backends implement — it is what `CrossPathConsistencyTest` pins,
   and no client sees it. Renaming costs three servers plus the integration suite for
   zero external benefit. It is documented as a pipeline variant instead (§7).
-- **The `/v2/recommend` protection gap.** On 7010 `/v2/recommend` is not wrapped in
-  `OnlineAdmissionControl` although `/online/recommendation` beside it is; on 8080 it
-  has no rate limiter, submit token, load shedder, A/B exposure logging, or metrics,
-  unlike `/api/v1/recommend`. This is a live correctness issue but an independent one,
-  scoped to a follow-up spec.
+- **The `/v2/recommend` protection gap.** ✅ **Closed 2026-07-28 by PR #234** — see
+  [the parity spec](2026-07-27-v2-recommend-protection-parity-design.md). As deferred here:
+  on 7010 `/v2/recommend` was not wrapped in `OnlineAdmissionControl` although
+  `/online/recommendation` beside it is; on 8080 it had no rate limiter, submit token, load
+  shedder, A/B exposure logging, or metrics, unlike `/api/v1/recommend`. A live correctness
+  issue, but an independent one, so it was scoped to a follow-up spec rather than this change.
 - **Automatic removal of deprecated routes.** See §5.
 
 ## Decisions

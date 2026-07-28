@@ -188,8 +188,15 @@ performing the revert rather than by inspection.
 `501` and records **no** failure metric. Without it, a later well-meaning change wraps the stub and
 quietly corrupts readiness.
 
-**7010:** an integration test that `/v2/recommend` sheds to `503` when the shedder is saturated,
+**7010:** an integration test that `/v2/recommend` sheds to `429` when the shedder is saturated,
 red if the `OnlineAdmissionControl` wrap is removed.
+
+> **Corrected during implementation.** This section originally said `503`. `OnlineAdmissionControl`
+> actually sheds with `429` + `Retry-After`; only 8080's `ServiceOverloadedException` maps to `503`.
+> The error was caught by the test failing, not by review, and the shipped
+> `OnlineV2RecommendIntegrationTest` asserts `429`. The two services genuinely differ here — see
+> [18_Fault_Tolerance](../../system_design/18_Fault_Tolerance.md) and
+> [the overload-protection runbook](../../runbooks/overload-protection.md), which are authoritative.
 
 **Readiness:** a test that v2 traffic now moves `metricsService.snapshot()` — the operational point
 of the change.
