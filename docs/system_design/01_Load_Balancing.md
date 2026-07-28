@@ -142,7 +142,9 @@ model has none (it is a reference/test artifact, not a shipped feature).
 
 1. **`ApplicationLoadBalancer` isn't in the request path.** It's a tested model of the
    ALB's L7 routing, not the production balancer — don't mistake it for where real
-   traffic is routed.
+   traffic is routed. It also models only the target-group `Protocol` field
+   (HTTP/HTTPS); `ProtocolVersion` — where a real ALB's gRPC support lives — is not
+   represented, so its protocol rejection is a limit of the model, not of ALB.
 2. **Capacity-weight needs an external consumer.** The app *emits* `X-Capacity-Weight`,
    but nothing balances on it unless an ALB target-group / Envoy / mesh is configured to
    read it; on its own it's just an observable signal.

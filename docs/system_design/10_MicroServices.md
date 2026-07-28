@@ -132,11 +132,64 @@ The economy of one codebase shows up as genuinely shared building blocks:
   `/health` + `/health/ready`, online `/health/live` + `/health/ready` + `/online/ops`
   + `/metrics`, model `/health/live` + `/health/ready` + `/actuator/prometheus`. The
   probes in each Deployment match its service's surface.
+- **Every hop is HTTP/JSON — there is no gRPC anywhere in the system.** Not in the
+  request path, not between services, not as a dependency: the build has no
+  `grpc`/`protobuf` artifact and Armeria is pulled in as core `armeria` only, never
+  `armeria-grpc`. The single occurrence of the string "gRPC" in the repo is a negative
+  test fixture in the ALB reference model, and it was
+  [changed to "TCP"](../../src/test/java/com/recsys/infrastructure/alb/ApplicationLoadBalancerTest.java)
+  because it misrepresented real ALB behaviour. Treat an apparent gRPC reference as a
+  mistake, not as a surface you have not found yet. The reasoning is below.
 - **URL versioning is per-service, not shared** — 6010 and 7010 use root `/v1/…` and
   `/v2/…` next to unversioned legacy routes, while 8080 (Spring) uses both `/api/v1/…`
   and root `/v2/…`. The gateway's own prefixes carry no version at all, so the edge
   contract and the backend contracts version independently — or, in practice, don't.
   See [09_API_Gateway §1](09_API_Gateway.md#1-routing-and-prefix-strip).
+
+### Why not gRPC (and why not bidirectional streaming)
+
+Recorded because the absence is easy to mistake for an oversight, and because "use gRPC
+for real-time bidirectional streaming" is the obvious next suggestion for a system with
+four services and a streaming surface.
+
+**Provenance, so this is not read as settled history.** The repo has always documented
+the *WebSocket* decision — [16_SSE_Streaming](16_SSE_Streaming.md) states that SSE is
+one-way "which is exactly what an LLM token stream needs; nothing here requires a
+bidirectional socket." It has never mentioned gRPC. Point 1 below is a property of
+gRPC-Web itself; points 2–4 are reconstructed from how the system is built, not
+decisions found written down.
+
+1. **gRPC cannot do bidirectional streaming to a browser at all.** Full bidi needs
+   HTTP/2 trailers and true full-duplex framing, which browser `fetch`/XHR cannot
+   express. gRPC-Web — the only browser-viable variant — supports unary and
+   *server*-streaming only; client-streaming and bidirectional streaming are
+   unsupported, including behind an Envoy translation proxy. So the trade-off is not
+   "SSE vs. gRPC bidi"; it is SSE vs. server-streaming gRPC-Web, which is the same
+   capability plus a protobuf toolchain. The premise mostly dissolves before the other
+   reasons are needed.
+2. **Nothing in the system is shaped like a bidirectional stream.** The only
+   client-facing stream is LLM tokens (server → client). Client → server traffic is
+   discrete and asynchronous — events into Kafka — which buys durability and replay
+   that a socket does not. Internal streaming (`sr:stream:<shard>`, Kafka → Flink →
+   Redis) never reaches a client. Bidi would be a capability with no consumer.
+3. **The edge is built on HTTP semantics, and much of the system's value lives there.**
+   CloudFront's cache behaviours are path-keyed (`GET /api/catalog/item`, `/similar`);
+   the WebACL and `x-origin-secret` origin lockdown are header-shaped; and the gateway
+   strips `/api/v1` *before* routing, authorization, and rate-limit keying, on top of
+   per-route circuit breakers and exact-path `GATEWAY_PUBLIC_PATHS` matching. gRPC does
+   not slot into that machinery — it would bypass or require rebuilding most of it.
+4. **Nonzero cost, zero current benefit** — protobuf toolchain, a codegen step in a
+   deliberately flat single-module build, and a second serialization format alongside
+   the existing JSON DTOs.
+
+**Where the question is genuinely open.** The honest case for gRPC is *not*
+client-facing: it is the internal hops (gateway → 8080/7010/6010), where the browser
+constraint in point 1 does not apply. There it would buy binary encoding and schema
+enforcement across four services that currently share DTO shapes by convention alone —
+weighed against reworking the path-based routing and circuit-breaking in point 3. And
+if a feature ever needs continuous client → server signal (live dwell/scroll telemetry
+driving in-session re-ranking), that is where bidi would earn its keep — trading Kafka's
+durability and replay for latency, which is a real trade rather than a free upgrade.
 
 ## 6. Testing and module structure
 

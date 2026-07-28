@@ -10,6 +10,13 @@ import java.util.concurrent.atomic.AtomicInteger;
 
 public final class AlbTargetGroup {
 
+    /**
+     * Models the AWS target-group {@code Protocol} field, which for an ALB is only HTTP or HTTPS
+     * (TCP/UDP/TLS belong to an NLB). This is deliberately <em>not</em> a claim that ALB cannot
+     * serve gRPC: real ALBs do, through the separate {@code ProtocolVersion} field
+     * ({@code HTTP1|HTTP2|GRPC}), which this reference model does not represent. Add
+     * ProtocolVersion here rather than widening this list if gRPC ever needs modelling.
+     */
     private static final List<String> SUPPORTED_PROTOCOLS = List.of("HTTP", "HTTPS");
 
     private final String name;

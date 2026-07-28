@@ -169,8 +169,12 @@ class ApplicationLoadBalancerTest {
 
     @Test
     void rejectsUnsupportedProtocolOnTargetGroup() {
+        // "TCP" (an NLB target-group protocol) rather than "gRPC". A real ALB target group DOES
+        // support gRPC — via the separate ProtocolVersion field (HTTP1|HTTP2|GRPC), which this
+        // model does not represent. Asserting rejection of "gRPC" here read as "ALB cannot do
+        // gRPC", which is false, in a class whose whole job is to document ALB behaviour.
         assertThatThrownBy(() ->
-                AlbTargetGroup.builder("grp").protocol("gRPC").target("h", 80).build()
+                AlbTargetGroup.builder("grp").protocol("TCP").target("h", 80).build()
         ).isInstanceOf(IllegalArgumentException.class)
                 .hasMessageContaining("HTTP");
     }
