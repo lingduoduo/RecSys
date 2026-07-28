@@ -76,7 +76,7 @@ wrapped in a versioned, 30 s-refreshed
 with a bounded dual-read window so a live reshard is *safe* — the mechanics of the
 versioned topology, generation-scoped keys, and the record write/read paths are the
 subject of the [Partitioning investigation](14_Partitioning.md#1-consistent-hash-record-sharding)
-and [Database Sharding](03_DB_Sharding.md).
+and [Database Sharding](03_DB_Scaling_Sharding.md).
 
 ## 3. The second consumer — `StableBucketer` (A/B bucketing)
 

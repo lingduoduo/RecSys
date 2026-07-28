@@ -156,6 +156,12 @@ degraded-cache`) and only throws `ServiceOverloadedException` (latency-derived
 
 ## 3. Data-tier scaling — horizontal everywhere
 
+> Store-level companion:
+> [03_DB_Scaling_Sharding §6](03_DB_Scaling_Sharding.md#6-scaling--the-levers-and-what-each-actually-buys)
+> lists the levers per store, what each one actually buys, and what breaks first. Note the
+> qualifier on "horizontal everywhere": the Redis shards are logical prefixes on one
+> primary, so levers 1–2 there spread contention rather than adding nodes.
+
 ### Record sharding
 
 `infrastructure/redis/sharding/ConsistentHashRing` — 150 virtual nodes per shard,
