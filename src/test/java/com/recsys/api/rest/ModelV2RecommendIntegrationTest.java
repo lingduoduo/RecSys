@@ -169,6 +169,27 @@ class ModelV2RecommendIntegrationTest {
     }
 
     @Test
+    void rejectedCursorDoesNotCountAgainstTheReadinessFailureRate() throws Exception {
+        // End-to-end companion to the unit guard: a 400 must not move the signal /health/ready
+        // reads. Wrapping the pipeline put client-input rejection inside the metrics try block for
+        // the first time, so without the IllegalArgumentException carve-out a client looping
+        // malformed cursors drives recentFailureRate toward 1.0 and reports a healthy instance
+        // degraded — the exact signal this wrapper was added to make trustworthy.
+        when(abTestService.getAssignmentForUser("u1")).thenReturn(
+                new ABTestService.Assignment("training", 0, "default", true));
+
+        long failuresBefore = metricsService.snapshot().failureCount();
+
+        mockMvc.perform(post("/v2/recommend")
+                        .contentType(MediaType.APPLICATION_JSON)
+                        .content(objectMapper.writeValueAsBytes(
+                                new RecommendationQuery("u1", 2, Set.of(), "tampered.cursor"))))
+                .andExpect(status().isBadRequest());
+
+        assertThat(metricsService.snapshot().failureCount()).isEqualTo(failuresBefore);
+    }
+
+    @Test
     void invalidUserId_returns400() throws Exception {
         mockMvc.perform(post("/v2/recommend")
                         .contentType(MediaType.APPLICATION_JSON)

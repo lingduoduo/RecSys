@@ -175,6 +175,45 @@ class ProtectedRecommendationPipelineTest {
     }
 
     @Test
+    void badInputIsRethrownWithoutRecordingAnInferenceFailure() {
+        // Parity with RecommendationController, which rethrows IllegalArgumentException from a
+        // dedicated catch precisely so a client's bad input is not booked as an inference failure.
+        // This matters more here than in V1: /health/ready derives "high failure rate" from this
+        // snapshot, so counting 400s would let a client looping malformed cursors drive an
+        // otherwise-healthy instance to degraded and out of the load balancer.
+        InferenceMetricsService metrics = metrics();
+        LoadShedder shedder = shedder(1);
+        ProtectedRecommendationPipeline pipeline = new ProtectedRecommendationPipeline(
+                q -> { throw new IllegalArgumentException("Invalid recommendation cursor"); },
+                disabledLimiter(), shedder, metrics,
+                new ABTestService(new ABTestConfig()), new RecordingExposureLogger());
+
+        assertThatThrownBy(() -> pipeline.recommend(QUERY))
+                .isInstanceOf(IllegalArgumentException.class)
+                .hasMessage("Invalid recommendation cursor");
+
+        assertThat(metrics.snapshot().failureCount()).as("client error is not an inference failure").isZero();
+        assertThat(metrics.snapshot().successCount()).as("and it is certainly not a success").isZero();
+        // The permit must still come back, exactly as it does for a genuine inference failure.
+        assertThat(shedder.tryAcquire()).as("permit released on the bad-input path").isTrue();
+    }
+
+    @Test
+    void genuineInferenceFailuresAreStillRecorded() {
+        // Guards the carve-out above from being widened into "swallow every failure".
+        InferenceMetricsService metrics = metrics();
+        ProtectedRecommendationPipeline pipeline = new ProtectedRecommendationPipeline(
+                q -> { throw new IllegalStateException("model exploded"); },
+                disabledLimiter(), shedder(4), metrics,
+                new ABTestService(new ABTestConfig()), new RecordingExposureLogger());
+
+        assertThatThrownBy(() -> pipeline.recommend(QUERY))
+                .isInstanceOf(IllegalStateException.class);
+
+        assertThat(metrics.snapshot().failureCount()).isEqualTo(1);
+    }
+
+    @Test
     void assignmentIsDeterministicSoFellBackFromIsTrustworthy() {
         // fellBackFrom is derived by recomputing the assignment. If this ever stops holding,
         // exposure events would be silently wrong — so pin it.

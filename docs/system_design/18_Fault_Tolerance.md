@@ -120,6 +120,13 @@ latency and protected capacity for the rest.
 > - **The two services shed with different status codes.** 7010's `OnlineAdmissionControl`
 >   returns `429` + `Retry-After`; 8080's `ProtectedRecommendationPipeline` throws
 >   `ServiceOverloadedException` → `503`. Both mean "shed"; do not alert on only one.
+> - **`400`s are not inference failures.** `ProtectedRecommendationPipeline` rethrows
+>   `IllegalArgumentException` without recording, mirroring the carve-out in
+>   `RecommendationController`. This matters more on the v2 path, which reaches the pagination
+>   cursor codec: cursor rejection is entirely client-driven, so counting it would let a client
+>   looping malformed cursors drive `recentFailureRate` toward 1.0 and pull a healthy instance
+>   out of the load balancer. A readiness degradation therefore reflects real inference trouble,
+>   never a burst of bad requests.
 
 ### Admission control (concurrency gates)
 
