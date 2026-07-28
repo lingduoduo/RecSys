@@ -127,7 +127,14 @@ public final class LlmProxyService implements HttpService {
 
     @Override
     public HttpResponse serve(ServiceRequestContext ctx, HttpRequest req) {
-        String path = ctx.path();
+        // Normalize before authorization, and before route.rewrite below — the LLM route's prefix
+        // is the version-free "/api/llm", so a versioned path would fail its matchesPrefix check.
+        ApiVersion apiVersion = ApiVersion.parse(ctx.path());
+        if (!apiVersion.supported()) {
+            return GatewayProxyService.gatewayError(
+                    HttpStatus.BAD_REQUEST, apiVersion.unsupportedMessage());
+        }
+        String path = apiVersion.path();
 
         GatewayAuthResult auth = authenticator.check(req.headers(), path);
         if (auth.rejected()) return auth.rejection();

@@ -51,6 +51,8 @@ Each nginx block is a deliberate mirror of a CloudFront decision:
 | `DefaultCacheBehavior` = CachingDisabled | default `location /` with bypass → `X-Cache: BYPASS` |
 | `/api/catalog/item*` key whitelists `id` | `proxy_cache_key "$uri\|$arg_id"` |
 | `/api/catalog/similar*` whitelists `movieId`,`k` | `proxy_cache_key "$uri\|$arg_movieId\|$arg_k"` |
+| `/api/v1/catalog/item*`, identical to the unversioned twin | second `location = /api/v1/catalog/item` block, same `proxy_cache_key "$uri\|$arg_id"` |
+| `/api/v1/catalog/similar*`, identical to the unversioned twin | second `location = /api/v1/catalog/similar` block, same `proxy_cache_key "$uri\|$arg_movieId\|$arg_k"` |
 | `CustomHeaders` inject the origin secret | `proxy_set_header x-origin-secret` |
 | `X-Cache: Hit from cloudfront` | `add_header X-Cache $upstream_cache_status` (or the `$cdn_cache_status` map in the default block — see Config note) |
 | Honours `stale-while-revalidate` / `stale-if-error` | same directives, natively (`proxy_cache_background_update on`, `proxy_cache_use_stale ...`) |
@@ -94,13 +96,15 @@ Read this before drawing any conclusion from the local environment.
   local-only artifact: CloudFront's whitelist simply drops `MOVIEID` since it isn't `movieId`,
   so the ambiguity nginx exhibits here cannot happen in production.
 - **The local locations are exact matches; CloudFront's are prefix globs.** `location =
-  /api/catalog/item` and `location = /api/catalog/similar` in
-  `docker/cdn/default.conf.template` match only that literal path, whereas the CloudFront path
-  patterns are `/api/catalog/item*` / `/api/catalog/similar*` — a prefix glob that also matches,
-  e.g., `/api/catalog/item/5`. The local environment therefore **under-caches** relative to
-  production: a sub-path request falls through to the local default (uncached) block instead of
-  the cached location. Nothing personalized is reachable at those sub-paths, so this is a
-  false-conclusion risk for anyone using the local env to reason about hit ratio — not a
+  /api/catalog/item`, `location = /api/catalog/similar`, `location = /api/v1/catalog/item`,
+  and `location = /api/v1/catalog/similar` in `docker/cdn/default.conf.template` each match
+  only that one literal path, whereas the CloudFront path patterns are `/api/catalog/item*` /
+  `/api/catalog/similar*` / `/api/v1/catalog/item*` / `/api/v1/catalog/similar*` — prefix globs
+  that also match, e.g., `/api/catalog/item/5` or `/api/v1/catalog/item/5`. The local
+  environment therefore **under-caches** relative to production, for both the versioned and
+  unversioned spellings: a sub-path request falls through to the local default (uncached) block
+  instead of the cached location. Nothing personalized is reachable at those sub-paths, so this
+  is a false-conclusion risk for anyone using the local env to reason about hit ratio — not a
   security hole.
 
 This is a semantics harness, not a CloudFront emulator.

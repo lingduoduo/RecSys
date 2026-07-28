@@ -44,7 +44,14 @@ public final class GatewayProxyService implements HttpService {
 
     @Override
     public HttpResponse serve(ServiceRequestContext ctx, HttpRequest req) {
-        String path = ctx.path();
+        // Normalize BEFORE authorization. GATEWAY_PUBLIC_PATHS and PROTECTED_PREFIXES are matched
+        // against version-free paths, so a caller must not be able to reach a protected route by
+        // adding a version segment. Every consumer below sees the normalized path.
+        ApiVersion apiVersion = ApiVersion.parse(ctx.path());
+        if (!apiVersion.supported()) {
+            return gatewayError(HttpStatus.BAD_REQUEST, apiVersion.unsupportedMessage());
+        }
+        String path = apiVersion.path();
 
         GatewayAuthResult auth = authenticator.check(req.headers(), path);
         if (auth.rejected()) return auth.rejection();

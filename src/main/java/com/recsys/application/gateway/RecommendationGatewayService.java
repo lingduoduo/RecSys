@@ -58,7 +58,14 @@ public final class RecommendationGatewayService implements HttpService {
                     HttpData.ofUtf8("{\"error\":\"method not allowed\"}"));
         }
 
-        GatewayAuthResult auth = authenticator.check(req.headers(), ctx.path());
+        // Same ordering rule as GatewayProxyService: normalize before authorization.
+        ApiVersion apiVersion = ApiVersion.parse(ctx.path());
+        if (!apiVersion.supported()) {
+            return GatewayProxyService.gatewayError(
+                    HttpStatus.BAD_REQUEST, apiVersion.unsupportedMessage());
+        }
+
+        GatewayAuthResult auth = authenticator.check(req.headers(), apiVersion.path());
         if (auth.rejected()) {
             return auth.rejection();
         }

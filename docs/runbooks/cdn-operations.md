@@ -21,17 +21,20 @@ repo has no IaC. There is no state file and no drift detection.
 
 ## What is and is not cached
 
-Cached: `GET /api/catalog/item` (1 h fresh, 24 h `stale-while-revalidate` +
-`stale-if-error`) and `GET /api/catalog/similar` (5 min fresh, 1 h
-`stale-while-revalidate` + `stale-if-error`). The two directives cover different
-failure modes and both matter: `stale-while-revalidate` serves the stale copy
-while refreshing it in the background against a *healthy* origin — it says
-nothing about an unhealthy one. `stale-if-error` is what covers an origin
+Cached: `GET /api/catalog/item` and `GET /api/v1/catalog/item` (1 h fresh, 24 h
+`stale-while-revalidate` + `stale-if-error`); `GET /api/catalog/similar` and
+`GET /api/v1/catalog/similar` (5 min fresh, 1 h `stale-while-revalidate` +
+`stale-if-error`). Four `CacheBehaviors` in total (`create-cdn-distribution.sh`) — the
+versioned and unversioned spellings of each route are cached identically, since the
+gateway strips the version segment before the request is otherwise distinguishable. The
+two directives cover different failure modes and both matter: `stale-while-revalidate`
+serves the stale copy while refreshing it in the background against a *healthy* origin —
+it says nothing about an unhealthy one. `stale-if-error` is what covers an origin
 outage: it lets the edge keep serving the cached object when the origin is
 unreachable or returns a 5xx, for the same window. `HttpCaching.publicCache`
 emits both with the same value, so a total origin outage still serves cached
-`/item` for up to 24 h and `/similar` for up to 1 h. See "Freshness" /
-"Availability" in the design doc for the full breakdown.
+`/item` (either spelling) for up to 24 h and `/similar` (either spelling) for up to 1 h.
+See "Freshness" / "Availability" in the design doc for the full breakdown.
 
 Everything else, including `POST /api/recommend`, is `CachingDisabled` by default and always
 reaches the origin. **The hit ratio on the primary recommendation route is zero by design** —
@@ -238,7 +241,7 @@ first rejection also emits one WARN log (only the first, to avoid flooding).
 once:
 
 ```bash
-./scripts/invalidate-cdn.sh '/api/catalog/similar*'
+./scripts/invalidate-cdn.sh
 ```
 
 Do not invalidate per write. A bulk load would issue thousands of calls and exhaust the

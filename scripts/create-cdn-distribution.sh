@@ -119,12 +119,20 @@ jq -n \
       Items: ["GET","HEAD","OPTIONS","PUT","POST","PATCH","DELETE"],
       CachedMethods: {Quantity: 2, Items: ["GET","HEAD"]}}
   },
-  CacheBehaviors: {Quantity: 2, Items: [
+  CacheBehaviors: {Quantity: 4, Items: [
     {PathPattern: "/api/catalog/item*", TargetOriginId: "alb-origin",
      ViewerProtocolPolicy: "redirect-to-https", CachePolicyId: $item_policy, Compress: true,
      AllowedMethods: {Quantity: 2, Items: ["GET","HEAD"],
        CachedMethods: {Quantity: 2, Items: ["GET","HEAD"]}}},
+    {PathPattern: "/api/v1/catalog/item*", TargetOriginId: "alb-origin",
+     ViewerProtocolPolicy: "redirect-to-https", CachePolicyId: $item_policy, Compress: true,
+     AllowedMethods: {Quantity: 2, Items: ["GET","HEAD"],
+       CachedMethods: {Quantity: 2, Items: ["GET","HEAD"]}}},
     {PathPattern: "/api/catalog/similar*", TargetOriginId: "alb-origin",
+     ViewerProtocolPolicy: "redirect-to-https", CachePolicyId: $similar_policy, Compress: true,
+     AllowedMethods: {Quantity: 2, Items: ["GET","HEAD"],
+       CachedMethods: {Quantity: 2, Items: ["GET","HEAD"]}}},
+    {PathPattern: "/api/v1/catalog/similar*", TargetOriginId: "alb-origin",
      ViewerProtocolPolicy: "redirect-to-https", CachePolicyId: $similar_policy, Compress: true,
      AllowedMethods: {Quantity: 2, Items: ["GET","HEAD"],
        CachedMethods: {Quantity: 2, Items: ["GET","HEAD"]}}}

@@ -23,6 +23,7 @@ import static org.junit.jupiter.api.Assertions.assertNotNull;
 import static org.junit.jupiter.api.Assertions.assertFalse;
 import static org.junit.jupiter.api.Assertions.assertTrue;
 import static org.junit.jupiter.api.Assertions.assertThrows;
+import static org.assertj.core.api.Assertions.assertThat;
 
 class GatewayAuthenticatorTest {
     private static final Base64.Encoder URL_ENCODER = Base64.getUrlEncoder().withoutPadding();
@@ -188,6 +189,28 @@ class GatewayAuthenticatorTest {
         RequestHeaders authed = RequestHeaders.of(HttpMethod.GET, "/api/catalog/user",
                 HttpHeaderNames.of("x-api-key"), "key-1");
         assertFalse(auth.check(authed, "/api/catalog/user").rejected());
+    }
+
+    @Test
+    void check_versionedProtectedPathIsStillProtectedAfterNormalization() {
+        GatewayAuthenticator auth = authenticator(rsaKeyPairOrThrow());
+        // The gateway normalizes before calling check(), so a caller cannot reach a protected
+        // path by adding a version segment. This asserts the normalized form is still rejected.
+        RequestHeaders headers = RequestHeaders.of(HttpMethod.GET, "/api/v1/users/profile");
+
+        String normalized = ApiVersion.parse("/api/v1/users/profile").path();
+        assertThat(normalized).isEqualTo("/api/users/profile");
+        assertTrue(auth.check(headers, normalized).rejected());
+    }
+
+    @Test
+    void check_versionedCatalogUserIsStillProtectedAfterNormalization() {
+        GatewayAuthenticator auth = authenticator(rsaKeyPairOrThrow());
+        RequestHeaders headers = RequestHeaders.of(HttpMethod.GET, "/api/v1/catalog/user?userId=1");
+
+        String normalized = ApiVersion.parse("/api/v1/catalog/user").path();
+        assertThat(normalized).isEqualTo("/api/catalog/user");
+        assertTrue(auth.check(headers, normalized).rejected());
     }
 
     private GatewayAuthenticator authenticator(KeyPair keyPair) {
