@@ -24,6 +24,9 @@ import com.recsys.domain.item.Movie;
 import com.recsys.domain.recommendation.RecommendationQuery;
 import com.recsys.domain.user.User;
 import com.recsys.application.recommendation.RecommendationPipeline;
+import com.recsys.loadshed.OnlineAdmissionControl;
+import com.recsys.loadshed.OnlineLoadShedder;
+import com.recsys.metrics.OnlineServingMetricsService;
 import io.micrometer.core.instrument.simple.SimpleMeterRegistry;
 import org.junit.jupiter.api.Test;
 import org.junit.jupiter.api.extension.RegisterExtension;
@@ -60,13 +63,22 @@ class OnlineV2RecommendIntegrationTest {
                         List.of(new Movie(10, "Inception", 2010, List.of("Sci-Fi")))));
     }
 
+    /** Capacity 1 so a single held permit saturates it deterministically — no wall-clock timing. */
+    static final OnlineLoadShedder LOAD_SHEDDER = new OnlineLoadShedder(1, 0.9);
+    static final OnlineServingMetricsService METRICS = new OnlineServingMetricsService();
+
     @RegisterExtension
     static final ServerExtension server = new ServerExtension() {
         @Override
         protected void configure(ServerBuilder sb) {
             RecommendationPipeline pipeline =
                     new OnlineBlendingPipeline(mockService, pagination(), MAX_CANDIDATES);
-            sb.service("/v2/recommend", new OnlineServices.RecommendV2(pipeline));
+            // Mirrors OnlinePredictionServer: /v2/recommend is admission-controlled exactly as
+            // /online/recommendation is. Registering it bare here would let the production wrap
+            // be removed without any test noticing.
+            sb.service("/v2/recommend",
+                    new OnlineAdmissionControl(
+                            new OnlineServices.RecommendV2(pipeline), LOAD_SHEDDER, METRICS));
         }
     };
 
@@ -132,5 +144,35 @@ class OnlineV2RecommendIntegrationTest {
                 new RecommendationCursorCodec(config, FIXED_CLOCK),
                 new CursorPaginationService(),
                 new RecommendationPaginationMetrics(new SimpleMeterRegistry()));
+    }
+
+    @Test
+    void v2RecommendShedsWhenTheShedderIsSaturated() throws Exception {
+        // /online/recommendation has been admission-controlled all along; /v2/recommend was not,
+        // so the route the canonical POST /api/recommend reaches had unbounded concurrency here.
+        // Goes red if the OnlineAdmissionControl wrap is removed from either the server or
+        // this harness.
+        assertThat(LOAD_SHEDDER.tryAcquire()).as("capacity 1 -> now saturated").isTrue();
+        try {
+            String body = MAPPER.writeValueAsString(
+                    new RecommendationQuery("1", 5, Set.of(), null));
+            AggregatedHttpResponse r = server.blockingWebClient()
+                    .execute(HttpRequest.of(
+                            RequestHeaders.of(
+                                    HttpMethod.POST, "/v2/recommend",
+                                    HttpHeaderNames.CONTENT_TYPE, "application/json"),
+                            HttpData.ofUtf8(body)));
+
+            // 429, not 503: OnlineAdmissionControl sheds with TOO_MANY_REQUESTS + Retry-After.
+            // That differs from the 8080 path, where ProtectedRecommendationPipeline throws
+            // ServiceOverloadedException -> 503. Both are "shed", but the two services report it
+            // differently, and this test pins 7010's actual contract rather than an assumed one.
+            assertThat(r.status()).isEqualTo(HttpStatus.TOO_MANY_REQUESTS);
+            assertThat(r.headers().get(HttpHeaderNames.RETRY_AFTER)).isNotNull();
+        } finally {
+            // Must release even on failure: the shedder is static and shared, so a leaked permit
+            // would cascade into every sibling test in this class.
+            LOAD_SHEDDER.release();
+        }
     }
 }

@@ -217,7 +217,14 @@ public final class OnlinePredictionServer {
                                       new AdminTokenGuard(System.getenv("SHARD_ADMIN_TOKEN")))))
               // "v2" is the PIPELINE name (recall -> rank -> hydrate -> paginate), not API version 2.
               // API versions live only at the gateway edge as /api/v{n} — see docs/api-compatibility-policy.md.
-              .service("/v2/recommend", new OnlineServices.RecommendV2(blendingPipeline))
+              //
+              // Admission-controlled to match /online/recommendation above. The canonical
+              // POST /api/recommend reaches THIS route, so leaving it unwrapped gave the busiest
+              // path on this service unbounded concurrency while its neighbour was protected.
+              .service("/v2/recommend",
+                      new OnlineAdmissionControl(
+                              new OnlineServices.RecommendV2(blendingPipeline),
+                              loadShedder, metricsService))
               .service(Route.builder().pathPrefix("/shards/").build(),
                       new ShardedRecordService(shardedRecordStore, topologyStore,
                               System.getenv("SHARD_ADMIN_TOKEN"),

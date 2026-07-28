@@ -108,7 +108,8 @@ public class RecommendationController {
                 return ResponseEntity.ok().headers(headers).body(degraded);
             }
             metricsService.recordFailure(0L, assignment.variant());
-            throw new ServiceOverloadedException(retryAfterSeconds(metricsService.snapshot()));
+            throw new ServiceOverloadedException(
+                    InferenceMetricsService.retryAfterSeconds(metricsService.snapshot()));
         }
         try {
             RecommendResponse response = recommendationService.recommend(request, assignment);
@@ -129,20 +130,6 @@ public class RecommendationController {
         } finally {
             loadShedder.release();
         }
-    }
-
-    /**
-     * Estimates a sensible Retry-After value from the rolling-average inference latency.
-     * Clients that back off for roughly one inference cycle avoid piling up retries while
-     * the instance is still processing the current batch of requests.
-     */
-    private static int retryAfterSeconds(InferenceMetricsService.Snapshot metrics) {
-        if (metrics == null) return 1;
-        double avgMs = metrics.recentAvgLatencyMs();
-        if (avgMs > 0) {
-            return Math.min(10, Math.max(1, (int) Math.ceil(avgMs / 1000.0)));
-        }
-        return 1;
     }
 
     private static long elapsedMs(long startNs) {
