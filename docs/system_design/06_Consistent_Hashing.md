@@ -64,7 +64,9 @@ shard index):
   **wrapping around to `firstEntry()`** when the hash exceeds the largest position —
   the classic clockwise-walk on the ring. It is lock-free after construction.
 - **Diagnosis.** `distribution(deviceIds)` returns the device count per shard, for
-  spotting hot-shard imbalance.
+  spotting hot-shard imbalance. It is a library helper only — **no endpoint, metric or
+  log exposes it today**, so an operator cannot currently read per-shard load without
+  writing code. Wiring it to a surface is unclaimed work, not an existing capability.
 
 **The minimal-remap property is structural, not a resize method.** The ring has no
 in-place resize — it is immutable, so a resize *rebuilds* a new ring inside a new

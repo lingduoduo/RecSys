@@ -94,7 +94,10 @@ snapshot across HTTP requests.
 ## 3. Offset pagination
 
 [`MillionScalePaginationSql.delayedJoinPage`](../../src/main/java/com/recsys/application/pagination/MillionScalePaginationSql.java)
-supports deep random access:
+shows the deferred-join shape for deep random access. It is a **reference
+implementation** — no serving path calls it (see the note in
+[13_DB_Indexing §3](13_DB_Indexing.md#3-index-access-patterns-via-millionscalepaginationsql)),
+so the service does not offer offset pagination over the catalog today:
 
 ```sql
 SELECT t.<payload>

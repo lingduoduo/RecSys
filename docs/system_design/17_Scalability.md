@@ -212,7 +212,10 @@ Consistency and lag: [04_Replication](04_Replication.md).
 
 `application/pagination/MillionScalePaginationSql` — keyset seek / covering-index
 / delayed-join with `FORCE INDEX` and a **1000-row page cap** avoids the OFFSET
-deep-scan cliff, keeping page latency flat to 10M+ rows. `/v2/recommend` uses an
+deep-scan cliff, keeping page latency flat to 10M+ rows. (That class is a reference
+implementation; the live catalog path hand-writes the equivalent `FORCE INDEX` keyset
+query in `MovieCatalogRepository` — see
+[13_DB_Indexing §3](13_DB_Indexing.md#3-index-access-patterns-via-millionscalepaginationsql).) `/v2/recommend` uses an
 HMAC-signed, query-bound `(score, itemId)` live-keyset cursor over a recomputed
 bounded ranking window. Catalog, Spring model, and online serving share
 validation-before-source-work, deterministic tuple seek, and exact

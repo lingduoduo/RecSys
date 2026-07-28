@@ -72,7 +72,9 @@ is an immutable 64-bit ring (`TreeMap` ceiling lookup) that places each shard at
 [`Hashing.fnv1a64`](../../src/main/java/com/recsys/infrastructure/redis/sharding/Hashing.java)),
 so device IDs spread uniformly and a resize remaps only the keys between adjacent
 vnodes — roughly `1/N`. `shardFor(deviceId)` resolves a device to its shard;
-`distribution()` exposes per-shard load for hot-shard diagnosis. The FNV-1a
+`distribution()` can compute per-shard load for hot-shard diagnosis, though nothing
+exposes it on a surface today (see
+[06_Consistent_Hashing](06_Consistent_Hashing.md#the-ring)). The FNV-1a
 primitive (`offset basis 0xcbf29ce484222325`, `prime 0x100000001b3`, UTF-8) is a
 compatibility contract — the same hash backs `StableBucketer` for A/B assignment,
 and changing it would silently remap every device and every bucket.
