@@ -221,7 +221,7 @@ public final class OnlinePredictionServer {
                               .decorate(AdminTokenGuard.newDecorator(
                                       new AdminTokenGuard(System.getenv("SHARD_ADMIN_TOKEN")))))
               // "v2" is the PIPELINE name (recall -> rank -> hydrate -> paginate), not API version 2.
-              // API versions live only at the gateway edge as /api/v{n} — see docs/api-compatibility-policy.md.
+              // API versions live only at the gateway edge as /api/v{n} — see docs/system_design/09_API_Gateway.md#the-compatibility-contract.
               //
               // Admission-controlled to match /online/recommendation above. The canonical
               // POST /api/recommend reaches THIS route, so leaving it unwrapped gave the busiest

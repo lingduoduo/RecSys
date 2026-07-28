@@ -131,13 +131,51 @@ advertise. `/health` and `/metrics` are exempt. The decorator is a no-op when
 `GATEWAY_DEPRECATION_SUNSET` is unset, so a `Deprecation` header is never emitted without a
 published expiry.
 
-**Which routes are currently deprecated, and what replaces each, is not listed here.** That
-is a client-facing commitment rather than a gateway implementation detail, and it lives in
-one place — the "Deprecated today" table in the
-[API compatibility policy](../api-compatibility-policy.md#deprecated-today). Duplicating the
-list here would give it two homes and one of them would eventually be wrong. The rest of the
-contract — breaking vs additive, the two-version support window, the twelve-month notice,
-and why removal is never automatic — is in that same document.
+### The compatibility contract
+
+> Consolidated here on 2026-07-28 from a separate `docs/api-compatibility-policy.md`. It was
+> split out to address a client audience, but this project has no client inventory — as the
+> removal rule below says outright — so the split bought a second place for the same facts to
+> drift rather than a genuinely different document. Everything below is unchanged in substance.
+
+Everything above is *how* the gateway implements versioning. This is *what it promises*.
+
+**Additive — may ship at any time, without a version bump:** a new optional request field, a
+new response field, a new route, a new value in a field documented as open-ended. Clients must
+tolerate unknown response fields; a client that rejects unrecognised JSON keys is not
+compatible with this contract.
+
+**Breaking — requires a new version:** removing or renaming a response field, tightening
+validation on an existing request field, changing the status code returned for an unchanged
+condition, changing default behaviour when a field is omitted, or removing a route.
+
+**Support window.** Two versions concurrently — the current version N and its predecessor
+N−1. A third is never promised.
+
+**Notice.** `Sunset` is published when a deprecation is announced, never later, and there is a
+minimum of **twelve months** between that announcement and removal.
+
+**Deprecated today:**
+
+| Deprecated | Replacement | Notes |
+|---|---|---|
+| Any unversioned `/api/...` path | The same path under `/api/v1` | Bodies identical; path change only. The only row where the `Link` header's successor matches this replacement. |
+| `/api/catalog/...` (either spelling) | `/api/v1/movies/...` and `/api/v1/recommend` | Not one-to-one — check the route you need. The unversioned form's `Link` points at `/api/v1/catalog/...`, a *mechanical* stop that is itself still deprecated. |
+| `/api/model/...` (either spelling) | `/api/v1/recommend` with `{"strategy":"model"}` | Same caveat: the `Link` points at `/api/v1/model/...`, not directly at this replacement. |
+| `/api/online/...` (either spelling) | `/api/v1/recommend` with `{"strategy":"online"}`, `/api/v1/features` | Same caveat: the `Link` points at `/api/v1/online/...`, not directly at this replacement. |
+
+**Removal is never automatic.** It is always an explicit, reviewed pull request; nothing in
+the gateway expires a route, and a `Sunset` date passing does not by itself change behaviour.
+This is deliberate — the project has no client inventory, so it cannot know who is still
+calling a deprecated path, and an enforcing sunset would be a scheduled outage for whoever did
+not read the header. The date commits to the *earliest* removal, not an automated one.
+
+**Detecting deprecation.** Check for the `Deprecation` header on any response. Failing a build
+when a dependency starts returning `Deprecation: true` is the cheapest way to catch it early.
+
+```bash
+curl -sI https://<gateway>/api/catalog/item?id=1 | grep -i '^deprecation\|^sunset\|^link'
+```
 
 ## 2. Identity propagation and credential stripping
 

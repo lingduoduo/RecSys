@@ -35,9 +35,14 @@ class DocumentationIndexTest {
     /**
      * {@code markdownFilesIn} uses {@link Files#list} rather than {@code walk}, so listing
      * {@code docs} itself covers only root-level documents and does not pull in
-     * {@code docs/superpowers/}. Root is indexed because a document parked there — today only
-     * {@code api-compatibility-policy.md} — was in a blind spot: the README-link direction
-     * caught a *dangling* link, but nothing caught the file simply never being linked at all.
+     * {@code docs/superpowers/}.
+     *
+     * <p>{@code docs/} root holds no documents today — the last one,
+     * {@code api-compatibility-policy.md}, was consolidated into
+     * {@code 09_API_Gateway.md} on 2026-07-28. The entry is kept deliberately: root was
+     * previously a blind spot where the README-link direction caught a *dangling* link but
+     * nothing caught a file simply never being linked at all, and a future document parked
+     * there should be indexed rather than silently invisible.
      */
     private static final List<Path> INDEXED_DIRECTORIES = List.of(
             Path.of("docs"),

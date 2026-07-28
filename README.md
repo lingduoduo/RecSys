@@ -492,9 +492,10 @@ Cross-cutting entry points:
   than "next generation", and the `Deprecation`/`Sunset`/`Link` headers. Edge
   cache-key constraints are in
   [12_CDNS §1](docs/system_design/12_CDNS.md#1-what-is-cached-and-what-isnt).
-- [API compatibility policy](docs/api-compatibility-policy.md) — what counts as a
-  breaking change, the two-version support window, twelve-month deprecation notice,
-  and the `Deprecation` / `Sunset` headers clients should watch.
+- [API compatibility contract](docs/system_design/09_API_Gateway.md#the-compatibility-contract)
+  — what counts as a breaking change, the two-version support window, twelve-month
+  deprecation notice, the routes deprecated today, and the `Deprecation` / `Sunset`
+  headers clients should watch.
 
 Operational runbooks — **all of them**, same index rule as above:
 

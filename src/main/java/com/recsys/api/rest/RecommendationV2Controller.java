@@ -10,7 +10,7 @@ import org.springframework.http.ResponseEntity;
 import org.springframework.web.bind.annotation.*;
 
 // "v2" is the PIPELINE name (recall -> rank -> hydrate -> paginate), not API version 2.
-// API versions live only at the gateway edge as /api/v{n} — see docs/api-compatibility-policy.md.
+// API versions live only at the gateway edge as /api/v{n} — see docs/system_design/09_API_Gateway.md#the-compatibility-contract.
 @RestController
 public class RecommendationV2Controller {
 
