@@ -192,15 +192,11 @@ progress columns only, no indexes.
 
 ## 5. Other index types (for context)
 
-Relational B-trees are one of several "indexes" in the system:
+Relational B-trees are one of several "indexes" in the system. Ordered structures first,
+then the hash family — which is where most of this system's lookups actually happen.
 
-- **LSH ANN vector index** —
-  [`EmbeddingLSH`](../../src/main/java/com/recsys/infrastructure/vectordb/EmbeddingLSH.java)
-  (random-hyperplane buckets with Hamming-1 probing) and the exact/flat fallback
-  both implement `VectorIndex`;
-  [`CandidateGenerator`](../../src/main/java/com/recsys/infrastructure/vectordb/CandidateGenerator.java)
-  picks `lsh`/`ann` vs `exact`/`flat` for embedding recall. This indexes vectors by
-  approximate cosine neighborhood, not by a sort key.
+### Ordered and inverted
+
 - **Redis ZSET-as-index** — `ShardedRecordStore` maintains a per-device sorted-set
   index (`ZADD NX` / `ZADD XX GT` keyed by sequence number) so per-device reads
   page in order — a Redis-side ordered index, discussed in
@@ -209,6 +205,56 @@ Relational B-trees are one of several "indexes" in the system:
   [`DataManager`](../../src/main/java/com/recsys/infrastructure/dataloading/DataManager.java)
   holds `moviesByGenre` (`Map<String, List<Movie>>`), an in-memory genre index for
   the non-SQL serving path.
+
+### The hash family
+
+Every relational index above is a B-tree, but B-trees are a minority of this system's
+lookups — most of them hash. **The full map of where hashing is used, and which document
+owns each, is the table under "Hashing elsewhere in the system" in
+[06_Consistent_Hashing](06_Consistent_Hashing.md).** It is not repeated here; that would
+give it two homes and one would eventually be wrong.
+
+Two entries in it are *indexes* in this document's sense, and their names hide that:
+
+- [`EmbeddingLSH`](../../src/main/java/com/recsys/infrastructure/vectordb/EmbeddingLSH.java)
+  — LSH is locality-sensitive **hashing**, and it is a hash index whose collisions are the
+  *feature*. It hashes each embedding to a 16-bit mask by the sign of its dot product
+  against random Gaussian hyperplanes, so vectors at a similar cosine angle deliberately
+  land in the same bucket; Hamming-1 probing widens recall. That is the opposite of what a
+  hash index normally wants, which is why it answers "what is this near?" rather than
+  "where is this row?". 06's table points here for it, so this is its home.
+- [`BloomFilterGuard`](../../src/main/java/com/recsys/infrastructure/resilience/BloomFilterGuard.java)
+  — a **negative index**. It cannot tell you where a row is, only that it certainly is not
+  there. That is exactly what makes it cheap enough to sit in front of Redis and skip a
+  round-trip for a known-absent id.
+
+### Why no hash index in MySQL
+
+A reasonable question, given how much of the system hashes: why is every relational index
+here a B-tree?
+
+Because InnoDB does not offer a user-declarable one. `CREATE INDEX ... USING HASH` is
+accepted and **silently produces a B-tree**; the only true hash index InnoDB has is the
+*adaptive hash index*, which the engine builds and discards on its own from observed access
+patterns. It cannot be created, targeted by `FORCE INDEX`, or relied upon — so it is
+invisible to the plan-pinning discipline in §2, and pinning a query to it is not
+expressible. MySQL's `MEMORY` engine does support real `USING HASH` indexes, but only for
+equality on non-persistent tables, which is not this workload.
+
+That is a constraint, not a preference — and it would not hold on other engines:
+
+- **PostgreSQL** has genuine hash indexes (WAL-logged and crash-safe since v10). They serve
+  only `=`, so they could not serve any query here anyway: every catalog query needs a
+  *range* scan in `(sort, id)` order for keyset pagination. Postgres is not used in this
+  project regardless — `MySqlConnectionSettings` rejects any URL that is not
+  `jdbc:mysql://`, and a test pins that.
+- **DynamoDB** makes the hash index the primary access path: the partition key *is* a hash
+  key, with the sort key providing range access within a partition — essentially the
+  `(hash, range)` split this system implements by hand with `ConsistentHashRing` plus a
+  Redis ZSET. DynamoDB is not used here; the equivalent role is played by Redis.
+
+So the honest summary is that this system does plenty of hash-based indexing — just none of
+it inside the relational store, where the engine gives it nowhere to live.
 
 ## 6. Testing the indexes
 

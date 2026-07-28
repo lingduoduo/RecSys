@@ -154,7 +154,7 @@ approximate similarity — and is documented in the subsystem that owns it:
 | Cache-penetration guard (`BloomFilterGuard`) | Bloom filter | membership — skip a Redis lookup for a known-absent id | [18_Fault_Tolerance](18_Fault_Tolerance.md#redis-resilience) |
 | Embedding recall (`EmbeddingLSH`) | LSH random-hyperplane | approximate nearest neighbor | [13_DB_Indexing §5](13_DB_Indexing.md#5-other-index-types-for-context) |
 | Kafka partitioning | `userId` key → Kafka's internal murmur2 partitioner | per-user ordering across partitions | [14_Partitioning §3](14_Partitioning.md#3-kafka-topic-partitioning--flink-keyed-pipeline) |
-| Top-K replica shards | *no hash* — `ThreadLocalRandom` shard pick | spread read QPS over identical replicas | [14_Partitioning §2](14_Partitioning.md#2-windowed-top-k-replica-sharding) |
+| Trending top-K reads | *no hash, and no sharding* — one canonical snapshot key per window | hot-key load absorbed by a 2 s JVM cache + single-flight | [14_Partitioning §2](14_Partitioning.md#2-windowed-top-k-replica-sharding) |
 
 The distinction that matters: **consistent hashing answers "which node/shard owns this
 key, and how little moves when the set of shards changes?"** The others answer "is this
