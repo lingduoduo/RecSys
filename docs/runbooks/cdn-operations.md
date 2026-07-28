@@ -241,7 +241,7 @@ first rejection also emits one WARN log (only the first, to avoid flooding).
 once:
 
 ```bash
-./scripts/invalidate-cdn.sh '/api/catalog/similar*'
+./scripts/invalidate-cdn.sh
 ```
 
 Do not invalidate per write. A bulk load would issue thousands of calls and exhaust the

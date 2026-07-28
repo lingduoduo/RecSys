@@ -18,19 +18,26 @@
 # Usage:
 #   ./scripts/invalidate-cdn.sh                                            # both spellings of /similar (the common case)
 #   ./scripts/invalidate-cdn.sh --paths '/api/catalog/*' '/api/v1/catalog/*'   # all catalog reads, both spellings
+#
+# There is no bare-positional-argument form: a path pattern MUST be preceded by --paths, since
+# both the unversioned and versioned spellings normally need to be listed together (see above).
 set -euo pipefail
 
 COMMENT="recsys-edge"
 
-if [[ "${1:-}" == "--paths" ]]; then
+if [[ $# -eq 0 ]]; then
+  PATHS=("/api/catalog/similar*" "/api/v1/catalog/similar*")
+elif [[ "$1" == "--paths" ]]; then
   shift
   PATHS=("$@")
+  if [[ ${#PATHS[@]} -eq 0 ]]; then
+    echo "ERROR: --paths requires at least one path pattern." >&2
+    exit 1
+  fi
 else
-  PATHS=("/api/catalog/similar*" "/api/v1/catalog/similar*")
-fi
-
-if [[ ${#PATHS[@]} -eq 0 ]]; then
-  echo "ERROR: --paths requires at least one path pattern." >&2
+  echo "ERROR: unrecognized argument '$1'." >&2
+  echo "Path patterns must be passed via --paths, e.g.:" >&2
+  echo "  ./scripts/invalidate-cdn.sh --paths '$1' '<versioned-equivalent>'" >&2
   exit 1
 fi
 
