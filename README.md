@@ -457,11 +457,35 @@ Configuration and local operation:
 
 Architecture:
 
-- [System-design investigations](docs/system_design/) — the existing numbered
-  investigation directory; there is no separate
-  `docs/system_design/README.md` index.
-- [API gateway](docs/system_design/09_API_Gateway.md) — route ownership,
-  authentication, health aggregation, circuit breakers, and metrics.
+[System-design investigations](docs/system_design/) — the numbered investigation
+directory. **Every investigation is listed here**; this section is the index, and
+`DocumentationIndexTest` fails the build if a doc is added, renamed, or removed
+without updating it.
+
+| # | Investigation | Covers |
+|---|---|---|
+| 01 | [Load Balancing](docs/system_design/01_Load_Balancing.md) | ALB → kube-proxy/topology-aware routing → Armeria health-checked groups, and the capacity-weight feedback signal |
+| 02 | [Caching](docs/system_design/02_Caching.md) | Three-tier embedding cache, soft-TTL serve-stale-while-refresh, single-flight snapshots |
+| 03 | [DB Scaling & Sharding](docs/system_design/03_DB_Scaling_Sharding.md) | The two Redis sharded stores, versioned topology and online reshard, and which scaling lever buys what |
+| 04 | [Replication](docs/system_design/04_Replication.md) | Single-primary Redis with AZ-aware read replicas, Sentinel failover, replica-lag probing, cross-region DR |
+| 05 | [CAP](docs/system_design/05_CAP.md) | Where each store chooses consistency over availability during a partition, and the tunable dial |
+| 06 | [Consistent Hashing](docs/system_design/06_Consistent_Hashing.md) | The shared FNV-1a primitive and the virtual-node ring that maps devices to shards |
+| 07 | [Message Queue](docs/system_design/07_Message_Queue.md) | The fire-and-forget bounded queue carrying behavioral/experiment events off the serving path |
+| 08 | [Rate Limits](docs/system_design/08_Rate_Limits.md) | One token-bucket primitive, three per-instance limiters, one global cluster limiter |
+| 09 | [API Gateway](docs/system_design/09_API_Gateway.md) | Route ownership, authentication, health aggregation, circuit breakers, metrics |
+| 10 | [Microservices](docs/system_design/10_MicroServices.md) | Service boundaries, one-image/four-mains deployment model, layering, and why every hop is HTTP/JSON |
+| 11 | [Service Discovery](docs/system_design/11_Service_Discovery.md) | Static route table, the opt-in Redis registry, and Cloud Map resolution |
+| 12 | [CDN](docs/system_design/12_CDNS.md) | What CloudFront caches, cache-key constraints, origin lockdown, and the local stand-in |
+| 13 | [DB Indexing](docs/system_design/13_DB_Indexing.md) | Which secondary indexes exist, and how every query is pinned to its index by contract tests |
+| 14 | [Partitioning](docs/system_design/14_Partitioning.md) | The five partition dimensions, and where the shards physically live |
+| 15 | [Eventual Consistency](docs/system_design/15_Eventual_Consistency.md) | How eventual consistency manifests and is deliberately bounded per layer |
+| 16 | [SSE Streaming](docs/system_design/16_SSE_Streaming.md) | The LLM-proxy SSE passthrough, its lifecycle, and why no WebSockets or gRPC |
+| 17 | [Scalability](docs/system_design/17_Scalability.md) | Compute-tier HPA, data-tier levers, and the overload-protection layers that let it scale without collapsing |
+| 18 | [Fault Tolerance](docs/system_design/18_Fault_Tolerance.md) | Resilience contracts, graceful drain, failure-path evidence, and status |
+| 19 | [Pagination](docs/system_design/19_Pagination.md) | Keyset and offset implementations, and the shared signed live-keyset recommendation contract |
+| 20 | [AuthN / AuthZ](docs/system_design/20_AuthN_AuthZ.md) | The six credentials, fail-closed startup, credential stripping, and the operator-token tier |
+
+Cross-cutting entry points:
 - [API versioning](docs/system_design/09_API_Gateway.md#api-versioning-and-deprecation)
   — the gateway-owned `/api/v{n}` path version, why an unversioned `/api` path is
   implicit v1, why `/v2` on the internal services means "different pipeline" rather
@@ -471,33 +495,41 @@ Architecture:
 - [API compatibility policy](docs/api-compatibility-policy.md) — what counts as a
   breaking change, the two-version support window, twelve-month deprecation notice,
   and the `Deprecation` / `Sunset` headers clients should watch.
-- [Microservices](docs/system_design/10_MicroServices.md) — service boundaries,
-  entry points, deployment model, and communication.
-- [Fault tolerance](docs/system_design/18_Fault_Tolerance.md) — resilience
-  contracts, graceful drain, failure-path evidence, and status.
-- [Pagination](docs/system_design/19_Pagination.md) — current keyset and offset
-  implementations, including the shared signed live-keyset recommendation
-  contract used by model and online serving.
-- [AuthN / AuthZ](docs/system_design/20_AuthN_AuthZ.md) — the six credentials, why
-  the gateway is the only front door, fail-closed startup, credential stripping and
-  identity injection, the operator-token tier, and the service-local submit and
-  session tokens.
 
-Operational runbooks:
+Operational runbooks — **all of them**, same index rule as above:
 
-- [Overload protection](docs/runbooks/overload-protection.md) — overload
-  symptoms, controls, validation, and recovery.
-- [Regional failover](docs/runbooks/dr-regional-failover.md) — promote the
-  standby region and capture evidence.
-- [Regional failback](docs/runbooks/dr-failback.md) — return traffic to the
-  recovered primary region.
-- [DR game day](docs/runbooks/dr-game-day.md) — rehearse and evaluate a
-  regional recovery.
+*Disaster recovery*
+- [Regional failover](docs/runbooks/dr-regional-failover.md) — promote the standby region and capture evidence.
+- [Regional failback](docs/runbooks/dr-failback.md) — return traffic to the recovered primary region.
+- [Data-tier promotion](docs/runbooks/dr-data-tier-promotion.md) — restore the **write** path after DNS failover.
+- [DR game day](docs/runbooks/dr-game-day.md) — rehearse and evaluate a regional recovery.
+- [Zonal resilience](docs/runbooks/zonal-resilience.md) — surviving the loss of one AZ within a region.
 
-The documentation map is intentionally curated. Browse `docs/system_design/`
-for caching, sharding, replication, messaging, indexing, consistency, CDN, and
-scalability investigations rather than duplicating their content here. Pagination
-details are consolidated in the dedicated investigation linked above.
+*Edge and CDN*
+- [CDN operations](docs/runbooks/cdn-operations.md) — running the CloudFront distribution in front of the gateway.
+- [CDN rollback](docs/runbooks/cdn-rollback.md) — the rollout order reversed; skipping ahead strands traffic.
+- [CDN local stand-in](docs/runbooks/cdn-local.md) — nginx mirror of the cache behaviors, no AWS account needed.
+- [WAF WebACL](docs/runbooks/waf-webacl.md) — the out-of-band WAFv2 ACL Kustomize cannot create.
+
+*Traffic and load*
+- [Overload protection](docs/runbooks/overload-protection.md) — overload symptoms, controls, validation, recovery.
+- [Overload characterization](docs/runbooks/overload-characterization.md) — the opt-in `@Tag("load")` harnesses and the invariants they lock in.
+- [Gateway auth](docs/runbooks/gateway-auth.md) — API keys, Cognito JWT, and the fail-closed startup rule.
+
+*Data and delivery*
+- [Durable eventual consistency](docs/runbooks/durable-eventual-consistency.md) — outbox, saga state, relay, consistency tokens, reconciliation.
+- [Kafka partition cutover](docs/runbooks/kafka-partition-cutover.md) — moving to a new topic generation without breaking per-user ordering.
+- [Cursor key rotation](docs/runbooks/recommendation-cursor-key-rotation.md) — rotating the HMAC signing key behind pagination cursors.
+- [Deploy by image digest](docs/runbooks/deploy-image-digest.md) — why the EKS overlay pins an immutable digest.
+- [Retire a backend](docs/runbooks/retire-backend.md) — **irreversible**; permanently shuts down all four services and their infrastructure.
+
+**How this index stays honest.** It is complete by construction, not by discipline:
+[`DocumentationIndexTest`](src/test/java/com/recsys/docs/DocumentationIndexTest.java)
+asserts in both directions — every doc under `docs/system_design/` and
+`docs/runbooks/` is linked here, and every `docs/…` link here resolves to a file that
+exists. Adding a doc without indexing it fails the build, and so does renaming one
+without updating the link. Historical design records under `docs/superpowers/` are
+deliberately out of scope; they are point-in-time artifacts, not topics.
 
 ## Before opening a pull request
 
