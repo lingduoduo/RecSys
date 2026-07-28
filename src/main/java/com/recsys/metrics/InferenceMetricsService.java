@@ -174,6 +174,21 @@ public class InferenceMetricsService {
         }
     }
 
+    /**
+     * Retry-After hint derived from recent inference latency: back off for roughly one inference
+     * cycle so clients do not pile up retries while the instance is still working through the
+     * current batch. Shared by the V1 controller and the protected v2 pipeline so both paths give
+     * callers the same guidance.
+     */
+    public static int retryAfterSeconds(Snapshot metrics) {
+        if (metrics == null) return 1;
+        double avgMs = metrics.recentAvgLatencyMs();
+        if (avgMs > 0) {
+            return Math.min(10, Math.max(1, (int) Math.ceil(avgMs / 1000.0)));
+        }
+        return 1;
+    }
+
     private void evict(long nowSeconds) {
         long cutoff = nowSeconds - windowSeconds;
         while (!window.isEmpty() && window.peekFirst().timestampSeconds < cutoff) {
