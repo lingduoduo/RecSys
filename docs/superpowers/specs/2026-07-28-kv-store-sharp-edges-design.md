@@ -103,6 +103,12 @@ canonical Lua read, `HotKeyDetector`, and the hit-rate counters.
 **Also kept — the legacy `topk:<window>` fallback.** It is reachable on a cold Redis before
 Flink's first snapshot lands, which is a real startup window, so it is not dead code.
 
+**Deviation from the original scoping — `legacyFallbackFetches` is kept.** It was
+listed for removal, but since the legacy fallback branch survives, the counter that
+reports how often it serves traffic remains meaningful. With no shard layer between
+the canonical read and the fallback, a non-zero value now means exactly one thing:
+the canonical snapshot is absent.
+
 **Not done here — renaming the class.** `ShardedTopKStore` becomes a slight misnomer.
 Renaming touches three servers, five documents, and two test classes for no behavioral gain
 and would bury the substantive diff. Recorded as a follow-up.

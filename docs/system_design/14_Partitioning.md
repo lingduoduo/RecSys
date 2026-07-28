@@ -1,8 +1,8 @@
 # Partitioning in Recsys-Backend-Service
 
 An investigation of how the system splits data and traffic so no single key,
-partition, or task owns everything: consistent-hash record shards, windowed top-K
-replica shards, a userId-partitioned Kafka/Flink pipeline, and keyset cursor
+partition, or task owns everything: consistent-hash record shards, a
+userId-partitioned Kafka/Flink pipeline, and keyset cursor
 windows over large result sets. (The Redis shards are *logical* — key partitions
 on a single Sentinel primary, not separate nodes; see "Where the shards
 physically live" below.) This is the partitioning counterpart to the
@@ -12,13 +12,14 @@ why*.
 
 ## The big picture
 
-Partitioning here is **one idea applied at five layers**, each with a
-deliberately chosen partition key:
+Partitioning here is **one idea applied at four layers**, each with a
+deliberately chosen partition key — plus one dimension that turned out not to need
+partitioning at all:
 
 | Dimension | What is partitioned | Partition key | Why this key |
 |---|---|---|---|
 | Record sharding | Per-device event/feature/log records in Redis | `deviceId` on a consistent-hash ring | Co-locate a device's records; resize moves only ~1/N |
-| Top-K replica sharding | Each trending window's sorted set | `window` → N identical replica keys | Spread hot-key read QPS; absorb cache-expiry herds |
+| ~~Top-K replica sharding~~ | **Nothing** — one canonical snapshot per window | — | Hot-key load is absorbed by a 2 s JVM cache + single-flight, not by partitioning (see §2) |
 | Kafka / Flink | The `movie_events_v2` event stream | `userId` | Per-user ordering on one partition; users spread across 24 |
 | Keyset pagination | A large ranked/relational result set | `(sort, id)` seek anchor | Flat sequential-page cost with explicit live or snapshot semantics |
 | A/B bucketing | Users into experiment variants | `userId` via the same FNV-1a primitive | Stable, uniform assignment (see [`StableBucketer`]) |
@@ -42,10 +43,9 @@ partitioning on a single primary**, not server-side sharding. Redis is deployed 
 **Sentinel** mode (`REDIS_MODE=sentinel`, one `mymaster` primary + 3 sentinels for
 failover, plus AZ-aware read replicas — see the
 [Fault Tolerance investigation](18_Fault_Tolerance.md#redis-resilience)), **not
-Redis Cluster**, and `ShardedRecordStore` / `ShardedTopKStore` each hold a single
-`RedisExecutor`. So the N shards are **key-prefixes on the same primary**
-(`sr:g{v}:rec:{shard}:…`, `topk:<window>:s{n}`), not separate nodes and not
-server-side hash slots. The consistent-hash ring partitions the *keyspace* — even
+Redis Cluster**, and `ShardedRecordStore` holds a single `RedisExecutor`. So the N
+shards are **key-prefixes on the same primary** (`sr:g{v}:rec:{shard}:…`), not
+separate nodes and not server-side hash slots. The consistent-hash ring partitions the *keyspace* — even
 distribution, hot-key contention spreading, and an online reshard — and makes it
 **ready** to map those logical shards onto separate Redis nodes (or a cluster)
 without a data migration, but today the win is contention-spreading and
@@ -135,25 +135,29 @@ Sharding](03_DB_Scaling_Sharding.md#3-versioned-topology--online-reshard).
 
 ## 2. Windowed Top-K replica sharding
 
-Trending is a read hot spot — every request wants the same few window keys — so
-[`ShardedTopKStore`](../../src/main/java/com/recsys/infrastructure/redis/ShardedTopKStore.java)
-partitions each window's sorted set into **N identical replica keys**
-(`topk:<window>:s0..s3`, default shard count **4**) purely to spread read QPS.
-Unlike record sharding, every shard holds the *same* data; the win is that a read
-picks one at random (`fetchFromRandomShard` via `ThreadLocalRandom`), giving an
-N-fold per-key QPS reduction — one hot sorted set becomes N, so no single key
-takes the full read fan-out (see the deployment note below on why this is
-per-key, not per-node, spreading).
+> **Changed 2026-07-28 — this dimension no longer partitions anything.**
+> `ShardedTopKStore` used to copy each window's sorted set into N identical replica
+> keys (`topk:<window>:s0..s3`). Nothing had written them since the canonical
+> snapshot path landed in `01870d2`, so every read already resolved through
+> `topk:{window}:value`. The fan-out was deleted; the class name is now historical.
+> See `docs/superpowers/specs/2026-07-28-kv-store-sharp-edges-design.md`.
 
-Two more layers sit in front of Redis: a per-window local JVM `hotCache`
-(`ONLINE_TOPK_CACHE_TTL_MS`, default 2000) and a **single-flight** guard so that
-when the cache expires only one thread recomputes while the rest wait — the
-classic thundering-herd fix for a hot expired key. On a Redis failure the store
-serves the cached snapshot until `ONLINE_TOPK_STALE_TTL_MS` (default 60000)
-elapses (fail-open, degraded but available). Writes (`seedAllShards`, from the
-Flink/sync jobs) fan a single pipelined `ZADD` to all N shard keys plus a legacy
-unsharded fallback key, then invalidate the local cache. Windows served on the
-recall path are `last_hour` and `last_day`.
+Trending is a read hot spot — every request wants the same few window keys — but
+[`ShardedTopKStore`](../../src/main/java/com/recsys/infrastructure/redis/ShardedTopKStore.java)
+does not spread it by partitioning. Each window is a **single canonical snapshot**
+(`topk:{window}:value`, guarded by `topk:{window}:version`) that the Flink sink
+writes atomically in one Lua script, so a reader never sees a half-written snapshot.
+
+What keeps that single key cool is two layers in front of Redis: a per-window local
+JVM `hotCache` (`ONLINE_TOPK_CACHE_TTL_MS`, default 2000) and a **single-flight**
+guard so that when the cache expires only one thread refills it while the rest wait —
+the classic thundering-herd fix for a hot expired key. Each instance therefore issues
+at most one read per window per 2 s no matter how much traffic it serves, so per-key
+QPS scales with instance count rather than request volume. On a Redis failure the
+store serves the cached snapshot until `ONLINE_TOPK_STALE_TTL_MS` (default 60000)
+elapses (fail-open, degraded but available). Absent a canonical snapshot — a cold
+Redis before Flink's first write — the read falls back to the unversioned
+`topk:<window>` key. Windows served on the recall path are `last_hour` and `last_day`.
 
 | Env var | Default | Purpose |
 |---|---:|---|
@@ -271,10 +275,11 @@ The partition invariants are exercised, not just asserted:
    reads merge both generations but `GET /shards/shard` / `readAllShards` are
    generation-current — an operator scanning shards mid-migration sees only the
    new generation.
-4. **Top-K shards are replicas, not partitions of data.** All `topk:<window>:sN`
-   keys hold the same set; the sharding is a QPS-spreading device, so a stale or
-   missing shard degrades read latency, not correctness (fail-open to cache).
-5. **MySQL table partitioning is not yet done.** Sharding covers Redis records,
-   Redis Top-K, and Kafka today; native MySQL table partitioning is called out as
+4. **Top-K does not partition at all, despite the class name.** Each window is one
+   canonical snapshot key; the JVM cache and single-flight are what keep it off
+   Redis. The replica keys this document used to describe were removed on
+   2026-07-28 — nothing had written them since the canonical path landed.
+5. **MySQL table partitioning is not yet done.** Sharding covers Redis records
+   and Kafka today; native MySQL table partitioning is called out as
    a separate later cycle in the
    [Kafka/Flink partition optimization design](../superpowers/specs/2026-07-18-kafka-flink-partition-optimization-design.md).
