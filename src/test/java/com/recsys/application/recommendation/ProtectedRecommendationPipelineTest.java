@@ -14,6 +14,7 @@ import com.recsys.ratelimit.ModelRateLimiter;
 import io.micrometer.core.instrument.simple.SimpleMeterRegistry;
 import org.junit.jupiter.api.Test;
 
+import java.time.Duration;
 import java.util.List;
 import java.util.Map;
 import java.util.Set;
@@ -42,6 +43,20 @@ class ProtectedRecommendationPipelineTest {
         }
     }
 
+    /**
+     * Denies every request, so the ordering assertion never depends on wall-clock refill.
+     * A real limiter with rps=1/burst=1 only stays exhausted for ~1s after the priming call —
+     * true by a huge margin normally, but not guaranteed under a throttled CI runner, a
+     * stop-the-world GC, or a safepoint stall between the two recommend() calls in the test.
+     */
+    private static final class DenyingRateLimiter extends ModelRateLimiter {
+        DenyingRateLimiter() { super(1.0, 1, 100); }
+        @Override
+        public Decision tryAcquire(String userId) {
+            return new Decision(false, 1, 0, Duration.ofSeconds(1));
+        }
+    }
+
     private static RecommendationResult resultWithTrace(String variant, String modelVersion) {
         return new RecommendationResult("u1", List.of(), null, false,
                 Map.of("abTestVariant", variant, "modelVersion", modelVersion));
@@ -59,17 +74,13 @@ class ProtectedRecommendationPipelineTest {
 
     @Test
     void rateLimitDenialThrowsBeforeTouchingTheSemaphore() {
-        // rps=1, burst=1 -> second call in the same instant is denied. Uses the public
-        // (rps, burst, maxUsers) ctor with the real System::nanoTime ticker: the two calls below
-        // execute back-to-back (microseconds apart), which is nowhere near enough elapsed time to
-        // refill a 1-token bucket at 1 token/sec, so this is deterministic without a fake ticker.
-        ModelRateLimiter limiter = new ModelRateLimiter(1.0, 1, 100);
+        // DenyingRateLimiter denies from the outset, so no priming call is needed — this
+        // isolates the assertion to what it actually means: a denied call never reaches the
+        // semaphore, and all 8 permits remain free.
         LoadShedder shedder = shedder(8);
         ProtectedRecommendationPipeline pipeline = new ProtectedRecommendationPipeline(
-                q -> resultWithTrace("A", "v1"), limiter, shedder, metrics(),
+                q -> resultWithTrace("A", "v1"), new DenyingRateLimiter(), shedder, metrics(),
                 new ABTestService(new ABTestConfig()), new RecordingExposureLogger());
-
-        pipeline.recommend(QUERY);   // consumes the only token
 
         assertThatThrownBy(() -> pipeline.recommend(QUERY))
                 .isInstanceOf(RateLimitExceededException.class);
