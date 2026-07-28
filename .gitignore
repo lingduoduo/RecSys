@@ -56,3 +56,8 @@ replay_pid*
 
 # Local isolated feature worktrees
 .worktrees/
+
+# understand-anything generated analysis (regenerable; a committed snapshot goes
+# stale within days and then makes claims about code that has since changed).
+# .understandignore stays tracked — it is the one file here a human would edit.
+.understand-anything/*.json
