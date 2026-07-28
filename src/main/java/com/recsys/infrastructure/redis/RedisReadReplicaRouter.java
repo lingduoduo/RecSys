@@ -11,10 +11,19 @@ import java.util.Optional;
  * <p><b>Write path</b>: always uses the primary executor (write leader).
  *
  * <p><b>Read path</b>: prefers the replica in the same AZ as this service
- * instance (set via the {@code AWS_AZ} environment variable).  Falls back to a
- * randomly selected replica, or to the primary when no replicas are configured.
- * This keeps reads available even if the primary AZ becomes unreachable, and
- * avoids cross-AZ data-transfer costs on the hot read path.
+ * instance (set via the {@code AWS_AZ} environment variable).  Otherwise falls back
+ * to the first configured replica — a <em>stable</em> choice, not a random one — or
+ * to the primary when no replicas are configured.  This keeps reads available even
+ * if the primary AZ becomes unreachable, and avoids cross-AZ data-transfer costs on
+ * the hot read path.
+ *
+ * <p><b>Why the fallback is stable and not randomised.</b> {@link #readable()} and
+ * {@link #probeReadable()} must resolve to the same node. The replica-lag probe issues
+ * a correlated sequence check against {@code probeReadable()} and reports the lag of
+ * the replica that real reads are actually served from; spreading reads randomly
+ * across replicas would make that measurement describe a node no particular read used.
+ * Do not "fix" this to random selection without also reworking
+ * {@link RedisReplicaLagProbe}.
  *
  * <p>Lifecycle: call {@link #close()} once on shutdown to close all executors.
  */
@@ -46,11 +55,12 @@ public final class RedisReadReplicaRouter implements Closeable {
     }
 
     /**
-     * Returns the best read executor for the current AZ.
+     * Returns the read executor for the current AZ.
      *
      * <ol>
      *   <li>Same-AZ replica — lowest latency, survives primary-AZ failure.</li>
-     *   <li>Random replica — load-balances when no same-AZ replica exists.</li>
+     *   <li>First configured replica — a stable choice, so that reads and the
+     *       replica-lag probe observe the same node.</li>
      *   <li>Primary — safe fallback when no replicas are configured.</li>
      * </ol>
      */
