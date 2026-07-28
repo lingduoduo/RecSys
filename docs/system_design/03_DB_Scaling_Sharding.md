@@ -15,18 +15,17 @@ turn on *which store*, what each turn actually buys, and where it stops working.
 
 ## The big picture
 
-Two distinct sharded stores share the same Redis and the same placement algorithm but
-solve opposite problems:
+One store shards. A second one used to, and no longer does:
 
 | Store | Shards *what* | Sharding kind | Purpose |
 |---|---|---|---|
 | [`ShardedRecordStore`](../../src/main/java/com/recsys/infrastructure/redis/sharding/ShardedRecordStore.java) | per-device event/feature/log records | **partition** — consistent-hash by `deviceId` | spread write/storage load; co-locate a device's records |
-| [`ShardedTopKStore`](../../src/main/java/com/recsys/infrastructure/redis/ShardedTopKStore.java) | each trending window's sorted set | **replica** — N identical copies | spread hot-key *read* QPS |
+| [`ShardedTopKStore`](../../src/main/java/com/recsys/infrastructure/redis/ShardedTopKStore.java) | nothing — one canonical snapshot per window | **none** (name is historical) | hot-key load absorbed by a 2 s JVM cache + single-flight |
 
-Both share three properties: keys are placed by the shared FNV-1a ring (record store) or
-a fixed shard count (top-K), the shard count is a **versioned, runtime-swappable
-topology** (no redeploy to reshard), and — importantly — the "shards" are *logical key
-prefixes on a single Redis primary* (with AZ replicas for reads), not separate nodes.
+The record store places keys by the shared FNV-1a ring, its shard count is a
+**versioned, runtime-swappable topology** (no redeploy to reshard), and — importantly —
+the "shards" are *logical key prefixes on a single Redis primary* (with AZ replicas for
+reads), not separate nodes.
 That physical reality is the same one described in
 [14_Partitioning](14_Partitioning.md#where-the-shards-physically-live--redis-and-mysql)
 and served by [04_Replication](04_Replication.md).
@@ -67,20 +66,35 @@ mounts `/shards/` on port 7010.
 
 ## 2. `ShardedTopKStore` — sharded trending
 
-The trending store is the opposite kind of sharding — **replica, not partition**. Each
-window's sorted set is copied into N identical shard keys (`topk:<window>:s0..s3`,
-default **4**), purely to spread read QPS:
+> **Changed 2026-07-28 — the shard fan-out was removed.** This section previously
+> described N identical replica keys per window (`topk:<window>:s0..s3`) written by
+> `seedAllShards`. Nothing had written them since the canonical snapshot path landed in
+> `01870d2`, so every read already resolved through `topk:{window}:value`. The dead
+> machinery was deleted; see
+> `docs/superpowers/specs/2026-07-28-kv-store-sharp-edges-design.md`. The class name is
+> now historical.
 
-- **Reads** pick one shard at random (`fetchFromRandomShard`), giving an N-fold per-key
-  QPS reduction — one hot sorted set becomes N. A per-window local cache
-  (`ONLINE_TOPK_CACHE_TTL_MS`, default 2000) plus **single-flight** absorb the
-  cache-expiry herd, and a Redis failure serves the cached snapshot until
-  `ONLINE_TOPK_STALE_TTL_MS` (default 60000) — fail-open.
-- **Writes** (`seedAllShards`, from the Flink/sync jobs) fan a single pipelined `ZADD` to
-  all N shard keys plus a legacy unsharded fallback key.
+Despite the name, the trending store does not shard. Each window is a **single canonical
+snapshot** that the Flink job writes atomically:
 
-Because every shard holds the same data, a stale or missing shard degrades read latency,
-not correctness. This is deep-dived from the partition angle in
+- **Writes** come from the Flink sink
+  ([`OnlineFeatureStreamingJob`](../../src/main/java/com/recsys/online/flink/OnlineFeatureStreamingJob.java)),
+  which sets `topk:{window}:value` and its guard `topk:{window}:version` in one Lua
+  script, so a reader never observes a half-written snapshot. Note the `{window}` hash
+  tag: it co-locates the value and its version in the same Redis Cluster slot, which is
+  what makes the guarded read possible.
+- **Reads** evaluate a small Lua script that returns the snapshot only when the version
+  key exists — an empty-but-present snapshot is authoritative, and is cached as such.
+  Absent a canonical snapshot, the read falls back to the unversioned `topk:<window>`
+  key, which matters on a cold Redis before Flink's first write.
+
+What protects the key is not replication but three layers in front of it: a per-window
+local cache (`ONLINE_TOPK_CACHE_TTL_MS`, default 2000), **single-flight** so only one
+thread per JVM refills it, and serve-stale until `ONLINE_TOPK_STALE_TTL_MS` (default
+60000) when Redis fails — fail-open. With a 2 s cache, each instance contributes at most
+0.5 reads/sec per window regardless of request volume.
+
+The partition-angle discussion is in
 [14_Partitioning §2](14_Partitioning.md#2-windowed-top-k-replica-sharding).
 
 ## 3. Versioned topology & online reshard
@@ -134,8 +148,8 @@ Database sharding here is one layer of a stack, not a standalone system:
 - **Consistency** during a reshard (generation dual-read, the 30 s propagation gap) is a
   CAP/eventual-consistency concern — [05_CAP](05_CAP.md) and
   [15_Eventual_Consistency](15_Eventual_Consistency.md).
-- **Partitioning context** — the record and top-K stores are two of the five partition
-  dimensions in [14_Partitioning](14_Partitioning.md).
+- **Partitioning context** — the record store is one of the partition dimensions in
+  [14_Partitioning](14_Partitioning.md).
 
 ## 5. Testing
 
@@ -161,29 +175,29 @@ sharding here does *not* buy".
 | # | Lever | Store | Mechanism | Buys | Bounded by |
 |---|---|---|---|---|---|
 | 1 | **Add shards** (reshard) | record | `POST /shards/topology`, online, no redeploy (§3) | even keyspace spread; shorter per-shard ZSETs/streams; more total retained stream | the single primary |
-| 2 | **Add top-K replicas** | top-K | N identical copies, one picked at random per refresh (§2) | ~N-fold cut in per-key read QPS on the hottest keys | the same primary |
-| 3 | **JVM hot cache** | top-K | `window → CachedIds`, TTL-bounded | absorbs most reads *before* Redis; sharding only spreads the leftover refreshes | staleness ≤ TTL |
-| 4 | **AZ-local replica reads** | both | separate write/read executors — writes to primary, reads to an AZ-local replica | read QPS off the primary; less cross-AZ traffic | replica lag ([04](04_Replication.md)) |
-| 5 | **Vertical** | Redis | larger ElastiCache node | the only lever that raises *real* single-primary capacity | one node's CPU/RAM |
-| 6 | **Index + keyset** | MySQL | covering indexes, HMAC cursor pagination | scales *within* one table, no partitioning | pool size, one instance |
+| 2 | **JVM hot cache + single-flight** | top-K | `window → CachedIds`, TTL-bounded, one refill per JVM (§2) | caps each instance at ~0.5 reads/sec/window regardless of request volume | staleness ≤ TTL |
+| 3 | **AZ-local replica reads** | both | separate write/read executors — writes to primary, reads to an AZ-local replica | read QPS off the primary; less cross-AZ traffic | replica lag ([04](04_Replication.md)) |
+| 4 | **Vertical** | Redis | larger ElastiCache node | the only lever that raises *real* single-primary capacity | one node's CPU/RAM |
+| 5 | **Index + keyset** | MySQL | covering indexes, HMAC cursor pagination | scales *within* one table, no partitioning | pool size, one instance |
 
 Defaults worth knowing: the ring uses **150 virtual nodes** per shard
 ([`ConsistentHashRing`](../../src/main/java/com/recsys/infrastructure/redis/sharding/ConsistentHashRing.java)),
-top-K defaults to **4 replica shards**
-([`ShardedTopKStore`](../../src/main/java/com/recsys/infrastructure/redis/ShardedTopKStore.java)),
 and each record shard's stream is approx-trimmed at **1,000,000** entries — so lever 1
 also multiplies total retained replay capacity, not just spread.
 
-### Lever 3 in detail — the cache is doing most of the work
+### Lever 2 in detail — the cache is doing all of the work
 
-For the trending windows the JVM cache, not the sharding, is the primary scaling
-mechanism: a **2 s** cache TTL (`ONLINE_TOPK_CACHE_TTL_MS`) with **60 s**
-serve-stale-on-error (`ONLINE_TOPK_STALE_TTL_MS`) plus inline single-flight means Redis
-sees only refreshes. The 4 replica shards spread *those refreshes*. Read the two together:
-sharding raises the ceiling for the traffic the cache fails to absorb, which is exactly
-the cold-start and stampede case.
+For the trending windows the JVM cache is the *only* scaling mechanism: a **2 s** cache
+TTL (`ONLINE_TOPK_CACHE_TTL_MS`) with **60 s** serve-stale-on-error
+(`ONLINE_TOPK_STALE_TTL_MS`) plus inline single-flight means Redis sees only refreshes.
+An instance therefore issues at most one read per window per 2 s no matter how much
+traffic it serves, so per-key QPS scales with *instance count*, not request volume.
 
-### Lever 4 in detail — replica routing
+This used to be phrased as "the cache does most of the work, and 4 replica shards spread
+the leftover refreshes." The replica shards were never written, so the cache was always
+doing all of it — see the note under §2.
+
+### Lever 3 in detail — replica routing
 
 [`RedisReadReplicaRouter`](../../src/main/java/com/recsys/infrastructure/redis/RedisReadReplicaRouter.java)
 + `RoutingRedisExecutor` send writes to the primary and reads to the **same-AZ** replica —
@@ -208,15 +222,15 @@ still concentrates load on one shard.
 
 ### What sharding here does *not* buy
 
-Levers 1 and 2 do **not** add nodes. Both stores hold a single `RedisExecutor`, and the
-shards are key prefixes (`sr:g{v}:rec:{shard}:…`, `topk:<window>:sN`) on one Sentinel
-primary — not Redis Cluster hash slots. The full physical account is in
+Lever 1 does **not** add nodes. The record store holds a single `RedisExecutor`, and its
+shards are key prefixes (`sr:g{v}:rec:{shard}:…`) on one Sentinel primary — not Redis
+Cluster hash slots. The full physical account is in
 [14_Partitioning](14_Partitioning.md#where-the-shards-physically-live--redis-and-mysql).
 
 The payoff is that the ring makes the system **ready** to map logical shards onto separate
 nodes without a data migration: the placement function and the generation-versioned
 reshard already exist, so that move becomes a routing change rather than a rewrite. Read
-lever 1 as an investment that makes future horizontal scaling cheap, and lever 5 as the
+lever 1 as an investment that makes future horizontal scaling cheap, and lever 4 as the
 one that adds capacity today.
 
 ### What breaks first
@@ -251,8 +265,10 @@ scale rather than to rebalance:
 2. **"Shards" are logical, on one primary.** The ring is cluster-ready, but today all
    shards are key prefixes on a single Sentinel primary — the win is contention-spreading
    and reshardability, not multi-node capacity.
-3. **Top-K shards are replicas, not partitions.** All `topk:<window>:sN` hold the same
-   set; a missing shard degrades latency, not correctness.
+3. **Top-K does not shard at all, despite the class name.** Each window is one canonical
+   snapshot key; the JVM cache and single-flight are what keep it off Redis. The replica
+   keys this document used to describe were removed on 2026-07-28 — nothing had written
+   them since the canonical path landed.
 4. **Reshard is operator-gated and generation-scoped.** It needs `SHARD_ADMIN_TOKEN` and
    only moves ~1/N of keys, but there's a ~30 s fleet propagation gap where instances
    straddle generations.

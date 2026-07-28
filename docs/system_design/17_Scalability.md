@@ -11,7 +11,7 @@ Scalability here is **multi-dimensional and layered**:
 
 - the **compute tier** scales *out* — stateless services behind Kubernetes HPA;
 - the **data tier** scales *horizontally* — consistent-hash record shards,
-  windowed top-K replica shards, Redis read replicas, and Kafka partitions;
+  Redis read replicas, and Kafka partitions;
 - a stack of **overload-protection layers** keeps each instance responsive while
   HPA reacts.
 
@@ -177,9 +177,10 @@ Mechanics, key schema, and the reshard procedure:
 
 `infrastructure/redis/ShardedTopKStore` — the few trending windows
 (`topk:last_hour`, `topk:last_day`) are read on every request across all JVMs. Each
-window is replicated across **4 identical shards** (`s0..s3`) read at random, with a
-short JVM cache and inline single-flight absorbing the bulk so Redis sees only
-refreshes.
+window is a single canonical snapshot key; a short JVM cache and inline single-flight
+absorb the bulk, so an instance issues at most one Redis read per window per cache TTL
+regardless of request volume. (This store used to replicate each window across 4
+identical shard keys; those were never written and were removed on 2026-07-28.)
 
 Cache TTLs, the guards that stop a miss storm undoing this, and why the cache — not
 the sharding — is the primary mechanism:
