@@ -8,13 +8,31 @@
 # invalidation during a bulk load would issue thousands of API calls and blow through
 # CloudFront's 1,000-free-invalidation-path quota. One bulk reload, one wildcard invalidation.
 #
+# CloudFront invalidation patterns glob only at the tail (a pattern's "*" only ever anchors the
+# end of the string). A pattern rooted at /api/catalog/... can NEVER also match
+# /api/v1/catalog/..., because the versioned request has an extra path segment BEFORE the glob,
+# not after it. The unversioned and versioned catalog reads are separate CacheBehaviors
+# (Quantity: 4 in create-cdn-distribution.sh), so both spellings must be purged explicitly or
+# one of them keeps serving stale data for the full stale-while-revalidate window.
+#
 # Usage:
-#   ./scripts/invalidate-cdn.sh                      # invalidate /similar (the common case)
-#   ./scripts/invalidate-cdn.sh '/api/catalog/*'     # invalidate all catalog reads
+#   ./scripts/invalidate-cdn.sh                                            # both spellings of /similar (the common case)
+#   ./scripts/invalidate-cdn.sh --paths '/api/catalog/*' '/api/v1/catalog/*'   # all catalog reads, both spellings
 set -euo pipefail
 
 COMMENT="recsys-edge"
-PATHS="${1:-/api/catalog/similar*}"
+
+if [[ "${1:-}" == "--paths" ]]; then
+  shift
+  PATHS=("$@")
+else
+  PATHS=("/api/catalog/similar*" "/api/v1/catalog/similar*")
+fi
+
+if [[ ${#PATHS[@]} -eq 0 ]]; then
+  echo "ERROR: --paths requires at least one path pattern." >&2
+  exit 1
+fi
 
 dist_id="$(aws cloudfront list-distributions \
   --query "DistributionList.Items[?Comment=='${COMMENT}'].Id" --output text 2>/dev/null || true)"
@@ -25,8 +43,8 @@ if [[ -z "$dist_id" || "$dist_id" == "None" ]]; then
   exit 1
 fi
 
-echo "Invalidating '${PATHS}' on ${dist_id}"
-aws cloudfront create-invalidation --distribution-id "$dist_id" --paths "$PATHS" \
+echo "Invalidating [${PATHS[*]}] on ${dist_id}"
+aws cloudfront create-invalidation --distribution-id "$dist_id" --paths "${PATHS[@]}" \
   --query 'Invalidation.{Id:Id,Status:Status}' --output table
 
 echo "Invalidations take ~1-3 min to complete. Check with:"

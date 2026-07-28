@@ -63,7 +63,11 @@ rotation has no 403 window — the gateway rejects any request without a matchin
 `GATEWAY_PUBLIC_PATHS` now defaults to
 `/health,/api/catalog/item,/api/catalog/similar` in k8s: the two catalog reads are edge-cached and
 must not vary on `Authorization`. It MUST list exact paths — `/api/catalog` would also expose
-`/api/catalog/user`. CDN operations are documented in `docs/runbooks/cdn-operations.md`.
+`/api/catalog/user`. These entries are deliberately unversioned: the gateway strips a request's
+`/api/v1/...` segment down to `/api/...` before the public-path check ever runs (see the API
+Gateway entry under Architecture below), so `GET /api/v1/catalog/item` already matches the
+unversioned `/api/catalog/item` entry — a versioned twin would be redundant, not protective. CDN
+operations are documented in `docs/runbooks/cdn-operations.md`.
 `GATEWAY_ALLOW_ANONYMOUS` (default unset = fail closed) — the gateway authenticates callers via
 `GATEWAY_API_KEYS` (`x-api-key`/bearer) or a Cognito JWT (`GATEWAY_COGNITO_ISSUER`/`_AUDIENCE`).
 With none of those set the gateway authenticates nobody, so `GatewayAuthenticator.fromEnvironment`
@@ -82,13 +86,15 @@ The system demonstrates two recommendation paths:
 
 **Online path** — `OnlinePredictionServer` (Armeria) uses Redis-backed `OnlineFeatureStore` (recent history) and `ShardedTopKStore` (trending) to produce real-time recommendations without a neural model. `OnlineLearner` updates lightweight serving parameters from streaming feedback. The operator/introspection surfaces — `POST /shards/topology` (reshard), `GET /shards/shard` (bulk shard dump), and `GET /online/ops` (ops snapshot) — require the operator token in the `X-Admin-Token` header, enforced by `AdminTokenGuard` and configured from `SHARD_ADMIN_TOKEN`. They **fail closed** (403) when the token is unset; the per-device read `GET /shards/device`, the write `POST /shards/records`, and the serving routes need only normal gateway auth. `SHARD_ADMIN_TOKEN` is wired from the `recsys-online-admin` Secret (`optional: true`).
 
-**API Gateway** — `MicroserviceGatewayServer` (Armeria) routes to the above services plus an optional LLM explanation endpoint. Has per-route circuit breakers (`RouteCircuitBreaker`), token-bucket rate limiting (`GatewayRateLimiter`), a dedicated LLM proxy with token budgets (`LlmTokenRateLimiter`, `LlmResponseCache`), and 30 s Cloud Map DNS TTL for EKS blue/green deploys.
+**API Gateway** — `MicroserviceGatewayServer` (Armeria) routes to the above services plus an optional LLM explanation endpoint. Has per-route circuit breakers (`RouteCircuitBreaker`), token-bucket rate limiting (`GatewayRateLimiter`), a dedicated LLM proxy with token budgets (`LlmTokenRateLimiter`, `LlmResponseCache`), and 30 s Cloud Map DNS TTL for EKS blue/green deploys. `/api/v1/...` is the canonical public spelling (`ApiVersion`); the gateway strips the version segment down to the version-free `/api/...` **before** routing, authorization, and rate-limit keying ever see the path, so `PROTECTED_PREFIXES`/`GATEWAY_PUBLIC_PATHS`/the route table need no versioned entries. An unversioned `/api/...` request is treated as implicit v1 and gets `Deprecation`/`Sunset`/`Link` response headers (`ApiDeprecationDecorator`); see `docs/api-compatibility-policy.md` and `docs/system_design/09_API_Gateway.md`.
 
 **CDN edge** — CloudFront fronts the gateway ALB: viewer TLS via an ACM cert in us-east-1, a
-`CLOUDFRONT`-scope WebACL, and origin lockdown (CloudFront prefix list + `x-origin-secret`). Only
-`GET /api/catalog/item` and `GET /api/catalog/similar` are cached; everything else, including the
-POST-only `/api/recommend`, is CachingDisabled by default. Created out-of-band via
-`scripts/create-cdn-distribution.sh`; see `docs/superpowers/specs/2026-07-14-cdn-edge-acceleration-design.md`.
+`CLOUDFRONT`-scope WebACL, and origin lockdown (CloudFront prefix list + `x-origin-secret`). Four
+behaviors are cached — `GET /api/catalog/item`, `GET /api/v1/catalog/item`,
+`GET /api/catalog/similar`, and `GET /api/v1/catalog/similar` (versioned and unversioned spellings
+cached identically); everything else, including the POST-only `/api/recommend`, is
+CachingDisabled by default. Created out-of-band via `scripts/create-cdn-distribution.sh`; see
+`docs/superpowers/specs/2026-07-14-cdn-edge-acceleration-design.md`.
 A local nginx stand-in (`docker-compose.cdn.yml`, port 8090) mirrors the distribution's cache
 behaviors for development — see `docs/runbooks/cdn-local.md`. It demonstrates caching semantics
 only: no WAF, Shield, edge TLS, or geographic distribution.

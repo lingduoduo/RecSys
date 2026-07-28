@@ -172,6 +172,44 @@ class RecommendationGatewayServiceTest {
     }
 
     @Test
+    void versionedRequestIsRejected401WhenPublicPathsUseVersionedSpelling() {
+        // REGRESSION GUARD (see GatewayServerIntegrationTest.versionedProtectedPathIsRejected401WithAuthEnabled
+        // for the same pattern at the proxy layer). This service's serve() must normalize the
+        // path (ApiVersion.parse) BEFORE calling authenticator.check. GATEWAY_PUBLIC_PATHS-style
+        // config here is deliberately set to the VERSIONED spelling "/api/v1/recommend" (never the
+        // normalized "/api/recommend"), so the two orderings produce different outcomes:
+        //   - correct order:  authenticator.check(headers, "/api/recommend") -> not public -> 401
+        //   - broken order:   authenticator.check(headers, "/api/v1/recommend") -> matches the
+        //                     configured public path -> allowed anonymously -> NOT 401
+        // If serve() is ever reordered, this test goes red.
+        List<MicroserviceRoute> routes = List.of(
+                route("embed-recall", embedding),
+                route("model-inference", model),
+                route("online-blend", online),
+                route("sequential", sequential));
+        Map<String, RouteCircuitBreaker> breakers = Map.of(
+                "embed-recall", new RouteCircuitBreaker(),
+                "model-inference", new RouteCircuitBreaker(),
+                "online-blend", new RouteCircuitBreaker(),
+                "sequential", new RouteCircuitBreaker());
+        GatewayRequestForwarder forwarder = new GatewayRequestForwarder(
+                routes, Duration.ofSeconds(2), breakers, GatewayRateLimiter.disabled());
+        GatewayAuthenticator authenticator = GatewayAuthenticator.forTesting(
+                Set.of("valid-key"), Set.of("/api/v1/recommend"), null);
+        RecommendationGatewayService service = new RecommendationGatewayService(
+                routes, forwarder, authenticator);
+
+        RequestHeaders headers = RequestHeaders.builder(HttpMethod.POST, "/api/v1/recommend")
+                .contentType(MediaType.JSON_UTF_8).build();
+        HttpRequest request = HttpRequest.of(headers, HttpData.ofUtf8("{\"userId\":42}"));
+        ServiceRequestContext ctx = ServiceRequestContext.of(request);
+
+        AggregatedHttpResponse response = service.serve(ctx, request).aggregate().join();
+
+        assertThat(response.status()).isEqualTo(HttpStatus.UNAUTHORIZED);
+    }
+
+    @Test
     void rejectsNonPostMethodsWithJsonAndAllowHeader() {
         AggregatedHttpResponse response = gateway.webClient().execute(
                 HttpRequest.of(HttpMethod.GET, "/api/recommend")).aggregate().join();

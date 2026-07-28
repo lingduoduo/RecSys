@@ -1,7 +1,6 @@
 package com.recsys.application.gateway;
 
 import com.linecorp.armeria.common.HttpHeaderNames;
-import com.linecorp.armeria.common.HttpResponse;
 import com.linecorp.armeria.server.HttpService;
 import com.recsys.config.EnvVars;
 import org.slf4j.Logger;
@@ -15,8 +14,8 @@ import java.util.Set;
 import java.util.function.Function;
 
 /**
- * Adds RFC 8594 {@code Sunset} and {@code Deprecation} response headers to the two deprecated
- * request shapes, from one place, so no route has to remember to do it.
+ * Adds the RFC 8594 {@code Sunset} and RFC 9745 {@code Deprecation} response headers to the two
+ * deprecated request shapes, from one place, so no route has to remember to do it.
  *
  * <p>Two independent deprecation classes:
  * <ul>
@@ -121,7 +120,8 @@ public final class ApiDeprecationDecorator {
     }
 
     private static boolean isUnversionedApiPath(String normalizedPath) {
-        return normalizedPath.startsWith("/api") && !ApiVersion.parse(normalizedPath).explicit();
+        boolean isApiPath = normalizedPath.equals("/api") || normalizedPath.startsWith("/api/");
+        return isApiPath && !ApiVersion.parse(normalizedPath).explicit();
     }
 
     private static boolean matchesAny(String path, Set<String> prefixes) {

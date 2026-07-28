@@ -101,6 +101,33 @@ class ApiVersionTest {
     }
 
     @Test
+    void parse_rejectsLeadingZeroSoItIsNotAnAlternateSpellingOfAnExplicitVersion() {
+        assertThat(ApiVersion.parse("/api/v01/users").explicit()).isFalse();
+        assertThat(ApiVersion.parse("/api/v01/users").path()).isEqualTo("/api/v01/users");
+        assertThat(ApiVersion.parse("/api/v001/users").explicit()).isFalse();
+        assertThat(ApiVersion.parse("/api/v0001/users").explicit()).isFalse();
+    }
+
+    @Test
+    void parse_singleZeroDigitIsStillAnExplicitVersion() {
+        // "v0" has no padding to strip — it is a genuine (unsupported) explicit version, not a
+        // zero-padded spelling of v1.
+        ApiVersion v = ApiVersion.parse("/api/v0/users");
+        assertThat(v.explicit()).isTrue();
+        assertThat(v.version()).isEqualTo(0);
+        assertThat(v.supported()).isFalse();
+    }
+
+    @Test
+    void parse_rejectsNonAsciiDigitsEvenThoughCharacterIsDigitWouldAcceptThem() {
+        // U+0661 ARABIC-INDIC DIGIT ONE. Character.isDigit('١') is true, but only ASCII
+        // digits may form a version segment.
+        ApiVersion v = ApiVersion.parse("/api/v١/users");
+        assertThat(v.explicit()).isFalse();
+        assertThat(v.path()).isEqualTo("/api/v١/users");
+    }
+
+    @Test
     void unsupportedMessage_namesTheSupportedVersions() {
         assertThat(ApiVersion.parse("/api/v2/users").unsupportedMessage())
                 .isEqualTo("unsupported API version: v2; supported: v1");

@@ -42,11 +42,19 @@ public record ApiVersion(int version, String path, boolean explicit) {
             return implicit(normalized);
         }
         int cursor = digitsStart;
-        while (cursor < normalized.length() && Character.isDigit(normalized.charAt(cursor))) {
+        while (cursor < normalized.length() && isAsciiDigit(normalized.charAt(cursor))) {
             cursor++;
         }
         int digits = cursor - digitsStart;
         if (digits == 0 || digits > MAX_VERSION_DIGITS) {
+            return implicit(normalized);
+        }
+        // Reject a leading zero: "/api/v01/x" and "/api/v001/x" must not parse as the same
+        // version as "/api/v1/x". Integer.parseInt happily accepts the zero-padded forms, which
+        // would otherwise give every explicit version multiple public spellings — and only the
+        // canonical "/api/v1/..." matches a CloudFront cache behavior, so the padded spellings
+        // would silently bypass the edge.
+        if (digits > 1 && normalized.charAt(digitsStart) == '0') {
             return implicit(normalized);
         }
         // The digits must end the segment: "/api/v1x/foo" is a resource named "v1x", not v1.
@@ -86,5 +94,16 @@ public record ApiVersion(int version, String path, boolean explicit) {
 
     private static ApiVersion implicit(String normalizedPath) {
         return new ApiVersion(DEFAULT_VERSION, normalizedPath, false);
+    }
+
+    /**
+     * ASCII-only digit check. {@link Character#isDigit} also accepts non-ASCII decimal digits
+     * (e.g. Arabic-Indic {@code ١}), so {@code /api/v١/users} would otherwise parse as v1. That
+     * is inert today because {@code ctx.path()} is percent-encoded before this method ever sees
+     * it, but restricting to ASCII removes the trap for good in case a caller ever switches to
+     * {@code decodedPath()}.
+     */
+    private static boolean isAsciiDigit(char c) {
+        return c >= '0' && c <= '9';
     }
 }

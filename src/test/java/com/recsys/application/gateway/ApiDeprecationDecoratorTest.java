@@ -62,6 +62,17 @@ class ApiDeprecationDecoratorTest {
     }
 
     @Test
+    void pathThatMerelyStartsWithApiIsNotTreatedAsAnApiPath() {
+        // "/apidocs" and "/apiary/foo" are not under "/api" — a bare startsWith("/api") would
+        // misclassify them as deprecated unversioned /api paths and emit a self-referential
+        // Link: </apidocs>; rel="successor-version".
+        assertThat(enabled().isDeprecated("/apidocs")).isFalse();
+        assertThat(enabled().successorLink("/apidocs")).isNull();
+        assertThat(enabled().isDeprecated("/apiary/foo")).isFalse();
+        assertThat(enabled().successorLink("/apiary/foo")).isNull();
+    }
+
+    @Test
     void sunsetIsFormattedAsAnHttpDate() {
         assertThat(enabled().sunsetHeaderValue()).isEqualTo("Tue, 27 Jul 2027 00:00:00 GMT");
     }

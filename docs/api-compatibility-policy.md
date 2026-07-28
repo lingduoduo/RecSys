@@ -63,19 +63,26 @@ A deprecated route or spelling responds with:
 `Sunset` is published when the deprecation is announced, never later. There is a minimum
 of **twelve months** between that announcement and removal.
 
-`Link` is emitted for the unversioned-spelling deprecation, where the successor is exactly
-the same path under `/api/v1`. It is **not** emitted for the back-compat alias routes
-(`/api/catalog`, `/api/model`, `/api/online`), because those do not map one-to-one onto
-their replacements — see below.
+`Link` is emitted **if and only if the request path is unversioned** — that rule keys purely
+on versioned-ness, not on whether the path is also a back-compat alias. The advertised
+successor is always the same path under `/api/v1`; it is a mechanical version-segment
+insertion, not a claim that the target is the final destination. For a back-compat alias like
+`/api/catalog/item`, the `Link` successor (`/api/v1/catalog/item`) is itself still
+alias-deprecated (see "Deprecated today" below) — following it is one hop of a two-hop
+migration, not the end of it. Once a path is versioned, no further `Link` is emitted from it:
+`GET /api/v1/catalog/item` still carries `Deprecation`/`Sunset` (it is a back-compat alias),
+but no `Link`, because from there the true replacement (`/api/v1/movies/...` or
+`/api/v1/recommend`) is not mechanically derivable — there is no version segment left to
+strip.
 
 ## Deprecated today
 
 | Deprecated | Replacement | Notes |
 |---|---|---|
-| Any unversioned `/api/...` path | The same path under `/api/v1` | Bodies identical; path change only |
-| `/api/catalog/...` | `/api/v1/movies/...` and `/api/v1/recommend` | Not a one-to-one mapping — check the route you need |
-| `/api/model/...` | `/api/v1/recommend` with `{"strategy":"model"}` | |
-| `/api/online/...` | `/api/v1/recommend` with `{"strategy":"online"}`, `/api/v1/features` | |
+| Any unversioned `/api/...` path | The same path under `/api/v1` | Bodies identical; path change only. This is the only row where the `Link` header's successor matches the table's replacement. |
+| `/api/catalog/...` (either spelling) | `/api/v1/movies/...` and `/api/v1/recommend` | Not a one-to-one mapping — check the route you need. Requesting the unversioned form emits a `Link` to `/api/v1/catalog/...`, which is a *mechanical* stop, not this replacement — that path is still deprecated too. |
+| `/api/model/...` (either spelling) | `/api/v1/recommend` with `{"strategy":"model"}` | Same caveat: the `Link` from the unversioned form points at `/api/v1/model/...`, not directly at this replacement. |
+| `/api/online/...` (either spelling) | `/api/v1/recommend` with `{"strategy":"online"}`, `/api/v1/features` | Same caveat: the `Link` from the unversioned form points at `/api/v1/online/...`, not directly at this replacement. |
 
 ## Removal
 
