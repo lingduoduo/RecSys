@@ -15,6 +15,11 @@ pipes the upstream's `text/event-stream` response straight through to the client
 frame-by-frame. SSE is one-way (server → client), which is exactly what an LLM
 token stream needs; nothing here requires a bidirectional socket.
 
+The same reasoning rules out **gRPC**, which is absent from the system entirely —
+and note that gRPC would not deliver bidirectional streaming to a browser even if
+it were adopted, since gRPC-Web supports server-streaming only. See
+[10_MicroServices §5 — Why not gRPC](10_MicroServices.md#why-not-grpc-and-why-not-bidirectional-streaming).
+
 Everything else in the system is either request/response HTTP or *internal*
 server-to-server streaming (Redis Streams `sr:stream:<shard>`, the
 Kafka → Flink → Redis feature pipeline) that never reaches a browser as a
