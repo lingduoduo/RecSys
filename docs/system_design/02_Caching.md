@@ -26,9 +26,9 @@ The caches:
 
 | Cache | Caches | Expiry strategy | Bound |
 |---|---|---|---|
-| `MultiLevelEmbeddingCache` | item/user embeddings | L1 no-TTL + null sentinel; L2/L3 fallthrough | L1 = 10,000 entries |
-| `LocalEmbeddingCache` | embeddings (L2 local) | access-order LRU | configurable size |
-| `LogicalExpiryEmbeddingCache` | user embeddings (`u2vEmb`) | **soft** TTL (~30 s) + serve-stale + 1 refresh | per-key |
+| `MultiLevelEmbeddingCache` | item/user embeddings | L1 no-TTL + null sentinel; L2/L3 fallthrough | L1 = 10,000 entries; sentinels = `EMBEDDING_NULL_SENTINEL_MAX_ENTRIES` |
+| `LocalEmbeddingCache` | embeddings (L2 local) | access-order LRU | `LOCAL_EMBEDDING_CACHE_MAX_ENTRIES` (100,000) |
+| `LogicalExpiryEmbeddingCache` | user embeddings (`u2vEmb`) | **soft** TTL (~30 s) + serve-stale + 1 refresh | `LOGICAL_EXPIRY_CACHE_MAX_ENTRIES` (10,000) |
 | `TtlSingleFlightCache<V>` | any snapshot | fresh 1 s / stale 60 s + single-flight | per-key |
 | `RecommendationCache` | rec results + cold-start pools | 300 s / 3600 s, keyed by variant+version | bounded map |
 | `LlmResponseCache` | LLM responses | 300 s TTL | 500 entries |
@@ -73,6 +73,20 @@ stale-but-valid value immediately and schedules exactly one background refresh**
 the herd never forms. Refreshes (and cold misses) are deduped per ID via a `refreshing`
 map. Used for user embeddings (`u2vEmb`, ~30 s soft TTL — see the staleness table in
 [15_Eventual_Consistency](15_Eventual_Consistency.md)).
+
+**Every embedding-cache tier is size-bounded** (since 2026-07-28). `LocalEmbeddingCache`
+(`LOCAL_EMBEDDING_CACHE_MAX_ENTRIES`, default 100,000), `LogicalExpiryEmbeddingCache`
+(`LOGICAL_EXPIRY_CACHE_MAX_ENTRIES`, default 10,000) and both negative caches of
+confirmed-absent IDs (`EMBEDDING_NULL_SENTINEL_MAX_ENTRIES`, default 10,000) use Caffeine
+`maximumSize`, so a sweep over many distinct or absent IDs cannot grow the heap without
+limit.
+
+One deliberate asymmetry: the sentinel and refresh-guard maps also carry
+`expireAfterWrite`, but `LogicalExpiryEmbeddingCache`'s *value* map is bounded by **size
+only**. A time-based eviction there would defeat the pattern — an entry past its soft
+expiry must stay servable until a refresh replaces it, or a backing-store outage would
+evaporate every entry and turn each read into a cold miss, which is precisely the herd
+this cache exists to prevent.
 
 ## 2. `TtlSingleFlightCache` — the generic serve-stale primitive
 

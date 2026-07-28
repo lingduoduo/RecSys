@@ -339,6 +339,8 @@
                 <include>**/*DegradedHeaderTest.java</include>
                 <include>**/redis/ShardedTopKStoreTest.java</include>
                 <include>**/redis/ShardedTopKStoreTtlConfigTest.java</include>
+                <include>**/cache/LogicalExpiryEmbeddingCacheTest.java</include>
+                <include>**/cache/MultiLevelEmbeddingCacheTest.java</include>
                 <!-- Not resilience tests. This profile is what the PR gate runs
                      (.github/workflows/resilience-pr.yml), so it is the only place a
                      deterministic check can block a merge. Everything listed here is pure
