@@ -32,6 +32,7 @@ import com.recsys.infrastructure.redis.ShardedTopKStore;
 import com.recsys.infrastructure.redis.sharding.ConsistentHashRing;
 import com.recsys.infrastructure.redis.sharding.SequenceGenerator;
 import com.recsys.infrastructure.redis.sharding.ShardedRecordStore;
+import com.recsys.infrastructure.redis.sharding.ShardTopology;
 import com.recsys.infrastructure.redis.sharding.ShardTopologyProvider;
 import com.recsys.infrastructure.redis.sharding.ShardTopologyStore;
 import com.recsys.infrastructure.vectordb.CandidateGenerator;
@@ -62,6 +63,8 @@ import com.recsys.application.retrieval.coldstart.QuotaPolicy;
 import com.recsys.application.retrieval.multichannel.ChannelHealthMonitor;
 import com.recsys.application.retrieval.multichannel.MultiChannelRecallService;
 import com.recsys.application.retrieval.multichannel.RecallConfig;
+import org.slf4j.Logger;
+import org.slf4j.LoggerFactory;
 import java.util.List;
 import java.util.Map;
 import java.util.concurrent.ExecutorService;
@@ -69,6 +72,7 @@ import java.time.Clock;
 import java.time.Duration;
 
 public final class OnlinePredictionServer {
+    private static final Logger log = LoggerFactory.getLogger(OnlinePredictionServer.class);
     private static final int DEFAULT_PORT = 7010;
 
     private OnlinePredictionServer() {}
@@ -174,9 +178,10 @@ public final class OnlinePredictionServer {
                     topologyStore, 150, shardCount, refreshMs,
                     System::currentTimeMillis);
             topologyProvider.start();
+            SequenceGenerator seqGen = new SequenceGenerator(jedisPool, "sr:");
             ShardedRecordStore shardedRecordStore = new ShardedRecordStore(
-                    jedisPool, jedisPool, topologyProvider,
-                    new SequenceGenerator(jedisPool, "sr:"), "sr:");
+                    jedisPool, jedisPool, topologyProvider, seqGen, "sr:");
+            startSequenceCounterRepair(seqGen, topologyProvider);
 
             OnlineServices.Features featuresService = durableConfig.enabled()
                     ? new OnlineServices.Features(recommendationService, metricsService, loadShedder,
@@ -288,6 +293,44 @@ public final class OnlinePredictionServer {
     }
 
     record DurableConfig(boolean enabled, String tokenSecret) {}
+
+    /**
+     * Repairs shard sequence counters that a Redis partial flush left behind the highest
+     * sequence number still present — a stale counter reissues that number, the device
+     * index's {@code ZADD NX} becomes a no-op, and the record is silently dropped.
+     *
+     * <p>Runs on a daemon thread, not the boot thread: the guard SCANs every device ZSet and
+     * issues a ZREVRANGEBYSCORE per key, so doing it synchronously would block startup in
+     * proportion to keyspace size. Fails soft — a Redis problem here must not stop the server
+     * from serving.
+     */
+    private static void startSequenceCounterRepair(SequenceGenerator seqGen,
+                                                   ShardTopologyProvider provider) {
+        if (!Boolean.parseBoolean(
+                System.getenv().getOrDefault("SHARDED_RECORD_SEQ_REPAIR_ENABLED", "true"))) {
+            log.info("Shard sequence-counter repair disabled (SHARDED_RECORD_SEQ_REPAIR_ENABLED=false)");
+            return;
+        }
+        long budgetMs = readIntEnv("SHARDED_RECORD_SEQ_REPAIR_TIMEOUT_MS", 30_000);
+        Thread t = new Thread(() -> {
+            try {
+                ShardTopology topo = provider.current();
+                for (int shard = 0; shard < topo.shardCount(); shard++) {
+                    if (!seqGen.ensureCounterValid(topo.version(), shard, budgetMs)) {
+                        log.warn("Sequence-counter repair for generation {} shard {} exceeded its {}ms "
+                                        + "budget; counter raised only as far as the partial scan reached",
+                                topo.version(), shard, budgetMs);
+                    }
+                }
+                log.info("Sequence-counter repair complete for generation {} ({} shards)",
+                        topo.version(), topo.shardCount());
+            } catch (Exception e) {
+                log.warn("Sequence-counter repair failed; continuing without it: {}", e.toString());
+            }
+        }, "shard-seq-repair");
+        t.setDaemon(true);
+        t.start();
+    }
 
     private static int readIntEnv(String envName, int defaultValue) {
         String raw = System.getenv(envName);
