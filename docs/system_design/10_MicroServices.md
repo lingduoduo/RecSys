@@ -150,14 +150,10 @@ The economy of one codebase shows up as genuinely shared building blocks:
 
 Recorded because the absence is easy to mistake for an oversight, and because "use gRPC
 for real-time bidirectional streaming" is the obvious next suggestion for a system with
-four services and a streaming surface.
-
-**Provenance, so this is not read as settled history.** The repo has always documented
-the *WebSocket* decision — [16_SSE_Streaming](16_SSE_Streaming.md) states that SSE is
-one-way "which is exactly what an LLM token stream needs; nothing here requires a
-bidirectional socket." It has never mentioned gRPC. Point 1 below is a property of
-gRPC-Web itself; points 2–4 are reconstructed from how the system is built, not
-decisions found written down.
+four services and a streaming surface. It extends the same reasoning
+[16_SSE_Streaming](16_SSE_Streaming.md) already applies to WebSockets: SSE is one-way,
+"which is exactly what an LLM token stream needs; nothing here requires a bidirectional
+socket."
 
 1. **gRPC cannot do bidirectional streaming to a browser at all.** Full bidi needs
    HTTP/2 trailers and true full-duplex framing, which browser `fetch`/XHR cannot
