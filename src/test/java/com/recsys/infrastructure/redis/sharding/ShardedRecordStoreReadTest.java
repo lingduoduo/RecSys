@@ -88,17 +88,29 @@ class ShardedRecordStoreReadTest extends RedisShardingTestBase {
         assertThat(p2.hasMore()).isFalse();
     }
 
+    /**
+     * Replaces {@code readAllShards_advancesEachShardIndependently}. That method was deleted
+     * on 2026-07-28 (no production caller, unbounded drain); walking every shard is now done
+     * by paging {@code readShard} per shard, which is what the HTTP surface already did.
+     */
     @Test
-    void readAllShards_advancesEachShardIndependently() {
+    void pagingEveryShardWithReadShard_visitsEveryRecordExactlyOnce() {
         var ring = new ConsistentHashRing(2, 150);
         var s = new ShardedRecordStore(exec, ring, new SequenceGenerator(exec, "sr:"), "sr:");
 
         for (int i = 0; i < 20; i++) s.write(event("device-" + i, "e" + i));
 
-        List<Page<ShardedRecord>> pages = s.readAllShards(ShardCursor.start(), 5);
-        assertThat(pages).hasSize(2);
+        int total = 0;
+        for (int shard = 0; shard < 2; shard++) {
+            ShardCursor cursor = ShardCursor.start();
+            Page<ShardedRecord> page;
+            do {
+                page = s.readShard(shard, cursor, 5);
+                total += page.records().size();
+                cursor = page.next();
+            } while (page.hasMore());
+        }
 
-        int total = pages.stream().mapToInt(p -> p.records().size()).sum();
         assertThat(total).isEqualTo(20);
     }
 }

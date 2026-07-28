@@ -112,13 +112,29 @@ Not everything is replicated, by design:
 
 ## 6. Testing
 
-- **Routing** — `RedisReadReplicaRouterTest` (write→primary, AZ-local preference, random
-  fallback, primary fallback when no replicas, `probeReadable` no-primary-fallback),
-  `RoutingRedisExecutorTest` (read vs write routing, single-endpoint collapse).
+- **Routing** — `RedisReadReplicaRouterTest` (write→primary, AZ-local preference, stable
+  first-replica fallback, primary fallback when no replicas, `probeReadable`
+  no-primary-fallback), `RoutingRedisExecutorTest` (read vs write routing,
+  single-endpoint collapse).
 - **Config** — `ReplicaConfigTest` (`host:port@az` parsing, port/az defaults).
 - **Lag** — `RedisReplicaLagProbeTest` (marker round-trip, lag reporting,
   unavailable-on-failure).
 - **Client build** — `LettuceClientFactoryTest` (pool construction, Sentinel URI).
+- **Pipeline connection lifecycle** — `LettuceRedisExecutorPipelineTest` (a failed batch
+  destroys its connection rather than returning it to the pool).
+
+**Replica fallback is stable, not random.** When no same-AZ replica exists, `readable()`
+returns the *first configured* replica, deliberately: `readable()` and `probeReadable()`
+must resolve to the same node, or the lag probe's correlated sequence check reports the
+lag of a replica no read actually used. Do not "fix" this to spread read load without
+also reworking `RedisReplicaLagProbe`.
+
+**A failed pipeline destroys its connection.** `executePipelined` borrows a dedicated
+connection and disables auto-flush on it. If the callback throws after queueing but
+before `flushCommands()`, those commands stay buffered — re-enabling auto-flush does not
+flush them — so returning the connection would let the *next* borrower's flush execute a
+failed batch's writes. On any failure the connection is invalidated instead, costing one
+connection rather than risking a silent replay.
 
 ## Sharp edges — notes
 

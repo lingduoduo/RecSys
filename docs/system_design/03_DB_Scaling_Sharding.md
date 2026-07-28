@@ -56,7 +56,7 @@ idempotent and safe to retry.
 - **Per-device reads** (`readDevice`, behind `GET /shards/device`) walk the device ZSET
   and, during a reshard window, **dual-read** the current *and* previous generation and
   merge them (dedupe by `(device, seq)`, current wins) — so no record is lost mid-reshard.
-- **Shard scans** (`readShard`/`readAllShards`, behind `GET /shards/shard`) are
+- **Shard scans** (`readShard`, behind `GET /shards/shard`) are
   **current-generation only** and silently miss previous-generation records — a known
   sharp edge.
 
@@ -261,7 +261,7 @@ scale rather than to rebalance:
 ## Sharp edges — notes
 
 1. **Shard scans drop previous-generation data during a reshard.** Only per-device reads
-   dual-read; `GET /shards/shard` / `readAllShards` are current-generation only.
+   dual-read; `GET /shards/shard` (`readShard`) is current-generation only.
 2. **"Shards" are logical, on one primary.** The ring is cluster-ready, but today all
    shards are key prefixes on a single Sentinel primary — the win is contention-spreading
    and reshardability, not multi-node capacity.

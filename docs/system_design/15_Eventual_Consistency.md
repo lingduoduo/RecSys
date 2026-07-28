@@ -122,7 +122,7 @@ deploying the generated Amazon States Language definition.
   **24 h** ([OnlinePredictionServer.java:214](../../src/main/java/com/recsys/api/online/OnlinePredictionServer.java#L214)).
   During it, `readDevice` reads current **and** `previousIfActive()` and merges
   (dedupe by `(deviceId, seqNum)`); new writes land only in the new generation.
-  `readShard`/`readAllShards` are **current-generation only** and silently miss
+  `readShard` is **current-generation only** and silently miss
   previous-generation records.
 - **Read-your-writes** holds for same-instance/same-generation primary-only
   deployments, but **not** for AZ-aware replica reads or across the 30 s
@@ -192,7 +192,7 @@ Non-obvious gaps in the eventual-consistency model — candidates for a correctn
 audit:
 
 1. **Shard-level reads silently drop previous-generation data during a 24 h
-   reshard window.** `GET /shards/shard` / `readAllShards` don't dual-read; only
+   reshard window.** `GET /shards/shard` (`readShard`) does not dual-read; only
    per-device reads merge generations.
 2. **`OnlineLearner` state is per-pod.** Learned biases apply immediately only on
    the pod that saw the feedback; others converge via the 30 s Redis flush, and

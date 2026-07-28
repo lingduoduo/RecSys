@@ -162,10 +162,19 @@ public final class ShardedRecordService extends BaseApiService {
                 }
                 int limit        = optionalIntParam(ctx, "limit", 10, 1, 100);
                 String cursorVal = ctx.queryParam("cursor");
-                ShardCursor cursor = (cursorVal == null || cursorVal.isBlank())
-                        ? ShardCursor.start() : ShardCursor.of(cursorVal);
 
-                Page<ShardedRecord> page = store.readDevice(deviceId, cursor, limit);
+                Page<ShardedRecord> page;
+                try {
+                    ShardCursor cursor = (cursorVal == null || cursorVal.isBlank())
+                            ? ShardCursor.start() : ShardCursor.of(cursorVal);
+                    // This endpoint pages by ZSet score; reject a cursor from /shards/shard here,
+                    // so the contract holds regardless of which store implementation is wired in.
+                    cursor.requireKind(ShardCursor.Kind.SEQ);
+                    page = store.readDevice(deviceId, cursor, limit);
+                } catch (IllegalArgumentException badCursor) {
+                    // Malformed, or a cursor paged out of /shards/shard. Client error, not ours.
+                    return writeError(HttpStatus.BAD_REQUEST, badCursor.getMessage());
+                }
                 return writeJson(HttpStatus.OK, Map.of(
                         "deviceId", deviceId,
                         "cursor",   page.hasMore() ? page.next().value() : "",
@@ -186,10 +195,19 @@ public final class ShardedRecordService extends BaseApiService {
                 int shardIndex   = optionalIntParam(ctx, "index", 0, 0, Integer.MAX_VALUE);
                 int limit        = optionalIntParam(ctx, "limit", 10, 1, 100);
                 String cursorVal = ctx.queryParam("cursor");
-                ShardCursor cursor = (cursorVal == null || cursorVal.isBlank())
-                        ? ShardCursor.start() : ShardCursor.of(cursorVal);
 
-                Page<ShardedRecord> page = store.readShard(shardIndex, cursor, limit);
+                Page<ShardedRecord> page;
+                try {
+                    ShardCursor cursor = (cursorVal == null || cursorVal.isBlank())
+                            ? ShardCursor.start() : ShardCursor.of(cursorVal);
+                    // This endpoint pages by stream ID; reject a cursor from /shards/device here,
+                    // so the contract holds regardless of which store implementation is wired in.
+                    cursor.requireKind(ShardCursor.Kind.STREAM);
+                    page = store.readShard(shardIndex, cursor, limit);
+                } catch (IllegalArgumentException badCursor) {
+                    // Malformed, or a cursor paged out of /shards/device. Client error, not ours.
+                    return writeError(HttpStatus.BAD_REQUEST, badCursor.getMessage());
+                }
                 return writeJson(HttpStatus.OK, Map.of(
                         "shardIndex", shardIndex,
                         "cursor",     page.hasMore() ? page.next().value() : "",

@@ -140,7 +140,7 @@ sub-packages.
 - `svc:registry:<serviceName>` — opt-in service registry (`SERVICE_REGISTRY_ENABLED`): advertised address string, TTL-renewed by each backend's heartbeat (all four services register — the Armeria ones directly, the Spring model service via `ServiceRegistryConfig`); liveness = key present, gateway MGETs known services and falls back to static route addresses. When enabled, the gateway `/health` response includes a `registry` section reporting each service's resolution `source` (`registry` vs `static` fallback) and the snapshot age. The gateway also exposes Prometheus at `/metrics`; when the registry is enabled it publishes `gateway_registry_services_total`, `gateway_registry_services_resolved`, `gateway_registry_snapshot_age_seconds`, and `gateway_registry_refresh_total` / `_failures_total`.
 - `sr:rec:{shard}:{seq}` / `sr:dev:{shard}:{id}` / `sr:stream:{shard}` / `sr:seq:{shard}` — generation 1 (unversioned)
 - `sr:g{version}:rec:…` etc. — generation ≥2 keys after a reshard; reads dual-read the previous generation for one max-TTL window. The startup sequence-counter repair (`SequenceGenerator.ensureCounterValid`) follows the *active* generation — both the `seq:` key and the `dev:` scan pattern go through `Generations.keyPrefix`
-- Shard-level reads (`GET /shards/shard`, `readAllShards`) are generation-current — during a migration window they do not dual-read the previous generation (device reads do).
+- Shard-level reads (`GET /shards/shard`, `readShard`) are generation-current — during a migration window they do not dual-read the previous generation (device reads do).
 
 ## JVM Tuning
 
