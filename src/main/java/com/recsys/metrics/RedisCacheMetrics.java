@@ -1,6 +1,7 @@
 package com.recsys.metrics;
 
 import com.recsys.infrastructure.redis.RedisCacheStatsProbe.CacheStats;
+import com.recsys.infrastructure.redis.RedisPersistentKeyProbe.KeyspaceSample;
 import io.micrometer.core.instrument.FunctionCounter;
 import io.micrometer.core.instrument.Gauge;
 import io.micrometer.core.instrument.MeterRegistry;
@@ -25,6 +26,9 @@ public final class RedisCacheMetrics {
     private final AtomicLong keyspaceHits = new AtomicLong();
     private final AtomicLong keyspaceMisses = new AtomicLong();
     private final AtomicLong evictsOnlyVolatileKeys = new AtomicLong();
+    private final AtomicLong keyspaceSampled = new AtomicLong();
+    private final AtomicLong unexpectedPersistentKeys = new AtomicLong();
+    private final AtomicLong keyspaceSampleAvailable = new AtomicLong();
 
     public RedisCacheMetrics(MeterRegistry registry) {
         Objects.requireNonNull(registry, "registry");
@@ -47,6 +51,18 @@ public final class RedisCacheMetrics {
                 .register(registry);
         FunctionCounter.builder("redis_cache_keyspace_misses", keyspaceMisses, AtomicLong::get)
                 .register(registry);
+        Gauge.builder("redis_keyspace_sampled_keys", keyspaceSampled, AtomicLong::get)
+                .description("Keys examined by the most recent bounded keyspace sample")
+                .register(registry);
+        Gauge.builder("redis_unexpected_persistent_keys", unexpectedPersistentKeys, AtomicLong::get)
+                .description("Sampled keys with no TTL that are not on the durable allow-list; "
+                        + "under volatile-lru these can never be evicted")
+                .register(registry);
+        Gauge.builder("redis_keyspace_sample_available", keyspaceSampleAvailable, AtomicLong::get)
+                .description("1 when the last keyspace sample succeeded, 0 otherwise; a probe that "
+                        + "never succeeds would otherwise leave redis_unexpected_persistent_keys at "
+                        + "its initial 0, indistinguishable from all-clear")
+                .register(registry);
     }
 
     public void update(CacheStats stats) {
@@ -59,5 +75,17 @@ public final class RedisCacheMetrics {
         keyspaceHits.set(Math.max(0L, stats.keyspaceHits()));
         keyspaceMisses.set(Math.max(0L, stats.keyspaceMisses()));
         evictsOnlyVolatileKeys.set(stats.evictsOnlyVolatileKeys() ? 1 : 0);
+    }
+
+    /**
+     * An unavailable sample keeps the last-known counts. Reporting 0 for a scan that never ran
+     * would be indistinguishable from the leak having been fixed.
+     */
+    public void updateKeyspace(KeyspaceSample sample) {
+        Objects.requireNonNull(sample, "sample");
+        keyspaceSampleAvailable.set(sample.available() ? 1 : 0);
+        if (!sample.available()) return; // keep the last-known counts; only availability drops
+        keyspaceSampled.set(Math.max(0, sample.scanned()));
+        unexpectedPersistentKeys.set(Math.max(0, sample.unexpected()));
     }
 }

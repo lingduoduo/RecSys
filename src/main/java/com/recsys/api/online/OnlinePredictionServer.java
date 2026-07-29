@@ -12,6 +12,7 @@ import com.recsys.metrics.OnlineServingMetricsService;
 import com.recsys.metrics.ConsistencyMetrics;
 import com.recsys.metrics.RedisCacheMetrics;
 import com.recsys.infrastructure.redis.RedisCacheStatsProbe;
+import com.recsys.infrastructure.redis.RedisPersistentKeyProbe;
 import com.recsys.infrastructure.redis.RedisReplicaLagProbe;
 import com.recsys.infrastructure.redis.RedisFeatureVersionSampler;
 
@@ -92,6 +93,7 @@ public final class OnlinePredictionServer {
         ShardTopologyProvider topologyProvider = null;
         RedisReplicaLagProbe replicaLagProbe = null;
         RedisCacheStatsProbe cacheStatsProbe = null;
+        RedisPersistentKeyProbe persistentKeyProbe = null;
         RedisFeatureVersionSampler featureVersionSampler = null;
         MySqlOutboxRepository outboxRepository = null;
 
@@ -171,6 +173,10 @@ public final class OnlinePredictionServer {
             cacheStatsProbe = new RedisCacheStatsProbe(jedisPool);
             cacheStatsProbe.start(Duration.ofSeconds(readIntEnv("REDIS_CACHE_STATS_PROBE_SECONDS", 30)),
                     cacheMetrics::update);
+            persistentKeyProbe = new RedisPersistentKeyProbe(jedisPool);
+            persistentKeyProbe.start(
+                    Duration.ofSeconds(readIntEnv("REDIS_PERSISTENT_KEY_PROBE_SECONDS", 60)),
+                    cacheMetrics::updateKeyspace);
             featureVersionSampler = new RedisFeatureVersionSampler(jedisPool, consistencyMetrics,
                     Clock.systemUTC(), readIntEnv("REDIS_FEATURE_VERSION_SAMPLE_LIMIT", 1000));
             featureVersionSampler.start(Duration.ofSeconds(readIntEnv("REDIS_FEATURE_VERSION_SAMPLE_SECONDS", 30)));
@@ -258,6 +264,7 @@ public final class OnlinePredictionServer {
             ExecutorService activeRecallExecutor = recallExecutor;
             RedisReplicaLagProbe activeReplicaLagProbe = replicaLagProbe;
             RedisCacheStatsProbe activeCacheStatsProbe = cacheStatsProbe;
+            RedisPersistentKeyProbe activePersistentKeyProbe = persistentKeyProbe;
             RedisFeatureVersionSampler activeFeatureVersionSampler = featureVersionSampler;
             Runtime.getRuntime().addShutdownHook(new Thread(() -> {
                 loadShedder.markShuttingDown();   // flip readiness to 503 + shed new load before draining
@@ -265,6 +272,7 @@ public final class OnlinePredictionServer {
                 activeAsyncEventPublisher.close();
                 activeReplicaLagProbe.close();
                 activeCacheStatsProbe.close();
+                activePersistentKeyProbe.close();
                 activeFeatureVersionSampler.close();
                 if (activeTransactionalMySql != null) activeTransactionalMySql.close();
                 activeLearnerFlushScheduler.close();
@@ -286,6 +294,7 @@ public final class OnlinePredictionServer {
             if (topologyProvider != null) topologyProvider.stop();
             if (replicaLagProbe != null) replicaLagProbe.close();
             if (cacheStatsProbe != null) cacheStatsProbe.close();
+            if (persistentKeyProbe != null) persistentKeyProbe.close();
             if (featureVersionSampler != null) featureVersionSampler.close();
             if (registrar != null) registrar.close();
             if (jedisPool != null) jedisPool.close();

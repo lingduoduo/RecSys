@@ -193,6 +193,74 @@ The policy is not a tuning knob — it is a correctness invariant, pinned by
 data under the wrong key prefix. The trade is deliberate: when memory fills with
 non-evictable keys, writes fail loudly with an OOM error instead of quietly dropping state.
 
+### The same invariant, two different mechanisms
+
+**In EKS none of the above applies.** `k8s/eks-shared` scales `redis-primary`,
+`redis-replica`, and `redis-sentinel` to **0** in every region — ElastiCache serves
+instead — so `k8s/base/redis-cluster.yaml` is inert in production. ElastiCache is
+**ElastiCache for Redis**, not a different engine (the overlay requires "Engine mode: Redis,
+not Cluster Mode"), so the semantics are the same; what differs is that its config lives in
+an AWS **parameter group**, out of reach of the manifests.
+
+That leaves the invariant enforced by two mechanisms and verified by a third:
+
+| Where | Mechanism | Checked by |
+|---|---|---|
+| Local / `k8s/base` | `--maxmemory-policy volatile-lru` in the manifests | `RedisEvictionPolicyManifestTest` |
+| EKS (both regions) | `maxmemory-policy` on a **custom** ElastiCache parameter group | [`scripts/set-elasticache-parameters.sh`](../../scripts/set-elasticache-parameters.sh) (`apply` / `verify`) |
+| Any | the running policy as Redis reports it | `redis_cache_evicts_only_volatile_keys` |
+
+ElastiCache is provisioned out-of-band (this repo has no IaC), following the same
+convention as CloudFront and the WAF, so the repo can only *state* the requirement — the
+two `redis-elasticache-patch.yaml` headers list it alongside Multi-AZ and the reader
+endpoint, and the manifest test asserts they keep saying so. Two operational details the
+script encodes:
+
+- **A `default.*` parameter group cannot carry it.** AWS rejects edits to its managed
+  default groups, so the cluster needs a custom group; `apply` fails fast with that
+  instruction rather than surfacing an opaque API error.
+- **Run it once per region.** Global Datastore replicates *data*, not parameter groups, and
+  the us-west-2 secondary is promoted to primary on failover — a secondary that evicted
+  untl'd keys is promoted already missing them.
+
+Only the metric closes the loop. The manifest test cannot see a live cluster, and the
+script only sees the group it is pointed at; `redis_cache_evicts_only_volatile_keys`
+reports what the serving path is actually talking to, which is what catches a manual
+`CONFIG SET`, an unmanaged instance, or a region nobody ran the script against.
+
+### Running the claim instead of asserting it
+
+ElastiCache is out-of-band, so the argument above would otherwise never execute.
+[`scripts/simulate-elasticache-eviction.sh`](../../scripts/simulate-elasticache-eviction.sh)
+starts a throwaway local `redis-server` (no Docker, no AWS) and applies real memory pressure
+under each policy — see [the runbook](../runbooks/elasticache-local.md) for the full output.
+At `maxmemory=8mb` with 51 authoritative keys and ~3000 filler writes:
+
+| Scenario | Authoritative kept | Note |
+|---|---|---|
+| `volatile-lru`, TTL'd pressure | **51/51** | 1579 keys evicted, 0 writes refused |
+| `allkeys-lru`, TTL'd pressure | **19/51** | `shard:topology` evicted in **4 of 5** trials |
+| `volatile-lru`, un-TTL'd pressure | 51/51 | 1565 writes refused with OOM — sharp edge 6, made concrete |
+
+Two things this measured that the prose had wrong or missing:
+
+- **The old policy's damage is probabilistic, not certain.** Redis samples for approximate
+  LRU, so survival moves run to run (0–24 of 50 embeddings across trials). The fix removes a
+  coin flip rather than improving odds — worth stating precisely, because "it might be fine"
+  is exactly the reasoning that leaves it unfixed.
+- **`maxmemory` is enforced per dispatched command, not per `redis.call` inside a script.**
+  A single Lua script runs to completion and overshoots the limit — measured at 15.8 MB
+  against 8 MB, near 2×. No eviction policy changes this, and the mechanism is real: the
+  Flink sinks write through Lua (`SET_IF_NEWER_WITH_LINEAGE_SCRIPT`, `ATOMIC_TOPK_SCRIPT`).
+  But the 2× magnitude is not — those sinks write far fewer keys per invocation than the
+  simulation's synthetic script does. In this system the per-invocation writes are small,
+  so the practical overshoot is
+  kilobytes, not the 2× the simulation shows: `SET_IF_NEWER_WITH_LINEAGE_SCRIPT` touches 5
+  keys and `ATOMIC_TOPK_SCRIPT` writes `top-k` members (default **10**) into 2 ZSets. The
+  simulation reaches 15.8 MB only because it writes 3000 keys in one `EVAL`, which no sink
+  does. The mechanism is worth knowing before someone adds a batching writer; it does not
+  justify resizing `maxmemory` today.
+
 **TTL jitter — the cache-avalanche defense.** Redis-side TTLs are never used raw:
 [`RedisEmbeddingStore.jitteredTtlMillis`](../../src/main/java/com/recsys/infrastructure/redis/RedisEmbeddingStore.java)
 adds uniform **positive** jitter in `[0, jitterFraction]` of the base TTL (default
@@ -276,11 +344,13 @@ server and publishes via
 | `redis_cache_keyspace_hits` / `_misses` | Redis-side hit rate, independent of the JVM tiers |
 | `redis_cache_evicts_only_volatile_keys` | is the **running** policy still `volatile-*`? |
 | `redis_cache_available` | was the last sample even taken? |
+| `redis_unexpected_persistent_keys` | is someone writing keys that can never be evicted? |
 
-The last two matter most. The policy gauge catches drift the manifest test cannot see — a
-manual `CONFIG SET`, an unmanaged instance, a hand-rolled compose file. And because the
-cumulative counters are **retained** across an unavailable sample (only `_available` drops
-to 0), a Redis gap can't masquerade as a counter reset and corrupt `rate()`.
+The policy gauge and the availability flag matter most. The policy gauge catches drift the
+manifest test cannot see — a manual `CONFIG SET`, an unmanaged instance, a hand-rolled
+compose file. And because the cumulative counters are **retained** across an unavailable
+sample (only `_available` drops to 0), a Redis gap can't masquerade as a counter reset and
+corrupt `rate()`.
 
 ## Sharp edges — notes
 
@@ -307,8 +377,14 @@ to 0), a Redis gap can't masquerade as a counter reset and corrupt `rate()`.
    something to watch (`redis_cache_used_memory_bytes` vs `_max_memory_bytes`) rather than
    something the policy silently absorbs. The durable set is small and bounded — the
    catalog's embeddings plus one topology document.
-7. **The eviction boundary is a convention, enforced one layer away.** `volatile-lru` is
-   only correct while *every* cache-like writer sets a TTL. A new writer that forgets one
-   makes its key permanently resident, and nothing at write time says so — the manifest
-   test pins the policy and `redis_cache_evicts_only_volatile_keys` catches a drifted
-   cluster, but neither can see a key that simply should have had a TTL and didn't.
+7. **The eviction boundary is a writer convention, now sampled rather than assumed.**
+   `volatile-lru` is only correct while *every* cache-like writer sets a TTL. Nothing at
+   write time enforces that, so
+   [`RedisPersistentKeyProbe`](../../src/main/java/com/recsys/infrastructure/redis/RedisPersistentKeyProbe.java)
+   walks one bounded `SCAN` page per tick and publishes `redis_unexpected_persistent_keys`
+   for keys with no TTL outside the declared durable prefixes (`shard:topology`, `i2vEmb:`,
+   `u2vEmb:`, `sr:`, `bias:item:`). It watches the keyspace rather than the code because
+   the Flink sinks — the highest-volume writer — are excluded from the Maven compile and
+   write through Lua. Two residual gaps: detection is **probabilistic**, so a rarely-written
+   key may take many ticks to surface; and the allow-list is itself a declaration that can
+   go stale if a new durable namespace is added without updating it.
