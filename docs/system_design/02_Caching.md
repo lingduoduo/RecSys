@@ -227,7 +227,7 @@ half-flushed batch can never replay into an unrelated request.
 
 | Key | Redis TTL | Written by |
 |---|---|---|
-| `i2vEmb:*` / `u2vEmb:*` | **none** as seeded (`setEmbeddings(…, 0)`); jittered TTL only when a caller passes one | `RecSysServer.seedEmbeddings`, Flink |
+| `i2vEmb:*` / `u2vEmb:*` | **none** as seeded (`writeMissing(…, 0)`); jittered TTL only when a caller passes one | `RecSysServer.seedEmbeddings`, Flink |
 | `topk:<window>` | **none** | the Flink streaming job (serving is read-only here) |
 | `shard:topology` | **none** (`SET … NX`) | `ShardTopologyStore` |
 | `sr:rec:*` / `sr:dev:*` | `EXPIRE ttlSeconds` when the writer passes one | `ShardedRecordStore` |
@@ -235,6 +235,15 @@ half-flushed batch can never replay into an unrelated request.
 
 The pattern: **liveness data expires, cached data doesn't** — it is bounded by
 `maxmemory` + LRU instead.
+
+**Seeding repairs eviction per id.** Because seeded embeddings have no TTL but are still
+LRU-evictable, startup seeding cannot be all-or-nothing.
+[`RedisEmbeddingStore.writeMissing`](../../src/main/java/com/recsys/infrastructure/redis/RedisEmbeddingStore.java)
+MGETs the classpath ids (batched, **on the primary** — a lagging replica would report a
+live key as absent) and pipelines back **only the absent subset**, so a healthy restart
+issues zero writes and a partially-evicted one is repaired. The earlier guard re-seeded
+only when the store scanned *completely empty*, which meant a partial eviction left Redis
+non-empty and the evicted ids missing until the whole keyspace was cleared.
 
 ## Sharp edges — notes
 
@@ -254,12 +263,13 @@ The pattern: **liveness data expires, cached data doesn't** — it is bounded by
 5. **Null sentinels are a 30 s bet.** Absent-ID sentinels expire after 30 s, so a newly
    *added* embedding for a previously-missing ID isn't visible until the sentinel lapses
    (or a write-through happens).
-6. **Redis evicts, and the seed is one-shot.** Embeddings are seeded with **no TTL**, but
-   `allkeys-lru` can still evict them — and `RecSysServer.seedEmbeddings` re-seeds only
-   when `scanIds(1)` comes back *empty*. After a partial eviction Redis is non-empty, so a
-   restart does **not** restore the evicted subset. Hot IDs are safe (LRU keeps what's
-   read) and classpath IDs are still served from `LocalEmbeddingCache.preload()`; the real
-   exposure is cold long-tail IDs and Flink-written vectors that have no classpath copy.
+6. **Eviction repair only covers what's on the classpath.** Seeding is now per-id
+   (`writeMissing`, §8), so a partially-evicted Redis is repaired at the next restart — but
+   only for ids that exist in `movie_embeddings.txt` / `user_embeddings.txt`. A
+   Flink-written vector with no classpath copy has no source to repair from, and eviction
+   of one is permanent. Serving degrades rather than errors — `CandidateGenerator` returns
+   an empty candidate list for an absent user vector, so that channel simply contributes
+   nothing to the multi-channel blend — but the vector itself never comes back.
 7. **The cache metrics stop at the JVM boundary.** The per-tier counters (§1) and
    `GET /health/cache` are in-process; nothing scrapes Redis `INFO` for `evicted_keys`,
    `used_memory`, or `keyspace_misses`. Eviction pressure is therefore only visible

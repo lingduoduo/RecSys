@@ -16,8 +16,10 @@ import org.slf4j.LoggerFactory;
 import java.time.Duration;
 import java.util.ArrayList;
 import java.util.Collection;
+import java.util.Collections;
 import java.util.HashMap;
 import java.util.HashSet;
+import java.util.LinkedHashMap;
 import java.util.LinkedHashSet;
 import java.util.List;
 import java.util.Map;
@@ -124,6 +126,44 @@ public class RedisEmbeddingStore implements EmbeddingStore {
             conn.flushCommands();
             LettuceFutures.awaitAll(Duration.ofSeconds(5), futures.toArray(new RedisFuture[0]));
         });
+    }
+
+    /**
+     * Repairs a partially populated store: writes only the entries whose keys are
+     * <em>absent</em> from Redis, in one pipelined batch, and returns the ids written.
+     *
+     * <p>Redis runs as an LRU cache ({@code allkeys-lru} at {@code maxmemory}), so entries
+     * written with no TTL can still be evicted. An all-or-nothing "seed only when the store
+     * is empty" guard therefore never repairs a <em>partial</em> eviction — Redis is
+     * non-empty, so the evicted subset stays missing until the whole keyspace is cleared.
+     *
+     * <p>Presence is checked against the <b>primary</b>: a lagging replica would report a
+     * live key as absent and trigger a pointless rewrite of it.
+     */
+    public Set<Integer> writeMissing(Map<Integer, float[]> vectors, long ttlSeconds) {
+        if (vectors == null || vectors.isEmpty()) return Set.of();
+
+        List<Integer> ids = new ArrayList<>(vectors.keySet());
+        Map<Integer, float[]> missing = new LinkedHashMap<>();
+
+        for (int start = 0; start < ids.size(); start += mgetBatchSize) {
+            int end = Math.min(ids.size(), start + mgetBatchSize);
+            final String[] keys = new String[end - start];
+            for (int i = start; i < end; i++) {
+                keys[i - start] = keyPrefix + ":" + ids.get(i);
+            }
+            List<KeyValue<String, String>> values = exec.executePrimaryRead(c -> c.mget(keys));
+            for (int j = 0; j < values.size(); j++) {
+                String value = values.get(j).getValueOrElse(null);
+                if (value != null && !value.isBlank()) continue;
+                int id = ids.get(start + j);
+                missing.put(id, vectors.get(id));
+            }
+        }
+
+        if (missing.isEmpty()) return Set.of();
+        setEmbeddings(missing, ttlSeconds);
+        return Collections.unmodifiableSet(new LinkedHashSet<>(missing.keySet()));
     }
 
     @Override

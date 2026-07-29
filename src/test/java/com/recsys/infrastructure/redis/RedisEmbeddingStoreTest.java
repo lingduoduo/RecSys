@@ -81,6 +81,73 @@ class RedisEmbeddingStoreTest {
         assertThat(store.jitteredTtlMillis(-1L)).isEqualTo(-1L);
     }
 
+    private static Map<Integer, float[]> classpathPair() {
+        Map<Integer, float[]> vectors = new java.util.LinkedHashMap<>();
+        vectors.put(1, new float[] {1.0f, 0.0f});
+        vectors.put(2, new float[] {0.0f, 1.0f});
+        return vectors;
+    }
+
+    @Test
+    @SuppressWarnings("unchecked")
+    void writeMissing_writesOnlyTheAbsentSubset() {
+        RedisCommands<String, String> cmd = mock(RedisCommands.class);
+        // id 1 survived; id 2 was evicted under allkeys-lru
+        when(cmd.mget("emb:1", "emb:2")).thenReturn(kvs("1.0 0.0", null));
+        RedisExecutor exec = execFor(cmd);
+        RedisEmbeddingStore store = new RedisEmbeddingStore(exec, "emb", 0.0, 500);
+
+        assertThat(store.writeMissing(classpathPair(), 0L)).containsExactly(2);
+        verify(exec).executePipelined(any());
+    }
+
+    @Test
+    @SuppressWarnings("unchecked")
+    void writeMissing_issuesNoWriteWhenEveryEntryIsPresent() {
+        RedisCommands<String, String> cmd = mock(RedisCommands.class);
+        when(cmd.mget("emb:1", "emb:2")).thenReturn(kvs("1.0 0.0", "0.0 1.0"));
+        RedisExecutor exec = execFor(cmd);
+        RedisEmbeddingStore store = new RedisEmbeddingStore(exec, "emb", 0.0, 500);
+
+        assertThat(store.writeMissing(classpathPair(), 0L)).isEmpty();
+        verify(exec, org.mockito.Mockito.never()).executePipelined(any());
+    }
+
+    @Test
+    @SuppressWarnings("unchecked")
+    void writeMissing_checksThePrimarySoReplicaLagCannotFakeAnAbsence() {
+        RedisCommands<String, String> cmd = mock(RedisCommands.class);
+        when(cmd.mget("emb:1", "emb:2")).thenReturn(kvs("1.0 0.0", "0.0 1.0"));
+        RedisExecutor exec = execFor(cmd);
+
+        new RedisEmbeddingStore(exec, "emb", 0.0, 500).writeMissing(classpathPair(), 0L);
+
+        verify(exec).executePrimaryRead(any());
+        verify(exec, org.mockito.Mockito.never()).executeRead(any());
+    }
+
+    @Test
+    @SuppressWarnings("unchecked")
+    void writeMissing_chunksThePresenceCheckLikeGetEmbeddings() {
+        RedisCommands<String, String> cmd = mock(RedisCommands.class);
+        when(cmd.mget("emb:1")).thenReturn(kvs("1.0 0.0"));
+        when(cmd.mget("emb:2")).thenReturn(kvs((String) null));
+        RedisExecutor exec = execFor(cmd);
+        RedisEmbeddingStore store = new RedisEmbeddingStore(exec, "emb", 0.0, 1);
+
+        assertThat(store.writeMissing(classpathPair(), 0L)).containsExactly(2);
+        verify(cmd).mget("emb:1");
+        verify(cmd).mget("emb:2");
+    }
+
+    @Test
+    void writeMissing_touchesRedisNotAtAllForAnEmptyInput() {
+        RedisExecutor exec = mock(RedisExecutor.class);
+
+        assertThat(new RedisEmbeddingStore(exec, "emb").writeMissing(Map.of(), 0L)).isEmpty();
+        org.mockito.Mockito.verifyNoInteractions(exec);
+    }
+
     @Test
     @SuppressWarnings("unchecked")
     void getEmbeddings_deduplicatesAndChunksRedisMget() {
