@@ -193,6 +193,41 @@ The policy is not a tuning knob — it is a correctness invariant, pinned by
 data under the wrong key prefix. The trade is deliberate: when memory fills with
 non-evictable keys, writes fail loudly with an OOM error instead of quietly dropping state.
 
+### The same invariant, two different mechanisms
+
+**In EKS none of the above applies.** `k8s/eks-shared` scales `redis-primary`,
+`redis-replica`, and `redis-sentinel` to **0** in every region — ElastiCache serves
+instead — so `k8s/base/redis-cluster.yaml` is inert in production. ElastiCache is
+**ElastiCache for Redis**, not a different engine (the overlay requires "Engine mode: Redis,
+not Cluster Mode"), so the semantics are the same; what differs is that its config lives in
+an AWS **parameter group**, out of reach of the manifests.
+
+That leaves the invariant enforced by two mechanisms and verified by a third:
+
+| Where | Mechanism | Checked by |
+|---|---|---|
+| Local / `k8s/base` | `--maxmemory-policy volatile-lru` in the manifests | `RedisEvictionPolicyManifestTest` |
+| EKS (both regions) | `maxmemory-policy` on a **custom** ElastiCache parameter group | [`scripts/set-elasticache-parameters.sh`](../../scripts/set-elasticache-parameters.sh) (`apply` / `verify`) |
+| Any | the running policy as Redis reports it | `redis_cache_evicts_only_volatile_keys` |
+
+ElastiCache is provisioned out-of-band (this repo has no IaC), following the same
+convention as CloudFront and the WAF, so the repo can only *state* the requirement — the
+two `redis-elasticache-patch.yaml` headers list it alongside Multi-AZ and the reader
+endpoint, and the manifest test asserts they keep saying so. Two operational details the
+script encodes:
+
+- **A `default.*` parameter group cannot carry it.** AWS rejects edits to its managed
+  default groups, so the cluster needs a custom group; `apply` fails fast with that
+  instruction rather than surfacing an opaque API error.
+- **Run it once per region.** Global Datastore replicates *data*, not parameter groups, and
+  the us-west-2 secondary is promoted to primary on failover — a secondary that evicted
+  untl'd keys is promoted already missing them.
+
+Only the metric closes the loop. The manifest test cannot see a live cluster, and the
+script only sees the group it is pointed at; `redis_cache_evicts_only_volatile_keys`
+reports what the serving path is actually talking to, which is what catches a manual
+`CONFIG SET`, an unmanaged instance, or a region nobody ran the script against.
+
 **TTL jitter — the cache-avalanche defense.** Redis-side TTLs are never used raw:
 [`RedisEmbeddingStore.jitteredTtlMillis`](../../src/main/java/com/recsys/infrastructure/redis/RedisEmbeddingStore.java)
 adds uniform **positive** jitter in `[0, jitterFraction]` of the base TTL (default

@@ -9,6 +9,16 @@
 #     REDIS_REPLICA_NODES below. Reads route there and survive a primary-AZ loss.
 #   - Snapshot retention window: >= 1 day
 #   - Preferred snapshot window: set to an off-peak hour (e.g. 03:00-04:00 UTC)
+#   - maxmemory-policy: volatile-lru, on a CUSTOM parameter group (AWS forbids
+#     editing default.* groups). This is a correctness requirement, not tuning:
+#     keys without a TTL are the authoritative ones (shard:topology, the
+#     classpath-seeded embeddings), and an allkeys-* policy lets Redis evict them
+#     — an evicted shard:topology is silently recreated at version 1, resetting a
+#     resharded cluster's generation. In EKS the in-cluster Redis StatefulSets are
+#     scaled to 0, so k8s/base/redis-cluster.yaml's policy does NOT apply here.
+#     Apply and verify with: scripts/set-elasticache-parameters.sh
+#     Runtime check: the redis_cache_evicts_only_volatile_keys metric reads 0 if
+#     this drifts. See docs/system_design/02_Caching.md section 8.
 #
 # ElastiCache primary endpoint flips DNS within ~30s on failover.
 # JedisPool will throw JedisConnectionException during the failover window;

@@ -1,6 +1,14 @@
 # ConfigMap patch: point prod Redis at the us-west-2 ElastiCache Global Datastore
 # SECONDARY endpoint (read replica; promoted to primary on failover — see
 # docs/runbooks/dr-data-tier-promotion.md). Set REDIS_HOST before deploying.
+#
+# Required AWS-side configuration: same as k8s/eks/redis-elasticache-patch.yaml,
+# including maxmemory-policy: volatile-lru on a custom parameter group. The DR
+# secondary needs it just as much as the primary — it is promoted to primary on
+# failover, and a secondary that evicted keys without a TTL is promoted already
+# missing them. Global Datastore does not replicate parameter groups, so the
+# us-west-2 group must be set independently:
+#   AWS_REGION=us-west-2 PARAMETER_GROUP=<group> scripts/set-elasticache-parameters.sh apply
 apiVersion: v1
 kind: ConfigMap
 metadata:
