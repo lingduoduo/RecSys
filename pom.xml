@@ -346,6 +346,9 @@
                 <include>**/store/ShardedRecordServiceCursorTest.java</include>
                 <include>**/redis/LettuceRedisExecutorPipelineTest.java</include>
                 <include>**/redis/RedisEmbeddingStoreTest.java</include>
+                <include>**/redis/RedisEvictionPolicyManifestTest.java</include>
+                <include>**/redis/RedisCacheStatsProbeTest.java</include>
+                <include>**/metrics/RedisCacheMetricsTest.java</include>
                 <include>**/serving/EmbeddingSeedRepairTest.java</include>
                 <!-- Not resilience tests. This profile is what the PR gate runs
                      (.github/workflows/resilience-pr.yml), so it is the only place a
