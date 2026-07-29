@@ -1,5 +1,6 @@
 package com.recsys.infrastructure.redis;
 
+import io.lettuce.core.SetArgs;
 import java.time.Clock;
 import java.time.Duration;
 import java.util.Objects;
@@ -13,6 +14,14 @@ import java.util.UUID;
 /** Writes a primary marker and observes the latest marker visible through replica routing. */
 public final class RedisReplicaLagProbe implements AutoCloseable {
     public static final String DEFAULT_KEY_PREFIX = "recsys:replica-lag-probe:";
+    /**
+     * The marker is read back inside the same {@link #sample()} call, so this only has to
+     * outlive replication lag. It also bounds the leak: the key is per-process
+     * ({@code DEFAULT_KEY_PREFIX + UUID}), so without a TTL every deploy, scale-up, or
+     * crash-loop restart would leave another permanently-resident key that
+     * {@code volatile-lru} can never evict.
+     */
+    static final int MARKER_TTL_SECONDS = 60;
     public record ProbeResult(boolean available, double lagSeconds) {}
 
     private final RedisExecutor redis;
@@ -34,7 +43,8 @@ public final class RedisReplicaLagProbe implements AutoCloseable {
         long now = clock.millis();
         try {
             long writtenSequence = sequence.incrementAndGet();
-            redis.execute(commands -> commands.set(key, writtenSequence + ":" + now));
+            redis.execute(commands ->
+                    commands.set(key, writtenSequence + ":" + now, SetArgs.Builder.ex(MARKER_TTL_SECONDS)));
             String observed = redis.executeReplicaRead(commands -> commands.get(key)).orElse(null);
             if (observed == null) return unavailable();
             int separator = observed.indexOf(':');
