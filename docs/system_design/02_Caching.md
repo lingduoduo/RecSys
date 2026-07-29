@@ -228,6 +228,33 @@ script only sees the group it is pointed at; `redis_cache_evicts_only_volatile_k
 reports what the serving path is actually talking to, which is what catches a manual
 `CONFIG SET`, an unmanaged instance, or a region nobody ran the script against.
 
+### Running the claim instead of asserting it
+
+ElastiCache is out-of-band, so the argument above would otherwise never execute.
+[`scripts/simulate-elasticache-eviction.sh`](../../scripts/simulate-elasticache-eviction.sh)
+starts a throwaway local `redis-server` (no Docker, no AWS) and applies real memory pressure
+under each policy — see [the runbook](../runbooks/elasticache-local.md) for the full output.
+At `maxmemory=8mb` with 51 authoritative keys and ~3000 filler writes:
+
+| Scenario | Authoritative kept | Note |
+|---|---|---|
+| `volatile-lru`, TTL'd pressure | **51/51** | 1579 keys evicted, 0 writes refused |
+| `allkeys-lru`, TTL'd pressure | **19/51** | `shard:topology` evicted in **4 of 5** trials |
+| `volatile-lru`, un-TTL'd pressure | 51/51 | 1565 writes refused with OOM — sharp edge 6, made concrete |
+
+Two things this measured that the prose had wrong or missing:
+
+- **The old policy's damage is probabilistic, not certain.** Redis samples for approximate
+  LRU, so survival moves run to run (0–24 of 50 embeddings across trials). The fix removes a
+  coin flip rather than improving odds — worth stating precisely, because "it might be fine"
+  is exactly the reasoning that leaves it unfixed.
+- **`maxmemory` is enforced per dispatched command, not per `redis.call` inside a script.**
+  A single Lua script runs to completion and overshoots the limit — measured at 15.8 MB
+  against 8 MB, near 2×. No eviction policy changes this, and it is not hypothetical here:
+  the Flink sinks write through Lua (`SET_IF_NEWER_WITH_LINEAGE_SCRIPT`, `ATOMIC_TOPK_SCRIPT`),
+  so the batch size in one invocation bounds how far past `maxmemory` Redis can go. Sizing
+  `maxmemory` with no headroom for that is a mistake the metrics would only catch afterwards.
+
 **TTL jitter — the cache-avalanche defense.** Redis-side TTLs are never used raw:
 [`RedisEmbeddingStore.jitteredTtlMillis`](../../src/main/java/com/recsys/infrastructure/redis/RedisEmbeddingStore.java)
 adds uniform **positive** jitter in `[0, jitterFraction]` of the base TTL (default

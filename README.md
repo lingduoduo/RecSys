@@ -511,6 +511,7 @@ Operational runbooks — **all of them**, same index rule as above:
 - [CDN rollback](docs/runbooks/cdn-rollback.md) — the rollout order reversed; skipping ahead strands traffic.
 - [CDN local stand-in](docs/runbooks/cdn-local.md) — nginx mirror of the cache behaviors, no AWS account needed.
 - [WAF WebACL](docs/runbooks/waf-webacl.md) — the out-of-band WAFv2 ACL Kustomize cannot create.
+- [Local ElastiCache stand-in](docs/runbooks/elasticache-local.md) — run the eviction invariant EKS depends on, no AWS account needed.
 
 *Traffic and load*
 - [Overload protection](docs/runbooks/overload-protection.md) — overload symptoms, controls, validation, recovery.
