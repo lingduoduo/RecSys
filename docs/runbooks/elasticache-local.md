@@ -42,10 +42,11 @@ embeddings) and ~3000 filler writes of 4 KB each:
    `redis_cache_used_memory_bytes` against `redis_cache_max_memory_bytes`.
 4. **A caveat no policy fixes.** `maxmemory` is enforced when a *command is dispatched*, not
    per `redis.call` inside a script, so a single script runs to completion and overshoots —
-   here to 15.8 MB against an 8 MB limit, near 2×. This is not hypothetical for this system:
-   the Flink sinks write through Lua (`SET_IF_NEWER_WITH_LINEAGE_SCRIPT`, `ATOMIC_TOPK_SCRIPT`
-   in `OnlineFeatureStreamingJob`), so the batch size in one script invocation bounds how far
-   past `maxmemory` Redis can go.
+   here to 15.8 MB against an 8 MB limit, near 2×. The mechanism is real, but the magnitude
+   here is not: the sinks write 5 keys (`SET_IF_NEWER_WITH_LINEAGE_SCRIPT`) or `top-k`
+   members, default 10 (`ATOMIC_TOPK_SCRIPT`), per invocation. The 15.8 MB above comes from
+   writing 3000 keys in a single `EVAL`, which is a synthetic worst case, not sink behavior.
+   Worth knowing before adding a batching writer.
 
 ## Rehearsing the parameter-group script
 

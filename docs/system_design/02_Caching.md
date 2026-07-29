@@ -251,9 +251,13 @@ Two things this measured that the prose had wrong or missing:
 - **`maxmemory` is enforced per dispatched command, not per `redis.call` inside a script.**
   A single Lua script runs to completion and overshoots the limit — measured at 15.8 MB
   against 8 MB, near 2×. No eviction policy changes this, and it is not hypothetical here:
-  the Flink sinks write through Lua (`SET_IF_NEWER_WITH_LINEAGE_SCRIPT`, `ATOMIC_TOPK_SCRIPT`),
-  so the batch size in one invocation bounds how far past `maxmemory` Redis can go. Sizing
-  `maxmemory` with no headroom for that is a mistake the metrics would only catch afterwards.
+  the Flink sinks write through Lua (`SET_IF_NEWER_WITH_LINEAGE_SCRIPT`, `ATOMIC_TOPK_SCRIPT`).
+  In this system the per-invocation writes are small, so the practical overshoot is
+  kilobytes, not the 2× the simulation shows: `SET_IF_NEWER_WITH_LINEAGE_SCRIPT` touches 5
+  keys and `ATOMIC_TOPK_SCRIPT` writes `top-k` members (default **10**) into 2 ZSets. The
+  simulation reaches 15.8 MB only because it writes 3000 keys in one `EVAL`, which no sink
+  does. The mechanism is worth knowing before someone adds a batching writer; it does not
+  justify resizing `maxmemory` today.
 
 **TTL jitter — the cache-avalanche defense.** Redis-side TTLs are never used raw:
 [`RedisEmbeddingStore.jitteredTtlMillis`](../../src/main/java/com/recsys/infrastructure/redis/RedisEmbeddingStore.java)
@@ -338,11 +342,13 @@ server and publishes via
 | `redis_cache_keyspace_hits` / `_misses` | Redis-side hit rate, independent of the JVM tiers |
 | `redis_cache_evicts_only_volatile_keys` | is the **running** policy still `volatile-*`? |
 | `redis_cache_available` | was the last sample even taken? |
+| `redis_unexpected_persistent_keys` | is someone writing keys that can never be evicted? |
 
-The last two matter most. The policy gauge catches drift the manifest test cannot see — a
-manual `CONFIG SET`, an unmanaged instance, a hand-rolled compose file. And because the
-cumulative counters are **retained** across an unavailable sample (only `_available` drops
-to 0), a Redis gap can't masquerade as a counter reset and corrupt `rate()`.
+The policy gauge and the availability flag matter most. The policy gauge catches drift the
+manifest test cannot see — a manual `CONFIG SET`, an unmanaged instance, a hand-rolled
+compose file. And because the cumulative counters are **retained** across an unavailable
+sample (only `_available` drops to 0), a Redis gap can't masquerade as a counter reset and
+corrupt `rate()`.
 
 ## Sharp edges — notes
 
@@ -369,8 +375,14 @@ to 0), a Redis gap can't masquerade as a counter reset and corrupt `rate()`.
    something to watch (`redis_cache_used_memory_bytes` vs `_max_memory_bytes`) rather than
    something the policy silently absorbs. The durable set is small and bounded — the
    catalog's embeddings plus one topology document.
-7. **The eviction boundary is a convention, enforced one layer away.** `volatile-lru` is
-   only correct while *every* cache-like writer sets a TTL. A new writer that forgets one
-   makes its key permanently resident, and nothing at write time says so — the manifest
-   test pins the policy and `redis_cache_evicts_only_volatile_keys` catches a drifted
-   cluster, but neither can see a key that simply should have had a TTL and didn't.
+7. **The eviction boundary is a writer convention, now sampled rather than assumed.**
+   `volatile-lru` is only correct while *every* cache-like writer sets a TTL. Nothing at
+   write time enforces that, so
+   [`RedisPersistentKeyProbe`](../../src/main/java/com/recsys/infrastructure/redis/RedisPersistentKeyProbe.java)
+   walks one bounded `SCAN` page per tick and publishes `redis_unexpected_persistent_keys`
+   for keys with no TTL outside the declared durable prefixes (`shard:topology`, `i2vEmb:`,
+   `u2vEmb:`, `sr:seq:`, `bias:item:`). It watches the keyspace rather than the code because
+   the Flink sinks — the highest-volume writer — are excluded from the Maven compile and
+   write through Lua. Two residual gaps: detection is **probabilistic**, so a rarely-written
+   key may take many ticks to surface; and the allow-list is itself a declaration that can
+   go stale if a new durable namespace is added without updating it.
