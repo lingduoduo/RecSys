@@ -32,7 +32,7 @@ The caches:
 | `TtlSingleFlightCache<V>` | any snapshot | fresh 1 s / stale 60 s + single-flight | per-key |
 | `RecommendationCache` | rec results + cold-start pools | 300 s / 3600 s, keyed by variant+version | bounded map |
 | `LlmResponseCache` | LLM responses | 300 s TTL | 500 entries |
-| Redis (the L2 everything shares) | embeddings, top-K, features | per-key TTL **+ jitter**; LRU eviction at `maxmemory` (§8) | `maxmemory 200mb` |
+| Redis (the L2 everything shares) | embeddings, top-K, features | per-key TTL **+ jitter**; `volatile-lru` at `maxmemory`, so only TTL'd keys evict (§8) | `maxmemory 200mb` |
 | CloudFront edge | catalog reads | 1 h / 5 min (see [12_CDNS](12_CDNS.md)) | edge |
 
 ## 1. Embedding caches — the hot path
@@ -171,18 +171,27 @@ The one meaningful axis of difference is **write-through vs TTL-only**:
 
 ## 8. Redis itself as a cache tier
 
-Everything above treats Redis as "the backing store", but Redis is **configured as a
-cache, not a store**: both the primary and the replica StatefulSets
+Everything above treats Redis as "the backing store", but Redis is really **half cache,
+half state**: both the primary and the replica StatefulSets
 ([k8s/base/redis-cluster.yaml](../../k8s/base/redis-cluster.yaml), mirrored in
 `docker-compose.streaming.yml`) run with
 
 ```
---maxmemory 200mb --maxmemory-policy allkeys-lru
+--maxmemory 200mb --maxmemory-policy volatile-lru
 ```
 
-RDB snapshots (`--save`) are on, so the data survives a restart — but under memory
-pressure **any** key is evictable, including keys written with no TTL. LRU protects what
-the hot path reads; the exposure is cold data (see sharp edge 6).
+RDB snapshots (`--save`) are on, so data survives a restart, and **`volatile-lru` confines
+eviction to keys that carry a TTL**. That split is the whole design: everything cache-like
+sets an explicit TTL, so the keys *without* one are exactly the authoritative ones and are
+structurally protected from eviction.
+
+The policy is not a tuning knob — it is a correctness invariant, pinned by
+`RedisEvictionPolicyManifestTest` and reported at runtime as
+`redis_cache_evicts_only_volatile_keys` (§8, "observability"). Under the previous
+`allkeys-lru`, an evicted `shard:topology` would be silently recreated at **version 1** by
+`ShardTopologyStore.bootstrap`, resetting a resharded cluster's generation and addressing
+data under the wrong key prefix. The trade is deliberate: when memory fills with
+non-evictable keys, writes fail loudly with an OOM error instead of quietly dropping state.
 
 **TTL jitter — the cache-avalanche defense.** Redis-side TTLs are never used raw:
 [`RedisEmbeddingStore.jitteredTtlMillis`](../../src/main/java/com/recsys/infrastructure/redis/RedisEmbeddingStore.java)
@@ -225,25 +234,53 @@ half-flushed batch can never replay into an unrelated request.
 
 **What actually carries a TTL in Redis:**
 
-| Key | Redis TTL | Written by |
-|---|---|---|
-| `i2vEmb:*` / `u2vEmb:*` | **none** as seeded (`writeMissing(…, 0)`); jittered TTL only when a caller passes one | `RecSysServer.seedEmbeddings`, Flink |
-| `topk:<window>` | **none** | the Flink streaming job (serving is read-only here) |
-| `shard:topology` | **none** (`SET … NX`) | `ShardTopologyStore` |
-| `sr:rec:*` / `sr:dev:*` | `EXPIRE ttlSeconds` when the writer passes one | `ShardedRecordStore` |
-| `svc:registry:*` | `SET … PX` renewed by heartbeat (`SERVICE_REGISTRY_TTL_MS`, 30 s) | `ServiceRegistrar` |
+| Key | Redis TTL | Evictable | Written by |
+|---|---|---|---|
+| `u2vEmb:*` (streaming) | `SETEX ttlSeconds` | yes | Flink `OnlineFeatureStreamingJob` |
+| `topk:<window>` | `EXPIRE ttlSeconds` (all 5 keys, in the Lua) | yes | the Flink TopK sink |
+| `sr:rec:*` / `sr:dev:*` | `EXPIRE ttlSeconds` when the writer passes one | if TTL'd | `ShardedRecordStore` |
+| `svc:registry:*` | `SET … PX` renewed by heartbeat (`SERVICE_REGISTRY_TTL_MS`, 30 s) | yes | `ServiceRegistrar` |
+| `i2vEmb:*` / `u2vEmb:*` (seeded) | **none** (`writeMissing(…, 0)`) | **no** | `RecSysServer.seedEmbeddings` |
+| `shard:topology` | **none** (`SET … NX`) | **no** | `ShardTopologyStore` |
 
-The pattern: **liveness data expires, cached data doesn't** — it is bounded by
-`maxmemory` + LRU instead.
+The pattern: **derived and liveness data expires; authoritative data has no TTL** — and
+`volatile-lru` turns that convention into the eviction boundary. Note the two `u2vEmb`
+rows: the same key namespace is durable when seeded from the classpath and ephemeral when
+written by the streaming job, which is why the TTL, not the prefix, is what decides.
 
-**Seeding repairs eviction per id.** Because seeded embeddings have no TTL but are still
-LRU-evictable, startup seeding cannot be all-or-nothing.
+**Streaming-written values are derived, not durable.** The Flink sink writes through a
+Lua script that `SETEX`s the value, its `:updated_at`, and its `:last_event` together, and
+the authoritative accumulation lives in Flink keyed state (itself TTL'd). Losing a
+`u2vEmb:<user>` to eviction or expiry is therefore equivalent to early expiry: the user's
+next event rewrites it from Flink state.
+
+**Seeding repairs eviction per id.** `volatile-lru` protects seeded embeddings today, but
+the repair path stays because eviction is not the only way to lose them (a flush, a
+restored-from-empty Redis, a policy revert).
 [`RedisEmbeddingStore.writeMissing`](../../src/main/java/com/recsys/infrastructure/redis/RedisEmbeddingStore.java)
 MGETs the classpath ids (batched, **on the primary** — a lagging replica would report a
 live key as absent) and pipelines back **only the absent subset**, so a healthy restart
-issues zero writes and a partially-evicted one is repaired. The earlier guard re-seeded
-only when the store scanned *completely empty*, which meant a partial eviction left Redis
-non-empty and the evicted ids missing until the whole keyspace was cleared.
+issues zero writes and a depleted one is repaired. The earlier guard re-seeded only when
+the store scanned *completely empty*, which meant a partial loss left Redis non-empty and
+the missing ids missing until the whole keyspace was cleared.
+
+**Observability.** [`RedisCacheStatsProbe`](../../src/main/java/com/recsys/infrastructure/redis/RedisCacheStatsProbe.java)
+samples `INFO` every `REDIS_CACHE_STATS_PROBE_SECONDS` (default **30 s**) on the online
+server and publishes via
+[`RedisCacheMetrics`](../../src/main/java/com/recsys/metrics/RedisCacheMetrics.java):
+
+| Metric | Answers |
+|---|---|
+| `redis_cache_evicted_keys` | is Redis evicting at all? |
+| `redis_cache_used_memory_bytes` / `_max_memory_bytes` | how close is it to `maxmemory`? |
+| `redis_cache_keyspace_hits` / `_misses` | Redis-side hit rate, independent of the JVM tiers |
+| `redis_cache_evicts_only_volatile_keys` | is the **running** policy still `volatile-*`? |
+| `redis_cache_available` | was the last sample even taken? |
+
+The last two matter most. The policy gauge catches drift the manifest test cannot see — a
+manual `CONFIG SET`, an unmanaged instance, a hand-rolled compose file. And because the
+cumulative counters are **retained** across an unavailable sample (only `_available` drops
+to 0), a Redis gap can't masquerade as a counter reset and corrupt `rate()`.
 
 ## Sharp edges — notes
 
@@ -263,15 +300,15 @@ non-empty and the evicted ids missing until the whole keyspace was cleared.
 5. **Null sentinels are a 30 s bet.** Absent-ID sentinels expire after 30 s, so a newly
    *added* embedding for a previously-missing ID isn't visible until the sentinel lapses
    (or a write-through happens).
-6. **Eviction repair only covers what's on the classpath.** Seeding is now per-id
-   (`writeMissing`, §8), so a partially-evicted Redis is repaired at the next restart — but
-   only for ids that exist in `movie_embeddings.txt` / `user_embeddings.txt`. A
-   Flink-written vector with no classpath copy has no source to repair from, and eviction
-   of one is permanent. Serving degrades rather than errors — `CandidateGenerator` returns
-   an empty candidate list for an absent user vector, so that channel simply contributes
-   nothing to the multi-channel blend — but the vector itself never comes back.
-7. **The cache metrics stop at the JVM boundary.** The per-tier counters (§1) and
-   `GET /health/cache` are in-process; nothing scrapes Redis `INFO` for `evicted_keys`,
-   `used_memory`, or `keyspace_misses`. Eviction pressure is therefore only visible
-   *indirectly*, as a rising L3/miss rate — which is the same signal a Redis outage
-   produces.
+6. **`volatile-lru` trades silent eviction for a loud OOM.** Keys without a TTL are no
+   longer eviction candidates, so once `maxmemory` is reached and the evictable set is
+   exhausted, Redis rejects **writes** with an OOM error rather than dropping state. That
+   is the intended failure mode for authoritative data, but it makes `maxmemory` headroom
+   something to watch (`redis_cache_used_memory_bytes` vs `_max_memory_bytes`) rather than
+   something the policy silently absorbs. The durable set is small and bounded — the
+   catalog's embeddings plus one topology document.
+7. **The eviction boundary is a convention, enforced one layer away.** `volatile-lru` is
+   only correct while *every* cache-like writer sets a TTL. A new writer that forgets one
+   makes its key permanently resident, and nothing at write time says so — the manifest
+   test pins the policy and `redis_cache_evicts_only_volatile_keys` catches a drifted
+   cluster, but neither can see a key that simply should have had a TTL and didn't.

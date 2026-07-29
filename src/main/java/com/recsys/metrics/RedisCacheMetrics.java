@@ -1,0 +1,63 @@
+package com.recsys.metrics;
+
+import com.recsys.infrastructure.redis.RedisCacheStatsProbe.CacheStats;
+import io.micrometer.core.instrument.FunctionCounter;
+import io.micrometer.core.instrument.Gauge;
+import io.micrometer.core.instrument.MeterRegistry;
+
+import java.util.Objects;
+import java.util.concurrent.atomic.AtomicLong;
+
+/**
+ * Publishes Redis's own cache counters, so eviction pressure stops being indistinguishable
+ * from a Redis outage — both otherwise surface only as a rising application-side miss rate.
+ *
+ * <p>Cumulative counters are <em>retained</em> across an unavailable sample rather than
+ * reset: a counter that walks backwards reads as a Redis restart downstream and corrupts
+ * {@code rate()}. {@code redis_cache_available} is what goes to 0 during a gap.
+ */
+public final class RedisCacheMetrics {
+
+    private final AtomicLong available = new AtomicLong();
+    private final AtomicLong usedMemoryBytes = new AtomicLong();
+    private final AtomicLong maxMemoryBytes = new AtomicLong();
+    private final AtomicLong evictedKeys = new AtomicLong();
+    private final AtomicLong keyspaceHits = new AtomicLong();
+    private final AtomicLong keyspaceMisses = new AtomicLong();
+    private final AtomicLong evictsOnlyVolatileKeys = new AtomicLong();
+
+    public RedisCacheMetrics(MeterRegistry registry) {
+        Objects.requireNonNull(registry, "registry");
+        Gauge.builder("redis_cache_available", available, AtomicLong::get)
+                .description("1 when the last INFO sample succeeded, 0 while Redis is unreachable")
+                .register(registry);
+        Gauge.builder("redis_cache_used_memory_bytes", usedMemoryBytes, AtomicLong::get)
+                .baseUnit("bytes").register(registry);
+        Gauge.builder("redis_cache_max_memory_bytes", maxMemoryBytes, AtomicLong::get)
+                .baseUnit("bytes")
+                .description("Configured maxmemory; 0 means no limit")
+                .register(registry);
+        Gauge.builder("redis_cache_evicts_only_volatile_keys", evictsOnlyVolatileKeys, AtomicLong::get)
+                .description("1 when the running maxmemory-policy cannot evict keys that have no TTL")
+                .register(registry);
+        FunctionCounter.builder("redis_cache_evicted_keys", evictedKeys, AtomicLong::get)
+                .description("Keys evicted by Redis under memory pressure")
+                .register(registry);
+        FunctionCounter.builder("redis_cache_keyspace_hits", keyspaceHits, AtomicLong::get)
+                .register(registry);
+        FunctionCounter.builder("redis_cache_keyspace_misses", keyspaceMisses, AtomicLong::get)
+                .register(registry);
+    }
+
+    public void update(CacheStats stats) {
+        Objects.requireNonNull(stats, "stats");
+        available.set(stats.available() ? 1 : 0);
+        if (!stats.available()) return; // keep the last-known values; only availability drops
+        usedMemoryBytes.set(Math.max(0L, stats.usedMemoryBytes()));
+        maxMemoryBytes.set(Math.max(0L, stats.maxMemoryBytes()));
+        evictedKeys.set(Math.max(0L, stats.evictedKeys()));
+        keyspaceHits.set(Math.max(0L, stats.keyspaceHits()));
+        keyspaceMisses.set(Math.max(0L, stats.keyspaceMisses()));
+        evictsOnlyVolatileKeys.set(stats.evictsOnlyVolatileKeys() ? 1 : 0);
+    }
+}

@@ -36,12 +36,15 @@ services:
     container_name: redis-primary
     ports:
       - "6379:6379"
+    # volatile-lru, not allkeys-lru: cache-like keys all carry an explicit TTL, so the
+    # no-TTL keys are the authoritative ones (shard:topology, seeded embeddings) and must
+    # never be eviction candidates. Mirrors k8s/base/redis-cluster.yaml.
     command: >
       redis-server
       --save 900 1
       --save 300 10
       --maxmemory 200mb
-      --maxmemory-policy allkeys-lru
+      --maxmemory-policy volatile-lru
     volumes:
       - redis-primary-data:/data
     healthcheck:
@@ -53,11 +56,12 @@ services:
   redis-replica:
     image: redis:7-alpine
     container_name: redis-replica
+    # See the primary above: eviction is confined to TTL-bearing keys.
     command: >
       redis-server
       --replicaof redis-primary 6379
       --maxmemory 200mb
-      --maxmemory-policy allkeys-lru
+      --maxmemory-policy volatile-lru
     depends_on:
       redis-primary:
         condition: service_healthy

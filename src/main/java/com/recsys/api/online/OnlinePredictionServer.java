@@ -10,6 +10,8 @@ import com.recsys.application.consistency.RedisLineageReader;
 import com.recsys.application.outbox.DurableEventPublisher;
 import com.recsys.metrics.OnlineServingMetricsService;
 import com.recsys.metrics.ConsistencyMetrics;
+import com.recsys.metrics.RedisCacheMetrics;
+import com.recsys.infrastructure.redis.RedisCacheStatsProbe;
 import com.recsys.infrastructure.redis.RedisReplicaLagProbe;
 import com.recsys.infrastructure.redis.RedisFeatureVersionSampler;
 
@@ -89,6 +91,7 @@ public final class OnlinePredictionServer {
         ExecutorService recallExecutor = null;
         ShardTopologyProvider topologyProvider = null;
         RedisReplicaLagProbe replicaLagProbe = null;
+        RedisCacheStatsProbe cacheStatsProbe = null;
         RedisFeatureVersionSampler featureVersionSampler = null;
         MySqlOutboxRepository outboxRepository = null;
 
@@ -162,6 +165,12 @@ public final class OnlinePredictionServer {
             replicaLagProbe.start(Duration.ofSeconds(readIntEnv("REDIS_REPLICA_LAG_PROBE_SECONDS", 10)),
                     result -> consistencyMetrics.updateReplicaLag(
                             new ConsistencyMetrics.ReplicaLag(result.available(), result.lagSeconds())));
+            // Redis's own eviction/memory counters: without them, a cache silently evicting
+            // and a Redis briefly unreachable look identical from the application side.
+            RedisCacheMetrics cacheMetrics = new RedisCacheMetrics(registry);
+            cacheStatsProbe = new RedisCacheStatsProbe(jedisPool);
+            cacheStatsProbe.start(Duration.ofSeconds(readIntEnv("REDIS_CACHE_STATS_PROBE_SECONDS", 30)),
+                    cacheMetrics::update);
             featureVersionSampler = new RedisFeatureVersionSampler(jedisPool, consistencyMetrics,
                     Clock.systemUTC(), readIntEnv("REDIS_FEATURE_VERSION_SAMPLE_LIMIT", 1000));
             featureVersionSampler.start(Duration.ofSeconds(readIntEnv("REDIS_FEATURE_VERSION_SAMPLE_SECONDS", 30)));
@@ -248,12 +257,14 @@ public final class OnlinePredictionServer {
             com.recsys.infrastructure.registry.ServiceRegistrar activeRegistrar = registrar;
             ExecutorService activeRecallExecutor = recallExecutor;
             RedisReplicaLagProbe activeReplicaLagProbe = replicaLagProbe;
+            RedisCacheStatsProbe activeCacheStatsProbe = cacheStatsProbe;
             RedisFeatureVersionSampler activeFeatureVersionSampler = featureVersionSampler;
             Runtime.getRuntime().addShutdownHook(new Thread(() -> {
                 loadShedder.markShuttingDown();   // flip readiness to 503 + shed new load before draining
                 server.stop().join();
                 activeAsyncEventPublisher.close();
                 activeReplicaLagProbe.close();
+                activeCacheStatsProbe.close();
                 activeFeatureVersionSampler.close();
                 if (activeTransactionalMySql != null) activeTransactionalMySql.close();
                 activeLearnerFlushScheduler.close();
@@ -274,6 +285,7 @@ public final class OnlinePredictionServer {
             if (recallExecutor != null) GracefulExecutors.shutdownGracefully(recallExecutor);
             if (topologyProvider != null) topologyProvider.stop();
             if (replicaLagProbe != null) replicaLagProbe.close();
+            if (cacheStatsProbe != null) cacheStatsProbe.close();
             if (featureVersionSampler != null) featureVersionSampler.close();
             if (registrar != null) registrar.close();
             if (jedisPool != null) jedisPool.close();

@@ -72,8 +72,13 @@ spec:
             - "60 10000"
             - "--maxmemory"
             - "200mb"
+            # volatile-lru, not allkeys: everything cache-like carries an explicit TTL, so
+            # the no-TTL keys are the authoritative ones (shard:topology, seeded
+            # embeddings). Evicting those silently resets a resharded cluster to
+            # generation 1. Memory pressure must degrade the cache and then fail loudly,
+            # not corrupt state.
             - "--maxmemory-policy"
-            - "allkeys-lru"
+            - "volatile-lru"
             - "--dir"
             - "/data"
           ports:
@@ -179,8 +184,13 @@ spec:
             - "6379"
             - "--maxmemory"
             - "200mb"
+            # volatile-lru, not allkeys: everything cache-like carries an explicit TTL, so
+            # the no-TTL keys are the authoritative ones (shard:topology, seeded
+            # embeddings). Evicting those silently resets a resharded cluster to
+            # generation 1. Memory pressure must degrade the cache and then fail loudly,
+            # not corrupt state.
             - "--maxmemory-policy"
-            - "allkeys-lru"
+            - "volatile-lru"
           ports:
             - containerPort: 6379
           readinessProbe:
