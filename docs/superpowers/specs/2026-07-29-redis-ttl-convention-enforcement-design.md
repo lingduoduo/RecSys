@@ -36,7 +36,15 @@ An audit of the other eleven Redis writers found no further violations. Auth tok
 (`sr:seq:<shard>`) and `OnlineLearner` write without a TTL and are *legitimately* durable
 and bounded.
 
-So: one real bug, and no way to notice the next one.
+That audit was itself incomplete: the final review found that `ShardedRecordStore` also
+writes without a TTL for records (`sr:rec:<shard>:<seq>`), device indexes
+(`sr:dev:<shard>:<id>`), and streams (`sr:stream:<shard>`) — `doWrite` only issues `EXPIRE`
+when `ttlSeconds > 0`, and normal writes pass 0. These are durable-by-design, not
+violations, but they belong on the allow-list, which now covers the bare `sr:` namespace
+instead of just `sr:seq:` so generation-prefixed keys (`sr:g2:seq:…`, written after a
+reshard) stay covered too.
+
+So: one real bug, one allow-list gap caught late, and no way to notice the next one.
 
 ## Why a runtime sampler and not a static test
 
@@ -73,7 +81,7 @@ has one job — one parses `INFO`, the other walks the keyspace.
   time, fixed cost per tick — never a full keyspace walk in one call.
 - **TTL classification.** For the page's keys, keys reporting `TTL == -1` (no expiry) are
   matched against `DURABLE_PREFIXES`; anything unmatched is *unexpected*.
-- **The allow-list is the declaration.** `shard:topology`, `i2vEmb:`, `u2vEmb:`, `sr:seq:`,
+- **The allow-list is the declaration.** `shard:topology`, `i2vEmb:`, `u2vEmb:`, `sr:`,
   and `bias:item:` (the online learner's flush prefix, wired in `OnlinePredictionServer`
   via `new LearnerFlushScheduler(onlineLearner, jedisPool, "bias:item", 30L)`). Note
   `u2vEmb:` is deliberately durable-listed even though the Flink job also writes TTL'd

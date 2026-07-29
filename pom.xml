@@ -349,6 +349,7 @@
                 <include>**/redis/RedisEvictionPolicyManifestTest.java</include>
                 <include>**/redis/RedisCacheStatsProbeTest.java</include>
                 <include>**/redis/RedisPersistentKeyProbeTest.java</include>
+                <include>**/redis/RedisReplicaLagProbeTest.java</include>
                 <include>**/metrics/RedisCacheMetricsTest.java</include>
                 <include>**/serving/EmbeddingSeedRepairTest.java</include>
                 <!-- Not resilience tests. This profile is what the PR gate runs

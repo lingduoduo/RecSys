@@ -28,6 +28,7 @@ public final class RedisCacheMetrics {
     private final AtomicLong evictsOnlyVolatileKeys = new AtomicLong();
     private final AtomicLong keyspaceSampled = new AtomicLong();
     private final AtomicLong unexpectedPersistentKeys = new AtomicLong();
+    private final AtomicLong keyspaceSampleAvailable = new AtomicLong();
 
     public RedisCacheMetrics(MeterRegistry registry) {
         Objects.requireNonNull(registry, "registry");
@@ -57,6 +58,11 @@ public final class RedisCacheMetrics {
                 .description("Sampled keys with no TTL that are not on the durable allow-list; "
                         + "under volatile-lru these can never be evicted")
                 .register(registry);
+        Gauge.builder("redis_keyspace_sample_available", keyspaceSampleAvailable, AtomicLong::get)
+                .description("1 when the last keyspace sample succeeded, 0 otherwise; a probe that "
+                        + "never succeeds would otherwise leave redis_unexpected_persistent_keys at "
+                        + "its initial 0, indistinguishable from all-clear")
+                .register(registry);
     }
 
     public void update(CacheStats stats) {
@@ -77,7 +83,8 @@ public final class RedisCacheMetrics {
      */
     public void updateKeyspace(KeyspaceSample sample) {
         Objects.requireNonNull(sample, "sample");
-        if (!sample.available()) return;
+        keyspaceSampleAvailable.set(sample.available() ? 1 : 0);
+        if (!sample.available()) return; // keep the last-known counts; only availability drops
         keyspaceSampled.set(Math.max(0, sample.scanned()));
         unexpectedPersistentKeys.set(Math.max(0, sample.unexpected()));
     }

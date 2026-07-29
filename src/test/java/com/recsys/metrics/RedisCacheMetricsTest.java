@@ -66,6 +66,7 @@ class RedisCacheMetricsTest {
 
         assertThat(registry.get("redis_keyspace_sampled_keys").gauge().value()).isEqualTo(200d);
         assertThat(registry.get("redis_unexpected_persistent_keys").gauge().value()).isEqualTo(2d);
+        assertThat(registry.get("redis_keyspace_sample_available").gauge().value()).isEqualTo(1d);
     }
 
     @Test
@@ -79,5 +80,26 @@ class RedisCacheMetricsTest {
         assertThat(registry.get("redis_unexpected_persistent_keys").gauge().value())
                 .as("a failed scan must not look like the leak was fixed")
                 .isEqualTo(2d);
+        assertThat(registry.get("redis_keyspace_sampled_keys").gauge().value())
+                .as("the sampled-count denominator is also retained")
+                .isEqualTo(200d);
+        assertThat(registry.get("redis_keyspace_sample_available").gauge().value())
+                .as("a probe that has never succeeded must not read as all-clear")
+                .isEqualTo(0d);
+    }
+
+    @Test
+    void keyspaceSampleAvailabilityStartsAtZeroBeforeAnySampleSucceeds() {
+        SimpleMeterRegistry registry = new SimpleMeterRegistry();
+        RedisCacheMetrics metrics = new RedisCacheMetrics(registry);
+
+        assertThat(registry.get("redis_keyspace_sample_available").gauge().value())
+                .as("a probe that has NEVER succeeded must not be indistinguishable from all-clear")
+                .isEqualTo(0d);
+
+        metrics.updateKeyspace(KeyspaceSample.unavailable());
+
+        assertThat(registry.get("redis_keyspace_sample_available").gauge().value()).isEqualTo(0d);
+        assertThat(registry.get("redis_unexpected_persistent_keys").gauge().value()).isEqualTo(0d);
     }
 }

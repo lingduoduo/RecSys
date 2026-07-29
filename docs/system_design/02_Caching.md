@@ -250,9 +250,11 @@ Two things this measured that the prose had wrong or missing:
   is exactly the reasoning that leaves it unfixed.
 - **`maxmemory` is enforced per dispatched command, not per `redis.call` inside a script.**
   A single Lua script runs to completion and overshoots the limit — measured at 15.8 MB
-  against 8 MB, near 2×. No eviction policy changes this, and it is not hypothetical here:
-  the Flink sinks write through Lua (`SET_IF_NEWER_WITH_LINEAGE_SCRIPT`, `ATOMIC_TOPK_SCRIPT`).
-  In this system the per-invocation writes are small, so the practical overshoot is
+  against 8 MB, near 2×. No eviction policy changes this, and the mechanism is real: the
+  Flink sinks write through Lua (`SET_IF_NEWER_WITH_LINEAGE_SCRIPT`, `ATOMIC_TOPK_SCRIPT`).
+  But the 2× magnitude is not — those sinks write far fewer keys per invocation than the
+  simulation's synthetic script does. In this system the per-invocation writes are small,
+  so the practical overshoot is
   kilobytes, not the 2× the simulation shows: `SET_IF_NEWER_WITH_LINEAGE_SCRIPT` touches 5
   keys and `ATOMIC_TOPK_SCRIPT` writes `top-k` members (default **10**) into 2 ZSets. The
   simulation reaches 15.8 MB only because it writes 3000 keys in one `EVAL`, which no sink
@@ -381,7 +383,7 @@ corrupt `rate()`.
    [`RedisPersistentKeyProbe`](../../src/main/java/com/recsys/infrastructure/redis/RedisPersistentKeyProbe.java)
    walks one bounded `SCAN` page per tick and publishes `redis_unexpected_persistent_keys`
    for keys with no TTL outside the declared durable prefixes (`shard:topology`, `i2vEmb:`,
-   `u2vEmb:`, `sr:seq:`, `bias:item:`). It watches the keyspace rather than the code because
+   `u2vEmb:`, `sr:`, `bias:item:`). It watches the keyspace rather than the code because
    the Flink sinks — the highest-volume writer — are excluded from the Maven compile and
    write through Lua. Two residual gaps: detection is **probabilistic**, so a rarely-written
    key may take many ticks to surface; and the allow-list is itself a declaration that can

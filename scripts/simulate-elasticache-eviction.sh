@@ -19,8 +19,13 @@
 #   4. the same writes issued inside ONE Lua script — Redis evaluates the OOM state once, at
 #                                       script dispatch, and does not re-check per redis.call,
 #                                       so a script overshoots maxmemory instead of being
-#                                       refused. This is not hypothetical here: the Flink
-#                                       sinks in OnlineFeatureStreamingJob write through Lua.
+#                                       refused. The mechanism is real: the Flink sinks in
+#                                       OnlineFeatureStreamingJob write through Lua. But the
+#                                       15.8 MB figure below comes from this script's synthetic
+#                                       3000-key EVAL, which no sink issues — those scripts touch
+#                                       5 keys or top-k members (default 10) per invocation, so
+#                                       the practical overshoot is kilobytes, not a reason to
+#                                       resize maxmemory.
 #
 # Pressure is applied as ordinary client commands (redis-cli reading a command file), because
 # that is what the serving path does and what maxmemory is enforced against — see scenario 4
@@ -187,7 +192,10 @@ Reading this:
   4 is a caveat neither policy fixes. maxmemory is enforced when a command is dispatched, not
     per redis.call inside a script, so one script ran to completion and left Redis at ${MEM4}MB
     against a ${LIMIT_MB}MB limit. The Flink sinks write through Lua (SET_IF_NEWER_WITH_LINEAGE,
-    ATOMIC_TOPK), so batch size there bounds the overshoot.
+    ATOMIC_TOPK), but those scripts touch 5 keys or top-k members (default 10) per invocation,
+    not the 3000 keys this script writes in one EVAL — so the ${MEM4}MB figure is this script's
+    synthetic worst case, not a magnitude those sinks reach; it does not justify resizing
+    maxmemory.
 SUMMARY
 
 if [ "$FAILURES" -ne 0 ]; then

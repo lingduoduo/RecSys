@@ -42,9 +42,19 @@ public final class RedisPersistentKeyProbe implements AutoCloseable {
     private static final int DEFAULT_PAGE_SIZE = 200;
     private static final int MAX_EXAMPLES = 3;
 
-    /** The namespaces whose keys are authoritative and therefore legitimately TTL-less. */
+    /**
+     * The namespaces whose keys are authoritative and therefore legitimately TTL-less.
+     *
+     * <p>{@code sr:} is deliberately the bare sharded-record namespace, not a narrower prefix
+     * like {@code sr:seq:}: it covers records ({@code sr:rec:<shard>:<seq>}), device indexes
+     * ({@code sr:dev:<shard>:<id>}), streams ({@code sr:stream:<shard>}), and sequence counters
+     * ({@code sr:seq:<shard>}), none of which are ever expired by {@code ShardedRecordStore} or
+     * {@code SequenceGenerator}. Staying at the bare namespace also keeps generation-prefixed
+     * keys covered after a reshard, since {@code Generations.keyPrefix(v)} rewrites these to
+     * {@code sr:g2:seq:…}, {@code sr:g2:rec:…}, etc. — a narrower prefix would stop matching.
+     */
     public static final List<String> DEFAULT_DURABLE_PREFIXES =
-            List.of("shard:topology", "i2vEmb:", "u2vEmb:", "sr:seq:", "bias:item:");
+            List.of("shard:topology", "i2vEmb:", "u2vEmb:", "sr:", "bias:item:");
 
     /**
      * @param examples a bounded sample of offending key names — logged, never used as a metric
@@ -103,6 +113,7 @@ public final class RedisPersistentKeyProbe implements AutoCloseable {
             }
             return new KeyspaceSample(true, keys.size(), offenders.size(), examples);
         } catch (RuntimeException failure) {
+            log.warn("Keyspace sample failed: {}", failure.toString());
             return KeyspaceSample.unavailable();
         }
     }
