@@ -1,6 +1,7 @@
 package com.recsys.metrics;
 
 import com.recsys.infrastructure.redis.RedisCacheStatsProbe.CacheStats;
+import com.recsys.infrastructure.redis.RedisPersistentKeyProbe.KeyspaceSample;
 import io.micrometer.core.instrument.FunctionCounter;
 import io.micrometer.core.instrument.Gauge;
 import io.micrometer.core.instrument.MeterRegistry;
@@ -25,6 +26,8 @@ public final class RedisCacheMetrics {
     private final AtomicLong keyspaceHits = new AtomicLong();
     private final AtomicLong keyspaceMisses = new AtomicLong();
     private final AtomicLong evictsOnlyVolatileKeys = new AtomicLong();
+    private final AtomicLong keyspaceSampled = new AtomicLong();
+    private final AtomicLong unexpectedPersistentKeys = new AtomicLong();
 
     public RedisCacheMetrics(MeterRegistry registry) {
         Objects.requireNonNull(registry, "registry");
@@ -47,6 +50,13 @@ public final class RedisCacheMetrics {
                 .register(registry);
         FunctionCounter.builder("redis_cache_keyspace_misses", keyspaceMisses, AtomicLong::get)
                 .register(registry);
+        Gauge.builder("redis_keyspace_sampled_keys", keyspaceSampled, AtomicLong::get)
+                .description("Keys examined by the most recent bounded keyspace sample")
+                .register(registry);
+        Gauge.builder("redis_unexpected_persistent_keys", unexpectedPersistentKeys, AtomicLong::get)
+                .description("Sampled keys with no TTL that are not on the durable allow-list; "
+                        + "under volatile-lru these can never be evicted")
+                .register(registry);
     }
 
     public void update(CacheStats stats) {
@@ -59,5 +69,16 @@ public final class RedisCacheMetrics {
         keyspaceHits.set(Math.max(0L, stats.keyspaceHits()));
         keyspaceMisses.set(Math.max(0L, stats.keyspaceMisses()));
         evictsOnlyVolatileKeys.set(stats.evictsOnlyVolatileKeys() ? 1 : 0);
+    }
+
+    /**
+     * An unavailable sample keeps the last-known counts. Reporting 0 for a scan that never ran
+     * would be indistinguishable from the leak having been fixed.
+     */
+    public void updateKeyspace(KeyspaceSample sample) {
+        Objects.requireNonNull(sample, "sample");
+        if (!sample.available()) return;
+        keyspaceSampled.set(Math.max(0, sample.scanned()));
+        unexpectedPersistentKeys.set(Math.max(0, sample.unexpected()));
     }
 }

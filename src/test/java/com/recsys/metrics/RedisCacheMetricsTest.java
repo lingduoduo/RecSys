@@ -1,6 +1,7 @@
 package com.recsys.metrics;
 
 import com.recsys.infrastructure.redis.RedisCacheStatsProbe.CacheStats;
+import com.recsys.infrastructure.redis.RedisPersistentKeyProbe.KeyspaceSample;
 import io.micrometer.core.instrument.simple.SimpleMeterRegistry;
 import org.junit.jupiter.api.Test;
 
@@ -54,5 +55,29 @@ class RedisCacheMetricsTest {
                 .as("a counter that resets to 0 reads as a Redis restart and corrupts rate()")
                 .isEqualTo(42d);
         assertThat(registry.get("redis_cache_keyspace_hits").functionCounter().count()).isEqualTo(900d);
+    }
+
+    @Test
+    void publishesTheKeyspaceSample() {
+        SimpleMeterRegistry registry = new SimpleMeterRegistry();
+        RedisCacheMetrics metrics = new RedisCacheMetrics(registry);
+
+        metrics.updateKeyspace(new KeyspaceSample(true, 200, 2, java.util.List.of("leak:1", "leak:2")));
+
+        assertThat(registry.get("redis_keyspace_sampled_keys").gauge().value()).isEqualTo(200d);
+        assertThat(registry.get("redis_unexpected_persistent_keys").gauge().value()).isEqualTo(2d);
+    }
+
+    @Test
+    void anUnavailableKeyspaceSampleDoesNotReportAFalseAllClear() {
+        SimpleMeterRegistry registry = new SimpleMeterRegistry();
+        RedisCacheMetrics metrics = new RedisCacheMetrics(registry);
+        metrics.updateKeyspace(new KeyspaceSample(true, 200, 2, java.util.List.of("leak:1")));
+
+        metrics.updateKeyspace(KeyspaceSample.unavailable());
+
+        assertThat(registry.get("redis_unexpected_persistent_keys").gauge().value())
+                .as("a failed scan must not look like the leak was fixed")
+                .isEqualTo(2d);
     }
 }
