@@ -32,6 +32,7 @@ The caches:
 | `TtlSingleFlightCache<V>` | any snapshot | fresh 1 s / stale 60 s + single-flight | per-key |
 | `RecommendationCache` | rec results + cold-start pools | 300 s / 3600 s, keyed by variant+version | bounded map |
 | `LlmResponseCache` | LLM responses | 300 s TTL | 500 entries |
+| Redis (the L2 everything shares) | embeddings, top-K, features | per-key TTL **+ jitter**; LRU eviction at `maxmemory` (§8) | `maxmemory 200mb` |
 | CloudFront edge | catalog reads | 1 h / 5 min (see [12_CDNS](12_CDNS.md)) | edge |
 
 ## 1. Embedding caches — the hot path
@@ -168,6 +169,82 @@ The one meaningful axis of difference is **write-through vs TTL-only**:
 - **Result caches** — `RecommendationCacheTest` (version keying, hit rates),
   `LlmResponseCacheTest` (SHA-256 key, TTL, bound).
 
+## 8. Redis itself as a cache tier
+
+Everything above treats Redis as "the backing store", but Redis is **configured as a
+cache, not a store**: both the primary and the replica StatefulSets
+([k8s/base/redis-cluster.yaml](../../k8s/base/redis-cluster.yaml), mirrored in
+`docker-compose.streaming.yml`) run with
+
+```
+--maxmemory 200mb --maxmemory-policy allkeys-lru
+```
+
+RDB snapshots (`--save`) are on, so the data survives a restart — but under memory
+pressure **any** key is evictable, including keys written with no TTL. LRU protects what
+the hot path reads; the exposure is cold data (see sharp edge 6).
+
+**TTL jitter — the cache-avalanche defense.** Redis-side TTLs are never used raw:
+[`RedisEmbeddingStore.jitteredTtlMillis`](../../src/main/java/com/recsys/infrastructure/redis/RedisEmbeddingStore.java)
+adds uniform **positive** jitter in `[0, jitterFraction]` of the base TTL (default
+`jitterFraction = 0.1`, clamped to `[0, 0.5]`), and `setEmbeddings` draws a **fresh
+jitter per key inside the pipeline** — so a bulk write of N embeddings does not create a
+synchronized expiry cliff N keys wide. The jitter is one-sided on purpose: adding time
+never shortens the caller's intended freshness window, it only spreads the tail.
+
+**Reads leave the primary.** `getEmbedding`/`getEmbeddings` use `executeRead`, which
+[`RoutingRedisExecutor`](../../src/main/java/com/recsys/infrastructure/redis/RoutingRedisExecutor.java)
+routes to the AZ-local replica; only writes and pipelines go to the primary. So a cached
+read's staleness is *replication lag on top of* the JVM-tier TTL. `executePrimaryRead`
+is the read-your-writes escape hatch (used by `getTopKIdsPrimary` and the correlated lag
+probe) — see [04_Replication §1](04_Replication.md#1-redis-read-replicas--az-aware-read-routing).
+
+**Batching keeps the round-trip count flat.** Multi-key reads go out as `MGET` in
+batches of `REDIS_EMBEDDING_MGET_BATCH_SIZE` (default **500**), and `loadAll` SCANs
+pages of 500 and MGETs **each page immediately** rather than accumulating every key name
+and issuing one unbounded MGET (a Full-GC/OOM risk on a large store). `loadAll` also
+carries a wall-clock budget, `REDIS_LOADALL_TIMEOUT_MS` (default **30 s**), after which
+it logs and returns a *partial* result — a slow or oversized Redis degrades startup
+warm-up, it doesn't block it.
+
+**A down Redis fails fast, so the JVM tier can serve stale.**
+`LettuceClientFactory.failFastOptions()` sets `TimeoutOptions.enabled()` (the per-command
+deadline applies even to commands queued while disconnected) plus
+`DisconnectedBehavior.REJECT_COMMANDS` (commands error immediately instead of buffering).
+Without this, a dead Redis would stall callers past their budget instead of tripping the
+serve-stale paths in §1–§2; the recall path additionally caps the command timeout via
+`LettuceClientFactory.fromEnv(maxTimeoutMs)`.
+
+**Connections.** Each executor keeps one **lazily opened** shared multiplexed connection
+for sync commands plus a commons-pool2 pool (`REDIS_POOL_MAX_TOTAL` 50, maxIdle 10,
+minIdle 2, `REDIS_POOL_MAX_WAIT_MS` 250) for pipelines — pipelines need a dedicated
+connection because auto-flush is a per-connection setting. Lazy connect is what lets a
+service construct its stores at boot against a down Redis without failing startup; a
+pipeline whose lifecycle was interrupted is **destroyed rather than returned**, so a
+half-flushed batch can never replay into an unrelated request.
+
+**What actually carries a TTL in Redis:**
+
+| Key | Redis TTL | Written by |
+|---|---|---|
+| `i2vEmb:*` / `u2vEmb:*` | **none** as seeded (`writeMissing(…, 0)`); jittered TTL only when a caller passes one | `RecSysServer.seedEmbeddings`, Flink |
+| `topk:<window>` | **none** | the Flink streaming job (serving is read-only here) |
+| `shard:topology` | **none** (`SET … NX`) | `ShardTopologyStore` |
+| `sr:rec:*` / `sr:dev:*` | `EXPIRE ttlSeconds` when the writer passes one | `ShardedRecordStore` |
+| `svc:registry:*` | `SET … PX` renewed by heartbeat (`SERVICE_REGISTRY_TTL_MS`, 30 s) | `ServiceRegistrar` |
+
+The pattern: **liveness data expires, cached data doesn't** — it is bounded by
+`maxmemory` + LRU instead.
+
+**Seeding repairs eviction per id.** Because seeded embeddings have no TTL but are still
+LRU-evictable, startup seeding cannot be all-or-nothing.
+[`RedisEmbeddingStore.writeMissing`](../../src/main/java/com/recsys/infrastructure/redis/RedisEmbeddingStore.java)
+MGETs the classpath ids (batched, **on the primary** — a lagging replica would report a
+live key as absent) and pipelines back **only the absent subset**, so a healthy restart
+issues zero writes and a partially-evicted one is repaired. The earlier guard re-seeded
+only when the store scanned *completely empty*, which meant a partial eviction left Redis
+non-empty and the evicted ids missing until the whole keyspace was cleared.
+
 ## Sharp edges — notes
 
 1. **Most caches don't invalidate on writes.** Only the two write-through embedding
@@ -186,3 +263,15 @@ The one meaningful axis of difference is **write-through vs TTL-only**:
 5. **Null sentinels are a 30 s bet.** Absent-ID sentinels expire after 30 s, so a newly
    *added* embedding for a previously-missing ID isn't visible until the sentinel lapses
    (or a write-through happens).
+6. **Eviction repair only covers what's on the classpath.** Seeding is now per-id
+   (`writeMissing`, §8), so a partially-evicted Redis is repaired at the next restart — but
+   only for ids that exist in `movie_embeddings.txt` / `user_embeddings.txt`. A
+   Flink-written vector with no classpath copy has no source to repair from, and eviction
+   of one is permanent. Serving degrades rather than errors — `CandidateGenerator` returns
+   an empty candidate list for an absent user vector, so that channel simply contributes
+   nothing to the multi-channel blend — but the vector itself never comes back.
+7. **The cache metrics stop at the JVM boundary.** The per-tier counters (§1) and
+   `GET /health/cache` are in-process; nothing scrapes Redis `INFO` for `evicted_keys`,
+   `used_memory`, or `keyspace_misses`. Eviction pressure is therefore only visible
+   *indirectly*, as a rising L3/miss rate — which is the same signal a Redis outage
+   produces.

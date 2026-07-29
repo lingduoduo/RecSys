@@ -223,16 +223,21 @@ public class RecSysServer {
         }
     }
 
-    // Seeds Redis with sample embeddings only if not already present.
-    private static void seedEmbeddings(RedisEmbeddingStore embStore,
-                                       RedisEmbeddingStore userEmbStore) {
-        if (embStore.scanIds(1).isEmpty()) {
-            embStore.setEmbeddings(DataLoader.loadMovieEmbeddings(), 0);
-            log.info("Seeded movie embeddings from movie_embeddings.txt");
+    // Seeds Redis with whichever sample embeddings are absent.
+    //
+    // Deliberately per-id rather than the old "seed only when the store scans empty" guard:
+    // Redis runs as an LRU cache, so a previous seed can be *partially* evicted, and an
+    // all-or-nothing guard sees a non-empty store and never repairs the gap. writeMissing
+    // rewrites only the absent subset, so a healthy restart issues no writes at all.
+    static void seedEmbeddings(RedisEmbeddingStore embStore,
+                               RedisEmbeddingStore userEmbStore) {
+        int movies = embStore.writeMissing(DataLoader.loadMovieEmbeddings(), 0).size();
+        if (movies > 0) {
+            log.info("Seeded {} movie embeddings from movie_embeddings.txt", movies);
         }
-        if (userEmbStore.scanIds(1).isEmpty()) {
-            userEmbStore.setEmbeddings(DataLoader.loadUserEmbeddings(), 0);
-            log.info("Seeded user embeddings from user_embeddings.txt");
+        int users = userEmbStore.writeMissing(DataLoader.loadUserEmbeddings(), 0).size();
+        if (users > 0) {
+            log.info("Seeded {} user embeddings from user_embeddings.txt", users);
         }
     }
 
