@@ -110,7 +110,8 @@ Three claims in the current docs are wrong or overstated and are fixed here:
   written key may take many ticks to surface.
 - **"Production ElastiCache unverified"** is dropped. The account has zero cache clusters
   and zero replication groups in both regions; the EKS overlays are templates with
-  placeholder endpoints that were never deployed.
+  placeholder endpoints that were never deployed. This claim lives only in the assistant's
+  session memory, not in `docs/`, so correcting it involves no repo change.
 
 ## Testing
 
