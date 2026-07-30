@@ -44,6 +44,8 @@ class LocalCdnCacheTest {
     static final List<String> receivedSecrets = new CopyOnWriteArrayList<>();
     /** Origin hits on /api/catalog/similar specifically — separate from the /item counter above. */
     static final AtomicInteger similarOriginHits = new AtomicInteger();
+    /** Origin hits on the glob-adjacent path — it must never be served from cache. */
+    static final AtomicInteger globAdjacentOriginHits = new AtomicInteger();
 
     static Server origin;
     static GenericContainer<?> nginx;
@@ -107,6 +109,20 @@ class LocalCdnCacheTest {
                             .contentType(MediaType.JSON_UTF_8)
                             .set(HttpHeaderNames.CACHE_CONTROL, HttpCaching.publicCache(300, 3600))
                             .set(HttpHeaderNames.ETAG, tag)
+                            .build(), HttpData.wrap(body));
+                })
+                // A path that the OLD CloudFront glob "/api/catalog/item*" would have matched
+                // but that is not the exact item route. It must land in the default-deny
+                // behavior, not in a cached one — the glob was wider than the exact
+                // GATEWAY_PUBLIC_PATHS entry, so on a glob-matched path the edge dropped
+                // Authorization while the gateway still treated the path as private.
+                .service("/api/catalog/items", (ctx, req) -> {
+                    globAdjacentOriginHits.incrementAndGet();
+                    byte[] body = "{\"items\":[]}".getBytes();
+                    return HttpResponse.of(ResponseHeaders.builder(HttpStatus.OK)
+                            .contentType(MediaType.JSON_UTF_8)
+                            .set(HttpHeaderNames.CACHE_CONTROL, HttpCaching.publicCache(3600, 86400))
+                            .set(HttpHeaderNames.ETAG, HttpCaching.etagFor(body))
                             .build(), HttpData.wrap(body));
                 })
                 .service("/api/recommend", (ctx, req) -> {
@@ -286,5 +302,24 @@ class LocalCdnCacheTest {
         // And the k=201 rejection did not disturb the canonical entry for the same movieId.
         assertThat(cdn().get("/api/catalog/similar?movieId=77&k=5").aggregate().join().status())
                 .isEqualTo(HttpStatus.OK);
+    }
+
+    // Uses id=99 on the /api/catalog/items path — disjoint from the ids the other tests use
+    // (1, 7, 3, 42, 55, 77), per the isolation note above. This path never touches the shared
+    // cache at all (it lands in the default-deny location), so the id can't collide regardless,
+    // but the convention is honoured for consistency.
+    @Test
+    void aGlobAdjacentPathIsNotCachedEvenWhenTheOriginSaysItIsCacheable() {
+        int before = globAdjacentOriginHits.get();
+
+        AggregatedHttpResponse first = cdn().get("/api/catalog/items?id=99").aggregate().join();
+        AggregatedHttpResponse second = cdn().get("/api/catalog/items?id=99").aggregate().join();
+
+        // The origin sends s-maxage, so this is cacheable content by HTTP rules. It is not
+        // cached because scope is decided by the behavior, not by the response: `location =`
+        // here, an exact PathPattern at CloudFront.
+        assertThat(cacheStatus(first)).isEqualTo("BYPASS");
+        assertThat(cacheStatus(second)).isEqualTo("BYPASS");
+        assertThat(globAdjacentOriginHits.get()).isEqualTo(before + 2);
     }
 }

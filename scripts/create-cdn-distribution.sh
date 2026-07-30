@@ -119,20 +119,26 @@ jq -n \
       Items: ["GET","HEAD","OPTIONS","PUT","POST","PATCH","DELETE"],
       CachedMethods: {Quantity: 2, Items: ["GET","HEAD"]}}
   },
+  # PathPatterns are EXACT — no trailing wildcard. CloudFront does not consider query strings
+  # when evaluating a path pattern, so "/api/catalog/item" already matches "?id=1"; a "*"
+  # would only widen the match to /api/catalog/item<anything>, which is wider than the exact
+  # GATEWAY_PUBLIC_PATHS entry the gateway authorizes. On a glob-matched path the edge drops
+  # Authorization while the gateway still treats the path as private. Mirrored by the
+  # `location =` blocks in docker/cdn/default.conf.template.
   CacheBehaviors: {Quantity: 4, Items: [
-    {PathPattern: "/api/catalog/item*", TargetOriginId: "alb-origin",
+    {PathPattern: "/api/catalog/item", TargetOriginId: "alb-origin",
      ViewerProtocolPolicy: "redirect-to-https", CachePolicyId: $item_policy, Compress: true,
      AllowedMethods: {Quantity: 2, Items: ["GET","HEAD"],
        CachedMethods: {Quantity: 2, Items: ["GET","HEAD"]}}},
-    {PathPattern: "/api/v1/catalog/item*", TargetOriginId: "alb-origin",
+    {PathPattern: "/api/v1/catalog/item", TargetOriginId: "alb-origin",
      ViewerProtocolPolicy: "redirect-to-https", CachePolicyId: $item_policy, Compress: true,
      AllowedMethods: {Quantity: 2, Items: ["GET","HEAD"],
        CachedMethods: {Quantity: 2, Items: ["GET","HEAD"]}}},
-    {PathPattern: "/api/catalog/similar*", TargetOriginId: "alb-origin",
+    {PathPattern: "/api/catalog/similar", TargetOriginId: "alb-origin",
      ViewerProtocolPolicy: "redirect-to-https", CachePolicyId: $similar_policy, Compress: true,
      AllowedMethods: {Quantity: 2, Items: ["GET","HEAD"],
        CachedMethods: {Quantity: 2, Items: ["GET","HEAD"]}}},
-    {PathPattern: "/api/v1/catalog/similar*", TargetOriginId: "alb-origin",
+    {PathPattern: "/api/v1/catalog/similar", TargetOriginId: "alb-origin",
      ViewerProtocolPolicy: "redirect-to-https", CachePolicyId: $similar_policy, Compress: true,
      AllowedMethods: {Quantity: 2, Items: ["GET","HEAD"],
        CachedMethods: {Quantity: 2, Items: ["GET","HEAD"]}}}
