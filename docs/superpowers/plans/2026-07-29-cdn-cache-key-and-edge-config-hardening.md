@@ -1145,7 +1145,7 @@ In §5, the sentence "mirrors the five CloudFront behaviors one-for-one" is now 
 ```markdown
 The mirror extends to path scope: nginx's `location =` blocks are exact matches, and the
 CloudFront `PathPattern`s are wildcard-free for the same reason. `LocalCdnCacheTest` pins this
-by driving a glob-adjacent path (`/api/catalog/items?id=1`) that the origin marks cacheable
+by driving a glob-adjacent path (`/api/catalog/items?id=99`) that the origin marks cacheable
 and asserting it is `BYPASS` — scope is decided by the behavior, not by the response.
 ```
 
