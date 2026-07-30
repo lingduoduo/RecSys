@@ -155,6 +155,10 @@ public final class RecommendationService {
                     int movieId = cacheKeyIntParam(ctx, "movieId");
                     int k = cacheKeyIntParam(ctx, "k", 10, 1, 200);
                     float[] queryVec = store.getEmbedding(movieId);
+                    // Load-bearing no-store: 404 is on CloudFront's unconditionally-cached
+                    // list, so without it a miss would be pinned at the edge for the 10 s
+                    // Error Caching Minimum TTL — and an embedding can be written at any time
+                    // by POST /setembedding, so a pinned 404 would outlive the gap.
                     if (queryVec == null)
                         return writeNoStoreJson(HttpStatus.NOT_FOUND, Map.of(
                                 "error", "embedding not found for movieId", "movieId", movieId));

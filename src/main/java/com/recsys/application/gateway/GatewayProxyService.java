@@ -72,13 +72,13 @@ public final class GatewayProxyService implements HttpService {
 
     public static HttpResponse gatewayError(HttpStatus status, String message) {
         String escaped = message == null ? "" : message.replace("\\", "\\\\").replace("\"", "\\\"");
-        // no-store is load-bearing for the 502/503 this helper returns: both are on
+        // no-store is load-bearing for the 404/502/503 this helper returns: all three are on
         // CloudFront's unconditionally-cached list, so on one of the four cached catalog
-        // behaviors a circuit-open 503 would otherwise be pinned at the edge for the 10 s Error
-        // Caching Minimum TTL and served to every viewer at that POP. For its 400, 403 and 404
-        // callers — including GatewayOriginSecret's 403 during a secret rotation — it is
-        // defensive: CloudFront caches those only with max-age/s-maxage, which this response
-        // never sends. Depends on both cache policies keeping MinTTL: 0.
+        // behaviors a missing route or a circuit-open 503 would otherwise be pinned at the edge
+        // for the 10 s Error Caching Minimum TTL and served to every viewer at that POP. For its
+        // 400 and 403 callers — including GatewayOriginSecret's 403 during a secret rotation —
+        // it is defensive: CloudFront caches those only with max-age/s-maxage, which this
+        // response never sends. Depends on both cache policies keeping MinTTL: 0.
         ResponseHeaders headers = ResponseHeaders.builder(status)
                 .contentType(MediaType.JSON_UTF_8)
                 .set(HttpHeaderNames.CACHE_CONTROL, "no-store")
