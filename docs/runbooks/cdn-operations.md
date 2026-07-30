@@ -263,6 +263,14 @@ Single-item edits need no action: the 300 s fresh window bounds the staleness.
 
 ## Monitoring
 
+`CacheHitRate` is an **additional** CloudFront metric, off by default.
+`create-cdn-distribution.sh` turns it on via `create-monitoring-subscription`, but an empty
+`Datapoints` array below means "not enabled", not "no traffic" — check the subscription first:
+
+```bash
+aws cloudfront get-monitoring-subscription --distribution-id <id>
+```
+
 ```bash
 # Hit ratio (expect high on catalog, ~0 overall — most traffic is uncacheable POSTs)
 aws cloudwatch get-metric-statistics --namespace AWS/CloudFront \
