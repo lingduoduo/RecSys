@@ -81,8 +81,9 @@ class SimilarCacheHeadersTest {
 
     @Test
     void similar_badRequestIsNotCacheable() {
-        // Non-numeric movieId -> BadRequestException -> 400. CloudFront's default Error Caching
-        // Minimum TTL (10s) would otherwise pin this at the edge.
+        // no-store on every error branch, uniformly. CloudFront would cache this particular
+        // 400 only with max-age/s-maxage, so the header is defensive here — but the 404 and
+        // 5xx branches depend on it, and one rule per route beats per-status reasoning.
         AggregatedHttpResponse res = client().get("/similar?movieId=abc").aggregate().join();
         assertThat(res.status()).isEqualTo(HttpStatus.BAD_REQUEST);
         assertThat(res.headers().get(HttpHeaderNames.CACHE_CONTROL)).isEqualTo("no-store");

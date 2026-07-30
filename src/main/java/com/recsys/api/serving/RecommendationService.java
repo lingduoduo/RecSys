@@ -155,6 +155,10 @@ public final class RecommendationService {
                     int movieId = cacheKeyIntParam(ctx, "movieId");
                     int k = cacheKeyIntParam(ctx, "k", 10, 1, 200);
                     float[] queryVec = store.getEmbedding(movieId);
+                    // Load-bearing no-store: 404 is on CloudFront's unconditionally-cached
+                    // list, so without it a miss would be pinned at the edge for the 10 s
+                    // Error Caching Minimum TTL — and an embedding can be written at any time
+                    // by POST /setembedding, so a pinned 404 would outlive the gap.
                     if (queryVec == null)
                         return writeNoStoreJson(HttpStatus.NOT_FOUND, Map.of(
                                 "error", "embedding not found for movieId", "movieId", movieId));
@@ -165,8 +169,9 @@ public final class RecommendationService {
                     return writeCacheableJson(HttpStatus.OK,
                             new SimilarMoviesResult(movieId, scored), CACHE_CONTROL, req);
                 } catch (BadRequestException e) {
-                    // Errors are never cacheable: no-store, else CloudFront's default Error
-                    // Caching Minimum TTL (10s) would pin a 400 at the edge.
+                    // Defensive, not load-bearing: CloudFront caches a 400 only when the
+                    // origin sends max-age/s-maxage. The unconditionally-cached codes are 404,
+                    // 414 and 5xx — see the no-store 404 above and writeNoStoreError's javadoc.
                     return writeNoStoreError(HttpStatus.BAD_REQUEST, e.getMessage());
                 } catch (Exception e) {
                     log.error("Unexpected error in RecommendationService.Similar", e);
