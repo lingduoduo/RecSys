@@ -165,8 +165,9 @@ public final class RecommendationService {
                     return writeCacheableJson(HttpStatus.OK,
                             new SimilarMoviesResult(movieId, scored), CACHE_CONTROL, req);
                 } catch (BadRequestException e) {
-                    // Errors are never cacheable: no-store, else CloudFront's default Error
-                    // Caching Minimum TTL (10s) would pin a 400 at the edge.
+                    // Defensive, not load-bearing: CloudFront caches a 400 only when the
+                    // origin sends max-age/s-maxage. The unconditionally-cached codes are 404,
+                    // 414 and 5xx — see the no-store 404 above and writeNoStoreError's javadoc.
                     return writeNoStoreError(HttpStatus.BAD_REQUEST, e.getMessage());
                 } catch (Exception e) {
                     log.error("Unexpected error in RecommendationService.Similar", e);

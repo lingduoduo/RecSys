@@ -95,8 +95,15 @@ edge ceiling — not the origin directive — is what currently bounds outage to
 `stale-while-revalidate` / `stale-if-error` share the same window — so a total
 origin outage still serves cached `/item` for up to 24h and `/similar` for up to
 1h. Conversely, `GET /getuser`, `GET /api/v1/token`, and not-found responses are
-`Cache-Control: no-store`, so a miss or a single-use token can never be pinned at
-the edge.
+`Cache-Control: no-store`, so a miss or a single-use token can never be pinned at the edge.
+Which of those `no-store` headers is load-bearing depends on the status: CloudFront caches
+404, 414, 500, 501, 502, 503 and 504 unconditionally for the Error Caching Minimum TTL (10 s
+by default), and caches 400, 403, 405, 412 and 415 *only* if the origin sends
+`max-age`/`s-maxage`. So the 404 branches and the gateway's 5xx genuinely need it, while the
+400 branches are belt-and-braces — the routes apply it uniformly so there is no per-status
+reasoning to get wrong. Behaviors on `CachingDisabled` cache no error responses at all, which
+is why this only matters on the four cached catalog behaviors. All of it assumes
+`MinTTL: 0`: above zero CloudFront ignores `no-store`.
 
 On uncached routes the origin request policy is `AllViewerExceptHostHeader`, so
 `Authorization` *is* forwarded to the origin — `POST /api/recommend` earns nothing
