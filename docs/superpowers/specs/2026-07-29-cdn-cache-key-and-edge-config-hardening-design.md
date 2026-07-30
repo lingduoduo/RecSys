@@ -133,12 +133,25 @@ This compounds a coupling nothing in the repo records. AWS caps stale serving at
 > is less. After the maximum TTL duration, the stale object won't be available
 > from the edge cache, regardless of the `stale-if-error` value.
 
-Today `MaxTTL` equals each stale window by coincidence — `recsys-item` is
-`MaxTTL 86400` against `stale-*=86400`, `recsys-similar` is `MaxTTL 3600` against
-`stale-*=3600` — so the documented 24 h / 1 h outage tolerance works out. But a
-future change to `HttpCaching.publicCache`'s stale window has no effect unless
-`MaxTTL` moves with it, and per this finding `MaxTTL` cannot be moved by the
-script at all.
+Today `MaxTTL` equals each stale window exactly — `recsys-item` is `MaxTTL 86400`
+against `stale-*=86400`, `recsys-similar` is `MaxTTL 3600` against `stale-*=3600`
+— so the documented 24 h / 1 h outage tolerance works out. But that makes the edge
+ceiling the *binding* constraint on the stale window, not a slack bound: a future
+change to `HttpCaching.publicCache`'s stale window has no effect unless `MaxTTL`
+moves with it, and per this finding `MaxTTL` cannot be moved by the script at all.
+
+This also corrects how the docs describe the division of labour.
+`12_CDNS.md` §1 states flatly that "TTL comes from the origin's
+`Cache-Control: s-maxage`", which is only true of the *fresh* window and only
+because `s-maxage` currently sits below `MaxTTL`. The accurate model is that the
+origin **proposes** freshness and the edge policy sets the **bounds** that proposal
+is clamped into, with the three TTLs playing different roles:
+
+| Policy field | Role today |
+|---|---|
+| `MinTTL: 0` | Load-bearing — above zero CloudFront ignores `no-store` entirely (see F5). |
+| `DefaultTTL` | Inert for cached 200s — it applies only when the origin sends no `max-age`/`s-maxage`, and both cacheable routes always send one. |
+| `MaxTTL` | Binding — CloudFront caches for the lesser of `s-maxage` and `MaxTTL`, and truncates stale serving at it. |
 
 ### F4 — `CacheHitRate` is an additional metric that nothing enables
 
@@ -285,6 +298,12 @@ months' notice. Two ways to land it, and the reviewer should choose explicitly:
   than today's silence; updating is preferable.
 - Record the `MaxTTL`-caps-stale coupling next to the two policy definitions, so a
   future stale-window change moves `MaxTTL` with it.
+- Replace `12_CDNS.md` §1's "TTL comes from the origin's `Cache-Control: s-maxage`"
+  with the proposes-and-bounds model from F3, including the per-field roles of
+  `MinTTL`/`DefaultTTL`/`MaxTTL`. The current sentence reads as though the edge
+  configures no lifetime at all, which is the belief that makes F3 invisible.
+  `cdn-operations.md`'s 24 h / 1 h figures stay as they are — they are correct, and
+  hedged with "up to" — but gain a pointer to the ceiling that produces them.
 - Correct the runbook's source-of-truth paragraph to scope its claim to the
   distribution config and state the opposite behavior for cache policies.
 - Add a comment to `default.conf.template` tying `location =` to the now-exact
