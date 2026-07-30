@@ -18,6 +18,15 @@ repo has no IaC. There is no state file and no drift detection.
 > console, the **next routine re-run of the script** (e.g. to rotate the origin secret) silently
 > reverts it, with no error and no warning. Any console change that isn't also added to the
 > script's `jq` payload does not survive the next run.
+>
+> **This applies to the distribution config only.** The two cache policies (`recsys-item`,
+> `recsys-similar`) are separate resources, and they hold the cache key and the TTL ceilings.
+> `ensure_cache_policy` diffs the fields the script manages and issues
+> `update-cache-policy --if-match` when they differ, printing the deployed-versus-desired diff
+> first. Before 2026-07-29 it had no update path at all, so a policy edit in the script was a
+> silent no-op — if you are debugging a TTL or cache-key change that "did not take", check
+> `aws cloudfront get-cache-policy --id <id>` against the script rather than assuming the
+> script won.
 
 ## What is and is not cached
 
@@ -34,6 +43,9 @@ outage: it lets the edge keep serving the cached object when the origin is
 unreachable or returns a 5xx, for the same window. `HttpCaching.publicCache`
 emits both with the same value, so a total origin outage still serves cached
 `/item` (either spelling) for up to 24 h and `/similar` (either spelling) for up to 1 h.
+Those windows are ceilings set by the cache policies' `MaxTTL`, which sits exactly at each
+stale directive — so they are the *smaller* of the two limits, not the origin's number
+winning. See the TTL table in [12_CDNS §1](../system_design/12_CDNS.md#1-what-is-cached-and-what-isnt).
 See "Freshness" / "Availability" in the design doc for the full breakdown.
 
 Everything else, including `POST /api/recommend`, is `CachingDisabled` by default and always
