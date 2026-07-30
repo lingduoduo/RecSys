@@ -149,8 +149,11 @@ public final class RecommendationService {
         protected HttpResponse doGet(ServiceRequestContext ctx, HttpRequest req) {
             return HttpResponse.of(CompletableFuture.supplyAsync(() -> {
                 try {
-                    int movieId = requiredIntParam(ctx, "movieId");
-                    int k = optionalIntParam(ctx, "k", 10, 1, 200);
+                    // Both are cache-key parameters (the recsys-similar policy whitelists
+                    // movieId and k), so canonical spellings only and no clamping: a clamped
+                    // k made every value above 200 a distinct key over the k=200 body.
+                    int movieId = cacheKeyIntParam(ctx, "movieId");
+                    int k = cacheKeyIntParam(ctx, "k", 10, 1, 200);
                     float[] queryVec = store.getEmbedding(movieId);
                     if (queryVec == null)
                         return writeNoStoreJson(HttpStatus.NOT_FOUND, Map.of(

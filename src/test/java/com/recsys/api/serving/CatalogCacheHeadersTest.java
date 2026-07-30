@@ -97,4 +97,28 @@ class CatalogCacheHeadersTest {
         assertThat(res.headers().get(HttpHeaderNames.CACHE_CONTROL)).isEqualTo("no-store");
         assertThat(res.headers().get(HttpHeaderNames.ETAG)).isNull();
     }
+
+    @Test
+    void item_leadingZeroIdIsRejected() {
+        // id=01 parses to 1 and would return movie 1's body under a second cache key.
+        AggregatedHttpResponse res = client().get("/item?id=01").aggregate().join();
+        assertThat(res.status()).isEqualTo(HttpStatus.BAD_REQUEST);
+        assertThat(res.headers().get(HttpHeaderNames.CACHE_CONTROL)).isEqualTo("no-store");
+    }
+
+    @Test
+    void item_repeatedIdIsRejected() {
+        AggregatedHttpResponse res = client().get("/item?id=1&id=2").aggregate().join();
+        assertThat(res.status()).isEqualTo(HttpStatus.BAD_REQUEST);
+        assertThat(res.headers().get(HttpHeaderNames.CACHE_CONTROL)).isEqualTo("no-store");
+    }
+
+    @Test
+    void item_negativeIdIsStillNotFound() {
+        // Canonical, so it reaches the lookup and 404s as it always did. Turning this into a
+        // 400 would be a status change on an unchanged condition for no cache-key benefit.
+        AggregatedHttpResponse res = client().get("/item?id=-5").aggregate().join();
+        assertThat(res.status()).isEqualTo(HttpStatus.NOT_FOUND);
+        assertThat(res.headers().get(HttpHeaderNames.CACHE_CONTROL)).isEqualTo("no-store");
+    }
 }

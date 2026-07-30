@@ -35,7 +35,9 @@ public final class CatalogService {
         protected HttpResponse doGet(ServiceRequestContext ctx, HttpRequest req) {
             return HttpResponse.of(CompletableFuture.supplyAsync(() -> {
                 try {
-                    int movieId = requiredIntParam(ctx, "id");
+                    // Cache-key parameter: canonical spellings only, so one edge cache key
+                    // maps to one body. requiredIntParam would accept 007/+7/" 7" as aliases.
+                    int movieId = cacheKeyIntParam(ctx, "id");
                     Movie movie = dataManager.getMovieById(movieId);
                     // Not cacheable: the movie may be added later, and a pinned 404 at the edge
                     // would outlive the gap.

@@ -164,6 +164,15 @@ minimum of **twelve months** between that announcement and removal.
 | `/api/model/...` (either spelling) | `/api/v1/recommend` with `{"strategy":"model"}` | Same caveat: the `Link` points at `/api/v1/model/...`, not directly at this replacement. |
 | `/api/online/...` (either spelling) | `/api/v1/recommend` with `{"strategy":"online"}`, `/api/v1/features` | Same caveat: the `Link` points at `/api/v1/online/...`, not directly at this replacement. |
 
+**Breaking changes shipped as reviewed exceptions:**
+
+| Date | Change | Why it did not wait for notice |
+|---|---|---|
+| 2026-07-29 | `GET /api/catalog/item` and `/api/catalog/similar` (either spelling) reject non-canonical numeric parameters — leading zeros, `+`, whitespace, `-0` — and reject `k` outside `[1, 200]` instead of clamping it. Repeated occurrences of `id`, `movieId` or `k` are also rejected. All return a `no-store` 400. | These parameters form the CloudFront cache key. Clamping and alias-accepting made them unbounded cache-busters on the only public, unauthenticated, compute-heavy route, with gateway rate limiting off by default. Waiting twelve months would have left the amplification open for twelve months. Affected callers were already receiving something other than what they asked for — a clamped `k` silently returned fewer results. See `docs/superpowers/specs/2026-07-29-cdn-cache-key-and-edge-config-hardening-design.md`. |
+
+An exception is a reviewed decision recorded here, not a precedent: the default remains a
+new version plus twelve months' notice.
+
 **Removal is never automatic.** It is always an explicit, reviewed pull request; nothing in
 the gateway expires a route, and a `Sunset` date passing does not by itself change behaviour.
 This is deliberate — the project has no client inventory, so it cannot know who is still

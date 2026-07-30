@@ -94,4 +94,47 @@ class SimilarCacheHeadersTest {
         assertThat(res.status()).isEqualTo(HttpStatus.INTERNAL_SERVER_ERROR);
         assertThat(res.headers().get(HttpHeaderNames.CACHE_CONTROL)).isEqualTo("no-store");
     }
+
+    @Test
+    void similar_outOfRangeKIsRejectedNotClamped() {
+        // Was 200 with k clamped to 200. Every k above 200 was a distinct cache key over the
+        // k=200 body, and every miss ran a full candidate scan.
+        AggregatedHttpResponse res = client().get("/similar?movieId=1&k=201").aggregate().join();
+        assertThat(res.status()).isEqualTo(HttpStatus.BAD_REQUEST);
+        assertThat(res.headers().get(HttpHeaderNames.CACHE_CONTROL)).isEqualTo("no-store");
+    }
+
+    @Test
+    void similar_nonPositiveKIsRejected() {
+        // Was 200 with k silently reset to the default of 10.
+        assertThat(client().get("/similar?movieId=1&k=0").aggregate().join().status())
+                .isEqualTo(HttpStatus.BAD_REQUEST);
+        assertThat(client().get("/similar?movieId=1&k=-1").aggregate().join().status())
+                .isEqualTo(HttpStatus.BAD_REQUEST);
+    }
+
+    @Test
+    void similar_repeatedMovieIdIsRejected() {
+        AggregatedHttpResponse res =
+                client().get("/similar?movieId=1&movieId=2").aggregate().join();
+        assertThat(res.status()).isEqualTo(HttpStatus.BAD_REQUEST);
+        assertThat(res.headers().get(HttpHeaderNames.CACHE_CONTROL)).isEqualTo("no-store");
+    }
+
+    @Test
+    void similar_leadingZeroMovieIdIsRejected() {
+        AggregatedHttpResponse res = client().get("/similar?movieId=01").aggregate().join();
+        assertThat(res.status()).isEqualTo(HttpStatus.BAD_REQUEST);
+        assertThat(res.headers().get(HttpHeaderNames.CACHE_CONTROL)).isEqualTo("no-store");
+    }
+
+    @Test
+    void similar_boundaryKIsStillCacheable() {
+        // k=200 is the top of the range and must keep serving a cacheable 200 with the
+        // unchanged /similar cache-control string.
+        AggregatedHttpResponse res = client().get("/similar?movieId=1&k=200").aggregate().join();
+        assertThat(res.status()).isEqualTo(HttpStatus.OK);
+        assertThat(res.headers().get(HttpHeaderNames.CACHE_CONTROL))
+                .isEqualTo("public, s-maxage=300, stale-while-revalidate=3600, stale-if-error=3600");
+    }
 }

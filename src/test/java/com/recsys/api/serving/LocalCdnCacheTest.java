@@ -76,12 +76,24 @@ class LocalCdnCacheTest {
                 })
                 // Mirrors the /api/catalog/item handler's shape, but keyed on movieId+k so the
                 // more complex two-parameter cache key ($uri|$arg_movieId|$arg_k) is exercised.
+                // Also mirrors what cacheKeyIntParam now returns for an out-of-range `k`: a
+                // no-store 400. The real contract is proven by SimilarCacheHeadersTest; this
+                // fixture exists to show what the cache does with such a response.
                 .service("/api/catalog/similar", (ctx, req) -> {
                     similarOriginHits.incrementAndGet();
                     String secret = req.headers().get(HttpHeaderNames.of("x-origin-secret"));
                     receivedSecrets.add(secret == null ? "<absent>" : secret);
                     String movieId = ctx.queryParam("movieId");
                     String k = ctx.queryParam("k");
+                    if (k != null) {
+                        int kValue = Integer.parseInt(k);
+                        if (kValue < 1 || kValue > 200) {
+                            return HttpResponse.of(ResponseHeaders.builder(HttpStatus.BAD_REQUEST)
+                                    .contentType(MediaType.JSON_UTF_8)
+                                    .set(HttpHeaderNames.CACHE_CONTROL, "no-store")
+                                    .build(), HttpData.ofUtf8("{\"error\":\"k must be between 1 and 200\"}"));
+                        }
+                    }
                     byte[] body = ("{\"movieId\":" + movieId + ",\"k\":" + k + ",\"neighbors\":[]}")
                             .getBytes();
                     String tag = HttpCaching.etagFor(body);
@@ -249,5 +261,30 @@ class LocalCdnCacheTest {
         assertThat(differentK.status()).isEqualTo(HttpStatus.OK);
         assertThat(cacheStatus(differentK)).isEqualTo("MISS");
         assertThat(similarOriginHits.get()).isEqualTo(before + 2);
+    }
+
+    // Uses movieId=77, disjoint from the ids the other tests use (1, 7, 3, 42, 55), per the
+    // isolation note above.
+    @Test
+    void aNoStoreRejectionOnACacheableLocationIsNeverCached() {
+        int before = similarOriginHits.get();
+
+        AggregatedHttpResponse first =
+                cdn().get("/api/catalog/similar?movieId=77&k=201").aggregate().join();
+        AggregatedHttpResponse second =
+                cdn().get("/api/catalog/similar?movieId=77&k=201").aggregate().join();
+
+        assertThat(first.status()).isEqualTo(HttpStatus.BAD_REQUEST);
+        assertThat(second.status()).isEqualTo(HttpStatus.BAD_REQUEST);
+        // The load-bearing part: this path matches `location = /api/catalog/similar`, where
+        // proxy_cache IS active — so unlike the default-deny block, nothing here bypasses the
+        // cache structurally. Both requests reaching the origin proves nginx honoured the
+        // origin's Cache-Control: no-store on a cacheable location. A rejection that WERE
+        // cached would be served to every viewer at that POP who sent a valid request under
+        // the same key.
+        assertThat(similarOriginHits.get()).isEqualTo(before + 2);
+        // And the k=201 rejection did not disturb the canonical entry for the same movieId.
+        assertThat(cdn().get("/api/catalog/similar?movieId=77&k=5").aggregate().join().status())
+                .isEqualTo(HttpStatus.OK);
     }
 }

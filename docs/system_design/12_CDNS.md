@@ -54,6 +54,15 @@ All four cached behaviors are **GET/HEAD only**, `redirect-to-https`, `Compress:
 - **`QueryStringBehavior: whitelist`** — only the listed params form the cache key.
   Forwarding the full query string would let `?id=1&cachebuster=<n>` fragment the
   cache arbitrarily and act as an origin-DoS amplifier.
+  The whitelist bounds *which* parameters can fragment the cache, not which **values** — so a
+  whitelisted parameter that the origin clamps or alias-accepts is itself an unbounded
+  cache-buster. `k` was exactly that until 2026-07-29: `k=201`…`k=2147483647` all clamped to
+  200 and each was a distinct cache key over one identical body, as were `id=007` and
+  `?id=1&id=<n>`. The origin now accepts one canonical spelling per value
+  (`BaseApiService.cacheKeyIntParam`) and rejects everything else with a `no-store` 400, so
+  one cache key maps to one body. One bounded alias remains and is accepted deliberately: an
+  absent `k` and an explicit `k=10` are two keys for the same body, which cannot be removed
+  without rejecting the default spelling.
 - **`HeaderBehavior: none`** — `Authorization` is **not** part of the cache key on
   cached routes (a JWT-keyed cache would fragment per user and never hit). This is
   what forces the "these routes must be public" decision in §2. It also means **no
@@ -273,3 +282,8 @@ POPs), and coarser whole-cache invalidation. See
    second.** Adding a cache behavior before the gateway can normalize that path makes
    CloudFront drop `Authorization` on a path the origin still treats as private, turning
    every request into a `401` on a cached behavior.
+7. **A whitelisted cache-key parameter is a cache-buster unless the origin canonicalizes it.**
+   The query-string whitelist is necessary but not sufficient — it constrains parameter names,
+   while the fragmentation budget is set by the number of accepted *spellings* per value. Any
+   new cacheable route must parse its cache-key parameters with `cacheKeyIntParam`, not
+   `optionalIntParam`; clamping is only safe off the cached behaviors.
