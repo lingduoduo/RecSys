@@ -18,15 +18,23 @@ import org.slf4j.Logger;
 import org.slf4j.LoggerFactory;
 
 import java.io.IOException;
+import java.util.List;
 import java.util.Map;
 import java.util.Objects;
 import java.util.Set;
+import java.util.regex.Pattern;
 import java.util.stream.Collectors;
 
 public abstract class BaseApiService extends AbstractHttpService {
 
     protected static final ObjectMapper MAPPER = new ObjectMapper();
     protected final Logger log = LoggerFactory.getLogger(getClass());
+
+    /**
+     * One canonical decimal spelling per value: no leading zeros, no sign except a single
+     * leading '-', no whitespace, and no "-0" (which aliases "0").
+     */
+    private static final Pattern CANONICAL_INT = Pattern.compile("0|-?[1-9][0-9]*");
 
     protected static HttpResponse writeJson(HttpStatus status, Object payload) {
         try {
@@ -203,6 +211,59 @@ public abstract class BaseApiService extends AbstractHttpService {
             return parsed;
         } catch (NumberFormatException e) {
             throw new BadRequestException("invalid numeric parameter format");
+        }
+    }
+
+    /** Required cache-key parameter over the full {@code int} range. */
+    protected static int cacheKeyIntParam(ServiceRequestContext ctx, String name) {
+        return cacheKeyIntParam(ctx, name, null, Integer.MIN_VALUE, Integer.MAX_VALUE);
+    }
+
+    /**
+     * Parses a query parameter that forms part of a CDN cache key, accepting exactly one
+     * canonical spelling per value so the set of edge cache keys is the set of distinct
+     * response bodies.
+     *
+     * <p>{@link #optionalIntParam} clamps instead — safe only where no cache key is derived
+     * from the value. CloudFront's query-string whitelist bounds <em>which</em> parameters can
+     * fragment the cache, not which values, so a clamped whitelisted parameter is itself an
+     * unbounded cache-buster: {@code k=201}…{@code k=2147483647} would each be a distinct key
+     * over one identical body, and every miss costs a full candidate scan on a public,
+     * unauthenticated route. See
+     * docs/superpowers/specs/2026-07-29-cdn-cache-key-and-edge-config-hardening-design.md.
+     *
+     * <p>Rejects, rather than clamps or normalizes, so that the rejection is visible to the
+     * caller and cheap for the origin. Every caller reaches a {@code no-store} 400 via its
+     * existing {@code BadRequestException} branch.
+     *
+     * @param defaultValue {@code null} makes the parameter required; a present-but-empty
+     *                     value is a rejection either way, since it is a second spelling of
+     *                     the default
+     */
+    protected static int cacheKeyIntParam(ServiceRequestContext ctx, String name,
+                                          Integer defaultValue, int min, int max) {
+        List<String> values = ctx.queryParams(name);
+        if (values.size() > 1) {
+            throw new BadRequestException(name + " must not be repeated");
+        }
+        if (values.isEmpty()) {
+            if (defaultValue != null) return defaultValue;
+            throw new BadRequestException("missing required query parameter: " + name);
+        }
+        String value = values.get(0);
+        if (!CANONICAL_INT.matcher(value).matches()) {
+            throw new BadRequestException(name + " must be a canonical decimal integer: no "
+                    + "leading zeros, sign, or whitespace");
+        }
+        try {
+            int parsed = Integer.parseInt(value);
+            if (parsed < min || parsed > max) {
+                throw new BadRequestException(name + " must be between " + min + " and " + max);
+            }
+            return parsed;
+        } catch (NumberFormatException e) {
+            // Canonical in form but wider than int, e.g. 99999999999999999999.
+            throw new BadRequestException(name + " must be between " + min + " and " + max);
         }
     }
 
