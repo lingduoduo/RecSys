@@ -116,10 +116,18 @@ ensure_cache_policy() {
   echo "  deployed: $(jq -cS "$norm" <<<"$current")" >&2
   echo "  desired:  $(jq -cS "$norm" <<<"$desired")" >&2
   echo "  NOTE: this changes cache behavior at every edge as it propagates." >&2
+
+  # update-cache-policy REPLACES the whole config, so carry forward any Comment set outside
+  # this script. It is excluded from the drift comparison above deliberately - a comment is
+  # not behavior - but excluding it from the comparison must not mean deleting it on update.
+  local payload
+  payload="$(jq -c --argjson cur "$current" '
+    if ($cur.Comment // "") == "" then . else . + {Comment: $cur.Comment} end' <<<"$desired")"
+
   local etag
   etag="$(aws cloudfront get-cache-policy --id "$existing" --query 'ETag' --output text)"
   aws cloudfront update-cache-policy --id "$existing" --if-match "$etag" \
-    --cache-policy-config "$desired" --query 'CachePolicy.Id' --output text
+    --cache-policy-config "$payload" --query 'CachePolicy.Id' --output text
 }
 
 # Cache keys whitelist ONLY the meaningful params. Forwarding all query strings would let
