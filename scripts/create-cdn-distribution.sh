@@ -59,18 +59,18 @@ trap 'rm -f "$config_file"' EXIT
 CACHING_DISABLED="4135ea2d-6df8-44a3-9df3-4b5a84be39ad"
 ALL_VIEWER_EXCEPT_HOST="b689b0a8-53d0-40ab-baf2-68738e2966ac"
 
-# Per-behavior cache policies are created on first run and reused thereafter.
+# Create the policy, or update it when this script definition has drifted from what is
+# deployed. This used to return the existing id unconditionally, which meant a TTL or
+# query-whitelist edit here was a silent no-op from the second run onward — the cache key and
+# the TTL ceiling live in the POLICY, not in the distribution config, so they are not covered
+# by the replace-everything semantics of update-distribution.
+#
+# All diagnostics go to stderr: stdout is the policy id, consumed by the callers below.
 ensure_cache_policy() {
   local name="$1" min_ttl="$2" default_ttl="$3" max_ttl="$4" query_keys="$5"
-  local existing
-  existing="$(aws cloudfront list-cache-policies --type custom \
-    --query "CachePolicyList.Items[?CachePolicy.CachePolicyConfig.Name=='${name}'].CachePolicy.Id" \
-    --output text 2>/dev/null || true)"
-  if [[ -n "$existing" && "$existing" != "None" ]]; then
-    echo "$existing"
-    return
-  fi
-  aws cloudfront create-cache-policy --cache-policy-config "$(jq -nc \
+
+  local desired
+  desired="$(jq -nc \
     --arg name "$name" --argjson min "$min_ttl" --argjson def "$default_ttl" \
     --argjson max "$max_ttl" --argjson keys "$query_keys" '{
       Name: $name, MinTTL: $min, DefaultTTL: $def, MaxTTL: $max,
@@ -80,11 +80,61 @@ ensure_cache_policy() {
         CookiesConfig: {CookieBehavior: "none"},
         QueryStringsConfig: {QueryStringBehavior: "whitelist",
                              QueryStrings: {Quantity: ($keys|length), Items: $keys}}
-      }}')" --query 'CachePolicy.Id' --output text
+      }}')"
+
+  local existing
+  existing="$(aws cloudfront list-cache-policies --type custom \
+    --query "CachePolicyList.Items[?CachePolicy.CachePolicyConfig.Name=='${name}'].CachePolicy.Id" \
+    --output text 2>/dev/null || true)"
+
+  if [[ -z "$existing" || "$existing" == "None" ]]; then
+    aws cloudfront create-cache-policy --cache-policy-config "$desired" \
+      --query 'CachePolicy.Id' --output text
+    return
+  fi
+
+  # Compare only the fields this script manages, so an AWS-added field (or a Comment set in
+  # the console) does not read as drift and trigger an update on every run.
+  local norm='{MinTTL, DefaultTTL, MaxTTL,
+    gzip:   .ParametersInCacheKeyAndForwardedToOrigin.EnableAcceptEncodingGzip,
+    brotli: .ParametersInCacheKeyAndForwardedToOrigin.EnableAcceptEncodingBrotli,
+    hdr:    .ParametersInCacheKeyAndForwardedToOrigin.HeadersConfig.HeaderBehavior,
+    cookie: .ParametersInCacheKeyAndForwardedToOrigin.CookiesConfig.CookieBehavior,
+    qsb:    .ParametersInCacheKeyAndForwardedToOrigin.QueryStringsConfig.QueryStringBehavior,
+    qs:     ((.ParametersInCacheKeyAndForwardedToOrigin.QueryStringsConfig.QueryStrings.Items // []) | sort)}'
+
+  local current
+  current="$(aws cloudfront get-cache-policy --id "$existing" \
+    --query 'CachePolicy.CachePolicyConfig' --output json)"
+
+  if [[ "$(jq -cS "$norm" <<<"$current")" == "$(jq -cS "$norm" <<<"$desired")" ]]; then
+    echo "$existing"
+    return
+  fi
+
+  echo "Cache policy ${name} (${existing}) has drifted from this script; updating." >&2
+  echo "  deployed: $(jq -cS "$norm" <<<"$current")" >&2
+  echo "  desired:  $(jq -cS "$norm" <<<"$desired")" >&2
+  echo "  NOTE: this changes cache behavior at every edge as it propagates." >&2
+  local etag
+  etag="$(aws cloudfront get-cache-policy --id "$existing" --query 'ETag' --output text)"
+  aws cloudfront update-cache-policy --id "$existing" --if-match "$etag" \
+    --cache-policy-config "$desired" --query 'CachePolicy.Id' --output text
 }
 
 # Cache keys whitelist ONLY the meaningful params. Forwarding all query strings would let
-# ?id=1&cachebuster=N fragment the cache arbitrarily and act as an origin-DoS amplifier.
+# ?id=1&cachebuster=N fragment the cache arbitrarily and act as an origin-DoS amplifier. The
+# whitelist bounds parameter NAMES only — the origin canonicalizes the values
+# (BaseApiService.cacheKeyIntParam), without which a whitelisted param is a cache-buster too.
+#
+# The two ceilings are not slack, and must move together with HttpCaching.publicCache:
+#   MaxTTL   CloudFront serves stale content for the LESSER of the origin stale-while-revalidate
+#            / stale-if-error window and MaxTTL, and drops the object entirely after MaxTTL.
+#            These MaxTTLs sit EXACTLY at the stale windows (86400 for
+#            item, 3600 for similar), so raising a stale window without raising MaxTTL is a
+#            silent no-op.
+#   MinTTL   Must stay 0. Above zero CloudFront ignores Cache-Control: no-store, which every
+#            error branch on these two routes depends on.
 item_policy="$(ensure_cache_policy recsys-item 0 3600 86400 '["id"]')"
 similar_policy="$(ensure_cache_policy recsys-similar 0 300 3600 '["movieId","k"]')"
 
