@@ -593,46 +593,63 @@ EOF
 
 - [ ] **Step 1: Write the docker-tagged harness test**
 
-The stub origin in `LocalCdnCacheTest` is deliberately minimal and does not run the real services, so this test proves the *config-plus-header* property: a `no-store` 400 creates no cache entry, therefore a rejection cannot be pinned at the edge. `SimilarCacheHeadersTest` is what proves the real origin returns that 400.
+The stub origin in `LocalCdnCacheTest` is deliberately minimal and does not run the real services. The property worth proving is that nginx honours a `no-store` 400 on a *cacheable* location — `location = /api/catalog/similar`, where `proxy_cache` is active — not merely on the default-deny `location /`, which bypasses the cache structurally regardless of any response header. `SimilarCacheHeadersTest` is what proves the real origin returns that 400.
 
-First add a stub route inside `startAll()`, alongside the existing `/api/catalog/similar` handler:
+Amend the existing `/api/catalog/similar` stub handler inside `startAll()` so it mirrors the real route's new contract: when the `k` query parameter is present and outside `[1, 200]`, return a `no-store` 400 instead of the cacheable 200. Increment `similarOriginHits` on every request including the rejection, so the counter still reflects origin arrivals, and keep the canonical-`k` path byte-identical to what it does today so the existing `similarCacheKeyIncludesK_missThenHit` test keeps passing unchanged:
 
 ```java
-                // Mirrors what cacheKeyIntParam now returns for a non-canonical or
-                // out-of-range cache-key parameter: a no-store 400. The real contract is
-                // proven by SimilarCacheHeadersTest; this fixture exists to show what the
-                // cache does with such a response.
-                .service("/api/catalog/reject", (ctx, req) -> {
-                    rejectOriginHits.incrementAndGet();
-                    return HttpResponse.of(ResponseHeaders.builder(HttpStatus.BAD_REQUEST)
-                            .contentType(MediaType.JSON_UTF_8)
-                            .set(HttpHeaderNames.CACHE_CONTROL, "no-store")
-                            .build(), HttpData.ofUtf8("{\"error\":\"k must be between 1 and 200\"}"));
+                // Mirrors the /api/catalog/item handler's shape, but keyed on movieId+k so the
+                // more complex two-parameter cache key ($uri|$arg_movieId|$arg_k) is exercised.
+                // Also mirrors what cacheKeyIntParam now returns for an out-of-range `k`: a
+                // no-store 400. The real contract is proven by SimilarCacheHeadersTest; this
+                // fixture exists to show what the cache does with such a response.
+                .service("/api/catalog/similar", (ctx, req) -> {
+                    similarOriginHits.incrementAndGet();
+                    String secret = req.headers().get(HttpHeaderNames.of("x-origin-secret"));
+                    receivedSecrets.add(secret == null ? "<absent>" : secret);
+                    String movieId = ctx.queryParam("movieId");
+                    String k = ctx.queryParam("k");
+                    if (k != null) {
+                        int kValue = Integer.parseInt(k);
+                        if (kValue < 1 || kValue > 200) {
+                            return HttpResponse.of(ResponseHeaders.builder(HttpStatus.BAD_REQUEST)
+                                    .contentType(MediaType.JSON_UTF_8)
+                                    .set(HttpHeaderNames.CACHE_CONTROL, "no-store")
+                                    .build(), HttpData.ofUtf8("{\"error\":\"k must be between 1 and 200\"}"));
+                        }
+                    }
+                    byte[] body = ("{\"movieId\":" + movieId + ",\"k\":" + k + ",\"neighbors\":[]}")
+                            .getBytes();
+                    // ...unchanged below: ETag / If-None-Match / 200 OK with publicCache(300, 3600)
                 })
 ```
 
-Add the counter beside the existing ones near the top of the class:
+Do **not** add a `/api/catalog/reject` stub or any new `location` block to `docker/cdn/default.conf.template` — the point is to exercise a location where `proxy_cache` is already active. Add the test:
 
 ```java
-    /** Origin hits on the rejection fixture — a no-store 400 must reach the origin every time. */
-    static final AtomicInteger rejectOriginHits = new AtomicInteger();
-```
-
-Do **not** add a `location` block for this path to `docker/cdn/default.conf.template`. `/api/catalog/reject` is meant to fall through to `location /`, the default-deny mirror, which is where an unknown path belongs — adding a block would change what the test proves. Add the test:
-
-```java
+    // Uses movieId=77, disjoint from the ids the other tests use (1, 7, 3, 42, 55), per the
+    // isolation note above.
     @Test
-    void aNoStoreRejectionIsNeverCached() {
-        int before = rejectOriginHits.get();
+    void aNoStoreRejectionOnACacheableLocationIsNeverCached() {
+        int before = similarOriginHits.get();
 
-        AggregatedHttpResponse first = cdn().get("/api/catalog/reject?k=201").aggregate().join();
-        AggregatedHttpResponse second = cdn().get("/api/catalog/reject?k=201").aggregate().join();
+        AggregatedHttpResponse first =
+                cdn().get("/api/catalog/similar?movieId=77&k=201").aggregate().join();
+        AggregatedHttpResponse second =
+                cdn().get("/api/catalog/similar?movieId=77&k=201").aggregate().join();
 
         assertThat(first.status()).isEqualTo(HttpStatus.BAD_REQUEST);
         assertThat(second.status()).isEqualTo(HttpStatus.BAD_REQUEST);
-        // Both reached the origin: the rejection was not stored, so it cannot be pinned at the
-        // edge and served to viewers who sent a perfectly good request.
-        assertThat(rejectOriginHits.get()).isEqualTo(before + 2);
+        // The load-bearing part: this path matches `location = /api/catalog/similar`, where
+        // proxy_cache IS active — so unlike the default-deny block, nothing here bypasses the
+        // cache structurally. Both requests reaching the origin proves nginx honoured the
+        // origin's Cache-Control: no-store on a cacheable location. A rejection that WERE
+        // cached would be served to every viewer at that POP who sent a valid request under
+        // the same key.
+        assertThat(similarOriginHits.get()).isEqualTo(before + 2);
+        // And the k=201 rejection did not disturb the canonical entry for the same movieId.
+        assertThat(cdn().get("/api/catalog/similar?movieId=77&k=5").aggregate().join().status())
+                .isEqualTo(HttpStatus.OK);
     }
 ```
 
