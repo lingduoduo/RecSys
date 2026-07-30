@@ -134,10 +134,17 @@ public abstract class BaseApiService extends AbstractHttpService {
 
     /**
      * Same body as {@link #writeError(HttpStatus, String)} but with {@code Cache-Control: no-store}
-     * instead of no cache header at all. For error branches on otherwise-cacheable routes, where
-     * CloudFront's default Error Caching Minimum TTL (10 s) would pin the error response at the
-     * edge if we didn't opt out explicitly. See
-     * docs/superpowers/specs/2026-07-14-cdn-edge-acceleration-design.md.
+     * instead of no cache header at all. For error branches on otherwise-cacheable routes.
+     *
+     * <p>CloudFront splits error caching by status code: 404, 414, 500, 501, 502, 503 and 504
+     * are cached unconditionally for the Error Caching Minimum TTL (10 s by default), while
+     * 400, 403, 405, 412 and 415 are cached <em>only</em> if the origin returns
+     * {@code Cache-Control: max-age} or {@code s-maxage}. So on the 404 and 5xx branches this
+     * {@code no-store} is load-bearing, and on the 400 branches it is defensive — applied
+     * anyway so the rule for a cacheable route is simply "errors are never cacheable", with no
+     * per-status reasoning to get wrong later. All of it depends on both cache policies keeping
+     * {@code MinTTL: 0}; above zero CloudFront ignores {@code no-store} outright. Behaviors on
+     * the {@code CachingDisabled} policy do not cache error responses at all.
      */
     protected static HttpResponse writeNoStoreError(HttpStatus status, String message) {
         return writeNoStoreJson(status, Map.of("error", message == null ? "" : message));

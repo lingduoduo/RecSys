@@ -49,14 +49,20 @@ Each nginx block is a deliberate mirror of a CloudFront decision:
 | CloudFront | nginx |
 |---|---|
 | `DefaultCacheBehavior` = CachingDisabled | default `location /` with bypass → `X-Cache: BYPASS` |
-| `/api/catalog/item*` key whitelists `id` | `proxy_cache_key "$uri\|$arg_id"` |
-| `/api/catalog/similar*` whitelists `movieId`,`k` | `proxy_cache_key "$uri\|$arg_movieId\|$arg_k"` |
-| `/api/v1/catalog/item*`, identical to the unversioned twin | second `location = /api/v1/catalog/item` block, same `proxy_cache_key "$uri\|$arg_id"` |
-| `/api/v1/catalog/similar*`, identical to the unversioned twin | second `location = /api/v1/catalog/similar` block, same `proxy_cache_key "$uri\|$arg_movieId\|$arg_k"` |
+| `/api/catalog/item` key whitelists `id` | `proxy_cache_key "$uri\|$arg_id"` |
+| `/api/catalog/similar` whitelists `movieId`,`k` | `proxy_cache_key "$uri\|$arg_movieId\|$arg_k"` |
+| `/api/v1/catalog/item`, identical to the unversioned twin | second `location = /api/v1/catalog/item` block, same `proxy_cache_key "$uri\|$arg_id"` |
+| `/api/v1/catalog/similar`, identical to the unversioned twin | second `location = /api/v1/catalog/similar` block, same `proxy_cache_key "$uri\|$arg_movieId\|$arg_k"` |
 | `CustomHeaders` inject the origin secret | `proxy_set_header x-origin-secret` |
 | `X-Cache: Hit from cloudfront` | `add_header X-Cache $upstream_cache_status` (or the `$cdn_cache_status` map in the default block — see Config note) |
 | Honours `stale-while-revalidate` / `stale-if-error` | same directives, natively (`proxy_cache_background_update on`, `proxy_cache_use_stale ...`) |
 | Honours a **bare `s-maxage`** with no `max-age`/`Expires` fallback | same, natively — **not documented by nginx itself**, confirmed here by experiment (see Config note) |
+
+Path scope is mirrored too, not just the four keys above: the nginx `location =` blocks are
+exact matches and the CloudFront `PathPattern`s are exact paths as well — no prefix globs on
+either side. A sub-path like `/api/catalog/item/5` falls through to the uncached default
+location in both environments alike, so this is not a local-vs-production divergence (see
+[12_CDNS.md §5](../system_design/12_CDNS.md#5-local-cdn-stand-in)).
 
 `LocalCdnCacheTest` (`@Tag("docker")`) proves these:
 
@@ -95,17 +101,10 @@ Read this before drawing any conclusion from the local environment.
   `movieId=2` — silently caching movie 2's neighbours under the key for movie 1. This is a
   local-only artifact: CloudFront's whitelist simply drops `MOVIEID` since it isn't `movieId`,
   so the ambiguity nginx exhibits here cannot happen in production.
-- **The local locations are exact matches; CloudFront's are prefix globs.** `location =
-  /api/catalog/item`, `location = /api/catalog/similar`, `location = /api/v1/catalog/item`,
-  and `location = /api/v1/catalog/similar` in `docker/cdn/default.conf.template` each match
-  only that one literal path, whereas the CloudFront path patterns are `/api/catalog/item*` /
-  `/api/catalog/similar*` / `/api/v1/catalog/item*` / `/api/v1/catalog/similar*` — prefix globs
-  that also match, e.g., `/api/catalog/item/5` or `/api/v1/catalog/item/5`. The local
-  environment therefore **under-caches** relative to production, for both the versioned and
-  unversioned spellings: a sub-path request falls through to the local default (uncached) block
-  instead of the cached location. Nothing personalized is reachable at those sub-paths, so this
-  is a false-conclusion risk for anyone using the local env to reason about hit ratio — not a
-  security hole.
+
+Path scope is *not* one of these divergences — see "What this DOES mirror" above: both the
+local `location =` blocks and the CloudFront `PathPattern`s are exact matches, so a sub-path
+like `/api/catalog/item/5` is uncached in both environments alike.
 
 This is a semantics harness, not a CloudFront emulator.
 

@@ -207,6 +207,29 @@ jq -n \
   PriceClass: "PriceClass_All"
 }' > "$config_file"
 
+# CacheHitRate, OriginLatency and error-rate-by-status-code are ADDITIONAL metrics: off by
+# default, and what cdn-operations.md's hit-ratio query reads. Without a monitoring
+# subscription that query returns an empty Datapoints array and exit 0 — indistinguishable
+# from zero traffic, on the one number that says whether the cache earns anything.
+#
+# This is a separate API from the distribution config, so unlike Logging it is NOT reset by
+# update-distribution's replace-everything semantics. Safe to re-run.
+enable_additional_metrics() {
+  local dist_id="$1"
+  local status
+  status="$(aws cloudfront get-monitoring-subscription --distribution-id "$dist_id" \
+    --query 'MonitoringSubscription.RealtimeMetricsSubscriptionConfig.RealtimeMetricsSubscriptionStatus' \
+    --output text 2>/dev/null || true)"
+  if [[ "$status" == "Enabled" ]]; then
+    echo "Additional CloudFront metrics already enabled for ${dist_id}"
+    return
+  fi
+  echo "Enabling additional CloudFront metrics for ${dist_id} (CacheHitRate, OriginLatency)"
+  aws cloudfront create-monitoring-subscription --distribution-id "$dist_id" \
+    --monitoring-subscription \
+    'RealtimeMetricsSubscriptionConfig={RealtimeMetricsSubscriptionStatus=Enabled}' >/dev/null
+}
+
 existing_id="$(aws cloudfront list-distributions \
   --query "DistributionList.Items[?Comment=='${COMMENT}'].Id" --output text 2>/dev/null || true)"
 
@@ -218,9 +241,16 @@ if [[ -n "$existing_id" && "$existing_id" != "None" ]]; then
     --query 'Distribution.DomainName' --output text
 else
   echo "Creating distribution"
-  aws cloudfront create-distribution --distribution-config "file://${config_file}" \
-    --query 'Distribution.{Id:Id,Domain:DomainName}' --output table
+  # Captured rather than printed as a table: the id is needed for the monitoring
+  # subscription below, which is a per-distribution call.
+  created="$(aws cloudfront create-distribution --distribution-config "file://${config_file}" \
+    --query 'Distribution.[Id,DomainName]' --output text)"
+  existing_id="$(awk '{print $1}' <<<"$created")"
+  echo "  Id:     ${existing_id}"
+  echo "  Domain: $(awk '{print $2}' <<<"$created")"
 fi
+
+enable_additional_metrics "$existing_id"
 
 echo "Done. Validate against the raw cloudfront.net domain BEFORE flipping DNS."
 echo "See docs/runbooks/cdn-operations.md."

@@ -61,10 +61,17 @@ All four cached behaviors are **GET/HEAD only**, `redirect-to-https`, `Compress:
   cache-buster. `k` was exactly that until 2026-07-29: `k=201`…`k=2147483647` all clamped to
   200 and each was a distinct cache key over one identical body, as were `id=007` and
   `?id=1&id=<n>`. The origin now accepts one canonical spelling per value
-  (`BaseApiService.cacheKeyIntParam`) and rejects everything else with a `no-store` 400, so
-  one cache key maps to one body. One bounded alias remains and is accepted deliberately: an
+  (`BaseApiService.cacheKeyIntParam`) and rejects everything else with a `no-store` 400,
+  closing repeats, leading zeros, sign, whitespace, `-0`, out-of-range, and present-but-empty
+  as cache-buster channels. One bounded alias remains and is accepted deliberately: an
   absent `k` and an explicit `k=10` are two keys for the same body, which cannot be removed
-  without rejecting the default spelling.
+  without rejecting the default spelling. Two channels are *not* closed, because
+  `cacheKeyIntParam` validates the **decoded** query value while the CDN cache key is built
+  from the **raw** query string: a percent-encoded value (`?id=%37`) is a second cache key for
+  the same body, and — the more serious direction, since it collapses distinct responses onto
+  one key rather than merely splitting one response across several — a percent-encoded
+  parameter **name** (`?%69d=7`) presents no whitelisted parameter to the edge at all, so it
+  collides with `?%69%64=8` and with a bare parameterless request. See sharp edge 9.
 - **`HeaderBehavior: none`** — `Authorization` is **not** part of the cache key on
   cached routes (a JWT-keyed cache would fragment per user and never hit). This is
   what forces the "these routes must be public" decision in §2. It also means **no
@@ -95,8 +102,15 @@ edge ceiling — not the origin directive — is what currently bounds outage to
 `stale-while-revalidate` / `stale-if-error` share the same window — so a total
 origin outage still serves cached `/item` for up to 24h and `/similar` for up to
 1h. Conversely, `GET /getuser`, `GET /api/v1/token`, and not-found responses are
-`Cache-Control: no-store`, so a miss or a single-use token can never be pinned at
-the edge.
+`Cache-Control: no-store`, so a miss or a single-use token can never be pinned at the edge.
+Which of those `no-store` headers is load-bearing depends on the status: CloudFront caches
+404, 414, 500, 501, 502, 503 and 504 unconditionally for the Error Caching Minimum TTL (10 s
+by default), and caches 400, 403, 405, 412 and 415 *only* if the origin sends
+`max-age`/`s-maxage`. So the 404 branches and the gateway's 5xx genuinely need it, while the
+400 branches are belt-and-braces — the routes apply it uniformly so there is no per-status
+reasoning to get wrong. Behaviors on `CachingDisabled` cache no error responses at all, which
+is why this only matters on the four cached catalog behaviors. All of it assumes
+`MinTTL: 0`: above zero CloudFront ignores `no-store`.
 
 On uncached routes the origin request policy is `AllViewerExceptHostHeader`, so
 `Authorization` *is* forwarded to the origin — `POST /api/recommend` earns nothing
@@ -305,7 +319,10 @@ POPs), and coarser whole-cache invalidation. See
    The query-string whitelist is necessary but not sufficient — it constrains parameter names,
    while the fragmentation budget is set by the number of accepted *spellings* per value. Any
    new cacheable route must parse its cache-key parameters with `cacheKeyIntParam`, not
-   `optionalIntParam`; clamping is only safe off the cached behaviors.
+   `optionalIntParam`; clamping is only safe off the cached behaviors. `cacheKeyIntParam` closes
+   the decoded-value spellings (leading zeros, sign, whitespace, repeats, out-of-range) — it is
+   not on its own sufficient to make one cache key map to one body; see sharp edge 9 for the
+   percent-encoding channels it does not close.
 8. **The cache policies were create-once; the distribution is create-or-update.** They are
    different AWS resources with different update semantics, and the cache key plus the TTL
    ceilings live in the *policy*. Until 2026-07-29 `ensure_cache_policy` returned the existing
@@ -313,3 +330,14 @@ POPs), and coarser whole-cache invalidation. See
    inverse of the drift hazard the runbook warns about for the distribution. It now diffs the
    fields it manages and updates with `--if-match`, which propagates a cache-behavior change
    to every edge: not a step to take casually mid-incident.
+9. **`cacheKeyIntParam` validates the decoded value; the cache key is built from the raw query
+   string — known, open, not regressed by this branch.** `?id=%37` decodes to a valid `7` and
+   is accepted, but is a second CloudFront cache key over the `id=7` body. Worse, `?%69d=7`
+   decodes its *parameter name* to `id` and is likewise accepted by the origin, but the edge
+   whitelist matches on the raw name, so it presents no whitelisted parameter at all and
+   collides with `?%69%64=8` and with a bare parameterless request — many bodies under one key.
+   This is pre-existing (`requiredIntParam` accepted the same spellings before 2026-07-29), not
+   something `cacheKeyIntParam` regresses or closes. Verified on this project's Armeria
+   classpath: both decode to the same value/name before validation runs. Not verified: whether
+   CloudFront itself percent-decodes before whitelist matching — the local nginx harness looks
+   up `$arg_id` on the undecoded literal, which is the only evidence this repo has either way.
