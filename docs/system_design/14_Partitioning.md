@@ -44,13 +44,19 @@ partitioning on a single primary**, not server-side sharding. Redis is deployed 
 failover, plus AZ-aware read replicas — see the
 [Fault Tolerance investigation](18_Fault_Tolerance.md#redis-resilience)), **not
 Redis Cluster**, and `ShardedRecordStore` holds a single `RedisExecutor`. So the N
-shards are **key-prefixes on the same primary** (`sr:g{v}:rec:{shard}:…`), not
+shards are **key-prefixes on the same primary** (`sr:g{v}:rec:{shard}:…`, placeholders —
+see "Key format" below), not
 separate nodes and not server-side hash slots. The consistent-hash ring partitions the *keyspace* — even
 distribution, hot-key contention spreading, and an online reshard — and makes it **ready** to map those logical shards onto separate Redis nodes (or a
-cluster) without a data migration — for single-key operations. The keys carry no hash
-tag, so a shard's keys are not guaranteed to share a Cluster slot and no multi-key
-operation over them can be atomic; see
+cluster) without a data migration. How far that readiness reaches is **conditional on key
+format**. A generation on **format 1** carries no hash tag, so its shard's keys are not
+guaranteed to share a Cluster slot and no multi-key operation over them could be atomic on
+a cluster — readiness there covers single-key operations only. A generation on **format 2**
+tags the shard index, co-locating a shard's four keys in one slot, which is what makes the
+multi-key write script legal; see
+[03 §1](03_DB_Scaling_Sharding.md#1-shardedrecordstore--the-sharded-record-database) and
 [03 §7](03_DB_Scaling_Sharding.md#7-cross-shard-atomicity--where-the-transaction-stops).
+Either way this stops at the shard boundary — nothing makes two *different* shards atomic.
 Today the win is contention-spreading and reshardability, not multi-node capacity.
 
 **MySQL is not partitioned.** It is one intentionally-small, opt-in relational read
@@ -83,15 +89,36 @@ and changing it would silently remap every device and every bucket.
 
 ### Write fan-out
 
-Each write resolves `topology.current().shardFor(device)` and pipelines three
-Redis ops against that shard: `HSET` the full record, `ZADD` a per-device index
-(`NX` for insert, `XX + GT` for update) for per-device cursor reads, and `XADD` a
-per-shard stream for ordered replay (approx-trimmed at `STREAM_MAXLEN =
-1_000_000`). A `ZADD NX` that returns 0 is a duplicate `eventId` → `DUPLICATE`
-status, so writes are idempotent and safe to retry. Sequence numbers come from a
-per-`(version, shard)` `INCR`
-([`SequenceGenerator`](../../src/main/java/com/recsys/infrastructure/redis/sharding/SequenceGenerator.java)) —
-shard-scoped, not globally unique.
+Each write resolves `topology.current().shardFor(device)` and evaluates a single Lua
+script against that shard: it `INCR`s the shard's sequence counter — shard-scoped, not
+globally unique — claims the device index (`ZADD`, `NX` for insert, `XX + GT` for
+update), writes the record hash (`HSET`), and appends to the per-shard stream (`XADD`,
+approx-trimmed at `STREAM_MAXLEN = 1_000_000`) — atomically, in one round-trip against
+the primary. A `ZADD NX` that returns 0 is a duplicate `eventId`; the script returns at
+that point without writing anything else, so writes are idempotent and safe to retry.
+Under key format 2 all four keys share a hash tag and therefore one Cluster slot, which
+is what makes the multi-key script legal. Redis runs the script in isolation, which is not
+the same as a transaction — an erroring `redis.call` leaves the earlier writes applied with
+no rollback; see [03 sharp edge 6](03_DB_Scaling_Sharding.md#sharp-edges--notes).
+
+### Key format — when the braces are real
+
+Key templates in this document write `{shard}`, `{v}` and `{seq}` as **placeholders**. Whether
+a live key actually contains braces is decided by the generation's key format
+([`ShardKeys`](../../src/main/java/com/recsys/infrastructure/redis/sharding/ShardKeys.java)),
+recorded per generation in `shard:topology`:
+
+| Format | Shard token | Example record key |
+|---|---|---|
+| 1 (untagged) | bare index | `sr:rec:0:42` |
+| 2 (tagged) | Redis Cluster hash tag, **braces literal** | `sr:g3:rec:{0}:42` |
+
+Format is independent of generation number. A deployment that already had a generation 1
+before `keyFormat` existed keeps format 1 for that generation's life, but
+`ShardTopologyStore.bootstrap` writes `keyFormat: 2`, so a **freshly bootstrapped Redis** —
+a DR region, a local dev stack — has generation-1 keys with literal braces and no `g1:`
+segment: `sr:rec:{0}:42`. Resolve the format from the topology document, not from the
+version, or an ops query will silently match nothing.
 
 **Sequence-counter repair at startup.** A Redis partial flush can leave a shard's
 `{prefix}{generation}seq:{shard}` counter *behind* the highest sequence number still
@@ -126,14 +153,15 @@ A reshard is online because of two mechanisms:
 
 - **Generation-scoped keys** —
   [`Generations.keyPrefix`](../../src/main/java/com/recsys/infrastructure/redis/sharding/Generations.java)
-  returns `""` for generation 1 (legacy unversioned keys, `sr:rec:{shard}:{seq}`)
+  returns `""` for generation 1 (unversioned keys, `sr:rec:<shard>:<seq>`)
   and `"g{version}:"` for generation ≥2 (`sr:g2:rec:…`), so a new topology writes
   into a disjoint keyspace rather than colliding with in-flight data.
 - **Bounded dual-read window** — for `SHARDED_RECORD_MAX_TTL_SECONDS` (default
   86400, reused as the dual-read window) after a reshard, per-device reads
   (`readDevice`) read *both* `current()` and `previousIfActive()` and merge them
-  (dedupe by `device:seq`, current wins), so records written before the change are
-  still served until they TTL out and the previous generation self-heals away.
+  (dedupe by `(deviceId, eventId)`, current wins), so records written before the change
+  are still served until they TTL out and the previous generation self-heals away — with
+  the caveats in [03 sharp edge 8](03_DB_Scaling_Sharding.md#sharp-edges--notes).
   Shard-level scans (`readShard`, behind `GET /shards/shard`)
   are generation-current and do **not** dual-read.
 

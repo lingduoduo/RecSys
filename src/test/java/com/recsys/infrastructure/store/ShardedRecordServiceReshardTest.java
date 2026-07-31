@@ -27,7 +27,7 @@ class ShardedRecordServiceReshardTest {
 
     // Snapshot stub: version=2, shardCount=4, vnodes=150, prevVersion=1, prevShardCount=2, prevExpiresAtMs=999999
     static final ShardTopologyStore.Snapshot STUB_SNAPSHOT =
-            new ShardTopologyStore.Snapshot(2, 4, 150, 0L, 1, 2, 999_999L);
+            new ShardTopologyStore.Snapshot(2, 4, 150, 0L, 1, 2, 999_999L, null, null);
 
     // Shared mocks — set up inside configure() so they are visible to tests
     static ShardTopologyStore mockTopologyStore;

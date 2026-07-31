@@ -33,7 +33,7 @@ counter must be exact.**
 |---|---|---|---|
 | Redis **writes** (records, topology, sequences) | **CP** | minority can't reach the primary → write fails | single leader + atomic RMW/`INCR`; a lost write is worse than a failed one |
 | Shard-topology commit (`ShardTopologyStore` Lua/SETNX) | **CP** | RMW on primary; no split-brain generations | one authoritative topology version |
-| Sequence assignment (`SequenceGenerator` INCR) | **CP** | monotonic per `(gen, shard)` or unavailable | duplicate seq nums would corrupt device order |
+| Sequence assignment (record-write script's `INCR`) | **CP** | monotonic per `(gen, shard)` or unavailable | duplicate seq nums would corrupt device order |
 | **Read-your-writes** read (token present) | **CP** | primary unreachable → **`503`, never stale** | the caller explicitly demanded to see their write |
 | Default online reads (no token) | **AP** | serve from AZ-local replica, possibly lagging | recommendations tolerate seconds of staleness |
 | Serve-stale caches (feature store, top-K, CDN) | **AP** | serve last-good within stale-if-error window | a slightly-old list beats an error |
@@ -46,10 +46,10 @@ counter must be exact.**
 
 The write path is deliberately linearizable. Redis runs a **single primary**
 (Sentinel handles leader election; the router only fans out *reads*), so every record
-write is a pipelined `HSET`+`ZADD`+`XADD` against that one leader. A reshard is an
+write is one atomic Lua script — it `INCR`s the sequence counter and commits the
+`HSET`+`ZADD`+`XADD` together — against that one leader. A reshard is an
 atomic Lua read-modify-write with a `SETNX` first-writer-wins bootstrap
-(`ShardTopologyStore`), and sequence numbers come from an atomic `INCR`
-(`SequenceGenerator`). During a partition the side that can't reach the primary simply
+(`ShardTopologyStore`). During a partition the side that can't reach the primary simply
 can't write — the system chooses "no write" over "conflicting writes," because a
 duplicate sequence number or a split-brain topology would corrupt the sharded record
 order. The mechanics are in [14_Partitioning](14_Partitioning.md#versioned-topology-and-online-reshard)
@@ -107,7 +107,8 @@ Partitions are handled, not wished away:
 
 - **Reshard windows** — during a topology change the fleet is briefly split across
   generations; per-device reads dual-read both generations for a bounded 24 h window
-  so no record is lost (shard-level scans do *not* — a known sharp edge). See
+  (shard-level scans do *not* — a known sharp edge). That window is at-least-once, not
+  lossless — see [03 sharp edge 8](03_DB_Scaling_Sharding.md#sharp-edges--notes) and
   [14_Partitioning §1](14_Partitioning.md#1-consistent-hash-record-sharding).
 - **Redis failover** — Sentinel re-elects a primary; the read router keeps serving
   from replicas throughout ([18_Fault_Tolerance](18_Fault_Tolerance.md#redis-resilience)).
@@ -159,7 +160,8 @@ paired implementation plan) under `docs/superpowers/`:
   failover with an accepted RPO (§5).
 - **Partition tolerance for sharding** — [Dynamic Shard Topology](../superpowers/specs/2026-06-24-dynamic-shard-topology-design.md)
   ([plan](../superpowers/plans/2026-06-24-dynamic-shard-topology.md)): the generation
-  dual-read window that keeps a reshard lossless (§5).
+  dual-read window a reshard relies on — bounded, and at-least-once rather than
+  lossless (03 sharp edge 8) (§5).
 
 ## Sharp edges — notes
 

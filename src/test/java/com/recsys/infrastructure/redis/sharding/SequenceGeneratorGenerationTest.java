@@ -64,7 +64,8 @@ class SequenceGeneratorGenerationTest {
                 .thenReturn(List.of(ScoredValue.just(100.0, "event-1")));
         when(cmd.get("sr:g2:seq:0")).thenReturn("5");
 
-        boolean completed = new SequenceGenerator(exec, "sr:").ensureCounterValid(2, 0, 30_000L);
+        boolean completed = new SequenceGenerator(exec, "sr:")
+                .ensureCounterValid(new ShardTopology(2, 1, 150, 0L), 0, 30_000L);
 
         assertThat(completed).isTrue();
         // Counter was behind the max score, so it is raised past it — on the g2 key.
@@ -83,7 +84,8 @@ class SequenceGeneratorGenerationTest {
                 .thenReturn(List.of(ScoredValue.just(100.0, "event-1")));
         when(cmd.get("sr:seq:0")).thenReturn("5");
 
-        new SequenceGenerator(exec, "sr:").ensureCounterValid(1, 0, 30_000L);
+        new SequenceGenerator(exec, "sr:")
+                .ensureCounterValid(new ShardTopology(1, 1, 150, 0L), 0, 30_000L);
 
         verify(cmd).set("sr:seq:0", "101");
     }
@@ -99,7 +101,8 @@ class SequenceGeneratorGenerationTest {
                 .thenReturn(List.of(ScoredValue.just(100.0, "event-1")));
         when(cmd.get("sr:seq:0")).thenReturn("500");
 
-        new SequenceGenerator(exec, "sr:").ensureCounterValid(1, 0, 30_000L);
+        new SequenceGenerator(exec, "sr:")
+                .ensureCounterValid(new ShardTopology(1, 1, 150, 0L), 0, 30_000L);
 
         // The guard only ever raises the counter, never lowers it.
         verify(cmd, never()).set(anyString(), anyString());
@@ -112,7 +115,8 @@ class SequenceGeneratorGenerationTest {
         KeyScanCursor<String> page = finishedCursor(List.of());
         when(cmd.scan(any(ScanArgs.class))).thenReturn(page);
 
-        assertThat(new SequenceGenerator(exec, "sr:").ensureCounterValid(1, 0, 30_000L)).isTrue();
+        assertThat(new SequenceGenerator(exec, "sr:")
+                .ensureCounterValid(new ShardTopology(1, 1, 150, 0L), 0, 30_000L)).isTrue();
 
         verify(cmd, never()).get(anyString());
         verify(cmd, never()).set(anyString(), anyString());
@@ -138,10 +142,45 @@ class SequenceGeneratorGenerationTest {
         AtomicLong ticks = new AtomicLong();
         SequenceGenerator gen = new SequenceGenerator(exec, "sr:", () -> ticks.addAndGet(10L));
 
-        assertThat(gen.ensureCounterValid(1, 0, 50L)).isFalse();
+        assertThat(gen.ensureCounterValid(new ShardTopology(1, 1, 150, 0L), 0, 50L)).isFalse();
 
         // A truncated scan still repairs with what it found: under-estimating maxSeq is safe,
         // because the guard only raises the counter.
         verify(cmd).set("sr:seq:0", "101");
+    }
+
+    @Test
+    void taggedGenerationIncrementsTheTaggedCounterKey() {
+        RedisExecutor exec = mock(RedisExecutor.class);
+        RedisCommands<String, String> cmd = wire(exec);
+        when(cmd.incr(anyString())).thenReturn(1L);
+
+        new SequenceGenerator(exec, "sr:")
+                .next(new ShardTopology(3, 2, 150, 0L, ShardKeys.FORMAT_TAGGED), 1);
+
+        // The counter INCR must target the tagged key, or it will not share a Cluster slot
+        // with the record and index keys the write script touches.
+        verify(cmd).incr("sr:g3:seq:{1}");
+    }
+
+    @Test
+    void taggedGenerationReadsAndRepairsTheTaggedCounterKey() {
+        // ensureCounterValid GETs the counter before deciding whether to raise it. Asserting
+        // the key it reads proves the repair path follows the generation's format too.
+        RedisExecutor exec = mock(RedisExecutor.class);
+        RedisCommands<String, String> cmd = wire(exec);
+
+        KeyScanCursor<String> page = finishedCursor(List.of("sr:g3:dev:{1}:dev-1"));
+        when(cmd.scan(any(ScanArgs.class))).thenReturn(page);
+        when(cmd.zrevrangebyscoreWithScores(anyString(), any(Range.class), any(Limit.class)))
+                .thenReturn(List.of(ScoredValue.just(9.0, "evt-9")));
+        when(cmd.get(anyString())).thenReturn("3");
+
+        new SequenceGenerator(exec, "sr:")
+                .ensureCounterValid(new ShardTopology(3, 2, 150, 0L, ShardKeys.FORMAT_TAGGED),
+                        1, 30_000L);
+
+        verify(cmd).get("sr:g3:seq:{1}");
+        verify(cmd).set("sr:g3:seq:{1}", "10");
     }
 }

@@ -58,7 +58,7 @@ class SequenceGeneratorTest extends RedisShardingTestBase {
         // Manually write a ZSet member with score=100 simulating records after a flush.
         cmd().zadd("sr:dev:0:device-1", 100.0, "event-1");
         // Counter is at 0 (never incremented after flush) — should be reset.
-        gen.ensureCounterValid(1, 0, 30_000L); // version=1, shardIndex=0, 30s budget
+        gen.ensureCounterValid(new ShardTopology(1, 1, 150, 0L), 0, 30_000L); // version=1, shardIndex=0, 30s budget
 
         long next = gen.next(0);
         assertThat(next).isGreaterThan(100L);

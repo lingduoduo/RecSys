@@ -195,7 +195,7 @@ Append to the `## Sharp edges — notes` numbered list, continuing from the exis
 - [ ] **Step 5: Verify the documentation gate passes**
 
 ```bash
-JAVA_HOME=$(/usr/libexec/java_home -v 17) mvn test -Dtest=DocumentedMechanismTest+DocumentationIndexTest
+JAVA_HOME=$(/usr/libexec/java_home -v 17) mvn test -Dtest=DocumentedMechanismTest,DocumentationIndexTest
 ```
 
 Expected: PASS. A failure here almost always means a relative source link in the new
@@ -273,7 +273,7 @@ Replace the row-03 description with:
 - [ ] **Step 5: Verify the documentation gate passes**
 
 ```bash
-JAVA_HOME=$(/usr/libexec/java_home -v 17) mvn test -Dtest=DocumentedMechanismTest+DocumentationIndexTest
+JAVA_HOME=$(/usr/libexec/java_home -v 17) mvn test -Dtest=DocumentedMechanismTest,DocumentationIndexTest
 ```
 
 Expected: PASS.
@@ -299,7 +299,7 @@ Also scopes the "cluster-ready without a data migration" claim in 03 §6 and 14 
 single-key operations, not for multi-key ones.
 
 ## Test plan
-- `mvn test -Dtest=DocumentedMechanismTest+DocumentationIndexTest` (both are in the PR gate)
+- `mvn test -Dtest=DocumentedMechanismTest,DocumentationIndexTest` (both are in the PR gate)
 
 ## Follow-up
 Stage 2 closes sharp edges 6 and 7. Spec:
@@ -468,7 +468,7 @@ If `ShardTopologyTest.java` lacks the AssertJ import, add
 - [ ] **Step 3: Run the tests to verify they fail**
 
 ```bash
-JAVA_HOME=$(/usr/libexec/java_home -v 17) mvn test -Dtest=ShardKeysTest+ShardTopologyTest
+JAVA_HOME=$(/usr/libexec/java_home -v 17) mvn test -Dtest=ShardKeysTest,ShardTopologyTest
 ```
 
 Expected: FAIL — compilation error; neither `ShardKeys` nor `ShardTopology.keyFormat()` exists.
@@ -586,7 +586,7 @@ topology that predates the field.
 - [ ] **Step 6: Run the tests to verify they pass**
 
 ```bash
-JAVA_HOME=$(/usr/libexec/java_home -v 17) mvn test -Dtest=ShardKeysTest+ShardTopologyTest
+JAVA_HOME=$(/usr/libexec/java_home -v 17) mvn test -Dtest=ShardKeysTest,ShardTopologyTest
 ```
 
 Expected: PASS, all tests in both classes.
@@ -781,7 +781,7 @@ format it was written under, defaulting to untagged for a document that predates
 - [ ] **Step 6: Run the tests to verify they pass**
 
 ```bash
-JAVA_HOME=$(/usr/libexec/java_home -v 17) mvn test -Dtest=ShardTopologySnapshotFormatTest+ShardKeysTest+ShardTopologyTest
+JAVA_HOME=$(/usr/libexec/java_home -v 17) mvn test -Dtest=ShardTopologySnapshotFormatTest,ShardKeysTest,ShardTopologyTest
 ```
 
 Expected: PASS.
@@ -891,7 +891,7 @@ Next to the existing `fixedAtVersion`:
 - [ ] **Step 5: Run the tests to verify they pass**
 
 ```bash
-JAVA_HOME=$(/usr/libexec/java_home -v 17) mvn test -Dtest=ShardTopologyProviderTest+ShardTopologySnapshotFormatTest+ShardKeysTest+ShardTopologyTest
+JAVA_HOME=$(/usr/libexec/java_home -v 17) mvn test -Dtest=ShardTopologyProviderTest,ShardTopologySnapshotFormatTest,ShardKeysTest,ShardTopologyTest
 ```
 
 Expected: PASS.
@@ -1062,7 +1062,7 @@ In `SequenceGeneratorGenerationTest.java` and `SequenceGeneratorTest.java`, repl
 - [ ] **Step 6: Run the tests to verify they pass**
 
 ```bash
-JAVA_HOME=$(/usr/libexec/java_home -v 17) mvn test -Dtest=SequenceGeneratorTest+SequenceGeneratorGenerationTest
+JAVA_HOME=$(/usr/libexec/java_home -v 17) mvn test -Dtest=SequenceGeneratorTest,SequenceGeneratorGenerationTest
 ```
 
 Expected: PASS.
@@ -1346,7 +1346,7 @@ class ShardedRecordStoreGenerationKeyTest {
 - [ ] **Step 6: Run the full sharding suite**
 
 ```bash
-JAVA_HOME=$(/usr/libexec/java_home -v 17) mvn test -Dtest='Shard*Test+SequenceGenerator*Test'
+JAVA_HOME=$(/usr/libexec/java_home -v 17) mvn test -Dtest='Shard*Test,SequenceGenerator*Test'
 ```
 
 Expected: PASS, except any `@Tag("docker")` class, which is skipped without Docker. If
@@ -1431,11 +1431,42 @@ class ShardedRecordStoreAtomicWriteIntegrationTest extends RedisShardingTestBase
         // Seed a tagged device ZSet with a high score, set the counter behind it, run the
         // repair, and assert the counter was raised.
     }
+
+    @Test
+    void everyArgvFieldLandsInTheRightPlace() {
+        // Write one record with distinct values in every field, then assert the stored hash's
+        // deviceId/type/eventId/payload/timestamp and the stream entry's deviceId/seq/type/
+        // eventId each carry the value they were given. Catches a positional ARGV transposition
+        // — the failure mode that corrupts every record while still returning OK.
+    }
+
+    @Test
+    void zeroTtlLeavesTheRecordKeyWithoutAnExpiry() {
+        // write(record) with no TTL argument must leave TTL == -1 on the record key, not -2 and
+        // not a positive value. Only the positive-TTL case is covered today.
+    }
+
+    @Test
+    void theSequenceRendersAsAnIntegerNotAFloat() {
+        // The script concatenates a Lua number into the record key. Assert the key at
+        // "<recPrefix><seq>" exists and that "<recPrefix><seq>.0" does not, so a %.14g
+        // rendering regression is caught rather than silently producing unreadable keys.
+    }
 }
 ```
 
 Fill in each body against the real store — the comments state the exact assertion each test
 owes. Do not leave a body empty; an empty `@Test` passes and proves nothing.
+
+**Use a `FORMAT_TAGGED` topology wherever the test does not specifically need format 1.** Every
+existing Docker test in this package builds an untagged topology, so before this task the Lua
+script has never executed against tagged keys at all — and tagged keys are the entire point of
+the format work. `deviceReadMergesAnUntaggedPreviousWithATaggedCurrentGeneration` is the one
+test that deliberately mixes them.
+
+These ten tests exist because a task review found the write path's guarantees asserted nowhere:
+the mock-based unit test cannot execute Lua, and every pre-existing Docker test predates the
+script. Treat the list as the coverage contract, not as suggestions.
 
 - [ ] **Step 2: Run against Docker**
 
@@ -1452,6 +1483,281 @@ git add src/test/java/com/recsys/infrastructure/redis/sharding/ShardedRecordStor
 git commit -m "test: verify atomic write and cross-format dual-read against real Redis"
 ```
 
+---
+
+### Task 10: Fix the dual-read dedup identity
+
+> **Runs before Task 9.** Added mid-execution after Task 8's Docker tests surfaced the defect.
+> Task 9 documents the migration as resting on the dual read, so the dual read has to be
+> correct first.
+
+**Files:**
+- Modify: `src/main/java/com/recsys/infrastructure/redis/sharding/ShardedRecordStore.java:191-202`
+- Modify: `src/test/java/com/recsys/infrastructure/redis/sharding/ShardedRecordStoreAtomicWriteIntegrationTest.java`
+
+**The defect.** `mergeDevicePages` dedupes the two generations' pages with
+`r.deviceId() + ":" + r.seqNum()`. Sequence counters are **per generation** —
+`ShardKeys.base()` puts the generation prefix in the counter key, so every new generation
+starts counting from 1 again. During a reshard's dual-read window a gen-2 record at seq 1
+therefore collides with the gen-1 record at seq 1 for the same device, and the
+`putIfAbsent` for the previous generation silently drops the older record. `readDevice`
+returns fewer records than exist, with no error.
+
+`seqNum` was never a valid identity across generations. `eventId` is: it is the member of
+the device index ZSet, and the write path's `ZADD NX` makes it unique per device. When the
+same `eventId` genuinely appears in both generations — a write retried across a reshard —
+preferring the current generation is still the right resolution, which the existing
+`put` / `putIfAbsent` ordering already gives.
+
+**Interfaces:**
+- Consumes: `ShardedRecord.eventId()`, `ShardedRecord.deviceId()`.
+- Produces: nothing new — `readDevice`'s signature and return type are unchanged.
+
+- [ ] **Step 1: Write the failing test**
+
+Add to `ShardedRecordStoreAtomicWriteIntegrationTest`. This is the test the existing
+migration test's counter-seeding workaround was avoiding, so write it to collide
+deliberately:
+
+```java
+    @Test
+    void deviceReadKeepsBothGenerationsWhenSequenceNumbersCollide() {
+        // Sequence counters are per generation, so both generations independently issue seq 1
+        // for the same device. Deduping on (deviceId, seqNum) would drop the older record.
+        // Deliberately does NOT seed the counters apart — the collision is the point.
+    }
+```
+
+Fill the body against the real store, following the shape the existing
+`deviceReadMergesAnUntaggedPreviousWithATaggedCurrentGeneration` test already uses for
+setting up two generations: write one record under generation 1, publish a reshard, write a
+second record with a different `eventId` under generation 2 while both counters sit at the
+same value, then assert `readDevice` returns **both** eventIds. Assert on eventIds, not on
+counts alone, so the failure message names what went missing.
+
+- [ ] **Step 2: Run it and watch it fail for the right reason**
+
+```bash
+JAVA_HOME=$(/usr/libexec/java_home -v 17) mvn test -Dtest=ShardedRecordStoreAtomicWriteIntegrationTest -DexcludedGroups=""
+```
+
+Expected: the new test FAILS, returning one record where two were written. Confirm the
+failure is the missing older record and not a setup error — if both records are present,
+your two generations are not actually issuing the same sequence number and the test is not
+yet exercising the collision.
+
+- [ ] **Step 3: Fix the dedup identity**
+
+```java
+    // Merge current + previous device records, dedupe by (deviceId, eventId) preferring current,
+    // sort by seqNum ascending, cap at `limit`. eventId — not seqNum — is the identity: sequence
+    // counters are per generation, so both generations issue the same numbers and deduping on
+    // seqNum would silently drop previous-generation records during a migration window.
+    private Page<ShardedRecord> mergeDevicePages(Page<ShardedRecord> current,
+                                                 Page<ShardedRecord> previous, int limit) {
+        java.util.LinkedHashMap<String, ShardedRecord> byKey = new java.util.LinkedHashMap<>();
+        for (ShardedRecord r : current.records()) byKey.put(r.deviceId() + ":" + r.eventId(), r);
+        for (ShardedRecord r : previous.records()) byKey.putIfAbsent(r.deviceId() + ":" + r.eventId(), r);
+        List<ShardedRecord> merged = new ArrayList<>(byKey.values());
+        // Ordering across generations is approximate for the same reason: two generations can
+        // issue equal sequence numbers, so a merged page is not a strict chronological sequence.
+        // Within one generation it is exact, and previous-generation data TTLs out of the window.
+        merged.sort(java.util.Comparator.comparingLong(ShardedRecord::seqNum));
+        if (merged.size() > limit) merged = new ArrayList<>(merged.subList(0, limit));
+        // Pagination is driven by the current generation's cursor; previous-generation records
+        // beyond the first page are not paged — they self-heal when the migration window closes.
+        return new Page<>(merged, current.next());
+    }
+```
+
+- [ ] **Step 4: Run the test to verify it passes**
+
+```bash
+JAVA_HOME=$(/usr/libexec/java_home -v 17) mvn test -Dtest=ShardedRecordStoreAtomicWriteIntegrationTest -DexcludedGroups=""
+```
+
+Expected: PASS, all tests in the class.
+
+- [ ] **Step 5: Remove the workaround the defect forced**
+
+`deviceReadMergesAnUntaggedPreviousWithATaggedCurrentGeneration` seeds the generation-1
+counter to 100 so the two generations' sequence ranges stay disjoint, with a comment
+explaining that it is working around this defect. Delete the seeding line and its comment —
+the defect is gone — and re-run the class to confirm the test still passes on its own merits.
+
+- [ ] **Step 6: Run the whole sharding package**
+
+```bash
+JAVA_HOME=$(/usr/libexec/java_home -v 17) mvn test -Dtest='Shard*Test,SequenceGenerator*Test,ConsistentHashRingTest' -DexcludedGroups=""
+```
+
+Expected: PASS. `ShardedRecordStoreDualReadTest` covers the merge directly and must still
+pass — if it asserted the old dedup identity, update it to the new one rather than weakening it.
+
+- [ ] **Step 7: Commit**
+
+```bash
+git add src/main/java/com/recsys/infrastructure/redis/sharding/ShardedRecordStore.java \
+        src/test/java/com/recsys/infrastructure/redis/sharding/ShardedRecordStoreAtomicWriteIntegrationTest.java
+git commit -m "fix: dedupe the dual read by eventId, not by sequence number
+
+Sequence counters are per generation, so both generations independently
+issue the same numbers. Deduping a merged device page on (deviceId, seqNum)
+made every gen-N record shadow the gen-(N-1) record at the same sequence,
+so readDevice silently returned fewer records than existed for the whole
+24h migration window. eventId is the device index's own member and is
+unique per device, which makes it the correct identity."
+```
+---
+
+### Task 11: Make the merged page's cursor agree with what it returned
+
+> **Runs before Task 9.** Added mid-execution after Task 10's review. Second defect in
+> `mergeDevicePages`, same root cause as Task 10: sequence numbers are per generation.
+
+**Files:**
+- Modify: `src/main/java/com/recsys/infrastructure/redis/sharding/ShardedRecordStore.java` (`mergeDevicePages`)
+- Modify: `src/test/java/com/recsys/infrastructure/redis/sharding/ShardedRecordStoreAtomicWriteIntegrationTest.java`
+
+**The defect.** `mergeDevicePages` sorts the merged records ascending, truncates to the
+**lowest** `limit`, and then returns `current.next()` as the cursor. `current.next()` is the
+current generation's **highest** returned sequence (`readDeviceAt` sets it from the last
+element of its own page). The two disagree.
+
+Concretely, with `limit = 10`, the current generation returning seqs 1–10 and the previous
+generation also returning seqs 1–10: the merge holds 20 records, truncates to seqs 1–5 of
+each generation, and hands back cursor `10`. The next page starts at `minScore = 11`, so
+current-generation records 6–10 are returned by no page at all.
+`ShardedRecordService.handleReadDevice` echoes that cursor to API clients, so the loss is
+externally visible. A second variant: when the current generation returns fewer than `limit`
+but the merge still exceeds `limit`, the page truncates while `current.next()` is null —
+terminal loss, no further page is even attempted.
+
+This is pre-existing logic, but Task 10 removed what was masking it: the old
+`(deviceId, seqNum)` dedup collapsed colliding sequences, which kept `merged.size()` within
+`limit` in exactly the case that now overflows.
+
+**The fix has two parts, and both are needed.**
+
+1. **Take the cursor from the last record actually returned**, not from either input page.
+   The cursor's meaning is "every record with a sequence at or below this has been
+   delivered", and only the returned page can establish that.
+2. **Never split a sequence number across pages.** The cursor is a sequence, so if a page
+   ends in the middle of a group of records sharing one sequence, the stragglers can never
+   be reached — the next page starts strictly above that sequence. When the cut lands
+   inside such a group, extend the page past it rather than stranding records. With two
+   generations at most two records can share a sequence, so this over-delivers by at most
+   one record beyond `limit`. `limit` becomes a soft cap; silent data loss is not an
+   acceptable price for a hard one.
+
+**Interfaces:**
+- Consumes: `ShardCursor.seq(long)`, `Page.next()`, `ShardedRecord.seqNum()`.
+- Produces: nothing new — `readDevice`'s signature and return type are unchanged.
+
+- [ ] **Step 1: Write the failing tests**
+
+Add both to `ShardedRecordStoreAtomicWriteIntegrationTest`:
+
+```java
+    @Test
+    void pagingADualReadWindowReturnsEveryRecordAcrossPages() {
+        // Both generations hold more than one page of records for the same device, at
+        // overlapping sequence numbers. Page through readDevice to exhaustion following the
+        // returned cursor, collecting eventIds, and assert the union equals everything written.
+        // Before the fix the merged first page returns the lowest sequences but a cursor taken
+        // from the current generation's highest, so current-generation records in between are
+        // returned by no page.
+    }
+
+    @Test
+    void aPageNeverEndsInTheMiddleOfASequenceNumber() {
+        // Arrange both generations to hold a record at the SAME sequence number, positioned so
+        // that a `limit` boundary falls between them. Assert the returned page contains either
+        // both or neither — never one — because the cursor is a sequence and a straggler at the
+        // same sequence could not be reached by any later page.
+    }
+```
+
+Fill both bodies against the real store, following the two-generation setup the existing
+`deviceReadKeepsBothGenerationsWhenSequenceNumbersCollide` test already uses. Assert on
+eventIds, not counts alone, so a failure names what went missing.
+
+- [ ] **Step 2: Run them and watch them fail for the right reason**
+
+```bash
+JAVA_HOME=$(/usr/libexec/java_home -v 17) mvn test -Dtest=ShardedRecordStoreAtomicWriteIntegrationTest -DexcludedGroups=""
+```
+
+Expected: both new tests FAIL, with the first reporting specific missing eventIds. If either
+passes before the production change, its setup is not reaching the truncation path — most
+likely the merged size never exceeds `limit`. Fix the setup until it fails for the stated
+reason, and quote the failure in your report.
+
+- [ ] **Step 3: Rewrite the tail of `mergeDevicePages`**
+
+Keep the dedup and sort from Task 10 exactly as they are. Replace everything from the
+truncation onward:
+
+```java
+        if (merged.isEmpty()) return new Page<>(merged, null);
+
+        // Never split a sequence number across pages. The cursor is a sequence, so a record
+        // sharing the last returned sequence could not be reached by any later page — the next
+        // page starts strictly above it. Extending past the boundary over-delivers by at most
+        // one record per generation; stranding records would be silent data loss.
+        int cut = Math.min(limit, merged.size());
+        while (cut < merged.size() && merged.get(cut).seqNum() == merged.get(cut - 1).seqNum()) {
+            cut++;
+        }
+        boolean truncated = cut < merged.size();
+        List<ShardedRecord> page = truncated ? new ArrayList<>(merged.subList(0, cut)) : merged;
+
+        // The cursor comes from the last record actually returned. Taking it from the current
+        // generation's own page — as this did before — skips every current-generation record
+        // that truncation dropped, because that page's cursor is its own highest sequence.
+        boolean moreRemains = truncated || current.next() != null || previous.next() != null;
+        ShardCursor next = moreRemains
+                ? ShardCursor.seq(page.get(page.size() - 1).seqNum())
+                : null;
+        return new Page<>(page, next);
+```
+
+Delete the old comment about previous-generation records beyond the first page not being
+paged — it described the behavior this step removes.
+
+- [ ] **Step 4: Run the tests to verify they pass**
+
+```bash
+JAVA_HOME=$(/usr/libexec/java_home -v 17) mvn test -Dtest=ShardedRecordStoreAtomicWriteIntegrationTest -DexcludedGroups=""
+```
+
+Expected: PASS, all tests in the class.
+
+- [ ] **Step 5: Run the whole sharding package**
+
+```bash
+JAVA_HOME=$(/usr/libexec/java_home -v 17) mvn test -Dtest='Shard*Test,SequenceGenerator*Test,ConsistentHashRingTest' -DexcludedGroups=""
+```
+
+Expected: PASS. `ShardedRecordStoreDualReadTest` and `ShardedRecordServiceCursorTest` both
+exercise paging. If either encoded the old cursor behavior, update it to the new contract —
+but do not weaken an assertion to make it pass. If a test can no longer express its intent,
+say so in your report rather than deleting the check.
+
+- [ ] **Step 6: Commit**
+
+```bash
+git add src/main/java/com/recsys/infrastructure/redis/sharding/ShardedRecordStore.java \
+        src/test/java/com/recsys/infrastructure/redis/sharding/ShardedRecordStoreAtomicWriteIntegrationTest.java
+git commit -m "fix: take the merged page's cursor from what it actually returned
+
+A dual-read page truncated to the lowest `limit` records but returned the
+current generation's highest sequence as its cursor, so every current
+-generation record between the two was returned by no page at all, and the
+bad cursor reached API clients. The cursor now comes from the last record
+returned, and a page never ends mid-sequence — the cursor is a sequence, so
+a straggler sharing it could never be reached."
+```
 ---
 
 ### Task 9: Gate the new tests and update the docs
@@ -1474,7 +1780,13 @@ In `pom.xml`, alongside `**/sharding/SequenceGeneratorGenerationTest.java`:
                 <include>**/sharding/ShardKeysTest.java</include>
                 <include>**/sharding/ShardTopologySnapshotFormatTest.java</include>
                 <include>**/sharding/ShardedRecordStoreAtomicWriteTest.java</include>
+                <include>**/sharding/ShardTopologyProviderTest.java</include>
 ```
+
+`ShardTopologyProviderTest` joins them because Task 5 added the tests proving each generation
+carries its own key format — the property the whole migration depends on — and it is a pure
+Mockito unit test with no Redis. Confirm that before adding it: if it turns out to need a
+container, leave it out rather than putting a skipped test in the gate.
 
 All three are pure unit tests with mocked Redis, which is what that profile's comment
 requires. Do **not** add the Task 8 integration class — `<excludedGroups>` would skip it and
@@ -1526,6 +1838,46 @@ therefore one Cluster slot, which is what makes the multi-key script legal.
    dual-read window per-device reads span both formats — see
    [03 sharp edge 7](03_DB_Scaling_Sharding.md#sharp-edges--notes).
 ```
+
+- [ ] **Step 5a: Record what the dual-read fixes changed, and what they did not**
+
+Tasks 10 and 11 fixed two data-loss defects in the dual-read merge that the Docker tests
+surfaced. Both predate this work, and neither is described anywhere in the docs. Add sharp
+edge 8 to 03:
+
+```markdown
+8. **The dual-read merge identifies records by `eventId`, and its page cap is soft.**
+   Sequence numbers are per generation — each generation's counter starts again at 1 — so
+   they are not an identity and not a total order across a migration window. The merge
+   therefore dedupes on `(deviceId, eventId)`, the device index's own member. Two
+   consequences. A merged page never ends part-way through a group of records sharing one
+   sequence, because the cursor *is* a sequence and a straggler at that same sequence could
+   never be reached by a later page — so a page may return `limit + 1` records during a
+   window. And a record whose `eventId` exists in both generations at different sequences
+   can still be skipped or delivered twice: the merge sees one page at a time and cannot
+   know the other generation holds the same event further along. That case needs the same
+   `eventId` written on both sides of a reshard, and reads remain at-least-once, not
+   exactly-once, for its duration.
+```
+
+And add the matching entry to 15's sharp-edge list as item 8:
+
+```markdown
+8. **Per-device reads are at-least-once during a reshard window, not exactly-once.** The
+   dual-read merge dedupes on `(deviceId, eventId)` within a single merged page. An event
+   written on both sides of a reshard can be skipped or returned twice across page
+   boundaries — see [03 sharp edge 8](03_DB_Scaling_Sharding.md#sharp-edges--notes).
+```
+
+Do not write that the dual read is lossless. It is materially better than it was, and the
+two specific defects are gone, but the remaining case above is real and undocumented
+elsewhere.
+
+- [ ] **Step 5b: Finish the correction Task 2 started**
+
+03's sharp edge 2 still reads "The ring is cluster-ready" with no caveat, while sharp edge 7
+and 14_Partitioning both now scope that claim to single-key operations. Bring edge 2 into
+line — a one-clause change pointing at edge 7, not a rewrite.
 
 - [ ] **Step 6: Run the full gate profile**
 

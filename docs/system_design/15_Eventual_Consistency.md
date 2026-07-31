@@ -116,9 +116,9 @@ That section owns the sharding consequence; this one owns the mechanism.
 ### 3a. Redis-backed sharding / shard topology
 
 - **Strongly consistent:** the topology read-modify-write (`ShardTopologyStore`
-  atomic Lua, SETNX first-writer-wins bootstrap), sequence assignment
-  (`SequenceGenerator` atomic INCR), and a single record write (pipelined
-  HSET+ZADD+XADD to the primary).
+  atomic Lua, SETNX first-writer-wins bootstrap), and a single record write — one Lua
+  script that `INCR`s the shard's sequence counter and commits the device index, record
+  hash, and stream append together, atomically, against the primary.
 - **Eventually consistent:** the topology *view* across instances — each JVM
   holds a `volatile Snapshot` refreshed on a fixed 30 s delay
   (`SHARD_TOPOLOGY_REFRESH_SECONDS`, [OnlinePredictionServer.java:163](../../src/main/java/com/recsys/api/online/OnlinePredictionServer.java#L163)).
@@ -126,7 +126,7 @@ That section owns the sharding consequence; this one owns the mechanism.
 - **Reshard dual-read window** = `SHARDED_RECORD_MAX_TTL_SECONDS`, default
   **24 h** ([OnlinePredictionServer.java:214](../../src/main/java/com/recsys/api/online/OnlinePredictionServer.java#L214)).
   During it, `readDevice` reads current **and** `previousIfActive()` and merges
-  (dedupe by `(deviceId, seqNum)`); new writes land only in the new generation.
+  (dedupe by `(deviceId, eventId)`); new writes land only in the new generation.
   `readShard` is **current-generation only** and silently miss
   previous-generation records.
 - **Read-your-writes** holds for same-instance/same-generation primary-only
@@ -216,8 +216,12 @@ audit:
    health-check path restores availability.
 6. **Cloud Map DNS staleness is unbounded if `networkaddress.cache.ttl` is
    pre-set** — the gateway caps it to 30 s only when not already configured.
-7. **A single-shard record write is not atomic.** `ShardedRecordStore` pipelines its
-   HSET + ZADD + XADD rather than committing them together, so a partial failure can
-   leave a record with no device-index entry or an index entry with no record. Recovery
-   is idempotent retry, not rollback — see
-   [03 sharp edge 6](03_DB_Scaling_Sharding.md#sharp-edges--notes).
+7. **Record-store key format is per generation.** A single-shard write is atomic, but a
+   generation created before the atomic-write change keeps the untagged key format for its
+   whole life; only a reshard moves a deployment onto the tagged format. During the 24 h
+   dual-read window per-device reads span both formats — see
+   [03 sharp edge 7](03_DB_Scaling_Sharding.md#sharp-edges--notes).
+8. **Per-device reads are at-least-once during a reshard window, not exactly-once.** The
+   dual-read merge dedupes on `(deviceId, eventId)` within a single merged page. An event
+   written on both sides of a reshard can be skipped or returned twice across page
+   boundaries — see [03 sharp edge 8](03_DB_Scaling_Sharding.md#sharp-edges--notes).

@@ -54,6 +54,13 @@ public final class ShardTopologyProvider {
         return new ShardTopologyProvider(new ShardTopology(version, shardCount, vnodes, 0L));
     }
 
+    /** Constant provider pinned at an explicit version and key format — test/helper use. */
+    public static ShardTopologyProvider fixedAtVersion(int version, int shardCount, int vnodes,
+                                                       int keyFormat) {
+        return new ShardTopologyProvider(
+                new ShardTopology(version, shardCount, vnodes, 0L, keyFormat));
+    }
+
     /**
      * Package-private factory for dual-read tests: constructs a fixed provider whose
      * current/previous/expiry triple is set directly. The fixed ctor's clock returns 0L;
@@ -87,11 +94,13 @@ public final class ShardTopologyProvider {
         try {
             ShardTopologyStore.Snapshot s = store.load();
             if (s == null) return;  // not yet bootstrapped — keep last-good
-            ShardTopology current = new ShardTopology(s.version(), s.shardCount(), s.vnodes(), s.createdAtMs());
+            ShardTopology current = new ShardTopology(s.version(), s.shardCount(), s.vnodes(),
+                    s.createdAtMs(), s.effectiveKeyFormat());
             ShardTopology previous = null;
             long prevExpiresAtMs = Long.MIN_VALUE;
             if (s.prevVersion() != null && s.prevShardCount() != null && s.prevExpiresAtMs() != null) {
-                previous = new ShardTopology(s.prevVersion(), s.prevShardCount(), s.vnodes(), s.createdAtMs());
+                previous = new ShardTopology(s.prevVersion(), s.prevShardCount(), s.vnodes(),
+                        s.createdAtMs(), s.effectivePrevKeyFormat());
                 prevExpiresAtMs = s.prevExpiresAtMs();
             }
             this.snapshot = new Snapshot(current, previous, prevExpiresAtMs);
