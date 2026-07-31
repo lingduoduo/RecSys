@@ -35,4 +35,16 @@ class ShardTopologyTest {
         assertThat(Generations.keyPrefix(2)).isEqualTo("g2:");
         assertThat(Generations.keyPrefix(7)).isEqualTo("g7:");
     }
+
+    @Test
+    void keyFormatDefaultsToUntaggedOnTheFourArgConstructor() {
+        assertThat(new ShardTopology(1, 2, 150, 0L).keyFormat())
+                .isEqualTo(ShardKeys.FORMAT_UNTAGGED);
+    }
+
+    @Test
+    void keyFormatIsCarriedWhenSuppliedExplicitly() {
+        assertThat(new ShardTopology(2, 4, 150, 0L, ShardKeys.FORMAT_TAGGED).keyFormat())
+                .isEqualTo(ShardKeys.FORMAT_TAGGED);
+    }
 }

@@ -10,14 +10,20 @@ public final class ShardTopology {
     private final int shardCount;
     private final int vnodes;
     private final long createdAtMs;
+    private final int keyFormat;
     private final ConsistentHashRing ring;
 
     public ShardTopology(int version, int shardCount, int vnodes, long createdAtMs) {
+        this(version, shardCount, vnodes, createdAtMs, ShardKeys.FORMAT_UNTAGGED);
+    }
+
+    public ShardTopology(int version, int shardCount, int vnodes, long createdAtMs, int keyFormat) {
         if (version < 1) throw new IllegalArgumentException("version must be >= 1");
         this.version = version;
         this.shardCount = shardCount;          // ConsistentHashRing validates >= 1
         this.vnodes = vnodes;                  // ConsistentHashRing validates >= 1
         this.createdAtMs = createdAtMs;
+        this.keyFormat = keyFormat;
         this.ring = new ConsistentHashRing(shardCount, vnodes);
     }
 
@@ -25,6 +31,7 @@ public final class ShardTopology {
     public int shardCount()   { return shardCount; }
     public int vnodes()       { return vnodes; }
     public long createdAtMs() { return createdAtMs; }
+    public int keyFormat()    { return keyFormat; }
     public ConsistentHashRing ring() { return ring; }
 
     public int shardFor(String deviceId) { return ring.shardFor(deviceId); }
