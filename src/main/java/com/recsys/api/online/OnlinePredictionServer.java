@@ -1,5 +1,6 @@
 package com.recsys.api.online;
 
+import ch.qos.logback.classic.LoggerContext;
 import com.recsys.application.online.OnlineServices;
 import com.recsys.application.online.OnlineBlendingPipeline;
 import com.recsys.application.online.OnlineRecommendationService;
@@ -282,6 +283,12 @@ public final class OnlinePredictionServer {
                     activeRegistrar.close();
                 }
                 activeJedisPool.close();
+                // Flushes the Splunk appender's queued events. Must run last: stopping the
+                // LoggerContext detaches and stops every appender (console included), so any
+                // logging after this point would be silently dropped.
+                if (LoggerFactory.getILoggerFactory() instanceof LoggerContext loggerContext) {
+                    loggerContext.stop();
+                }
             }));
 
             server.start().join();

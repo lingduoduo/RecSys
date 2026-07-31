@@ -10,14 +10,15 @@
   <include resource="logback-common.xml"/>
 
   <!--
-    Logback-classic registers no shutdown hook of its own, and only the Spring Boot model
-    service stops this LoggerContext today (via Spring's LoggingApplicationListener). The
-    three Armeria mains have nothing that calls LoggerContext.stop(), so without this hook a
-    rolling deploy or SIGTERM would discard the SPLUNK appender's whole in-flight queue —
-    including the shutdown log lines those mains emit from their own shutdown hooks. Safe to
-    add for the Spring service too: SplunkHecAppender.stop() guards on its `running` flag, so
-    a second stop() (Spring's hook, then this one, in either order) is a no-op rather than a
-    double-ship.
+    Deliberately no Logback-registered shutdown element here: Logback's DefaultShutdownHook
+    registers its own independent Runtime.addShutdownHook() thread (0 ms delay), which races
+    each Armeria main's own shutdown-time thread and its GracefulServers drain window (1 s
+    quiet period + up to 30 s drain). That independent thread calls LoggerContext.stop() ->
+    reset(), which detaches and stops every appender — CONSOLE included, not just SPLUNK —
+    so it could tear down logging while a service is still draining and emitting log lines.
+    Instead, each Armeria main stops the LoggerContext explicitly, as the last statement of
+    its own shutdown-time thread, after the drain completes. The Spring Boot model service
+    needs no equivalent call: Spring's LoggingApplicationListener already stops the context
+    on shutdown.
   -->
-  <shutdownHook/>
 </configuration>

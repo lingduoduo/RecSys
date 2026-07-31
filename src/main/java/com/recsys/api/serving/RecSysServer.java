@@ -1,5 +1,6 @@
 package com.recsys.api.serving;
 
+import ch.qos.logback.classic.LoggerContext;
 import com.linecorp.armeria.common.HttpMethod;
 import com.linecorp.armeria.common.HttpResponse;
 import com.linecorp.armeria.common.HttpStatus;
@@ -210,6 +211,12 @@ public class RecSysServer {
                 }
                 jedisPool.close();
                 ownedCatalogComponent.close();
+                // Flushes the Splunk appender's queued events. Must run last: stopping the
+                // LoggerContext detaches and stops every appender (console included), so any
+                // logging after this point would be silently dropped.
+                if (LoggerFactory.getILoggerFactory() instanceof LoggerContext loggerContext) {
+                    loggerContext.stop();
+                }
             }, "recsys-shutdown"));
             log.info("Starting RecSys serving API on port {}", port);
             server.start().join();

@@ -195,6 +195,21 @@ factoring it out:
 The old `logback-spring.xml` is deleted: it cannot be reached while `logback.xml` exists on
 the classpath, so it would be dead code.
 
+`logback.xml` carries no `<shutdownHook/>`. Logback's `DefaultShutdownHook` registers its
+own independent `Runtime.addShutdownHook()` thread (0 ms delay), and JVM shutdown hooks
+run concurrently with no ordering guarantee — it would race each Armeria main's own
+shutdown hook and the `GracefulServers.applyShutdownWindow` drain (a 1 s quiet period plus
+up to 30 s of drain) that hook waits on. `LoggerContext.stop()` calls `reset()`, which
+detaches and stops *every* appender, `CONSOLE` included, not just `SPLUNK` — so Logback's
+own hook firing mid-drain would tear down logging while the service is still emitting
+lines, losing them from console and Splunk alike, which is worse than the queued-events
+loss this feature exists to fix. Instead, each of the three Armeria mains calls
+`((LoggerContext) LoggerFactory.getILoggerFactory()).stop()` (guarded with an
+`instanceof` check) as the very last statement of its own shutdown hook, after
+`server.stop().join()` and every other log line that hook emits. The Spring Boot model
+service needs no equivalent call: Spring's `LoggingApplicationListener` already stops the
+context on shutdown.
+
 **Operational side effect worth flagging:** before this change the three Armeria mains had
 no Logback configuration at all and fell back to Logback's built-in `BasicConfigurator`,
 which attaches a console appender to root at **DEBUG**. `logback-common.xml`'s root logger
@@ -273,7 +288,7 @@ searchable logs at `localhost:8000` with no manual UI steps.
 | 403 (bad or rotated token) | `addError` once, then throttled; draining continues, since the token may be rotated in place. |
 | Serialization throws on one event | That event is skipped; the rest of the batch still ships. |
 | Hostname resolution fails at start | `host` becomes `unknown`; the appender still starts. |
-| JVM shutdown | `stop()` interrupts the drain thread and flushes the remainder with a bounded 2s wait, mirroring `AsyncEventPublisher.close()`. |
+| JVM shutdown | `stop()` interrupts the drain thread and flushes the remainder with a bounded 2s wait, mirroring `AsyncEventPublisher.close()`. It runs when the `LoggerContext` is stopped, which each Armeria main now does explicitly at the end of its own shutdown hook (after its drain completes) rather than via a Logback `<shutdownHook/>` — see "Logback wiring" above for why. |
 
 **No retry is a deliberate choice, not an omission.** Retrying inside the drain thread
 converts a Splunk outage into a growing backlog and delays every subsequent batch;
