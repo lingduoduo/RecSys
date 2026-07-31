@@ -86,6 +86,11 @@ emits Try/Confirm/Cancel states. Both render retry policies with exponential bac
 `MaxDelaySeconds: 30`, and `JitterStrategy: FULL`; callers remain responsible for
 deploying the generated Amazon States Language definition.
 
+Why this machinery exists at all — which guarantee sharding takes away, and what has to
+be rebuilt by hand once a transaction can no longer span the write — is
+[03 §7](03_DB_Scaling_Sharding.md#7-cross-shard-atomicity--where-the-transaction-stops).
+That section owns the sharding consequence; this one owns the mechanism.
+
 ## 2. Every staleness window in the system
 
 | Layer | Window (default) | Escape hatch / notes |
@@ -211,3 +216,8 @@ audit:
    health-check path restores availability.
 6. **Cloud Map DNS staleness is unbounded if `networkaddress.cache.ttl` is
    pre-set** — the gateway caps it to 30 s only when not already configured.
+7. **A single-shard record write is not atomic.** `ShardedRecordStore` pipelines its
+   HSET + ZADD + XADD rather than committing them together, so a partial failure can
+   leave a record with no device-index entry or an index entry with no record. Recovery
+   is idempotent retry, not rollback — see
+   [03 sharp edge 6](03_DB_Scaling_Sharding.md#sharp-edges--notes).
