@@ -64,10 +64,24 @@ classes, including error handling. All internal diagnostics use Logback's own st
 (`addWarn`, `addError`, `addInfo`), which writes to Logback's status manager and cannot
 re-enter the appender.
 
-The JDK's `HttpClient` logs through `System.Logger`, not slf4j, and its request logging
-is off unless `jdk.httpclient.HttpClient.log` is set — so it does not create a cycle.
-This is a property of the chosen client, and is the reason not to swap in an slf4j-backed
-HTTP client later without re-checking it.
+The JDK's `HttpClient` logs through `System.Logger`, not slf4j *directly* — but that is
+not, by itself, a break in the cycle. This repo pulls in `org.slf4j:jul-to-slf4j` via
+`spring-boot-starter-logging`, Spring Boot installs `SLF4JBridgeHandler`, and the JDK's
+default `System.Logger` finder routes to `java.util.logging`. So the real chain is
+`System.Logger → JUL → slf4j → Logback → this appender`. The only thing actually
+breaking that cycle is that `HttpClient`'s request/response logging is off unless
+`jdk.httpclient.HttpClient.log` is explicitly set — which it never is here.
+
+**Do not set `jdk.httpclient.HttpClient.log` on a service with this appender attached.**
+It is the obvious first move when debugging "nothing is arriving in Splunk," and it is
+the wrong one: turning it on makes every HTTP request `SplunkHecClient` makes log a
+line, which enqueues, which ships, which logs — a self-sustaining amplification loop.
+Logback's per-thread `guard` in `UnsynchronizedAppenderBase` prevents a
+`StackOverflowError`, so the failure mode is not a crash but the drain thread pinned in
+the loop, which is arguably worse. This is a property of the chosen client's *default*
+logging configuration, not of `System.Logger` as a type, and is the reason not to swap
+in an slf4j-backed HTTP client later — or flip that property on — without re-checking
+this whole chain.
 
 The `CONSOLE` appender stays attached to root unconditionally. Nothing that reaches
 Logback is ever lost from stdout, whatever Splunk is doing.
@@ -180,6 +194,15 @@ factoring it out:
 
 The old `logback-spring.xml` is deleted: it cannot be reached while `logback.xml` exists on
 the classpath, so it would be dead code.
+
+**Operational side effect worth flagging:** before this change the three Armeria mains had
+no Logback configuration at all and fell back to Logback's built-in `BasicConfigurator`,
+which attaches a console appender to root at **DEBUG**. `logback-common.xml`'s root logger
+is **INFO**. So this change also raises those three services' effective log level from
+DEBUG to INFO. Almost certainly an improvement — nothing first-party is lost, since none of
+this repo's own packages have `log.debug` calls on the hot paths — but it is a real,
+previously-undocumented operational change riding along inside a Splunk feature, and is
+called out explicitly in `docs/runbooks/splunk-hec-logging.md`.
 
 What the test suite actually loads is worth stating precisely, because it determines
 whether a test-only opt-out is needed:

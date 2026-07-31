@@ -4,6 +4,7 @@ import ch.qos.logback.classic.Level;
 import ch.qos.logback.classic.LoggerContext;
 import ch.qos.logback.classic.spi.LoggingEvent;
 import ch.qos.logback.classic.util.LogbackMDCAdapter;
+import ch.qos.logback.core.status.StatusManager;
 import com.linecorp.armeria.common.HttpResponse;
 import com.linecorp.armeria.common.HttpStatus;
 import com.linecorp.armeria.common.MediaType;
@@ -12,7 +13,6 @@ import com.linecorp.armeria.testing.junit5.server.ServerExtension;
 import org.junit.jupiter.api.Test;
 import org.junit.jupiter.api.extension.RegisterExtension;
 
-import java.util.List;
 import java.util.Map;
 import java.util.concurrent.ConcurrentLinkedQueue;
 import java.util.concurrent.CountDownLatch;
@@ -27,6 +27,27 @@ class SplunkHecAppenderTest {
 
     static final ConcurrentLinkedQueue<String> bodies = new ConcurrentLinkedQueue<>();
     static final ConcurrentLinkedQueue<String> authHeaders = new ConcurrentLinkedQueue<>();
+
+    /**
+     * Every appender built by this test class must get a real {@link LoggerContext} before
+     * {@code start()}. Without one, {@code addInfo}/{@code addWarn}/{@code addError} fall
+     * through to Logback's null-context fallback, which prints a
+     * {@code LOGBACK: No context given for ...} line per call and — more importantly — makes
+     * the whole status-reporting path (including {@code warnThrottled}'s throttling and the
+     * {@code AUTH_REJECTED} branch) untestable, since there is no {@link StatusManager} to
+     * assert against.
+     */
+    private static SplunkHecAppender newAppender(SplunkHecConfig config, SplunkHecClient client) {
+        SplunkHecAppender appender = new SplunkHecAppender(config, client);
+        appender.setContext(newLoggerContext());
+        return appender;
+    }
+
+    private static LoggerContext newLoggerContext() {
+        LoggerContext context = new LoggerContext();
+        context.setMDCAdapter(new LogbackMDCAdapter());
+        return context;
+    }
 
     @RegisterExtension
     static final ServerExtension collector = new ServerExtension() {
@@ -101,7 +122,7 @@ class SplunkHecAppenderTest {
         bodies.clear();
         authHeaders.clear();
         SplunkHecConfig config = enabledConfig(Map.of("SPLUNK_SERVICE_NAME", "api-gateway"));
-        SplunkHecAppender appender = new SplunkHecAppender(config, new SplunkHecClient(config));
+        SplunkHecAppender appender = newAppender(config, new SplunkHecClient(config));
         appender.start();
         try {
             appender.doAppend(event("hello splunk"));
@@ -121,7 +142,7 @@ class SplunkHecAppenderTest {
         SplunkHecConfig config = enabledConfig(Map.of("SPLUNK_HEC_BATCH_SIZE", "50"));
         CountDownLatch gate = new CountDownLatch(1);
         FakeClient client = new FakeClient(SplunkHecClient.Outcome.SUCCESS, gate);
-        SplunkHecAppender appender = new SplunkHecAppender(config, client);
+        SplunkHecAppender appender = newAppender(config, client);
         appender.start();
         try {
             for (int i = 0; i < 10; i++) {
@@ -142,7 +163,7 @@ class SplunkHecAppenderTest {
     void disabledConfigSendsNothing() {
         SplunkHecConfig disabled = SplunkHecConfig.from(Map.of());
         FakeClient client = new FakeClient(SplunkHecClient.Outcome.SUCCESS, null);
-        SplunkHecAppender appender = new SplunkHecAppender(disabled, client);
+        SplunkHecAppender appender = newAppender(disabled, client);
         appender.start();
         try {
             assertThat(appender.isStarted()).isTrue(); // started but inert
@@ -162,7 +183,7 @@ class SplunkHecAppenderTest {
         SplunkHecConfig config = enabledConfig(Map.of("SPLUNK_HEC_QUEUE_CAPACITY", "2"));
         CountDownLatch gate = new CountDownLatch(1);
         FakeClient client = new FakeClient(SplunkHecClient.Outcome.SUCCESS, gate);
-        SplunkHecAppender appender = new SplunkHecAppender(config, client);
+        SplunkHecAppender appender = newAppender(config, client);
         appender.start();
         try {
             long startedAt = System.nanoTime();
@@ -183,7 +204,7 @@ class SplunkHecAppenderTest {
     void failingCollectorNeverThrowsIntoAppend() {
         SplunkHecConfig config = enabledConfig(Map.of());
         FakeClient client = new FakeClient(SplunkHecClient.Outcome.SERVER_ERROR, null);
-        SplunkHecAppender appender = new SplunkHecAppender(config, client);
+        SplunkHecAppender appender = newAppender(config, client);
         appender.start();
         try {
             assertThatCode(() -> {
@@ -200,6 +221,57 @@ class SplunkHecAppenderTest {
     }
 
     @Test
+    void warnThrottleEmitsOnceNotPerFailedBatch() {
+        SplunkHecConfig config = enabledConfig(Map.of("SPLUNK_HEC_BATCH_SIZE", "1"));
+        FakeClient client = new FakeClient(SplunkHecClient.Outcome.SERVER_ERROR, null);
+        SplunkHecAppender appender = newAppender(config, client);
+        StatusManager statusManager = appender.getContext().getStatusManager();
+        appender.start();
+        try {
+            for (int i = 0; i < 20; i++) {
+                appender.doAppend(event("failing-" + i));
+            }
+
+            // Batch size 1 means each event ships (and fails) on its own, so the drain loop
+            // calls warnThrottled 20 times in quick succession.
+            await().atMost(5, TimeUnit.SECONDS).until(() -> client.calls().get() >= 20);
+
+            long deliveryFailedWarnings = statusManager.getCopyOfStatusList().stream()
+                    .filter(status -> status.getMessage() != null
+                            && status.getMessage().contains("Splunk HEC delivery failed"))
+                    .count();
+
+            // The 60s per-outcome-kind throttle means only the first of those 20 failures
+            // should actually have reached the StatusManager as a logged warning.
+            assertThat(deliveryFailedWarnings).isEqualTo(1);
+        } finally {
+            appender.stop();
+        }
+    }
+
+    @Test
+    void authRejectedIsReportedAsAnError() {
+        SplunkHecConfig config = enabledConfig(Map.of());
+        FakeClient client = new FakeClient(SplunkHecClient.Outcome.AUTH_REJECTED, null);
+        SplunkHecAppender appender = newAppender(config, client);
+        StatusManager statusManager = appender.getContext().getStatusManager();
+        appender.start();
+        try {
+            appender.doAppend(event("unauthorized"));
+
+            await().atMost(5, TimeUnit.SECONDS).until(() -> appender.snapshot().failed() > 0);
+
+            boolean sawAuthError = statusManager.getCopyOfStatusList().stream()
+                    .anyMatch(status -> status.getLevel() == ch.qos.logback.core.status.Status.ERROR
+                            && status.getMessage() != null
+                            && status.getMessage().contains("Check SPLUNK_HEC_TOKEN"));
+            assertThat(sawAuthError).isTrue();
+        } finally {
+            appender.stop();
+        }
+    }
+
+    @Test
     void drainThreadSurvivesAClientThatThrows() {
         SplunkHecConfig config = enabledConfig(Map.of());
         AtomicInteger calls = new AtomicInteger();
@@ -210,7 +282,7 @@ class SplunkHecAppenderTest {
                 return Outcome.SUCCESS;
             }
         };
-        SplunkHecAppender appender = new SplunkHecAppender(config, exploding);
+        SplunkHecAppender appender = newAppender(config, exploding);
         appender.start();
         try {
             appender.doAppend(event("first"));
@@ -235,7 +307,7 @@ class SplunkHecAppenderTest {
                 return Outcome.SUCCESS;
             }
         };
-        SplunkHecAppender appender = new SplunkHecAppender(config, exploding);
+        SplunkHecAppender appender = newAppender(config, exploding);
         appender.start();
         try {
             appender.doAppend(event("first"));
@@ -255,7 +327,7 @@ class SplunkHecAppenderTest {
         SplunkHecConfig config = enabledConfig(Map.of("SPLUNK_HEC_LINGER_MS", "3000"));
         CountDownLatch gate = new CountDownLatch(1);
         FakeClient client = new FakeClient(SplunkHecClient.Outcome.SUCCESS, gate);
-        SplunkHecAppender appender = new SplunkHecAppender(config, client);
+        SplunkHecAppender appender = newAppender(config, client);
         appender.start();
 
         for (int i = 0; i < 5; i++) {
@@ -268,10 +340,67 @@ class SplunkHecAppenderTest {
     }
 
     @Test
+    void stopChunksALargeShutdownFlushIntoMultipleSends() {
+        // A large queue-capacity default with a small batch size, so 23 leftover events is
+        // several times over one batch's worth.
+        SplunkHecConfig config = enabledConfig(Map.of(
+                "SPLUNK_HEC_BATCH_SIZE", "5",
+                "SPLUNK_HEC_LINGER_MS", "3000"));
+        CountDownLatch enteredFirstSend = new CountDownLatch(1);
+        CountDownLatch releaseFirstSend = new CountDownLatch(1);
+        AtomicInteger calls = new AtomicInteger();
+        java.util.concurrent.CopyOnWriteArrayList<Integer> bodySizes =
+                new java.util.concurrent.CopyOnWriteArrayList<>();
+        SplunkHecClient blockingOnFirstCall = new SplunkHecClient(config) {
+            @Override
+            Outcome send(String body) {
+                bodySizes.add(body.split("\n").length);
+                if (calls.incrementAndGet() == 1) {
+                    enteredFirstSend.countDown();
+                    try {
+                        // Never counted down directly: stop()'s drainThread.interrupt() is
+                        // what breaks out of this, exercising the real shutdown path rather
+                        // than a manual release racing against it.
+                        releaseFirstSend.await(5, TimeUnit.SECONDS);
+                    } catch (InterruptedException e) {
+                        Thread.currentThread().interrupt();
+                    }
+                }
+                return Outcome.SUCCESS;
+            }
+        };
+        SplunkHecAppender appender = newAppender(config, blockingOnFirstCall);
+        appender.start();
+
+        // These 5 form the drain thread's normal in-flight batch (batch size 5), which
+        // blocks inside send() until stop() interrupts it below.
+        for (int i = 0; i < 5; i++) {
+            appender.doAppend(event("inflight-" + i));
+        }
+        await().atMost(5, TimeUnit.SECONDS).until(() -> enteredFirstSend.getCount() == 0);
+
+        // The drain thread is stuck shipping the first batch, so these 23 land in the
+        // queue and are still there, un-shipped, when stop() runs.
+        for (int i = 0; i < 23; i++) {
+            appender.doAppend(event("queued-" + i));
+        }
+
+        appender.stop();
+
+        // 1 in-flight batch (5 events) plus a chunked shutdown flush of the remaining 23
+        // (batch size 5) must be more than one additional send() call, and no single call
+        // may exceed the configured batch size — the bug this test guards against is one
+        // unbounded ship() of the whole remainder in a single oversized POST.
+        assertThat(calls.get()).isGreaterThan(2);
+        assertThat(bodySizes).allMatch(size -> size <= 5);
+        assertThat(bodySizes.stream().mapToInt(Integer::intValue).sum()).isEqualTo(28);
+    }
+
+    @Test
     void capturesCallerThreadNameNotDrainThreadName() {
         SplunkHecConfig config = enabledConfig(Map.of());
         FakeClient client = new FakeClient(SplunkHecClient.Outcome.SUCCESS, null);
-        SplunkHecAppender appender = new SplunkHecAppender(config, client);
+        SplunkHecAppender appender = newAppender(config, client);
         appender.start();
         try {
             Thread caller = new Thread(() -> appender.doAppend(event("from-caller")), "test-caller-thread");

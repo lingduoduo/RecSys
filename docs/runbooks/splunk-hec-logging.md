@@ -13,6 +13,15 @@ Spring config).
 
 Design: `docs/superpowers/specs/2026-07-31-splunk-hec-log-shipping-design.md`
 
+**Side effect: the three Armeria mains now run at INFO, not DEBUG.** Before this
+feature, RecSys Serving (6010), Online Serving (7010), and API Gateway (8010) had no
+Logback configuration at all and fell back to Logback's built-in `BasicConfigurator`,
+which attaches a console appender to root at DEBUG. `logback-common.xml`'s root logger
+is INFO, so this change also raises those three services' effective log level.
+Almost certainly an improvement — none of this repo's own packages issue `log.debug`
+calls on their hot paths, so nothing first-party is lost — but it is a real,
+previously-undocumented operational change that ships alongside the Splunk feature.
+
 ## A Logback constraint
 
 There is only one Logback config file in this repo, `src/main/resources/logback.xml`,
@@ -169,6 +178,17 @@ container more room if you can.
 
 ## Enabling in EKS
 
+**No Splunk is deployed by these manifests.** `k8s/base`, `k8s/eks-shared`, and both
+region overlays (`k8s/eks`, `k8s/eks-us-west-2`) contain no Splunk Service, Deployment,
+or `ExternalName` — `grep -rn splunk k8s/` turns up only the `SPLUNK_*` env blocks in
+the four service Deployments. Every one of them hardcodes
+`SPLUNK_HEC_URL: http://splunk:8088/services/collector/event`, a bare Kubernetes service
+name that resolves to nothing in-cluster until something provides it. Creating the
+Secret below and restarting is **not sufficient by itself** — without also repointing
+`SPLUNK_HEC_URL`, all four services will have a live token and every batch will fail
+DNS resolution against `splunk`. This fails safe (console logging is unaffected,
+`TRANSPORT_FAILURE` is throttled), but it does not ship anything to Splunk.
+
 The `recsys-splunk` Secret (key `hec-token`) is wired as `optional: true` into all four
 `k8s/base/*.yaml` deployments, the same pattern as `recsys-online-admin` /
 `SHARD_ADMIN_TOKEN` — pods are schedulable before the Secret exists, and the appender
@@ -178,6 +198,26 @@ pod keeps shipping nothing (or keeps using an old token) until it restarts.
 
 ```bash
 kubectl -n recsys create secret generic recsys-splunk --from-literal=hec-token='<token>'
+```
+
+**Before restarting, repoint `SPLUNK_HEC_URL` at a real collector.** Depending on where
+Splunk actually runs, that is one of:
+
+- **In-cluster Splunk Service** — deploy (or point to) a Service literally named
+  `splunk` in the same namespace, matching the manifests' default as-is, and skip the
+  next step.
+- **Externally hosted Splunk, reachable via a stable DNS name** — add a Kubernetes
+  `ExternalName` Service named `splunk` that points at the real collector hostname, so
+  the manifests' existing `http://splunk:8088/...` default resolves correctly with no
+  patch to the Deployments themselves.
+- **Any other real HEC endpoint** — patch each Deployment's `SPLUNK_HEC_URL` `value:`
+  (in `k8s/base/api-gateway.yaml`, `catalog-serving.yaml`, `model-serving.yaml`,
+  `online-serving.yaml`) to the actual collector URL via a Kustomize overlay patch, and
+  re-render (`kubectl kustomize k8s/eks`) before applying.
+
+Only once one of those is in place does a rollout restart actually start shipping logs:
+
+```bash
 kubectl -n recsys rollout restart deployment/recsys-api-gateway
 kubectl -n recsys rollout restart deployment/recsys-catalog-serving
 kubectl -n recsys rollout restart deployment/recsys-model-serving
@@ -283,6 +323,21 @@ WARN in ch.qos.logback.classic.LoggerContext - Splunk HEC delivery failed (SERVE
 since the appender cannot depend on the thing it's trying to diagnose. If you are
 debugging "why is nothing arriving in Splunk," look at the service's own stdout /
 `logs/<service>.log`, not at a Splunk search.
+
+**Never set `-Djdk.httpclient.HttpClient.log` (or the `jdk.httpclient.HttpClient.log`
+system property another way) on a service with this appender attached.** It is the
+obvious first move when debugging "nothing is arriving in Splunk," and it is the wrong
+one. The JDK's `HttpClient` logs through `System.Logger`, and this repo's classpath
+routes `System.Logger` → `java.util.logging` → `SLF4JBridgeHandler` → slf4j → Logback →
+this very appender (`jul-to-slf4j` arrives via `spring-boot-starter-logging`, and Spring
+Boot installs the bridge handler). The only thing standing between that chain and a
+recursive loop is that `HttpClient`'s own request/response logging defaults to off.
+Turning it on makes every HTTP POST this appender's client makes emit a log line, which
+gets enqueued, which gets shipped, which logs again — a self-sustaining amplification
+loop. It will not stack-overflow (Logback's per-thread re-entrancy guard in
+`UnsynchronizedAppenderBase` prevents that), so instead the drain thread pins itself in
+the loop indefinitely, which is arguably worse: quieter, and it stops shipping every
+other log line while it happens.
 
 `SplunkHecClient.send` classifies every outcome into one of four values
 (`SplunkHecClient.Outcome`), and a warning is throttled to once per outcome kind per

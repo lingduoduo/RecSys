@@ -20,9 +20,19 @@ import java.util.Set;
  */
 final class SplunkHecEventSerializer {
 
-    /** MDC entries with these names are dropped rather than shadowing the real field. */
+    /**
+     * MDC entries with these names are dropped rather than shadowing the real field: the
+     * five {@code event} payload fields this class writes, plus the five Splunk envelope
+     * metadata names ({@code host}/{@code source}/{@code sourcetype}/{@code index}/
+     * {@code time}). The envelope fields live in a different JSON object than {@code event},
+     * so an MDC collision there cannot corrupt the payload — but Splunk's automatic
+     * key-value extraction still surfaces an MDC-supplied {@code event.source} right next to
+     * the real metadata {@code source} that runbook searches group by, which is exactly the
+     * kind of search-poisoning this defence exists to prevent.
+     */
     private static final Set<String> RESERVED_KEYS =
-            Set.of("level", "logger", "thread", "message", "exception");
+            Set.of("level", "logger", "thread", "message", "exception",
+                    "host", "source", "sourcetype", "index", "time");
 
     private static final ObjectMapper MAPPER = new ObjectMapper();
 

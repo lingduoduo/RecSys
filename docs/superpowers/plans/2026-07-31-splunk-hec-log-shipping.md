@@ -54,7 +54,6 @@ These apply to **every** task. Re-read them before starting any task.
 
 | File | Change |
 |---|---|
-| `src/main/resources/logback-spring.xml` | Reduce to an `<include>` of the common file |
 | `pom.xml:330-361` | Add five test includes to the `resilience` profile |
 | `scripts/run-microservices-local.sh` | Per-service `SPLUNK_SERVICE_NAME`, `localhost` URL default, forward tunables |
 | `k8s/base/catalog-serving.yaml`, `model-serving.yaml`, `online-serving.yaml`, `api-gateway.yaml` | `SPLUNK_*` env block |
@@ -1569,7 +1568,7 @@ import static org.junit.jupiter.api.Assumptions.assumeTrue;
  *
  * <p>Note there is no test that configures {@code logback-common.xml} directly: its root
  * element is {@code <included>}, which Joran only accepts through an {@code <include>}, not
- * as a standalone configuration. It is covered transitively by both tests below.
+ * as a standalone configuration. It is covered transitively by the config tests below.
  */
 class SplunkLogbackWiringTest {
 
@@ -1596,22 +1595,8 @@ class SplunkLogbackWiringTest {
     }
 
     @Test
-    void plainLogbackConfigAttachesConsoleAndSplunk() throws Exception {
+    void logbackConfigAttachesConsoleAndSplunk() throws Exception {
         LoggerContext context = configure("src/main/resources/logback.xml");
-        try {
-            List<Appender<?>> appenders = rootAppendersOf(context);
-
-            assertThat(appenders).hasSize(2);
-            assertThat(appenders).anyMatch(a -> a instanceof ConsoleAppender);
-            assertThat(appenders).anyMatch(a -> a instanceof SplunkHecAppender);
-        } finally {
-            context.stop();
-        }
-    }
-
-    @Test
-    void springConfigAttachesConsoleAndSplunk() throws Exception {
-        LoggerContext context = configure("src/main/resources/logback-spring.xml");
         try {
             List<Appender<?>> appenders = rootAppendersOf(context);
 
@@ -1720,7 +1705,7 @@ fragment anyway — they only work from a `-spring` file, and there isn't one.
 - [ ] **Step 4: Run test to verify it passes**
 
 Run: `JAVA_HOME=$(/usr/libexec/java_home -v 17) mvn test -Dtest=SplunkLogbackWiringTest`
-Expected: PASS, 3 tests.
+Expected: PASS, 2 tests.
 
 Then confirm nothing else regressed and that no recursion or startup noise appeared:
 
@@ -1731,16 +1716,18 @@ Expected: PASS, with no `StackOverflowError` and no flood of Splunk connection w
 
 ```bash
 git add src/main/resources/logback-common.xml src/main/resources/logback.xml \
-        src/main/resources/logback-spring.xml \
         src/test/java/com/recsys/infrastructure/observability/SplunkLogbackWiringTest.java
 git commit -m "feat: share one Logback config across all four service mains
 
-Appenders move to logback-common.xml, included by logback-spring.xml (Spring
-Boot) and a new logback.xml (the three Armeria mains, which had no Logback
-config at all and used the built-in default).
+Appenders move to logback-common.xml, included by a new logback.xml — the
+single entry point for all four mains. Spring Boot's standard-location check
+finds logback.xml before it ever looks for a -spring variant, so this file
+wins for the model service too; there is no logback-spring.xml; a separate
+Spring config would be unreachable dead code. The three Armeria mains
+previously had no Logback config at all and used the built-in default.
 
 A wrong appender FQCN in XML fails silently, so SplunkLogbackWiringTest
-asserts both configs actually attach a SplunkHecAppender, and that it is
+asserts the config actually attaches a SplunkHecAppender, and that it is
 inert without SPLUNK_HEC_TOKEN.
 
 Co-Authored-By: Claude Opus 5 (1M context) <noreply@anthropic.com>"

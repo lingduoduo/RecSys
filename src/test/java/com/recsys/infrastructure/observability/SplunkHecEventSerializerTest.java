@@ -118,6 +118,36 @@ class SplunkHecEventSerializerTest {
     }
 
     @Test
+    void reservedKeysAlsoCoverSplunkEnvelopeMetadataNames() throws Exception {
+        LoggingEvent event = event(Level.INFO, "real message");
+        java.util.Map<String, String> mdc = new java.util.HashMap<>();
+        mdc.put("host", "spoofed-host");
+        mdc.put("source", "spoofed-source");
+        mdc.put("sourcetype", "spoofed-sourcetype");
+        mdc.put("index", "spoofed-index");
+        mdc.put("time", "spoofed-time");
+        event.setMDCPropertyMap(mdc);
+
+        JsonNode node = parse(serializer.toJson(event));
+        JsonNode payload = node.get("event");
+
+        // The five envelope metadata names must be dropped from the MDC merge rather than
+        // surfacing inside `event` alongside (and shadowing, under Splunk's automatic
+        // key-value extraction) the real envelope-level metadata fields.
+        assertThat(payload.has("host")).isFalse();
+        assertThat(payload.has("source")).isFalse();
+        assertThat(payload.has("sourcetype")).isFalse();
+        assertThat(payload.has("index")).isFalse();
+        assertThat(payload.has("time")).isFalse();
+
+        // And the real envelope-level fields must be untouched by the spoofed MDC values.
+        assertThat(node.get("host").asText()).isEqualTo("host-1");
+        assertThat(node.get("source").asText()).isEqualTo("api-gateway");
+        assertThat(node.get("sourcetype").asText()).isEqualTo("recsys:app:log");
+        assertThat(node.get("index").asText()).isEqualTo("recsys");
+    }
+
+    @Test
     void blankMdcKeysAreSkipped() throws Exception {
         LoggingEvent event = event(Level.INFO, "hello");
         java.util.Map<String, String> mdc = new java.util.HashMap<>();

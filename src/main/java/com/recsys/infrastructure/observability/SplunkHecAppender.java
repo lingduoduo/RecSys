@@ -124,8 +124,13 @@ public final class SplunkHecAppender extends UnsynchronizedAppenderBase<ILogging
         }
         List<ILoggingEvent> remaining = new ArrayList<>();
         queue.drainTo(remaining);
-        if (!remaining.isEmpty()) {
-            ship(remaining);
+        // Chunk like the drain loop does: one unbounded ship() here could hand Splunk a
+        // single POST with the full queue depth (up to SPLUNK_HEC_QUEUE_CAPACITY events),
+        // tripping HEC's max_content_length and losing the *entire* flush to a 413 — the one
+        // case at-most-once was supposed to be mitigated.
+        for (int start = 0; start < remaining.size(); start += config.batchSize()) {
+            int end = Math.min(start + config.batchSize(), remaining.size());
+            ship(remaining.subList(start, end));
         }
         addInfo("Splunk HEC appender stopped; " + snapshot());
         super.stop();

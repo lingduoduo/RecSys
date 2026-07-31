@@ -17,9 +17,20 @@ import java.time.Duration;
  * The appender's drain thread depends on this: an escaping exception would kill the thread
  * and silently stop all log shipping for the life of the JVM.
  *
- * <p>Uses the JDK's {@link HttpClient} deliberately. It logs through {@code System.Logger},
- * not slf4j, so it cannot re-enter the appender. Do not swap in an slf4j-backed HTTP client
- * without re-checking that.
+ * <p>Uses the JDK's {@link HttpClient} deliberately, but its recursion safety is narrower than
+ * it looks. {@link HttpClient} logs through {@code System.Logger}, not slf4j directly — but
+ * this repo pulls in {@code org.slf4j:jul-to-slf4j} via {@code spring-boot-starter-logging},
+ * Spring Boot installs {@code SLF4JBridgeHandler}, and the JDK's default {@code System.Logger}
+ * finder routes to {@code java.util.logging}. So the real chain is
+ * {@code System.Logger -> JUL -> slf4j -> Logback -> this appender}, and the only thing
+ * actually breaking that cycle is that {@code jdk.httpclient.HttpClient.log} is unset by
+ * default. <strong>Never set that property on a service with this appender attached</strong>:
+ * doing so makes every HTTP request this client makes log a line, which enqueues, which
+ * ships, which logs — a self-sustaining amplification loop. (Logback's per-thread `guard` in
+ * {@code UnsynchronizedAppenderBase} prevents a {@code StackOverflowError}, so it pins the
+ * drain thread rather than crashing — arguably worse.) Do not swap in an slf4j-backed HTTP
+ * client without re-checking this, and do not assume enabling JDK HttpClient request logging
+ * is a safe debugging step here.
  *
  * <p>Not {@code final}: tests subclass it to fake outcomes without standing up a server.
  */
