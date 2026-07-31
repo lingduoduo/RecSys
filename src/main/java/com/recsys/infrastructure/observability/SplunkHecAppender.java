@@ -82,9 +82,13 @@ public final class SplunkHecAppender extends UnsynchronizedAppenderBase<ILogging
                 resolveHost(), config.serviceName(), config.sourcetype(), config.index());
         client = injectedClient != null ? injectedClient : new SplunkHecClient(config);
         queue = new ArrayBlockingQueue<>(config.queueCapacity());
-        running = true;
         drainThread = new Thread(this::drainLoop, "splunk-hec-appender");
         drainThread.setDaemon(true);
+        // drainThread must be assigned before running flips true: stop() reads running to
+        // decide whether to touch drainThread, so a stop() landing between the two would
+        // NPE on drainThread.interrupt() if the flag were set first. (The drain loop's own
+        // `while (running)` is why the thread cannot simply be started before this point.)
+        running = true;
         drainThread.start();
 
         addInfo("Splunk HEC appender shipping to " + config.uri()
@@ -146,12 +150,18 @@ public final class SplunkHecAppender extends UnsynchronizedAppenderBase<ILogging
             } catch (InterruptedException e) {
                 Thread.currentThread().interrupt();
                 return;
-            } catch (RuntimeException e) {
-                // A transport or serialization defect must not kill this thread — that would
-                // silently stop all log shipping for the life of the JVM.
+            } catch (Throwable t) {
+                // A transport or serialization defect — including an OutOfMemoryError or
+                // StackOverflowError, most likely to fire during the very burst this appender
+                // is supposed to survive — must not kill this thread. A permanently dead
+                // shipper is strictly worse than absorbing the failure and continuing.
                 batch.clear();
-                warnThrottled(SplunkHecClient.Outcome.TRANSPORT_FAILURE,
-                        "Splunk HEC drain iteration failed: " + e);
+                try {
+                    warnThrottled(SplunkHecClient.Outcome.TRANSPORT_FAILURE,
+                            "Splunk HEC drain iteration failed: " + t);
+                } catch (Throwable reportingFailure) {
+                    // The reporting path itself must never be able to kill this thread.
+                }
             }
         }
     }

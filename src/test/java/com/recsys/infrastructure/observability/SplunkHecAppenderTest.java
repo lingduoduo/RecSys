@@ -225,6 +225,32 @@ class SplunkHecAppenderTest {
     }
 
     @Test
+    void drainThreadSurvivesAClientThatThrowsAnError() {
+        SplunkHecConfig config = enabledConfig(Map.of());
+        AtomicInteger calls = new AtomicInteger();
+        SplunkHecClient exploding = new SplunkHecClient(config) {
+            @Override
+            Outcome send(String body) {
+                if (calls.incrementAndGet() == 1) throw new StackOverflowError("boom");
+                return Outcome.SUCCESS;
+            }
+        };
+        SplunkHecAppender appender = new SplunkHecAppender(config, exploding);
+        appender.start();
+        try {
+            appender.doAppend(event("first"));
+            await().atMost(5, TimeUnit.SECONDS).until(() -> calls.get() >= 1);
+
+            appender.doAppend(event("second"));
+            // The drain thread must survive an Error (not just a RuntimeException) to ship
+            // the second event.
+            await().atMost(5, TimeUnit.SECONDS).until(() -> appender.snapshot().sent() > 0);
+        } finally {
+            appender.stop();
+        }
+    }
+
+    @Test
     void stopFlushesBufferedEvents() {
         SplunkHecConfig config = enabledConfig(Map.of("SPLUNK_HEC_LINGER_MS", "3000"));
         CountDownLatch gate = new CountDownLatch(1);
