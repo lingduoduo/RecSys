@@ -46,10 +46,12 @@ failover, plus AZ-aware read replicas — see the
 Redis Cluster**, and `ShardedRecordStore` holds a single `RedisExecutor`. So the N
 shards are **key-prefixes on the same primary** (`sr:g{v}:rec:{shard}:…`), not
 separate nodes and not server-side hash slots. The consistent-hash ring partitions the *keyspace* — even
-distribution, hot-key contention spreading, and an online reshard — and makes it
-**ready** to map those logical shards onto separate Redis nodes (or a cluster)
-without a data migration, but today the win is contention-spreading and
-reshardability, not multi-node capacity.
+distribution, hot-key contention spreading, and an online reshard — and makes it **ready** to map those logical shards onto separate Redis nodes (or a
+cluster) without a data migration — for single-key operations. The keys carry no hash
+tag, so a shard's keys are not guaranteed to share a Cluster slot and no multi-key
+operation over them can be atomic; see
+[03 §7](03_DB_Scaling_Sharding.md#7-cross-shard-atomicity--where-the-transaction-stops).
+Today the win is contention-spreading and reshardability, not multi-node capacity.
 
 **MySQL is not partitioned.** It is one intentionally-small, opt-in relational read
 model that scales *within* a single table via covering indexes and keyset
