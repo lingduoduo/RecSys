@@ -314,15 +314,21 @@ EOF
 
 ## Stage 2 — Atomic shard write (PR2)
 
-### Task 3: `ShardKeys` — one owner for the key scheme
+### Task 3: `ShardKeys` and the topology's key format
 
 **Files:**
 - Create: `src/main/java/com/recsys/infrastructure/redis/sharding/ShardKeys.java`
+- Modify: `src/main/java/com/recsys/infrastructure/redis/sharding/ShardTopology.java`
 - Create: `src/test/java/com/recsys/infrastructure/redis/sharding/ShardKeysTest.java`
+- Modify: `src/test/java/com/recsys/infrastructure/redis/sharding/ShardTopologyTest.java`
+
+`ShardKeys` and `ShardTopology.keyFormat` land together because neither is testable
+without the other: `ShardKeys.of` reads the format off a topology, and a format on the
+topology that nothing consumes is dead code. One commit, compiling and green.
 
 **Interfaces:**
 - Consumes: `Generations.keyPrefix(int)`.
-- Produces, relied on by Tasks 5–7:
+- Produces, relied on by Tasks 4–7:
   - `ShardKeys.of(String prefix, ShardTopology topology) -> ShardKeys`
   - `new ShardKeys(String prefix, int version, int keyFormat)`
   - `rec(int shardIndex, long seqNum) -> String`
@@ -333,6 +339,9 @@ EOF
   - `devScanPattern(int shardIndex) -> String`
   - `version() -> int`, `keyFormat() -> int`
   - Constants `ShardKeys.FORMAT_UNTAGGED = 1`, `ShardKeys.FORMAT_TAGGED = 2`
+  - `new ShardTopology(int version, int shardCount, int vnodes, long createdAtMs, int keyFormat)`
+  - `new ShardTopology(int version, int shardCount, int vnodes, long createdAtMs)` — retained, defaults to `FORMAT_UNTAGGED`
+  - `ShardTopology.keyFormat() -> int`
 
 - [ ] **Step 1: Create the branch off PR1's branch**
 
@@ -341,7 +350,7 @@ git checkout docs/cross-shard-atomicity-investigation
 git checkout -b fix/atomic-shard-write
 ```
 
-- [ ] **Step 2: Write the failing test**
+- [ ] **Step 2: Write the failing tests**
 
 Create `src/test/java/com/recsys/infrastructure/redis/sharding/ShardKeysTest.java`:
 
@@ -421,6 +430,12 @@ class ShardKeysTest {
         assertThat(keys.stream(0)).isEqualTo("sr:g4:stream:{0}");
     }
 
+    @Test
+    void anUnknownKeyFormatIsRejected() {
+        assertThatThrownBy(() -> new ShardKeys("sr:", 1, 99))
+                .isInstanceOf(IllegalArgumentException.class);
+    }
+
     // The substring between the first '{' and the following '}' — what Redis Cluster hashes.
     private static String tagOf(String key) {
         int open = key.indexOf('{');
@@ -429,15 +444,36 @@ class ShardKeysTest {
 }
 ```
 
-- [ ] **Step 3: Run the test to verify it fails**
+Add `import static org.assertj.core.api.Assertions.assertThatThrownBy;`.
 
-```bash
-JAVA_HOME=$(/usr/libexec/java_home -v 17) mvn test -Dtest=ShardKeysTest
+Append to `src/test/java/com/recsys/infrastructure/redis/sharding/ShardTopologyTest.java`:
+
+```java
+    @Test
+    void keyFormatDefaultsToUntaggedOnTheFourArgConstructor() {
+        assertThat(new ShardTopology(1, 2, 150, 0L).keyFormat())
+                .isEqualTo(ShardKeys.FORMAT_UNTAGGED);
+    }
+
+    @Test
+    void keyFormatIsCarriedWhenSuppliedExplicitly() {
+        assertThat(new ShardTopology(2, 4, 150, 0L, ShardKeys.FORMAT_TAGGED).keyFormat())
+                .isEqualTo(ShardKeys.FORMAT_TAGGED);
+    }
 ```
 
-Expected: FAIL — compilation error, `ShardKeys` does not exist (and `ShardTopology` has no 5-argument constructor yet; Task 4 adds it, so this test stays red until then).
+If `ShardTopologyTest.java` lacks the AssertJ import, add
+`import static org.assertj.core.api.Assertions.assertThat;`.
 
-- [ ] **Step 4: Write the implementation**
+- [ ] **Step 3: Run the tests to verify they fail**
+
+```bash
+JAVA_HOME=$(/usr/libexec/java_home -v 17) mvn test -Dtest=ShardKeysTest+ShardTopologyTest
+```
+
+Expected: FAIL — compilation error; neither `ShardKeys` nor `ShardTopology.keyFormat()` exists.
+
+- [ ] **Step 4: Write `ShardKeys`**
 
 Create `src/main/java/com/recsys/infrastructure/redis/sharding/ShardKeys.java`:
 
@@ -513,73 +549,10 @@ public final class ShardKeys {
 }
 ```
 
-- [ ] **Step 5: Run the test — it stays red until Task 4**
+- [ ] **Step 5: Add `keyFormat` to `ShardTopology`**
 
-```bash
-JAVA_HOME=$(/usr/libexec/java_home -v 17) mvn test -Dtest=ShardKeysTest
-```
-
-Expected: FAIL on `ofReadsVersionAndFormatFromTheTopology` only — no 5-argument `ShardTopology` constructor. Every other test in the class passes. Do not work around this; Task 4 supplies the constructor.
-
-- [ ] **Step 6: Commit**
-
-```bash
-git add src/main/java/com/recsys/infrastructure/redis/sharding/ShardKeys.java \
-        src/test/java/com/recsys/infrastructure/redis/sharding/ShardKeysTest.java
-git commit -m "feat: add ShardKeys as the single owner of the record key scheme
-
-Introduces a key format alongside the existing generation prefix. Format 2
-wraps the shard index in a Redis Cluster hash tag so all of a shard's keys
-share one slot, which a multi-key script requires."
-```
-
----
-
-### Task 4: Carry the key format on the topology
-
-**Files:**
-- Modify: `src/main/java/com/recsys/infrastructure/redis/sharding/ShardTopology.java`
-- Modify: `src/main/java/com/recsys/infrastructure/redis/sharding/ShardTopologyProvider.java:39-67, 85-101`
-
-**Interfaces:**
-- Consumes: `ShardKeys.FORMAT_UNTAGGED`, `ShardKeys.FORMAT_TAGGED` (Task 3).
-- Produces, relied on by Tasks 5–7:
-  - `new ShardTopology(int version, int shardCount, int vnodes, long createdAtMs, int keyFormat)`
-  - `new ShardTopology(int version, int shardCount, int vnodes, long createdAtMs)` — retained, defaults `keyFormat` to `FORMAT_UNTAGGED`
-  - `ShardTopology.keyFormat() -> int`
-  - `ShardTopologyProvider.fixedAtVersion(int version, int shardCount, int vnodes, int keyFormat)`
-
-- [ ] **Step 1: Write the failing test**
-
-Append to `src/test/java/com/recsys/infrastructure/redis/sharding/ShardTopologyTest.java`:
-
-```java
-    @Test
-    void keyFormatDefaultsToUntaggedOnTheFourArgConstructor() {
-        assertThat(new ShardTopology(1, 2, 150, 0L).keyFormat())
-                .isEqualTo(ShardKeys.FORMAT_UNTAGGED);
-    }
-
-    @Test
-    void keyFormatIsCarriedWhenSuppliedExplicitly() {
-        assertThat(new ShardTopology(2, 4, 150, 0L, ShardKeys.FORMAT_TAGGED).keyFormat())
-                .isEqualTo(ShardKeys.FORMAT_TAGGED);
-    }
-```
-
-If `ShardTopologyTest.java` lacks the AssertJ import, add `import static org.assertj.core.api.Assertions.assertThat;`.
-
-- [ ] **Step 2: Run to verify it fails**
-
-```bash
-JAVA_HOME=$(/usr/libexec/java_home -v 17) mvn test -Dtest=ShardTopologyTest
-```
-
-Expected: FAIL — `keyFormat()` is undefined.
-
-- [ ] **Step 3: Add the field to `ShardTopology`**
-
-Replace the constructor and add the accessor:
+Replace the fields and constructor, and add the accessor. Keep every existing accessor
+unchanged:
 
 ```java
     private final int version;
@@ -606,63 +579,44 @@ Replace the constructor and add the accessor:
     public int keyFormat() { return keyFormat; }
 ```
 
-Keep the existing accessors unchanged. The four-argument constructor is retained
-deliberately: it keeps every existing call site and test compiling, and defaulting to
-`FORMAT_UNTAGGED` is the correct reading of a topology that predates the field.
+The four-argument constructor is retained deliberately: it keeps every existing call site
+and test compiling, and defaulting to `FORMAT_UNTAGGED` is the correct reading of a
+topology that predates the field.
 
-- [ ] **Step 4: Plumb the format through the provider**
-
-In `ShardTopologyProvider.refresh()`, build both generations with the stored format:
-
-```java
-            ShardTopology current = new ShardTopology(s.version(), s.shardCount(), s.vnodes(),
-                    s.createdAtMs(), s.effectiveKeyFormat());
-            ShardTopology previous = null;
-            long prevExpiresAtMs = Long.MIN_VALUE;
-            if (s.prevVersion() != null && s.prevShardCount() != null && s.prevExpiresAtMs() != null) {
-                previous = new ShardTopology(s.prevVersion(), s.prevShardCount(), s.vnodes(),
-                        s.createdAtMs(), s.effectivePrevKeyFormat());
-                prevExpiresAtMs = s.prevExpiresAtMs();
-            }
-```
-
-`effectiveKeyFormat()` and `effectivePrevKeyFormat()` arrive in Task 5. This step will not
-compile until then — that is expected and is why Tasks 4 and 5 share one verification step.
-
-Add the format-aware test factory next to the existing `fixedAtVersion`:
-
-```java
-    /** Constant provider pinned at an explicit version and key format — test/helper use. */
-    public static ShardTopologyProvider fixedAtVersion(int version, int shardCount, int vnodes,
-                                                       int keyFormat) {
-        return new ShardTopologyProvider(
-                new ShardTopology(version, shardCount, vnodes, 0L, keyFormat));
-    }
-```
-
-- [ ] **Step 5: Commit**
+- [ ] **Step 6: Run the tests to verify they pass**
 
 ```bash
-git add src/main/java/com/recsys/infrastructure/redis/sharding/ShardTopology.java \
-        src/main/java/com/recsys/infrastructure/redis/sharding/ShardTopologyProvider.java \
-        src/test/java/com/recsys/infrastructure/redis/sharding/ShardTopologyTest.java
-git commit -m "feat: carry keyFormat on ShardTopology and the provider
+JAVA_HOME=$(/usr/libexec/java_home -v 17) mvn test -Dtest=ShardKeysTest+ShardTopologyTest
+```
 
-Both the current and previous generation carry their own format so the
-existing dual-read window can span a format change."
+Expected: PASS, all tests in both classes.
+
+- [ ] **Step 7: Commit**
+
+```bash
+git add src/main/java/com/recsys/infrastructure/redis/sharding/ShardKeys.java \
+        src/main/java/com/recsys/infrastructure/redis/sharding/ShardTopology.java \
+        src/test/java/com/recsys/infrastructure/redis/sharding/ShardKeysTest.java \
+        src/test/java/com/recsys/infrastructure/redis/sharding/ShardTopologyTest.java
+git commit -m "feat: add ShardKeys and a per-generation key format
+
+Introduces a key format alongside the existing generation prefix. Format 2
+wraps the shard index in a Redis Cluster hash tag so all of a shard's keys
+share one slot, which a multi-key script requires. The format lives on the
+topology generation, not on the deployment."
 ```
 
 ---
 
-### Task 5: Persist the key format in the topology snapshot
+### Task 4: Persist the key format in the topology snapshot
 
 **Files:**
 - Modify: `src/main/java/com/recsys/infrastructure/redis/sharding/ShardTopologyStore.java`
 - Create: `src/test/java/com/recsys/infrastructure/redis/sharding/ShardTopologySnapshotFormatTest.java`
 
 **Interfaces:**
-- Consumes: `ShardKeys.FORMAT_TAGGED` (Task 3).
-- Produces, relied on by Task 4:
+- Consumes: `ShardKeys.FORMAT_UNTAGGED`, `ShardKeys.FORMAT_TAGGED` (Task 3).
+- Produces, relied on by Task 5:
   - `Snapshot` gains trailing components `Integer keyFormat, Integer prevKeyFormat`
   - `Snapshot.effectiveKeyFormat() -> int` (null → `FORMAT_UNTAGGED`)
   - `Snapshot.effectivePrevKeyFormat() -> int` (null → `FORMAT_UNTAGGED`)
@@ -702,17 +656,6 @@ class ShardTopologySnapshotFormatTest {
     }
 
     @Test
-    void unknownFieldsAreIgnoredSoOlderReadersSurviveNewerWriters() throws Exception {
-        String futureJson = """
-                {"version":1,"shardCount":2,"vnodes":150,"createdAtMs":1000,
-                 "prevVersion":null,"prevShardCount":null,"prevExpiresAtMs":null,
-                 "somethingAddedLater":"x"}""";
-
-        assertThat(MAPPER.readValue(futureJson, ShardTopologyStore.Snapshot.class).version())
-                .isEqualTo(1);
-    }
-
-    @Test
     void keyFormatRoundTrips() throws Exception {
         ShardTopologyStore.Snapshot original = new ShardTopologyStore.Snapshot(
                 3, 4, 150, 2000L, 2, 2, 9000L, ShardKeys.FORMAT_TAGGED, ShardKeys.FORMAT_UNTAGGED);
@@ -726,17 +669,36 @@ class ShardTopologySnapshotFormatTest {
 }
 ```
 
+The store's own mapper must also tolerate unknown fields, so a pod on an older build can
+still read a document a newer build wrote. Assert that on the store's mapper rather than a
+local one — add this test to the same class:
+
+```java
+    @Test
+    void theStoresMapperIgnoresUnknownFields() {
+        // A newer writer may add fields this build does not know. The store must keep parsing,
+        // or an old pod fails-static on its last-good topology and stops seeing updates.
+        String futureJson = """
+                {"version":1,"shardCount":2,"vnodes":150,"createdAtMs":1000,
+                 "prevVersion":null,"prevShardCount":null,"prevExpiresAtMs":null,
+                 "somethingAddedLater":"x"}""";
+
+        assertThat(ShardTopologyStore.parseForTest(futureJson).version()).isEqualTo(1);
+    }
+```
+
 - [ ] **Step 2: Run to verify it fails**
 
 ```bash
 JAVA_HOME=$(/usr/libexec/java_home -v 17) mvn test -Dtest=ShardTopologySnapshotFormatTest
 ```
 
-Expected: FAIL — `Snapshot` has seven components and no `effectiveKeyFormat()`.
+Expected: FAIL — `Snapshot` has seven components, and neither `effectiveKeyFormat()` nor
+`parseForTest` exists.
 
 - [ ] **Step 3: Extend `Snapshot` and make parsing tolerant**
 
-Replace the `Snapshot` record and the `MAPPER` field:
+Replace the `MAPPER` field, add `import com.fasterxml.jackson.databind.DeserializationFeature;`:
 
 ```java
     private static final ObjectMapper MAPPER = new ObjectMapper()
@@ -745,7 +707,16 @@ Replace the `Snapshot` record and the `MAPPER` field:
             .configure(DeserializationFeature.FAIL_ON_UNKNOWN_PROPERTIES, false);
 ```
 
-Add `import com.fasterxml.jackson.databind.DeserializationFeature;`.
+Add a package-private seam so the test can exercise the store's own mapper, next to `parse`:
+
+```java
+    /** Package-private seam: parse through the store's configured mapper. */
+    static Snapshot parseForTest(String json) {
+        return parse(json);
+    }
+```
+
+Replace the `Snapshot` record:
 
 ```java
     /**
@@ -810,11 +781,10 @@ format it was written under, defaulting to untagged for a document that predates
 - [ ] **Step 6: Run the tests to verify they pass**
 
 ```bash
-JAVA_HOME=$(/usr/libexec/java_home -v 17) mvn test -Dtest=ShardTopologySnapshotFormatTest+ShardTopologyTest+ShardKeysTest
+JAVA_HOME=$(/usr/libexec/java_home -v 17) mvn test -Dtest=ShardTopologySnapshotFormatTest+ShardKeysTest+ShardTopologyTest
 ```
 
-Expected: PASS — all three classes. This is the first point at which Task 4's provider
-change compiles.
+Expected: PASS.
 
 - [ ] **Step 7: Commit**
 
@@ -830,6 +800,116 @@ ignores unknown fields so a mixed-version fleet stays readable."
 
 ---
 
+### Task 5: Carry the format onto both generations in the provider
+
+**Files:**
+- Modify: `src/main/java/com/recsys/infrastructure/redis/sharding/ShardTopologyProvider.java:39-67, 85-101`
+- Modify: `src/test/java/com/recsys/infrastructure/redis/sharding/ShardTopologyProviderTest.java`
+
+**Interfaces:**
+- Consumes: `Snapshot.effectiveKeyFormat()` / `effectivePrevKeyFormat()` (Task 4), the
+  five-argument `ShardTopology` constructor (Task 3).
+- Produces, relied on by Task 7:
+  - `ShardTopologyProvider.fixedAtVersion(int version, int shardCount, int vnodes, int keyFormat)`
+  - `current()` and `previousIfActive()` return topologies carrying their own format
+
+- [ ] **Step 1: Write the failing test**
+
+Append to `src/test/java/com/recsys/infrastructure/redis/sharding/ShardTopologyProviderTest.java`,
+following that file's existing store-stubbing pattern — read it first and reuse whatever
+double it already uses for `ShardTopologyStore`:
+
+```java
+    @Test
+    void refreshCarriesEachGenerationsOwnKeyFormat() {
+        // A reshard from an untagged generation leaves current tagged and previous untagged.
+        // Both must keep their own format, or the dual-read builds keys the writer never wrote.
+        ShardTopologyStore.Snapshot stored = new ShardTopologyStore.Snapshot(
+                2, 4, 150, 1_000L, 1, 2, Long.MAX_VALUE,
+                ShardKeys.FORMAT_TAGGED, ShardKeys.FORMAT_UNTAGGED);
+
+        ShardTopologyProvider provider = providerReading(stored);
+        provider.refresh();
+
+        assertThat(provider.current().keyFormat()).isEqualTo(ShardKeys.FORMAT_TAGGED);
+        assertThat(provider.previousIfActive().keyFormat()).isEqualTo(ShardKeys.FORMAT_UNTAGGED);
+    }
+
+    @Test
+    void aLegacyDocumentWithoutTheFieldYieldsUntaggedGenerations() {
+        ShardTopologyStore.Snapshot legacy = new ShardTopologyStore.Snapshot(
+                2, 4, 150, 1_000L, 1, 2, Long.MAX_VALUE, null, null);
+
+        ShardTopologyProvider provider = providerReading(legacy);
+        provider.refresh();
+
+        assertThat(provider.current().keyFormat()).isEqualTo(ShardKeys.FORMAT_UNTAGGED);
+        assertThat(provider.previousIfActive().keyFormat()).isEqualTo(ShardKeys.FORMAT_UNTAGGED);
+    }
+```
+
+Write the `providerReading(...)` helper to match the file's existing conventions: a
+`ShardTopologyStore` double whose `load()` returns the given snapshot, wrapped in a
+provider whose clock is below `prevExpiresAtMs` so `previousIfActive()` is non-null.
+
+- [ ] **Step 2: Run to verify it fails**
+
+```bash
+JAVA_HOME=$(/usr/libexec/java_home -v 17) mvn test -Dtest=ShardTopologyProviderTest
+```
+
+Expected: FAIL — `keyFormat()` is always `FORMAT_UNTAGGED` because `refresh()` builds both
+generations with the four-argument constructor.
+
+- [ ] **Step 3: Plumb the format through `refresh()`**
+
+```java
+            ShardTopology current = new ShardTopology(s.version(), s.shardCount(), s.vnodes(),
+                    s.createdAtMs(), s.effectiveKeyFormat());
+            ShardTopology previous = null;
+            long prevExpiresAtMs = Long.MIN_VALUE;
+            if (s.prevVersion() != null && s.prevShardCount() != null && s.prevExpiresAtMs() != null) {
+                previous = new ShardTopology(s.prevVersion(), s.prevShardCount(), s.vnodes(),
+                        s.createdAtMs(), s.effectivePrevKeyFormat());
+                prevExpiresAtMs = s.prevExpiresAtMs();
+            }
+```
+
+- [ ] **Step 4: Add the format-aware test factory**
+
+Next to the existing `fixedAtVersion`:
+
+```java
+    /** Constant provider pinned at an explicit version and key format — test/helper use. */
+    public static ShardTopologyProvider fixedAtVersion(int version, int shardCount, int vnodes,
+                                                       int keyFormat) {
+        return new ShardTopologyProvider(
+                new ShardTopology(version, shardCount, vnodes, 0L, keyFormat));
+    }
+```
+
+- [ ] **Step 5: Run the tests to verify they pass**
+
+```bash
+JAVA_HOME=$(/usr/libexec/java_home -v 17) mvn test -Dtest=ShardTopologyProviderTest+ShardTopologySnapshotFormatTest+ShardKeysTest+ShardTopologyTest
+```
+
+Expected: PASS.
+
+- [ ] **Step 6: Commit**
+
+```bash
+git add src/main/java/com/recsys/infrastructure/redis/sharding/ShardTopologyProvider.java \
+        src/test/java/com/recsys/infrastructure/redis/sharding/ShardTopologyProviderTest.java
+git commit -m "feat: carry each generation's key format through the provider
+
+Current and previous generations keep their own format, so the existing
+dual-read window can span a format change without building keys the writer
+never wrote."
+```
+
+---
+
 ### Task 6: Point `SequenceGenerator` at `ShardKeys`
 
 **Files:**
@@ -839,7 +919,7 @@ ignores unknown fields so a mixed-version fleet stays readable."
 - Modify: `src/test/java/com/recsys/infrastructure/redis/sharding/SequenceGeneratorTest.java`
 
 **Interfaces:**
-- Consumes: `ShardKeys` (Task 3), `ShardTopology.keyFormat()` (Task 4).
+- Consumes: `ShardKeys` and `ShardTopology.keyFormat()` (Task 3).
 - Produces, relied on by Task 7:
   - `next(ShardTopology topology, int shardIndex) -> long`
   - `ensureCounterValid(ShardTopology topology, int shardIndex, long budgetMs) -> boolean`
@@ -850,27 +930,63 @@ Append to `SequenceGeneratorGenerationTest.java`:
 
 ```java
     @Test
-    void taggedGenerationScansAndIncrementsTaggedKeys() {
+    void taggedGenerationIncrementsTheTaggedCounterKey() {
+        RedisCommands<String, String> commands = mock(RedisCommands.class);
         RedisExecutor exec = mock(RedisExecutor.class);
-        SequenceGenerator gen = new SequenceGenerator(exec, "sr:");
+        when(exec.execute(any())).thenAnswer(invocation -> {
+            Function<RedisCommands<String, String>, Object> fn = invocation.getArgument(0);
+            return fn.apply(commands);
+        });
+        when(commands.incr(anyString())).thenReturn(1L);
 
-        gen.next(new ShardTopology(3, 2, 150, 0L, ShardKeys.FORMAT_TAGGED), 1);
+        new SequenceGenerator(exec, "sr:")
+                .next(new ShardTopology(3, 2, 150, 0L, ShardKeys.FORMAT_TAGGED), 1);
 
         // The counter INCR must target the tagged key, or it will not share a Cluster slot
         // with the record and index keys the write script touches.
-        verify(exec).execute(argThat(fn -> {
-            RedisCommands<String, String> commands = mock(RedisCommands.class);
-            fn.apply(commands);
-            verify(commands).incr("sr:g3:seq:{1}");
-            return true;
-        }));
+        verify(commands).incr("sr:g3:seq:{1}");
+    }
+
+    @Test
+    void taggedGenerationReadsAndRepairsTheTaggedCounterKey() {
+        // ensureCounterValid GETs the counter before deciding whether to raise it. Asserting
+        // the key it reads proves the repair path follows the generation's format too.
+        RedisCommands<String, String> commands = mock(RedisCommands.class);
+        RedisExecutor exec = mock(RedisExecutor.class);
+        when(exec.execute(any())).thenAnswer(invocation -> {
+            Function<RedisCommands<String, String>, Object> fn = invocation.getArgument(0);
+            return fn.apply(commands);
+        });
+        KeyScanCursor<String> cursor = mock(KeyScanCursor.class);
+        when(cursor.getKeys()).thenReturn(List.of("sr:g3:dev:{1}:dev-1"));
+        when(cursor.isFinished()).thenReturn(true);
+        when(commands.scan(any(ScanArgs.class))).thenReturn(cursor);
+        when(commands.zrevrangebyscoreWithScores(anyString(), any(Range.class), any(Limit.class)))
+                .thenReturn(List.of(ScoredValue.just(9.0, "evt-9")));
+        when(commands.get(anyString())).thenReturn("3");
+
+        new SequenceGenerator(exec, "sr:")
+                .ensureCounterValid(new ShardTopology(3, 2, 150, 0L, ShardKeys.FORMAT_TAGGED),
+                        1, 30_000L);
+
+        verify(commands).get("sr:g3:seq:{1}");
+        verify(commands).set("sr:g3:seq:{1}", "10");
     }
 ```
 
-Add whatever imports the file lacks: `org.mockito.ArgumentMatchers.argThat`,
-`org.mockito.Mockito.verify`, `io.lettuce.core.api.sync.RedisCommands`. If the existing
-tests in this file already use a different executor stub than a raw Mockito mock, follow
-that file's established pattern instead and assert on the key it captures.
+Add whatever imports the file lacks: `org.mockito.ArgumentMatchers.any`,
+`org.mockito.ArgumentMatchers.anyString`, `org.mockito.Mockito.mock`,
+`org.mockito.Mockito.verify`, `org.mockito.Mockito.when`,
+`io.lettuce.core.api.sync.RedisCommands`, `io.lettuce.core.KeyScanCursor`,
+`io.lettuce.core.Limit`, `io.lettuce.core.Range`, `io.lettuce.core.ScanArgs`,
+`io.lettuce.core.ScoredValue`, `java.util.List`, `java.util.function.Function`.
+
+Two notes. If the existing tests in this file already stub `RedisExecutor`, reuse that
+helper rather than repeating the `thenAnswer` block. And do not assert inside a Mockito
+matcher: a matcher that runs verifications can pass without asserting anything. The SCAN
+pattern itself is covered by `ShardKeysTest.devScanPatternMatchesTheDeviceKeyNamespace`
+and by Task 8's Docker test — `ScanArgs` exposes no getter for its MATCH pattern, so do
+not try to assert it here.
 
 - [ ] **Step 2: Run to verify it fails**
 
@@ -974,7 +1090,7 @@ format, or the startup repair scans the wrong keyspace after a reshard."
 - Create: `src/test/java/com/recsys/infrastructure/redis/sharding/ShardedRecordStoreAtomicWriteTest.java`
 
 **Interfaces:**
-- Consumes: `ShardKeys` (Task 3), `ShardTopology.keyFormat()` (Task 4), `SequenceGenerator.next(ShardTopology, int)` (Task 6).
+- Consumes: `ShardKeys` and `ShardTopology.keyFormat()` (Task 3), `ShardTopologyProvider.fixedAtVersion(int, int, int, int)` (Task 5), `SequenceGenerator.next(ShardTopology, int)` (Task 6).
 - Produces: unchanged public API — `write(ShardedRecord)`, `write(ShardedRecord, int)`, `update(ShardedRecord)` all still return `WriteResult(seqNum, shardIndex, status)`.
 
 - [ ] **Step 1: Write the failing test**
@@ -1483,20 +1599,26 @@ EOF
 
 **Spec coverage.** Stage 1 §03 → Task 1; §14, §15, README → Task 2. Stage 2 Component 1
 (Lua + folded INCR + insert-only early return + `ARGV` record prefix) → Task 7; Component 2
-(`keyFormat`, absent→1, bootstrap, reshard, provider carrying both generations) → Tasks 4–5;
-Component 3 (`SequenceGenerator`, repair path, SCAN pattern) → Task 6; Component 4 (CLAUDE.md,
-sharp-edge rewrites) → Task 9. Testing table → Tasks 3, 5, 7 (unit) and 8 (docker); the CI
-trap → Task 9 Step 1. Sequencing → the two PR steps. The spec's three deferred findings stay
-deferred; no task touches them.
+(`keyFormat` on the topology → Task 3, persisted with absent→1, bootstrap and reshard →
+Task 4, carried onto both generations → Task 5); Component 3 (`SequenceGenerator`, repair
+path, SCAN pattern) → Task 6; Component 4 (CLAUDE.md, sharp-edge rewrites) → Task 9.
+Testing table → Tasks 3, 4, 5, 7 (unit) and 8 (docker); the CI trap → Task 9 Step 1.
+Sequencing → the two PR steps. The spec's three deferred findings stay deferred; no task
+touches them.
 
 **Placeholders.** None. Task 8's bodies are the one place prose stands in for code — that is
 deliberate, since the assertions depend on `RedisShardingTestBase`'s fixtures, and each
 carries its exact obligation plus an explicit instruction not to leave it empty.
 
+**Every task ends green.** Tasks 3–5 are ordered so each commit compiles and its tests pass:
+Task 3 pairs `ShardKeys` with the `ShardTopology` constructor it reads; Task 4 extends
+`Snapshot` without touching the provider, which still compiles against the old constructor;
+Task 5 switches the provider over. No task commits a known-red test or non-compiling code.
+
 **Type consistency.** `ShardKeys` method names (`rec`, `recPrefix`, `dev`, `stream`, `seq`,
-`devScanPattern`) are used identically in Tasks 5–7. `effectiveKeyFormat()` /
-`effectivePrevKeyFormat()` are defined in Task 5 and consumed in Task 4 — Task 4 states that
-it does not compile until Task 5, and Task 5's Step 6 is the shared verification. The
-`ShardTopology` five-argument constructor is defined in Task 4 and used in Tasks 3, 5, 6, 7.
+`devScanPattern`) are used identically in Tasks 6–7. The `ShardTopology` five-argument
+constructor is defined in Task 3 and used in Tasks 4, 5, 6, 7. `effectiveKeyFormat()` /
+`effectivePrevKeyFormat()` are defined in Task 4 and consumed in Task 5.
+`fixedAtVersion(int, int, int, int)` is defined in Task 5 and used in Task 7.
 `ensureCounterValid(ShardTopology, int, long)` is defined in Task 6 and its only production
 caller is updated in the same task.
