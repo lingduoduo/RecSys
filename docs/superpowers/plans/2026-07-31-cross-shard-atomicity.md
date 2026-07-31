@@ -1485,6 +1485,131 @@ git commit -m "test: verify atomic write and cross-format dual-read against real
 
 ---
 
+### Task 10: Fix the dual-read dedup identity
+
+> **Runs before Task 9.** Added mid-execution after Task 8's Docker tests surfaced the defect.
+> Task 9 documents the migration as resting on the dual read, so the dual read has to be
+> correct first.
+
+**Files:**
+- Modify: `src/main/java/com/recsys/infrastructure/redis/sharding/ShardedRecordStore.java:191-202`
+- Modify: `src/test/java/com/recsys/infrastructure/redis/sharding/ShardedRecordStoreAtomicWriteIntegrationTest.java`
+
+**The defect.** `mergeDevicePages` dedupes the two generations' pages with
+`r.deviceId() + ":" + r.seqNum()`. Sequence counters are **per generation** —
+`ShardKeys.base()` puts the generation prefix in the counter key, so every new generation
+starts counting from 1 again. During a reshard's dual-read window a gen-2 record at seq 1
+therefore collides with the gen-1 record at seq 1 for the same device, and the
+`putIfAbsent` for the previous generation silently drops the older record. `readDevice`
+returns fewer records than exist, with no error.
+
+`seqNum` was never a valid identity across generations. `eventId` is: it is the member of
+the device index ZSet, and the write path's `ZADD NX` makes it unique per device. When the
+same `eventId` genuinely appears in both generations — a write retried across a reshard —
+preferring the current generation is still the right resolution, which the existing
+`put` / `putIfAbsent` ordering already gives.
+
+**Interfaces:**
+- Consumes: `ShardedRecord.eventId()`, `ShardedRecord.deviceId()`.
+- Produces: nothing new — `readDevice`'s signature and return type are unchanged.
+
+- [ ] **Step 1: Write the failing test**
+
+Add to `ShardedRecordStoreAtomicWriteIntegrationTest`. This is the test the existing
+migration test's counter-seeding workaround was avoiding, so write it to collide
+deliberately:
+
+```java
+    @Test
+    void deviceReadKeepsBothGenerationsWhenSequenceNumbersCollide() {
+        // Sequence counters are per generation, so both generations independently issue seq 1
+        // for the same device. Deduping on (deviceId, seqNum) would drop the older record.
+        // Deliberately does NOT seed the counters apart — the collision is the point.
+    }
+```
+
+Fill the body against the real store, following the shape the existing
+`deviceReadMergesAnUntaggedPreviousWithATaggedCurrentGeneration` test already uses for
+setting up two generations: write one record under generation 1, publish a reshard, write a
+second record with a different `eventId` under generation 2 while both counters sit at the
+same value, then assert `readDevice` returns **both** eventIds. Assert on eventIds, not on
+counts alone, so the failure message names what went missing.
+
+- [ ] **Step 2: Run it and watch it fail for the right reason**
+
+```bash
+JAVA_HOME=$(/usr/libexec/java_home -v 17) mvn test -Dtest=ShardedRecordStoreAtomicWriteIntegrationTest -DexcludedGroups=""
+```
+
+Expected: the new test FAILS, returning one record where two were written. Confirm the
+failure is the missing older record and not a setup error — if both records are present,
+your two generations are not actually issuing the same sequence number and the test is not
+yet exercising the collision.
+
+- [ ] **Step 3: Fix the dedup identity**
+
+```java
+    // Merge current + previous device records, dedupe by (deviceId, eventId) preferring current,
+    // sort by seqNum ascending, cap at `limit`. eventId — not seqNum — is the identity: sequence
+    // counters are per generation, so both generations issue the same numbers and deduping on
+    // seqNum would silently drop previous-generation records during a migration window.
+    private Page<ShardedRecord> mergeDevicePages(Page<ShardedRecord> current,
+                                                 Page<ShardedRecord> previous, int limit) {
+        java.util.LinkedHashMap<String, ShardedRecord> byKey = new java.util.LinkedHashMap<>();
+        for (ShardedRecord r : current.records()) byKey.put(r.deviceId() + ":" + r.eventId(), r);
+        for (ShardedRecord r : previous.records()) byKey.putIfAbsent(r.deviceId() + ":" + r.eventId(), r);
+        List<ShardedRecord> merged = new ArrayList<>(byKey.values());
+        // Ordering across generations is approximate for the same reason: two generations can
+        // issue equal sequence numbers, so a merged page is not a strict chronological sequence.
+        // Within one generation it is exact, and previous-generation data TTLs out of the window.
+        merged.sort(java.util.Comparator.comparingLong(ShardedRecord::seqNum));
+        if (merged.size() > limit) merged = new ArrayList<>(merged.subList(0, limit));
+        // Pagination is driven by the current generation's cursor; previous-generation records
+        // beyond the first page are not paged — they self-heal when the migration window closes.
+        return new Page<>(merged, current.next());
+    }
+```
+
+- [ ] **Step 4: Run the test to verify it passes**
+
+```bash
+JAVA_HOME=$(/usr/libexec/java_home -v 17) mvn test -Dtest=ShardedRecordStoreAtomicWriteIntegrationTest -DexcludedGroups=""
+```
+
+Expected: PASS, all tests in the class.
+
+- [ ] **Step 5: Remove the workaround the defect forced**
+
+`deviceReadMergesAnUntaggedPreviousWithATaggedCurrentGeneration` seeds the generation-1
+counter to 100 so the two generations' sequence ranges stay disjoint, with a comment
+explaining that it is working around this defect. Delete the seeding line and its comment —
+the defect is gone — and re-run the class to confirm the test still passes on its own merits.
+
+- [ ] **Step 6: Run the whole sharding package**
+
+```bash
+JAVA_HOME=$(/usr/libexec/java_home -v 17) mvn test -Dtest='Shard*Test,SequenceGenerator*Test,ConsistentHashRingTest' -DexcludedGroups=""
+```
+
+Expected: PASS. `ShardedRecordStoreDualReadTest` covers the merge directly and must still
+pass — if it asserted the old dedup identity, update it to the new one rather than weakening it.
+
+- [ ] **Step 7: Commit**
+
+```bash
+git add src/main/java/com/recsys/infrastructure/redis/sharding/ShardedRecordStore.java \
+        src/test/java/com/recsys/infrastructure/redis/sharding/ShardedRecordStoreAtomicWriteIntegrationTest.java
+git commit -m "fix: dedupe the dual read by eventId, not by sequence number
+
+Sequence counters are per generation, so both generations independently
+issue the same numbers. Deduping a merged device page on (deviceId, seqNum)
+made every gen-N record shadow the gen-(N-1) record at the same sequence,
+so readDevice silently returned fewer records than existed for the whole
+24h migration window. eventId is the device index's own member and is
+unique per device, which makes it the correct identity."
+```
+---
+
 ### Task 9: Gate the new tests and update the docs
 
 **Files:**
