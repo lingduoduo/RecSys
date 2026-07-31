@@ -1610,6 +1610,156 @@ unique per device, which makes it the correct identity."
 ```
 ---
 
+### Task 11: Make the merged page's cursor agree with what it returned
+
+> **Runs before Task 9.** Added mid-execution after Task 10's review. Second defect in
+> `mergeDevicePages`, same root cause as Task 10: sequence numbers are per generation.
+
+**Files:**
+- Modify: `src/main/java/com/recsys/infrastructure/redis/sharding/ShardedRecordStore.java` (`mergeDevicePages`)
+- Modify: `src/test/java/com/recsys/infrastructure/redis/sharding/ShardedRecordStoreAtomicWriteIntegrationTest.java`
+
+**The defect.** `mergeDevicePages` sorts the merged records ascending, truncates to the
+**lowest** `limit`, and then returns `current.next()` as the cursor. `current.next()` is the
+current generation's **highest** returned sequence (`readDeviceAt` sets it from the last
+element of its own page). The two disagree.
+
+Concretely, with `limit = 10`, the current generation returning seqs 1–10 and the previous
+generation also returning seqs 1–10: the merge holds 20 records, truncates to seqs 1–5 of
+each generation, and hands back cursor `10`. The next page starts at `minScore = 11`, so
+current-generation records 6–10 are returned by no page at all.
+`ShardedRecordService.handleReadDevice` echoes that cursor to API clients, so the loss is
+externally visible. A second variant: when the current generation returns fewer than `limit`
+but the merge still exceeds `limit`, the page truncates while `current.next()` is null —
+terminal loss, no further page is even attempted.
+
+This is pre-existing logic, but Task 10 removed what was masking it: the old
+`(deviceId, seqNum)` dedup collapsed colliding sequences, which kept `merged.size()` within
+`limit` in exactly the case that now overflows.
+
+**The fix has two parts, and both are needed.**
+
+1. **Take the cursor from the last record actually returned**, not from either input page.
+   The cursor's meaning is "every record with a sequence at or below this has been
+   delivered", and only the returned page can establish that.
+2. **Never split a sequence number across pages.** The cursor is a sequence, so if a page
+   ends in the middle of a group of records sharing one sequence, the stragglers can never
+   be reached — the next page starts strictly above that sequence. When the cut lands
+   inside such a group, extend the page past it rather than stranding records. With two
+   generations at most two records can share a sequence, so this over-delivers by at most
+   one record beyond `limit`. `limit` becomes a soft cap; silent data loss is not an
+   acceptable price for a hard one.
+
+**Interfaces:**
+- Consumes: `ShardCursor.seq(long)`, `Page.next()`, `ShardedRecord.seqNum()`.
+- Produces: nothing new — `readDevice`'s signature and return type are unchanged.
+
+- [ ] **Step 1: Write the failing tests**
+
+Add both to `ShardedRecordStoreAtomicWriteIntegrationTest`:
+
+```java
+    @Test
+    void pagingADualReadWindowReturnsEveryRecordAcrossPages() {
+        // Both generations hold more than one page of records for the same device, at
+        // overlapping sequence numbers. Page through readDevice to exhaustion following the
+        // returned cursor, collecting eventIds, and assert the union equals everything written.
+        // Before the fix the merged first page returns the lowest sequences but a cursor taken
+        // from the current generation's highest, so current-generation records in between are
+        // returned by no page.
+    }
+
+    @Test
+    void aPageNeverEndsInTheMiddleOfASequenceNumber() {
+        // Arrange both generations to hold a record at the SAME sequence number, positioned so
+        // that a `limit` boundary falls between them. Assert the returned page contains either
+        // both or neither — never one — because the cursor is a sequence and a straggler at the
+        // same sequence could not be reached by any later page.
+    }
+```
+
+Fill both bodies against the real store, following the two-generation setup the existing
+`deviceReadKeepsBothGenerationsWhenSequenceNumbersCollide` test already uses. Assert on
+eventIds, not counts alone, so a failure names what went missing.
+
+- [ ] **Step 2: Run them and watch them fail for the right reason**
+
+```bash
+JAVA_HOME=$(/usr/libexec/java_home -v 17) mvn test -Dtest=ShardedRecordStoreAtomicWriteIntegrationTest -DexcludedGroups=""
+```
+
+Expected: both new tests FAIL, with the first reporting specific missing eventIds. If either
+passes before the production change, its setup is not reaching the truncation path — most
+likely the merged size never exceeds `limit`. Fix the setup until it fails for the stated
+reason, and quote the failure in your report.
+
+- [ ] **Step 3: Rewrite the tail of `mergeDevicePages`**
+
+Keep the dedup and sort from Task 10 exactly as they are. Replace everything from the
+truncation onward:
+
+```java
+        if (merged.isEmpty()) return new Page<>(merged, null);
+
+        // Never split a sequence number across pages. The cursor is a sequence, so a record
+        // sharing the last returned sequence could not be reached by any later page — the next
+        // page starts strictly above it. Extending past the boundary over-delivers by at most
+        // one record per generation; stranding records would be silent data loss.
+        int cut = Math.min(limit, merged.size());
+        while (cut < merged.size() && merged.get(cut).seqNum() == merged.get(cut - 1).seqNum()) {
+            cut++;
+        }
+        boolean truncated = cut < merged.size();
+        List<ShardedRecord> page = truncated ? new ArrayList<>(merged.subList(0, cut)) : merged;
+
+        // The cursor comes from the last record actually returned. Taking it from the current
+        // generation's own page — as this did before — skips every current-generation record
+        // that truncation dropped, because that page's cursor is its own highest sequence.
+        boolean moreRemains = truncated || current.next() != null || previous.next() != null;
+        ShardCursor next = moreRemains
+                ? ShardCursor.seq(page.get(page.size() - 1).seqNum())
+                : null;
+        return new Page<>(page, next);
+```
+
+Delete the old comment about previous-generation records beyond the first page not being
+paged — it described the behavior this step removes.
+
+- [ ] **Step 4: Run the tests to verify they pass**
+
+```bash
+JAVA_HOME=$(/usr/libexec/java_home -v 17) mvn test -Dtest=ShardedRecordStoreAtomicWriteIntegrationTest -DexcludedGroups=""
+```
+
+Expected: PASS, all tests in the class.
+
+- [ ] **Step 5: Run the whole sharding package**
+
+```bash
+JAVA_HOME=$(/usr/libexec/java_home -v 17) mvn test -Dtest='Shard*Test,SequenceGenerator*Test,ConsistentHashRingTest' -DexcludedGroups=""
+```
+
+Expected: PASS. `ShardedRecordStoreDualReadTest` and `ShardedRecordServiceCursorTest` both
+exercise paging. If either encoded the old cursor behavior, update it to the new contract —
+but do not weaken an assertion to make it pass. If a test can no longer express its intent,
+say so in your report rather than deleting the check.
+
+- [ ] **Step 6: Commit**
+
+```bash
+git add src/main/java/com/recsys/infrastructure/redis/sharding/ShardedRecordStore.java \
+        src/test/java/com/recsys/infrastructure/redis/sharding/ShardedRecordStoreAtomicWriteIntegrationTest.java
+git commit -m "fix: take the merged page's cursor from what it actually returned
+
+A dual-read page truncated to the lowest `limit` records but returned the
+current generation's highest sequence as its cursor, so every current
+-generation record between the two was returned by no page at all, and the
+bad cursor reached API clients. The cursor now comes from the last record
+returned, and a page never ends mid-sequence — the cursor is a sequence, so
+a straggler sharing it could never be reached."
+```
+---
+
 ### Task 9: Gate the new tests and update the docs
 
 **Files:**
