@@ -67,10 +67,19 @@ gated) is the authoritative copy. State this plainly to anyone who wants to use 
 
 ## Local bring-up
 
-**Status: this stack is not yet verified end to end.** It was built and desk-checked
-(the compose file and `init.sh` parse cleanly, and every REST call in `init.sh` was
-checked against Splunk's published API docs), but has never been run to a healthy
-`splunk-init` on the host available during implementation, because:
+**Status: verified in CI, not on an arm64 workstation.**
+[`SplunkHecIntegrationTest`](../../src/test/java/com/recsys/infrastructure/observability/SplunkHecIntegrationTest.java)
+boots a real Splunk, runs **this exact `docker/splunk/init.sh`** inside it, ships events
+through a real `SplunkHecAppender`, and asserts they come back from Splunk's search API
+with the right `source`, `sourcetype`, `index`, level, and MDC fields. It runs on
+`ubuntu-latest` (x86_64) via
+[`.github/workflows/splunk-hec-integration.yml`](../../.github/workflows/splunk-hec-integration.yml)
+whenever anything under the appender, the Logback configs, the compose file, or
+`docker/splunk/` changes — and weekly through `resilience-scheduled.yml`'s `docker` job.
+Check that workflow's most recent run for the current status.
+
+That test is the answer to "has this actually been proven". What follows is why you
+cannot reproduce it locally on a Mac.
 
 **It requires an x86_64 host.** `splunk/splunk` publishes no arm64 image. On Apple
 Silicon, Docker Desktop will run the image emulated (the compose file forces
@@ -93,30 +102,29 @@ emulation, most plausibly in the KVStore/mongod component. Run this stack on a g
 x86_64 host (a Linux box, an amd64 CI runner, or a Docker Desktop emulation setup that
 doesn't hit this fault) to actually exercise it.
 
-**What HAS been verified**, independent of a running Splunk instance: the appender's HEC
-wire format, its batching behavior, and the `Authorization: Splunk <token>` header are
-all proven against a stub HTTP collector in `SplunkHecAppenderTest`. All five
-`Splunk*`/observability test classes (`SplunkHecConfigTest`, `SplunkHecEventSerializerTest`,
-`SplunkHecClientTest`, `SplunkHecAppenderTest`, `SplunkLogbackWiringTest`) run in the
-`-Presilience` PR gate, and the full suite passes (1488/1488 at the time this was
-written). None of that exercises a real Splunk instance, index creation, or the HEC
-provisioning REST calls in `init.sh` — that gap is exactly what running this stack on
-x86_64 closes.
+**What the unit tests cover**, independent of a running Splunk: the appender's HEC wire
+format, its batching behavior, and the `Authorization: Splunk <token>` header are proven
+against a stub HTTP collector in `SplunkHecAppenderTest`. All five `Splunk*`/observability
+test classes (`SplunkHecConfigTest`, `SplunkHecEventSerializerTest`, `SplunkHecClientTest`,
+`SplunkHecAppenderTest`, `SplunkLogbackWiringTest`) run in the `-Presilience` PR gate. A
+stub collector cannot catch a payload that Splunk rejects or silently mangles, nor exercise
+index creation and the HEC provisioning REST calls — which is why the docker-tagged
+integration test above exists.
 
-**Which HEC-enabling path actually works is also unconfirmed.** Two mechanisms are in
-place and neither has been observed working end to end:
-1. The Splunk image's own env vars (`SPLUNK_HEC_TOKEN`, `SPLUNK_HEC_SSL: "False"`)
-   are honoured by its Ansible provisioning layer, in theory.
-2. `docker/splunk/init.sh` independently repairs the same state via Splunk's
-   management REST API (create the index, force HEC's global `enableSSL` off, create
-   the token with a pinned value) and then polls the plain-HTTP collector endpoint
-   until it accepts an event.
+**Two HEC-enabling mechanisms are in place, deliberately.** Which one does the real work
+was unknown when this was written, so both are present and the integration test asserts
+only the outcome:
+1. The Splunk image's own env vars (`SPLUNK_HEC_TOKEN`, `SPLUNK_HEC_SSL: "False"`),
+   honoured by its Ansible provisioning layer.
+2. `docker/splunk/init.sh` independently repairs the same state via Splunk's management
+   REST API (create the index, force HEC's global `enableSSL` off, create the token with a
+   pinned value) and then polls the plain-HTTP collector endpoint until it accepts an event.
 
-Whoever runs this first on x86_64 should confirm which path (or both) is doing the real
-work — a related upstream issue (`splunk/docker-splunk#40`) documents `SPLUNK_HEC_TOKEN`
-historically not being reliably honoured for *standalone* instances, which is why
-`init.sh`'s management-API repair exists as a fallback rather than trusting the env var
-alone — and update this section with the answer.
+The belt-and-braces is not redundant: upstream `splunk/docker-splunk#40` documents
+`SPLUNK_HEC_TOKEN` historically not being reliably honoured for *standalone* instances,
+which is why `init.sh`'s management-API repair exists rather than trusting the env var
+alone. If you want to know which one is load-bearing on a given image tag, remove one and
+watch whether `initScriptEnablesPlainHttpHec` still passes.
 
 ### Bring-up sequence
 

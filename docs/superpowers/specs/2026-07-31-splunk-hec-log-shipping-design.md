@@ -306,8 +306,9 @@ Spring context exists, and there is no consumer for the numbers today.
 
 ## Testing
 
-Three test classes, all non-docker, all added to the `-Presilience` Surefire profile so
-they actually gate a PR (the CI gate runs only that profile):
+Five test classes, all non-docker, all added to the `-Presilience` Surefire profile so
+they actually gate a PR (the CI gate runs only that profile) — plus one docker-tagged
+integration test that runs elsewhere, described at the end of this section:
 
 **`SplunkHecConfigTest`** — defaults; env override of each field; malformed integers fall
 back rather than throw; disabled when the token is absent; disabled with `addError` when
@@ -329,6 +330,28 @@ batch body is newline-concatenated objects.
 - **a stub returning 503, or refusing connections, never throws into the caller of
   `append()`** — the property the whole design exists to preserve
 - `stop()` flushes buffered events before returning
+
+### The stub collector's blind spot, and what closes it
+
+Everything above runs against a stub. A stub answers 200 to whatever it is sent, so it
+proves the appender emits what we *intended* — not that Splunk accepts it. Two questions
+survive that suite: whether the provisioning in `docker/splunk/init.sh` actually enables
+HEC over plain HTTP, and whether the emitted payload really parses and indexes rather
+than being rejected or silently mangled.
+
+**`SplunkHecIntegrationTest`** (`@Tag("docker")`, excluded from `mvn test` by default)
+closes both. It boots a real `splunk/splunk` container, executes the shipped `init.sh`
+inside it — the script takes its host from `SPLUNK_HOST` precisely so the real file can be
+run rather than a paraphrase — asserts that script's own verification loop exits zero, then
+ships events through a real `SplunkHecAppender` and polls Splunk's search API until they
+come back with the expected `source`, `sourcetype`, `index`, level, and MDC `traceId`.
+
+It cannot run on an arm64 workstation: Splunk publishes no arm64 image and `splunkd`
+segfaults under emulation during first-boot indexing. So it runs on x86_64 CI —
+`.github/workflows/splunk-hec-integration.yml` on changes to the appender, the Logback
+configs, the compose file, or `docker/splunk/`, and weekly via `resilience-scheduled.yml`'s
+`docker` job. It is deliberately *not* in the PR gate: it boots a full Splunk, and that
+gate is a fast deterministic allow-list by design.
 
 ## Documentation
 

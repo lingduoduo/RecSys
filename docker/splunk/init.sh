@@ -6,9 +6,15 @@
 #
 # Splunk's management API is always HTTPS with a self-signed cert, hence -k throughout.
 # That is the MANAGEMENT port (8089). The HEC port (8088) is what we force to plain HTTP.
+#
+# SPLUNK_HOST defaults to the compose service name, which is what the splunk-init container
+# resolves. SplunkHecIntegrationTest overrides it to `localhost` so it can run THIS script
+# inside the Splunk container itself — that is the whole point of the variable: CI verifies
+# the shipped provisioning script, not a paraphrase of it.
 set -eu
 
-MGMT="https://splunk:8089"
+HOST="${SPLUNK_HOST:-splunk}"
+MGMT="https://${HOST}:8089"
 AUTH="admin:${SPLUNK_PASSWORD}"
 INDEX="${SPLUNK_HEC_INDEX:-recsys}"
 TOKEN="${SPLUNK_HEC_TOKEN}"
@@ -35,7 +41,7 @@ while [ "$i" -lt 30 ]; do
     -H "Authorization: Splunk ${TOKEN}" \
     -H 'Content-Type: application/json' \
     --data '{"event":{"message":"splunk-init verification"},"sourcetype":"recsys:app:log"}' \
-    "http://splunk:8088/services/collector/event" || true)
+    "http://${HOST}:8088/services/collector/event" || true)
   if [ "$code" = "200" ]; then
     echo "==> HEC is accepting events over plain HTTP. Ready."
     exit 0

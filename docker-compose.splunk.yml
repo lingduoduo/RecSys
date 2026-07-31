@@ -22,14 +22,13 @@
 # runner, or Docker Desktop with a Rosetta/QEMU setup that doesn't hit the segfault) to
 # actually exercise it.
 #
-# NOT YET VERIFIED END TO END. This file and docker/splunk/init.sh were desk-checked
-# against Splunk's published REST API docs (index creation, HEC global settings, HEC
-# token creation, and the /services/collector/event + "Authorization: Splunk <token>"
-# format) but have not been run to a passing splunk-init on this host, because the arm64
-# host available for this work hits the segfault above. What IS verified: the appender's
-# HEC wire format, batching, and Authorization header are proven against a stub HTTP
-# collector in SplunkHecAppenderTest. Whoever runs this on x86_64 first should confirm
-# splunk-init exits 0 and record it in docs/runbooks/splunk-hec-logging.md (Task 8).
+# VERIFIED IN CI, NOT ON AN ARM64 WORKSTATION. SplunkHecIntegrationTest boots a real
+# Splunk on an x86_64 GitHub runner, executes docker/splunk/init.sh (this exact script,
+# not a paraphrase — that is what SPLUNK_HOST in it is for), ships events through a real
+# SplunkHecAppender, and asserts they come back from Splunk's search API with the right
+# source/sourcetype/index/level/MDC fields. See
+# .github/workflows/splunk-hec-integration.yml. If you change this file or init.sh, that
+# workflow is what tells you whether it still works — you cannot find out on a Mac.
 #
 # First boot (on a working host) takes 1-3 minutes — be patient with the healthcheck.
 # If a first boot is interrupted (container killed, host restarted) before splunkd
