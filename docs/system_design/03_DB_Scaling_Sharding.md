@@ -229,9 +229,12 @@ Cluster hash slots. The full physical account is in
 
 The payoff is that the ring makes the system **ready** to map logical shards onto separate
 nodes without a data migration: the placement function and the generation-versioned
-reshard already exist, so that move becomes a routing change rather than a rewrite. Read
-lever 1 as an investment that makes future horizontal scaling cheap, and lever 4 as the
-one that adds capacity today.
+reshard already exist, so that move becomes a routing change rather than a rewrite. That
+readiness currently covers **single-key operations only** — the keys carry no hash tag, so
+a shard's record, device-index, and stream keys are not guaranteed to share a Cluster
+slot, and no multi-key operation over them can be atomic (sharp edge 7). Read lever 1 as
+an investment that makes future horizontal scaling cheap, and lever 4 as the one that adds
+capacity today.
 
 ### What breaks first
 
@@ -258,6 +261,77 @@ scale rather than to rebalance:
   generation-current and will under-report while the previous generation is still live
   (sharp edge 1). Per-device reads are the ones that dual-read.
 
+## 7. Cross-shard atomicity — where the transaction stops
+
+The usual way to make two writes all-or-nothing is to wrap them in one database
+transaction: deduct inventory and insert the order row, commit, and let the database
+own the consistency guarantee. That works, and this repo relies on it — in exactly one
+place.
+
+[`MySqlSagaStateStore.saveWithEvent`](../../src/main/java/com/recsys/infrastructure/saga/MySqlSagaStateStore.java)
+mutates two different tables — `saga_instance` and `event_outbox` — inside a single
+[`TransactionalMySql`](../../src/main/java/com/recsys/infrastructure/persistence/TransactionalMySql.java)
+transaction. Both rows land or neither does. That is legal only because MySQL here is
+deliberately **un-sharded**
+([14_Partitioning](14_Partitioning.md#where-the-shards-physically-live--redis-and-mysql)).
+The atomicity is not free; it is bought by not sharding.
+
+### Three ways sharding breaks it
+
+Usually only the first is named. All three are live concerns here.
+
+1. **Separate shards are separate transaction domains.** Inventory hashed by item and
+   orders hashed by user land in different places. There is no XA and no two-phase
+   commit anywhere in this codebase, and the writable MySQL boundary holds a single
+   JDBC URL and one pool.
+2. **A multi-key write inside one shard is not atomic either.** The record store
+   pipelines its three writes (§1). Pipelining is batching, not a transaction — see
+   sharp edge 6.
+3. **The shard map is itself eventually consistent.** Topology propagates across the
+   fleet over ~30 s and a reshard opens a 24 h dual-read window (§3). A transaction
+   cannot span a boundary that is still moving.
+
+### What the system uses instead
+
+| Mechanism | Where | Shape for "deduct inventory, create order" |
+|---|---|---|
+| Local transaction + outbox | [`DurableEventPublisher`](../../src/main/java/com/recsys/application/outbox/DurableEventPublisher.java), `OutboxRelay` | Order row and the "deduct inventory" outbox row commit together in one database; delivery is asynchronous, leased, and retried |
+| Compensation saga | [`SagaOrchestrators`](../../src/main/java/com/recsys/application/saga/SagaOrchestrators.java) `Standard` | Reserve inventory, then create the order; on failure compensate completed steps in reverse |
+| TCC | `SagaOrchestrators` `Tcc` | Try reserves without making the reservation externally final; Confirm commits all; Cancel releases every unconfirmed reservation |
+
+For inventory specifically **TCC fits better than the plain saga**, because compensation
+is not rollback. Between a reserve step committing and its compensation running, every
+other reader sees stock that was never actually sold. TCC's Try holds a reservation that
+is not yet externally final, which closes that window — at the cost of modelling
+`available` and `reserved` separately.
+
+### What you now owe, that the transaction gave you free
+
+- **Idempotency keys.** Participants key on saga id plus step name, plus the phase for
+  TCC, because the event path is at-least-once and replay is expected.
+- **Optimistic concurrency instead of row locks.** Saga state advances under
+  `WHERE saga_id = ? AND version = ?`, raising a conflict rather than blocking. That is
+  the sharded-world substitute for `SELECT … FOR UPDATE`.
+- **A failure state ACID never had.** Compensation and cancel are deliberately
+  best-effort: every step is attempted, errors accumulate, and the saga still fails. A
+  compensation that itself fails leaves real inconsistency for an operator to resolve.
+
+### Where it bottoms out
+
+The saga machinery is not an escape from transactions — it is built on one. The
+coordinator needs its state row and its outbox row to commit atomically, or it can lose
+track of a workflow it already started. So the design bottoms out at exactly one
+un-sharded database.
+
+The practical rule, and the arrangement this repo already has: **shard the high-volume
+aggregates, and keep coordinator state and its outbox together and un-sharded.** One
+consequence worth planning for — the outbox relay claims work through a single index on
+a single table, so per-shard outboxes would need per-shard relays and would give up
+global delivery ordering.
+
+Note that the saga orchestrators are reference machinery: no production request path
+constructs one today.
+
 ## Sharp edges — notes
 
 1. **Shard scans drop previous-generation data during a reshard.** Only per-device reads
@@ -275,3 +349,14 @@ scale rather than to rebalance:
 5. **The record store and MySQL are different things.** This is Redis record sharding;
    the relational catalog is a single un-sharded MySQL read model (see
    [14_Partitioning](14_Partitioning.md#where-the-shards-physically-live--redis-and-mysql)).
+6. **A single-shard write is pipelined, not atomic.** `doWrite` sends HSET + ZADD + XADD
+   as one pipeline, which is batching, not a transaction. A partial failure can leave a
+   record hash with no device-index entry — invisible to per-device reads — or an index
+   entry pointing at a record that was never written. The sequence `INCR` is a separate
+   round-trip before it, so a failure between the two burns a sequence number and drops
+   the record. Retries are the recovery mechanism: a duplicate `eventId` is caught by
+   `ZADD NX` returning 0.
+7. **Record-store keys carry no hash tag.** Keys are `sr:rec:0:123`, not
+   `sr:rec:{0}:123`, so a shard's four keys are not guaranteed to share a Redis Cluster
+   slot. No multi-key operation over them — including any atomic fix for sharp edge 6 —
+   is Cluster-safe until they are co-located. See §7.
