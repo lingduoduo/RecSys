@@ -20,7 +20,11 @@ import java.util.Objects;
  * Redis-backed sharded record store.
  *
  * Write path: one Lua script per write — INCR the shard's sequence counter, claim the device
- * index, store the record hash, and append to the shard stream, atomically.
+ * index, store the record hash, and append to the shard stream. Redis runs the script in
+ * isolation, so no other client ever observes a partial write and no client-side or network
+ * failure can interleave between the commands. That is isolation, not a transaction: a
+ * {@code redis.call} that errors mid-script aborts with the preceding writes already applied,
+ * and there is no rollback.
  *
  * Read paths: per-device reads dual-read the current and previous generation during a
  * migration window; shard reads are current-generation only.
@@ -31,8 +35,11 @@ public final class ShardedRecordStore {
     private static final Duration PIPELINE_TIMEOUT = Duration.ofSeconds(5);
 
     /**
-     * One atomic write: assign the sequence, claim the device index, then store the record and
-     * append to the stream. Returns {seq, zaddResult}.
+     * One write in one script: assign the sequence, claim the device index, then store the
+     * record and append to the stream. Returns {seq, zaddResult}. Redis's script isolation is
+     * what this buys — no other client sees the write half-done, and nothing can fail between
+     * the commands. It is not a transaction: an erroring {@code redis.call} aborts the script
+     * with the earlier writes already applied and no rollback.
      *
      * <p>On an insert whose event ID is already indexed, the script returns before writing
      * anything else — a retry therefore neither burns a record key nor appends a duplicate
@@ -53,6 +60,8 @@ public final class ShardedRecordStore {
               zadd = redis.call('ZADD', KEYS[2], 'NX', seq, ARGV[3])
               if zadd == 0 then return {seq, 0} end
             end
+            -- Lua renders seq with %.14g: at seq >= 1e14 this emits '1e+14' and the record key
+            -- is malformed. Unreachable in practice, and silent if it ever were reached.
             local recKey = ARGV[1] .. seq
             redis.call('HSET', recKey,
               'deviceId', ARGV[2], 'type', ARGV[8], 'eventId', ARGV[3],
@@ -127,6 +136,10 @@ public final class ShardedRecordStore {
 
         long seqNum = result.get(0);
         long zadd   = result.get(1);
+        // On DUPLICATE the sequence was still consumed by the INCR but the script wrote nothing,
+        // so this seqNum names a record key that does not and never will exist. Callers
+        // (ShardedRecordService among them) receive it anyway; treat it as a burnt number, not a
+        // handle. Before the script it resolved to an orphaned record hash instead.
         WriteStatus status = (!isUpdate && zadd == 0L) ? WriteStatus.DUPLICATE : WriteStatus.OK;
         return new WriteResult(seqNum, shardIndex, status);
     }

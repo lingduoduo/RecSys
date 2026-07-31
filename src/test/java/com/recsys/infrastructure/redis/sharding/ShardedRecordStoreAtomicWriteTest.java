@@ -42,6 +42,26 @@ class ShardedRecordStoreAtomicWriteTest {
         return new ShardedRecord("dev-1", 0L, RecordType.EVENT, "evt-1", "{}", 1234L);
     }
 
+    /**
+     * The nine ARGVs {@link #record()} produces, in the order the script indexes them. Written
+     * out literally rather than derived from production code: the failure this guards against is
+     * a positional transposition — payload into the type slot, say — which compiles, and which a
+     * matcher that only checks the array's presence would wave through while corrupting every
+     * record written.
+     */
+    private static String[] argv(String shardToken, String ttlSeconds, String isUpdate) {
+        return new String[]{
+                "sr:g2:rec:" + shardToken + ":", // ARGV[1] record-key prefix
+                "dev-1",                         // ARGV[2] deviceId
+                "evt-1",                         // ARGV[3] eventId
+                "{}",                            // ARGV[4] payload
+                "1234",                          // ARGV[5] timestamp
+                ttlSeconds,                      // ARGV[6]
+                isUpdate,                        // ARGV[7]
+                "EVENT",                         // ARGV[8] type
+                "1000000"};                      // ARGV[9] stream MAXLEN
+    }
+
     @Test
     void insertReturnsOkAndTheScriptAssignedSequence() {
         ShardedRecordStore store = storeReturning(42L, 1L, ShardKeys.FORMAT_TAGGED);
@@ -69,7 +89,7 @@ class ShardedRecordStoreAtomicWriteTest {
     }
 
     @Test
-    void theScriptReceivesTaggedKeysAndTheRecordKeyPrefix() {
+    void theScriptReceivesTaggedKeysAndEveryArgvInOrder() {
         ShardedRecordStore store = storeReturning(42L, 1L, ShardKeys.FORMAT_TAGGED);
         int shard = new ConsistentHashRing(2, 150).shardFor("dev-1");
 
@@ -80,7 +100,7 @@ class ShardedRecordStoreAtomicWriteTest {
                         "sr:g2:seq:{" + shard + "}",
                         "sr:g2:dev:{" + shard + "}:dev-1",
                         "sr:g2:stream:{" + shard + "}"}),
-                any(String[].class));
+                eq(argv("{" + shard + "}", "0", "0")));
     }
 
     @Test
@@ -95,6 +115,31 @@ class ShardedRecordStoreAtomicWriteTest {
                         "sr:g2:seq:" + shard,
                         "sr:g2:dev:" + shard + ":dev-1",
                         "sr:g2:stream:" + shard}),
-                any(String[].class));
+                eq(argv(Integer.toString(shard), "0", "0")));
+    }
+
+    @Test
+    void aTtlWriteCarriesTheTtlInItsOwnArgvSlot() {
+        // ARGV[6] and ARGV[7] are adjacent and both "0" on a plain insert, so a transposition
+        // between them would hide in the two tests above. A TTL pins ARGV[6].
+        ShardedRecordStore store = storeReturning(42L, 1L, ShardKeys.FORMAT_TAGGED);
+        int shard = new ConsistentHashRing(2, 150).shardFor("dev-1");
+
+        store.write(record(), 3600);
+
+        verify(commands).eval(anyString(), eq(ScriptOutputType.MULTI), any(String[].class),
+                eq(argv("{" + shard + "}", "3600", "0")));
+    }
+
+    @Test
+    void anUpdateCarriesTheUpdateFlagInItsOwnArgvSlot() {
+        // The other half of the ARGV[6]/ARGV[7] pair: update flips ARGV[7] and leaves ARGV[6].
+        ShardedRecordStore store = storeReturning(42L, 1L, ShardKeys.FORMAT_TAGGED);
+        int shard = new ConsistentHashRing(2, 150).shardFor("dev-1");
+
+        store.update(record());
+
+        verify(commands).eval(anyString(), eq(ScriptOutputType.MULTI), any(String[].class),
+                eq(argv("{" + shard + "}", "0", "1")));
     }
 }
