@@ -7,10 +7,37 @@ already produce. It is off unless `SPLUNK_HEC_TOKEN` is set: with no token,
 `SplunkHecAppender` starts, does nothing, and every request path is unaffected. Console
 logging is never gated on this — the `CONSOLE` and `SPLUNK` appenders are attached
 side by side in `src/main/resources/logback-common.xml`, included by the single
-`src/main/resources/logback.xml` that all four mains load (see "A Logback constraint"
-below for why there is no separate Spring config).
+`src/main/resources/logback.xml` that all four mains load (see
+["A Logback constraint"](#a-logback-constraint) below for why there is no separate
+Spring config).
 
 Design: `docs/superpowers/specs/2026-07-31-splunk-hec-log-shipping-design.md`
+
+## A Logback constraint
+
+There is only one Logback config file in this repo, `src/main/resources/logback.xml`,
+and it governs all four service mains — including the Spring Boot model service on
+8080, not just the three Armeria mains that run outside Spring entirely.
+
+That is not an oversight; it is forced by how Spring Boot resolves its logging config.
+`AbstractLoggingSystem.getSelfInitializationConfig()` scans for **standard-location**
+files first — `logback-test.xml`, then `logback.xml` — and returns as soon as it finds
+one, *before* it ever looks for a `-spring` variant such as `logback-spring.xml`.
+Because `logback.xml` exists on the classpath, Spring Boot finds it on that first pass
+and never reaches the `-spring` lookup at all. A `logback-spring.xml` file would
+therefore be unreachable dead code, which is why this repo has none — it was deleted
+during implementation once this precedence was confirmed (see commit `793067f`).
+
+The practical consequence: **Spring-only Logback tags — `<springProfile>`,
+`<springProperty>` — cannot be used anywhere in this repo's Logback config.** They only
+have any effect inside a `-spring` file, and no `-spring` file is ever loaded while
+`logback.xml` is present. If you need Spring-profile-aware logging configuration, it has
+to happen in a different phase (e.g. driven by a plain environment variable read inside
+`SplunkHecConfig` or an equivalent class), not via a Logback tag. Someone will eventually
+reach for `<springProfile>` inside `logback-common.xml` or `logback.xml`; it will parse,
+Joran will silently ignore it outside a `-spring` file, and the intended behavior will
+simply never happen. This section exists so that person finds the answer before losing
+an afternoon to it.
 
 ## The delivery contract: at-most-once
 

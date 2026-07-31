@@ -1526,8 +1526,11 @@ Co-Authored-By: Claude Opus 5 (1M context) <noreply@anthropic.com>"
 **Files:**
 - Create: `src/main/resources/logback-common.xml`
 - Create: `src/main/resources/logback.xml`
-- Modify: `src/main/resources/logback-spring.xml`
 - Test: `src/test/java/com/recsys/infrastructure/observability/SplunkLogbackWiringTest.java`
+
+(No `logback-spring.xml`: Spring Boot's standard-location check finds `logback.xml`
+before it ever looks for a `-spring` variant, so that file would be unreachable dead
+code — see the corrected prose below.)
 
 **Interfaces:**
 - Consumes: `SplunkHecAppender` (Task 4) by fully-qualified class name in XML.
@@ -1651,7 +1654,7 @@ class SplunkLogbackWiringTest {
 Run: `JAVA_HOME=$(/usr/libexec/java_home -v 17) mvn test -Dtest=SplunkLogbackWiringTest`
 Expected: FAIL — `logback.xml` and `logback-common.xml` do not exist.
 
-- [ ] **Step 3: Write the three config files**
+- [ ] **Step 3: Write the two config files**
 
 Create `src/main/resources/logback-common.xml`:
 
