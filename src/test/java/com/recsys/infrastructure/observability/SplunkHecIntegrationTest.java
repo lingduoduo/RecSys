@@ -53,8 +53,11 @@ import static org.assertj.core.api.Assertions.assertThat;
 @Tag("docker")
 class SplunkHecIntegrationTest {
 
-    private static final String PASSWORD = "integration-test-password";
-    private static final String HEC_TOKEN = "integration-test-hec-token";
+    // Generated per run rather than hardcoded: a literal credential in the tree is something
+    // secret scanners flag and people copy, and a fresh one also guarantees a re-run cannot
+    // authenticate against a container left over from a previous one.
+    private static final String PASSWORD = "Pw-" + UUID.randomUUID();
+    private static final String HEC_TOKEN = UUID.randomUUID().toString();
     private static final String INDEX = "recsys";
     private static final String SERVICE_NAME = "integration-test-service";
 

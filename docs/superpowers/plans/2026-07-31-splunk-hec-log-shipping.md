@@ -1772,7 +1772,7 @@ In `scripts/run-microservices-local.sh`, add this block immediately after the `m
 ```sh
 # Splunk HEC log shipping is off unless SPLUNK_HEC_TOKEN is exported.
 #   docker compose -f docker-compose.splunk.yml up -d
-#   export SPLUNK_HEC_TOKEN=local-dev-hec-token
+#   export SPLUNK_HEC_TOKEN="$(uuidgen)"
 # The default URL targets the Docker service name `splunk`, which is right inside the
 # compose network and in EKS. These four JVMs run on the HOST, where only the published
 # localhost port resolves — so default to that instead.
@@ -1944,8 +1944,8 @@ Then replace its contents with:
 ```yaml
 # Local Splunk stand-in for HEC log shipping.
 #
-#   export SPLUNK_PASSWORD=changeme-splunk-admin
-#   export SPLUNK_HEC_TOKEN=local-dev-hec-token
+#   export SPLUNK_PASSWORD="$(openssl rand -base64 18)"
+#   export SPLUNK_HEC_TOKEN="$(uuidgen)"
 #   docker compose -f docker-compose.splunk.yml up -d
 #   sh scripts/run-microservices-local.sh          # picks up SPLUNK_HEC_TOKEN
 #   open http://localhost:8000                     # admin / $SPLUNK_PASSWORD
@@ -2017,8 +2017,8 @@ Expected: no output from the first two; the third prints nothing on success (it 
 - [ ] **Step 4: Verify end to end (do not skip)**
 
 ```bash
-export SPLUNK_PASSWORD=changeme-splunk-admin
-export SPLUNK_HEC_TOKEN=local-dev-hec-token
+export SPLUNK_PASSWORD="$(openssl rand -base64 18)"
+export SPLUNK_HEC_TOKEN="$(uuidgen)"
 docker compose -f docker-compose.splunk.yml up -d
 docker compose -f docker-compose.splunk.yml logs -f splunk-init
 ```

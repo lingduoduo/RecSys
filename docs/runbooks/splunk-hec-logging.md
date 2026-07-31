@@ -129,8 +129,8 @@ watch whether `initScriptEnablesPlainHttpHec` still passes.
 ### Bring-up sequence
 
 ```bash
-export SPLUNK_PASSWORD=changeme-splunk-admin
-export SPLUNK_HEC_TOKEN=local-dev-hec-token
+export SPLUNK_PASSWORD="$(openssl rand -base64 18)"
+export SPLUNK_HEC_TOKEN="$(uuidgen)"
 docker compose -f docker-compose.splunk.yml up -d
 # First boot takes 1-3 minutes — splunk-init waits on the splunk service's healthcheck,
 # then polls the plain-HTTP collector endpoint for up to 150s. Be patient.
@@ -383,7 +383,7 @@ ingestion, not an emulation of a production Splunk deployment.
   the compose file's `SPLUNK_HEC_SSL: "False"` and `init.sh`'s explicit `enableSSL=0`
   call) — this exists purely so a local run needs no certificate trust setup. A real
   Splunk HEC endpoint should be TLS, and a real deployment issues distinct tokens per
-  source rather than one shared `local-dev-hec-token` across every developer's stack.
+  source rather than one token shared across every developer's stack.
 
 This is a wiring harness for the appender's HEC contract, not a production Splunk
 stand-in.
