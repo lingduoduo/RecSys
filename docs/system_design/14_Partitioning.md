@@ -83,15 +83,15 @@ and changing it would silently remap every device and every bucket.
 
 ### Write fan-out
 
-Each write resolves `topology.current().shardFor(device)` and pipelines three
-Redis ops against that shard: `HSET` the full record, `ZADD` a per-device index
-(`NX` for insert, `XX + GT` for update) for per-device cursor reads, and `XADD` a
-per-shard stream for ordered replay (approx-trimmed at `STREAM_MAXLEN =
-1_000_000`). A `ZADD NX` that returns 0 is a duplicate `eventId` → `DUPLICATE`
-status, so writes are idempotent and safe to retry. Sequence numbers come from a
-per-`(version, shard)` `INCR`
-([`SequenceGenerator`](../../src/main/java/com/recsys/infrastructure/redis/sharding/SequenceGenerator.java)) —
-shard-scoped, not globally unique.
+Each write resolves `topology.current().shardFor(device)` and evaluates a single Lua
+script against that shard: it `INCR`s the shard's sequence counter — shard-scoped, not
+globally unique — claims the device index (`ZADD`, `NX` for insert, `XX + GT` for
+update), writes the record hash (`HSET`), and appends to the per-shard stream (`XADD`,
+approx-trimmed at `STREAM_MAXLEN = 1_000_000`) — atomically, in one round-trip against
+the primary. A `ZADD NX` that returns 0 is a duplicate `eventId`; the script returns at
+that point without writing anything else, so writes are idempotent and safe to retry.
+Under key format 2 all four keys share a hash tag and therefore one Cluster slot, which
+is what makes the multi-key script legal.
 
 **Sequence-counter repair at startup.** A Redis partial flush can leave a shard's
 `{prefix}{generation}seq:{shard}` counter *behind* the highest sequence number still
@@ -132,8 +132,9 @@ A reshard is online because of two mechanisms:
 - **Bounded dual-read window** — for `SHARDED_RECORD_MAX_TTL_SECONDS` (default
   86400, reused as the dual-read window) after a reshard, per-device reads
   (`readDevice`) read *both* `current()` and `previousIfActive()` and merge them
-  (dedupe by `device:seq`, current wins), so records written before the change are
-  still served until they TTL out and the previous generation self-heals away.
+  (dedupe by `(deviceId, eventId)`, current wins), so records written before the change
+  are still served until they TTL out and the previous generation self-heals away — with
+  the caveats in [03 sharp edge 8](03_DB_Scaling_Sharding.md#sharp-edges--notes).
   Shard-level scans (`readShard`, behind `GET /shards/shard`)
   are generation-current and do **not** dual-read.
 

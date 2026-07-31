@@ -212,9 +212,11 @@ public final class ShardedRecordStore {
         // Never split a sequence number across pages. The cursor is a sequence, so a record
         // sharing the last returned sequence could not be reached by any later page — the next
         // page starts strictly above it. Extending past the boundary over-delivers by at most
-        // one record per generation; stranding records would be silent data loss. (A corrupted
-        // shard counter that reissues a sequence many times could push that bound higher; the
-        // loop stays correct, it just over-delivers more. Tracked as a sharp edge, not handled.)
+        // one record beyond `limit`: with two generations and sequence numbers that are never
+        // reissued, at most one straggler can share the cut sequence. Stranding records would
+        // be silent data loss instead. (A corrupted shard counter that reissues a sequence many
+        // times could push that bound higher; the loop stays correct, it just over-delivers
+        // more. Tracked as a sharp edge, not handled.)
         int cut = Math.min(limit, merged.size());
         while (cut < merged.size() && merged.get(cut).seqNum() == merged.get(cut - 1).seqNum()) {
             cut++;

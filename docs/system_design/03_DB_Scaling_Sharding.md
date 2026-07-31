@@ -35,14 +35,19 @@ and served by [04_Replication](04_Replication.md).
 This is the partition store: per-device records distributed across N shards by the
 consistent-hash ring.
 
-**Key schema.** Each shard holds three Redis structures, generation-prefixed
+**Key schema.** Each shard holds four Redis structures, generation-prefixed
 (`Generations.keyPrefix` → `""` for gen 1, `"g{version}:"` for gen ≥2):
 
+- `sr:g{v}:seq:{shard}` — an **INCR** counter that assigns each write's sequence number;
 - `sr:g{v}:rec:{shard}:{seq}` — an **HSET** with the full record;
 - `sr:g{v}:dev:{shard}:{device}` — a **ZADD** device index (score = sequence) for
   ordered per-device reads;
 - `sr:g{v}:stream:{shard}` — an **XADD** stream (approx-trimmed at 1,000,000) for ordered
   replay.
+
+Under key format 2 the shard index itself carries a hash tag, e.g. `sr:g3:seq:{0}`,
+`sr:g3:rec:{0}:42`, `sr:g3:dev:{0}:dev-1`, `sr:g3:stream:{0}` — all four land in the same
+Cluster slot, which is what the write script below depends on.
 
 **Write fan-out.** `doWrite` resolves `topology.current().shardFor(device)` and evaluates a
 single Lua script against that one shard on the **primary**: it INCRs the shard's sequence
@@ -56,7 +61,8 @@ therefore one Cluster slot, which is what makes the multi-key script legal.
 
 - **Per-device reads** (`readDevice`, behind `GET /shards/device`) walk the device ZSET
   and, during a reshard window, **dual-read** the current *and* previous generation and
-  merge them (dedupe by `(device, seq)`, current wins) — so no record is lost mid-reshard.
+  merge them (dedupe by `(deviceId, eventId)`, current wins) — at-least-once, not
+  lossless; see sharp edge 8 for what that guarantees and what it doesn't.
 - **Shard scans** (`readShard`, behind `GET /shards/shard`) are
   **current-generation only** and silently miss previous-generation records — a known
   sharp edge.

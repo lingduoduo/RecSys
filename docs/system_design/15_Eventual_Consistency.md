@@ -116,9 +116,9 @@ That section owns the sharding consequence; this one owns the mechanism.
 ### 3a. Redis-backed sharding / shard topology
 
 - **Strongly consistent:** the topology read-modify-write (`ShardTopologyStore`
-  atomic Lua, SETNX first-writer-wins bootstrap), sequence assignment
-  (`SequenceGenerator` atomic INCR), and a single record write (pipelined
-  HSET+ZADD+XADD to the primary).
+  atomic Lua, SETNX first-writer-wins bootstrap), and a single record write — one Lua
+  script that `INCR`s the shard's sequence counter and commits the device index, record
+  hash, and stream append together, atomically, against the primary.
 - **Eventually consistent:** the topology *view* across instances — each JVM
   holds a `volatile Snapshot` refreshed on a fixed 30 s delay
   (`SHARD_TOPOLOGY_REFRESH_SECONDS`, [OnlinePredictionServer.java:163](../../src/main/java/com/recsys/api/online/OnlinePredictionServer.java#L163)).
@@ -126,7 +126,7 @@ That section owns the sharding consequence; this one owns the mechanism.
 - **Reshard dual-read window** = `SHARDED_RECORD_MAX_TTL_SECONDS`, default
   **24 h** ([OnlinePredictionServer.java:214](../../src/main/java/com/recsys/api/online/OnlinePredictionServer.java#L214)).
   During it, `readDevice` reads current **and** `previousIfActive()` and merges
-  (dedupe by `(deviceId, seqNum)`); new writes land only in the new generation.
+  (dedupe by `(deviceId, eventId)`); new writes land only in the new generation.
   `readShard` is **current-generation only** and silently miss
   previous-generation records.
 - **Read-your-writes** holds for same-instance/same-generation primary-only
