@@ -200,12 +200,21 @@ public final class ShardedRecordStore {
         // issue equal sequence numbers, so a merged page is not a strict chronological sequence.
         // Within one generation it is exact, and previous-generation data TTLs out of the window.
         merged.sort(java.util.Comparator.comparingLong(ShardedRecord::seqNum));
-        if (merged.isEmpty()) return new Page<>(merged, null);
+        // An empty page does NOT mean the index is exhausted: fetchRecords skips ZSet entries
+        // whose record hash is gone (TTL expiry, or an orphan left by an aborted script), so a
+        // page can come back empty with plenty still above it. Keep paging, resuming from the
+        // LOWEST cursor either input reported — if current says 10 and previous says 7, resuming
+        // at 11 would skip previous-generation 8-10, while resuming at 8 merely re-reads current
+        // 8-10, whose records are gone anyway and whose duplicates the dedup above absorbs.
+        // Skipping is unrecoverable; re-reading is not.
+        if (merged.isEmpty()) return new Page<>(merged, lowerOf(current.next(), previous.next()));
 
         // Never split a sequence number across pages. The cursor is a sequence, so a record
         // sharing the last returned sequence could not be reached by any later page — the next
         // page starts strictly above it. Extending past the boundary over-delivers by at most
-        // one record per generation; stranding records would be silent data loss.
+        // one record per generation; stranding records would be silent data loss. (A corrupted
+        // shard counter that reissues a sequence many times could push that bound higher; the
+        // loop stays correct, it just over-delivers more. Tracked as a sharp edge, not handled.)
         int cut = Math.min(limit, merged.size());
         while (cut < merged.size() && merged.get(cut).seqNum() == merged.get(cut - 1).seqNum()) {
             cut++;
@@ -221,6 +230,14 @@ public final class ShardedRecordStore {
                 ? ShardCursor.seq(page.get(page.size() - 1).seqNum())
                 : null;
         return new Page<>(page, next);
+    }
+
+    // The lower of two device cursors; null means "that generation is exhausted", so it loses to
+    // any non-null cursor. Both are SEQ cursors minted by ShardCursor.seq, so the values parse.
+    private static ShardCursor lowerOf(ShardCursor a, ShardCursor b) {
+        if (a == null) return b;
+        if (b == null) return a;
+        return Long.parseLong(a.value()) <= Long.parseLong(b.value()) ? a : b;
     }
 
     public Page<ShardedRecord> readShard(int shardIndex, ShardCursor cursor, int limit) {

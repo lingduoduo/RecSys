@@ -342,6 +342,103 @@ class ShardedRecordStoreAtomicWriteIntegrationTest extends RedisShardingTestBase
                 "g1-1", "g1-2", "g1-3", "g2-1", "g2-2", "g2-3");
     }
 
+    @Test
+    void anEmptyMergedPageStillPagesPastRecordsWhoseHashesAreGone() throws InterruptedException {
+        // fetchRecords skips ZSet entries whose record hash is gone — TTL expiry, or an orphan
+        // left behind by an aborted script. So a merged page can legitimately hold zero records
+        // while the index still has plenty above it. Returning a null cursor there stops the
+        // caller at the hole and silently loses everything beyond it.
+        //
+        // The cursor must be non-null if and only if either input page reports more, taken as the
+        // LOWEST of the two: here the current generation says 13 and the previous says 3, so
+        // resuming at 14 would skip previous-generation records 4 and 5. Resuming at 4 re-reads
+        // current 11-13, which is harmless — their hashes are gone, and the dedup absorbs any
+        // that reappear. Skipping is unrecoverable; re-reading is not.
+        //
+        // ShardedRecordStoreTtlTest.readDevice_hasMore_notAffectedByExpiredRecords pins the same
+        // property for the single-generation path, but it builds a fixed ring, so prev == null
+        // and it never reaches the merge.
+        String device = "dev-hole";
+        int limit = 3;
+
+        ShardTopologyStore topoStore = new ShardTopologyStore(exec, "shard:topology:hole");
+        assertThat(topoStore.bootstrap(2, VNODES, 0L).version()).isEqualTo(1);
+        ShardKeys v1Keys = ShardKeys.of(
+                PREFIX, new ShardTopology(1, 2, VNODES, 0L, ShardKeys.FORMAT_TAGGED));
+
+        // Generation 1: seqs 1..5, of which 1-3 will be made unfetchable.
+        ShardedRecordStore gen1 = storeOn(ShardTopologyProvider.fixedAtVersion(
+                1, 2, VNODES, ShardKeys.FORMAT_TAGGED));
+        int shard1 = 0;
+        for (int i = 1; i <= 5; i++) {
+            WriteResult wr = gen1.write(new ShardedRecord(
+                    device, 0, RecordType.EVENT, "g1-" + i, "v", i));
+            assertThat(wr.seqNum()).isEqualTo((long) i);
+            shard1 = wr.shardIndex();
+        }
+        // The orphan route: drop the hash, leave the ZSet entry — what an aborted script leaves.
+        for (int i = 1; i <= 3; i++) {
+            assertThat(cmd().del(v1Keys.rec(shard1, i))).isEqualTo(1L);
+        }
+
+        // Reshard into the dual-read window.
+        assertThat(topoStore.publishReshard(4, 1_000L, 60_000L).version()).isEqualTo(2);
+        ShardTopologyProvider migrating =
+                new ShardTopologyProvider(topoStore, VNODES, 4, 0L, () -> 2_000L);
+        migrating.start();
+        assertThat(migrating.previousIfActive()).isNotNull();
+
+        // Push generation 2's counter well above generation 1's so the two input pages report
+        // *different* cursors — that difference is what makes "take the lowest" testable.
+        ShardKeys v2Keys = ShardKeys.of(PREFIX, migrating.current());
+        int shard2 = migrating.current().shardFor(device);
+        cmd().set(v2Keys.seq(shard2), "10");
+
+        // Generation 2: seqs 11-13 expire (the TTL route), 14-15 stay live.
+        ShardedRecordStore gen2 = storeOn(migrating);
+        for (int i = 11; i <= 15; i++) {
+            WriteResult wr = gen2.write(
+                    new ShardedRecord(device, 0, RecordType.EVENT, "g2-" + i, "v", i),
+                    i <= 13 ? 1 : 0);
+            assertThat(wr.seqNum()).isEqualTo((long) i);
+        }
+
+        Thread.sleep(1100); // let 11-13 expire
+
+        // Precondition: the hashes are gone but both indexes still hold every entry. Without
+        // this the test could pass vacuously on a setup that simply wrote nothing.
+        for (int i = 1; i <= 3; i++) assertThat(cmd().exists(v1Keys.rec(shard1, i))).isZero();
+        for (int i = 11; i <= 13; i++) assertThat(cmd().exists(v2Keys.rec(shard2, i))).isZero();
+        assertThat(cmd().zcard(v1Keys.dev(shard1, device))).isEqualTo(5L);
+        assertThat(cmd().zcard(v2Keys.dev(shard2, device))).isEqualTo(5L);
+
+        ShardedRecordStore reader = storeOn(migrating);
+        Page<ShardedRecord> first = reader.readDevice(device, ShardCursor.start(), limit);
+
+        assertThat(first.records())
+                .as("every record on the first page has a missing hash").isEmpty();
+        assertThat(first.next())
+                .as("an empty page must not end paging while the index still holds more")
+                .isNotNull();
+        assertThat(first.next())
+                .as("resume from the LOWEST unexhausted generation (previous=3), not the current "
+                        + "one (13) — resuming at 14 would skip g1-4 and g1-5")
+                .isEqualTo(ShardCursor.seq(3));
+
+        // And paging on from there reaches every live record, then terminates.
+        List<String> seen = new ArrayList<>();
+        ShardCursor cursor = first.next();
+        int pages = 1;
+        while (cursor != null && pages < 20) {
+            Page<ShardedRecord> page = reader.readDevice(device, cursor, limit);
+            for (ShardedRecord r : page.records()) seen.add(r.eventId());
+            pages++;
+            cursor = page.next();
+        }
+        assertThat(cursor).as("paging must terminate").isNull();
+        assertThat(seen).containsExactlyInAnyOrder("g1-4", "g1-5", "g2-14", "g2-15");
+    }
+
     /**
      * Writes {@code gen1Count} records under a fresh generation 1 and {@code gen2Count} under
      * generation 2 after a real reshard, for the one device, and returns a provider sitting
