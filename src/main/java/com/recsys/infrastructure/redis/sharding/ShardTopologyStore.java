@@ -1,5 +1,6 @@
 package com.recsys.infrastructure.redis.sharding;
 
+import com.fasterxml.jackson.databind.DeserializationFeature;
 import com.fasterxml.jackson.databind.ObjectMapper;
 import com.recsys.infrastructure.redis.RedisExecutor;
 import io.lettuce.core.ScriptOutputType;
@@ -13,7 +14,10 @@ import io.lettuce.core.SetArgs;
  */
 public final class ShardTopologyStore {
 
-    private static final ObjectMapper MAPPER = new ObjectMapper();
+    private static final ObjectMapper MAPPER = new ObjectMapper()
+            // A newer writer may add fields this build does not know. Ignoring them keeps a
+            // mixed-version fleet readable in both directions rather than fail-static.
+            .configure(DeserializationFeature.FAIL_ON_UNKNOWN_PROPERTIES, false);
 
     /** Reshard: read JSON at KEYS[1], bump version, set prev pointer, write back, return new JSON. */
     private static final String PUBLISH_LUA = """
@@ -30,7 +34,9 @@ public final class ShardTopologyStore {
               createdAtMs = nowMs,
               prevVersion = t.version,
               prevShardCount = t.shardCount,
-              prevExpiresAtMs = nowMs + windowMs
+              prevExpiresAtMs = nowMs + windowMs,
+              keyFormat = 2,
+              prevKeyFormat = t.keyFormat or 1
             }
             local encoded = cjson.encode(next)
             redis.call('SET', KEYS[1], encoded)
@@ -52,7 +58,10 @@ public final class ShardTopologyStore {
 
     /** First-writer-wins create of version 1; returns the effective snapshot (existing or new). */
     public Snapshot bootstrap(int shardCount, int vnodes, long nowMs) {
-        Snapshot v1 = new Snapshot(1, shardCount, vnodes, nowMs, null, null, null);
+        // A fresh keyspace has no legacy records to preserve, so it starts tagged. SETNX means
+        // an existing generation 1 — which is untagged — is never rewritten.
+        Snapshot v1 = new Snapshot(1, shardCount, vnodes, nowMs, null, null, null,
+                ShardKeys.FORMAT_TAGGED, null);
         exec.execute(c -> c.set(key, write(v1), SetArgs.Builder.nx()));
         return load();
     }
@@ -75,6 +84,11 @@ public final class ShardTopologyStore {
         }
     }
 
+    /** Package-private seam: parse through the store's configured mapper. */
+    static Snapshot parseForTest(String json) {
+        return parse(json);
+    }
+
     private static String write(Snapshot s) {
         try {
             return MAPPER.writeValueAsString(s);
@@ -83,6 +97,11 @@ public final class ShardTopologyStore {
         }
     }
 
+    /**
+     * The stored topology document. {@code keyFormat} and {@code prevKeyFormat} are boxed
+     * because documents written before the field existed omit them entirely; absent reads as
+     * {@link ShardKeys#FORMAT_UNTAGGED}, which is what those documents' keys actually use.
+     */
     public record Snapshot(
             int version,
             int shardCount,
@@ -90,6 +109,16 @@ public final class ShardTopologyStore {
             long createdAtMs,
             Integer prevVersion,
             Integer prevShardCount,
-            Long prevExpiresAtMs
-    ) {}
+            Long prevExpiresAtMs,
+            Integer keyFormat,
+            Integer prevKeyFormat
+    ) {
+        public int effectiveKeyFormat() {
+            return keyFormat == null ? ShardKeys.FORMAT_UNTAGGED : keyFormat;
+        }
+
+        public int effectivePrevKeyFormat() {
+            return prevKeyFormat == null ? ShardKeys.FORMAT_UNTAGGED : prevKeyFormat;
+        }
+    }
 }

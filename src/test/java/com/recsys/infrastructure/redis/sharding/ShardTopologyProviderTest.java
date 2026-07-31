@@ -10,7 +10,7 @@ class ShardTopologyProviderTest {
 
     private static ShardTopologyStore.Snapshot snap(int v, int shards, long created,
             Integer pv, Integer ps, Long pExp) {
-        return new ShardTopologyStore.Snapshot(v, shards, 150, created, pv, ps, pExp);
+        return new ShardTopologyStore.Snapshot(v, shards, 150, created, pv, ps, pExp, null, null);
     }
 
     @Test
