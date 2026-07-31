@@ -342,6 +342,10 @@
                 <include>**/cache/LogicalExpiryEmbeddingCacheTest.java</include>
                 <include>**/cache/MultiLevelEmbeddingCacheTest.java</include>
                 <include>**/sharding/SequenceGeneratorGenerationTest.java</include>
+                <include>**/sharding/ShardKeysTest.java</include>
+                <include>**/sharding/ShardTopologySnapshotFormatTest.java</include>
+                <include>**/sharding/ShardedRecordStoreAtomicWriteTest.java</include>
+                <include>**/sharding/ShardTopologyProviderTest.java</include>
                 <include>**/sharding/ShardCursorKindTest.java</include>
                 <include>**/store/ShardedRecordServiceCursorTest.java</include>
                 <include>**/redis/LettuceRedisExecutorPipelineTest.java</include>

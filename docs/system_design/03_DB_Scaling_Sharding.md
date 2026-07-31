@@ -44,12 +44,13 @@ consistent-hash ring.
 - `sr:g{v}:stream:{shard}` — an **XADD** stream (approx-trimmed at 1,000,000) for ordered
   replay.
 
-**Write fan-out.** `doWrite` resolves `topology.current().shardFor(device)`, gets a
-sequence from a per-`(gen, shard)` atomic `INCR`
-([`SequenceGenerator`](../../src/main/java/com/recsys/infrastructure/redis/sharding/SequenceGenerator.java)),
-and pipelines the HSET + ZADD + XADD against that one shard on the **primary**. A `ZADD
-NX` that returns 0 means a duplicate `eventId` → `DUPLICATE` status, so writes are
-idempotent and safe to retry.
+**Write fan-out.** `doWrite` resolves `topology.current().shardFor(device)` and evaluates a
+single Lua script against that one shard on the **primary**: it INCRs the shard's sequence
+counter, claims the device index, writes the record hash (with TTL) and appends to the
+shard stream — atomically, in one round-trip. A `ZADD NX` that returns 0 means a duplicate
+`eventId`, and the script returns at that point without writing anything else, so writes
+are idempotent and safe to retry. Under key format 2 all four keys share a hash tag and
+therefore one Cluster slot, which is what makes the multi-key script legal.
 
 **Reads — two shapes, two consistency levels.**
 
@@ -230,17 +231,19 @@ Cluster hash slots. The full physical account is in
 The payoff is that the ring makes the system **ready** to map logical shards onto separate
 nodes without a data migration: the placement function and the generation-versioned
 reshard already exist, so that move becomes a routing change rather than a rewrite. That
-readiness currently covers **single-key operations only** — the keys carry no hash tag, so
-a shard's record, device-index, and stream keys are not guaranteed to share a Cluster
-slot, and no multi-key operation over them can be atomic (sharp edge 7). Read lever 1 as
+readiness is conditional on key format: a generation still on format 1 carries no hash
+tag, so its shard's record, device-index, and stream keys are not guaranteed to share a
+Cluster slot (sharp edge 7); only a generation resharded onto format 2 gets keys
+co-located well enough for the atomic multi-key script (sharp edge 6). Read lever 1 as
 an investment that makes future horizontal scaling cheap, and lever 4 as the one that adds
 capacity today.
 
 ### What breaks first
 
-- **Record store — primary write throughput.** Every write is HSET + ZADD + XADD
-  pipelined to one primary. Adding shards spreads *which keys* are touched; it does not
-  reduce total ops/sec against that primary. This is the first real wall.
+- **Record store — primary write throughput.** Every write is one Lua script (INCR +
+  HSET + ZADD + XADD) against one primary. Adding shards spreads *which keys* are
+  touched; it does not reduce total ops/sec against that primary. This is the first real
+  wall.
 - **Top-K — a cold or stampeding JVM cache.** With the cache warm, Redis sees little
   traffic; the replicas matter precisely when it is cold, and that is when read QPS spikes
   hardest.
@@ -284,9 +287,10 @@ Usually only the first is named. All three are live concerns here.
    orders hashed by user land in different places. There is no XA and no two-phase
    commit anywhere in this codebase, and the writable MySQL boundary holds a single
    JDBC URL and one pool.
-2. **A multi-key write inside one shard is not atomic either.** The record store
-   pipelines its three writes (§1). Pipelining is batching, not a transaction — see
-   sharp edge 6.
+2. **A multi-key write inside one shard is atomic now, but only within that shard.** One
+   Lua script commits the record store's sequence, device-index, and stream writes
+   together (§1, sharp edge 6). That still stops at the shard boundary — nothing here
+   makes two *different* shards atomic.
 3. **The shard map is itself eventually consistent.** Topology propagates across the
    fleet over ~30 s and a reshard opens a 24 h dual-read window (§3). A transaction
    cannot span a boundary that is still moving.
@@ -338,7 +342,8 @@ constructs one today.
    dual-read; `GET /shards/shard` (`readShard`) is current-generation only.
 2. **"Shards" are logical, on one primary.** The ring is cluster-ready, but today all
    shards are key prefixes on a single Sentinel primary — the win is contention-spreading
-   and reshardability, not multi-node capacity.
+   and reshardability, not multi-node capacity. "Cluster-ready" itself is conditional on
+   key format (see sharp edge 7).
 3. **Top-K does not shard at all, despite the class name.** Each window is one canonical
    snapshot key; the JVM cache and single-flight are what keep it off Redis. The replica
    keys this document used to describe were removed on 2026-07-28 — nothing had written
@@ -349,14 +354,24 @@ constructs one today.
 5. **The record store and MySQL are different things.** This is Redis record sharding;
    the relational catalog is a single un-sharded MySQL read model (see
    [14_Partitioning](14_Partitioning.md#where-the-shards-physically-live--redis-and-mysql)).
-6. **A single-shard write is pipelined, not atomic.** `doWrite` sends HSET + ZADD + XADD
-   as one pipeline, which is batching, not a transaction. A partial failure can leave a
-   record hash with no device-index entry — invisible to per-device reads — or an index
-   entry pointing at a record that was never written. The sequence `INCR` is a separate
-   round-trip before it, so a failure between the two burns a sequence number and drops
-   the record. Retries are the recovery mechanism: a duplicate `eventId` is caught by
-   `ZADD NX` returning 0.
-7. **Record-store keys carry no hash tag.** Keys are `sr:rec:0:123`, not
-   `sr:rec:{0}:123`, so a shard's four keys are not guaranteed to share a Redis Cluster
-   slot. No multi-key operation over them — including any atomic fix for sharp edge 6 —
-   is Cluster-safe until they are co-located. See §7.
+6. **A single-shard write is atomic; a cross-shard one is not.** One Lua script assigns the
+   sequence and writes all three structures together, so a partial write is no longer
+   possible within a shard. Nothing makes two *different* shards atomic — that is §7's
+   subject.
+7. **Key format is per generation, and format 1 is not Cluster-safe.** Generations published
+   after the atomic-write change tag the shard index (`sr:g3:rec:{0}:42`) so a shard's keys
+   share one slot. Generations created before it stay untagged for their whole life. An
+   existing deployment therefore keeps a non-Cluster-safe keyspace until an operator
+   publishes a reshard — deploying the code alone does not migrate it.
+8. **The dual-read merge identifies records by `eventId`, and its page cap is soft.**
+   Sequence numbers are per generation — each generation's counter starts again at 1 — so
+   they are not an identity and not a total order across a migration window. The merge
+   therefore dedupes on `(deviceId, eventId)`, the device index's own member. Two
+   consequences. A merged page never ends part-way through a group of records sharing one
+   sequence, because the cursor *is* a sequence and a straggler at that same sequence could
+   never be reached by a later page — so a page may return `limit + 1` records during a
+   window. And a record whose `eventId` exists in both generations at different sequences
+   can still be skipped or delivered twice: the merge sees one page at a time and cannot
+   know the other generation holds the same event further along. That case needs the same
+   `eventId` written on both sides of a reshard, and reads remain at-least-once, not
+   exactly-once, for its duration.
