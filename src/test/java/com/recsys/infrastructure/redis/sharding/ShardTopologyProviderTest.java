@@ -13,6 +13,16 @@ class ShardTopologyProviderTest {
         return new ShardTopologyStore.Snapshot(v, shards, 150, created, pv, ps, pExp, null, null);
     }
 
+    /**
+     * Provider wired to a stubbed store returning {@code stored}, with a clock fixed below
+     * the snapshot's {@code prevExpiresAtMs} so {@code previousIfActive()} returns non-null.
+     */
+    private static ShardTopologyProvider providerReading(ShardTopologyStore.Snapshot stored) {
+        ShardTopologyStore store = mock(ShardTopologyStore.class);
+        when(store.load()).thenReturn(stored);
+        return new ShardTopologyProvider(store, 150, 2, 30_000L, () -> 0L);
+    }
+
     @Test
     void refresh_adoptsCurrentVersionFromStore() {
         ShardTopologyStore store = mock(ShardTopologyStore.class);
@@ -85,5 +95,32 @@ class ShardTopologyProviderTest {
         // never started -> scheduler is null
         p.stop(); // must not throw
         assertThat(p.scheduler).isNull();
+    }
+
+    @Test
+    void refreshCarriesEachGenerationsOwnKeyFormat() {
+        // A reshard from an untagged generation leaves current tagged and previous untagged.
+        // Both must keep their own format, or the dual-read builds keys the writer never wrote.
+        ShardTopologyStore.Snapshot stored = new ShardTopologyStore.Snapshot(
+                2, 4, 150, 1_000L, 1, 2, Long.MAX_VALUE,
+                ShardKeys.FORMAT_TAGGED, ShardKeys.FORMAT_UNTAGGED);
+
+        ShardTopologyProvider provider = providerReading(stored);
+        provider.refresh();
+
+        assertThat(provider.current().keyFormat()).isEqualTo(ShardKeys.FORMAT_TAGGED);
+        assertThat(provider.previousIfActive().keyFormat()).isEqualTo(ShardKeys.FORMAT_UNTAGGED);
+    }
+
+    @Test
+    void aLegacyDocumentWithoutTheFieldYieldsUntaggedGenerations() {
+        ShardTopologyStore.Snapshot legacy = new ShardTopologyStore.Snapshot(
+                2, 4, 150, 1_000L, 1, 2, Long.MAX_VALUE, null, null);
+
+        ShardTopologyProvider provider = providerReading(legacy);
+        provider.refresh();
+
+        assertThat(provider.current().keyFormat()).isEqualTo(ShardKeys.FORMAT_UNTAGGED);
+        assertThat(provider.previousIfActive().keyFormat()).isEqualTo(ShardKeys.FORMAT_UNTAGGED);
     }
 }
