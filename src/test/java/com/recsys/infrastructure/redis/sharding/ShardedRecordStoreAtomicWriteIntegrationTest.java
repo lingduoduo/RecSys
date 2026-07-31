@@ -439,6 +439,100 @@ class ShardedRecordStoreAtomicWriteIntegrationTest extends RedisShardingTestBase
         assertThat(seen).containsExactlyInAnyOrder("g1-4", "g1-5", "g2-14", "g2-15");
     }
 
+    @Test
+    void aMergedPageMustNotAdvancePastAGenerationWhoseRecordsWereDropped() {
+        // The cut can fill entirely from ONE generation while the other contributed tuples but no
+        // records — fetchRecords drops tuples whose record hash is gone. A cursor taken from the
+        // last record RETURNED then jumps past the silent generation's ceiling, and everything in
+        // between is returned by no page, ever.
+        //
+        // A reshard resets the new generation's counter, so previous-generation sequences are
+        // normally much LARGER than current's — which is exactly the shape that hides the bug:
+        // the previous generation's live records sort above the current generation's, so they
+        // fill the cut and drag the cursor with them.
+        //
+        // anEmptyMergedPageStillPagesPastRecordsWhoseHashesAreGone does NOT cover this: its hole
+        // makes BOTH input pages record-less, so the merge takes the empty branch. Here the merge
+        // is non-empty and the bound has to come from the input pages' own cursors.
+        String device = "dev-cursor-bound";
+        int limit = 3;
+
+        ShardTopologyStore topoStore = new ShardTopologyStore(exec, "shard:topology:cursorbound");
+        assertThat(topoStore.bootstrap(2, VNODES, 0L).version()).isEqualTo(1);
+
+        ShardTopology v1 = new ShardTopology(1, 2, VNODES, 0L, ShardKeys.FORMAT_TAGGED);
+        ShardKeys v1Keys = ShardKeys.of(PREFIX, v1);
+        int shard1 = v1.shardFor(device);
+
+        // Previous generation: seqs 9990-9995, every record live.
+        cmd().set(v1Keys.seq(shard1), "9989");
+        ShardedRecordStore gen1 = storeOn(ShardTopologyProvider.fixedAtVersion(
+                1, 2, VNODES, ShardKeys.FORMAT_TAGGED));
+        for (int i = 9990; i <= 9995; i++) {
+            assertThat(gen1.write(new ShardedRecord(
+                    device, 0, RecordType.EVENT, "g1-" + i, "v", i)).seqNum()).isEqualTo((long) i);
+        }
+
+        // Reshard into the dual-read window. Generation 2's counter starts from scratch.
+        assertThat(topoStore.publishReshard(4, 1_000L, 60_000L).version()).isEqualTo(2);
+        ShardTopologyProvider migrating =
+                new ShardTopologyProvider(topoStore, VNODES, 4, 0L, () -> 2_000L);
+        migrating.start();
+        assertThat(migrating.previousIfActive()).isNotNull();
+
+        ShardedRecordStore gen2 = storeOn(migrating);
+        for (int i = 1; i <= 8; i++) {
+            assertThat(gen2.write(new ShardedRecord(
+                    device, 0, RecordType.EVENT, "g2-" + i, "v", i)).seqNum()).isEqualTo((long) i);
+        }
+
+        // Drop the hashes for the current generation's three LOWEST sequences, leaving the ZSet
+        // entries — the orphan an aborted script leaves behind. Three is exactly `limit`, so the
+        // current generation's first page reports a cursor while returning nothing.
+        ShardKeys v2Keys = ShardKeys.of(PREFIX, migrating.current());
+        int shard2 = migrating.current().shardFor(device);
+        for (int i = 1; i <= 3; i++) {
+            assertThat(cmd().del(v2Keys.rec(shard2, i))).isEqualTo(1L);
+        }
+
+        // Preconditions, so a setup regression cannot make the assertions below vacuous.
+        assertThat(cmd().zcard(v1Keys.dev(shard1, device))).isEqualTo(6L);
+        assertThat(cmd().zcard(v2Keys.dev(shard2, device))).isEqualTo(8L);
+        for (int i = 4; i <= 8; i++) assertThat(cmd().exists(v2Keys.rec(shard2, i))).isEqualTo(1L);
+
+        ShardedRecordStore reader = storeOn(migrating);
+
+        // The first page is the trap: current contributes tuples 1-3 and zero records, previous
+        // contributes 9990-9992 and three records, so the whole cut comes from previous.
+        Page<ShardedRecord> first = reader.readDevice(device, ShardCursor.start(), limit);
+        assertThat(first.records()).extracting(ShardedRecord::eventId)
+                .containsExactly("g1-9990", "g1-9991", "g1-9992");
+        assertThat(first.next())
+                .as("the cursor must be bounded by the current generation's ceiling (3), not the "
+                        + "last record returned (9992) — resuming at 9993 strands g2-4..g2-8")
+                .isEqualTo(ShardCursor.seq(3));
+
+        List<String> expected = new ArrayList<>();
+        for (int i = 9990; i <= 9995; i++) expected.add("g1-" + i);
+        for (int i = 1; i <= 8; i++) if (i > 3) expected.add("g2-" + i);
+
+        List<String> seen = new ArrayList<>(
+                first.records().stream().map(ShardedRecord::eventId).toList());
+        ShardCursor cursor = first.next();
+        int pages = 1;
+        while (cursor != null && pages < 30) {
+            Page<ShardedRecord> page = reader.readDevice(device, cursor, limit);
+            for (ShardedRecord r : page.records()) seen.add(r.eventId());
+            pages++;
+            cursor = page.next();
+        }
+        assertThat(cursor).as("paging must terminate").isNull();
+        // Duplicates across page boundaries are allowed — reads are at-least-once. Losing a
+        // record is not.
+        assertThat(seen).as("every live record must be returned by some page")
+                .containsAll(expected);
+    }
+
     /**
      * Writes {@code gen1Count} records under a fresh generation 1 and {@code gen2Count} under
      * generation 2 after a real reshard, for the one device, and returns a provider sitting

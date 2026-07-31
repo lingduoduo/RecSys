@@ -76,6 +76,17 @@ public final class ShardedRecordStore {
     private final RedisExecutor writeExec;
     private final RedisExecutor readExec;
     private final ShardTopologyProvider provider;
+    /**
+     * Written, never read. The write script assigns the sequence itself, so nothing on this class
+     * calls {@code seqGen.next(...)} any more — only {@code ensureCounterValid}, invoked from
+     * {@code OnlinePredictionServer}'s startup repair, is still live in production.
+     *
+     * <p>Kept because three public constructors take it, and dropping the parameter is a wider
+     * change than the field is worth. <strong>{@code doWrite} must not use it.</strong> A separate
+     * {@code INCR} outside the script would put the sequence assignment back outside the atomic
+     * unit — exactly the split this branch removed — and reopen the window where a crash between
+     * the INCR and the record write burns a sequence into an orphan.
+     */
     private final SequenceGenerator seqGen;
     private final String prefix;
 
@@ -190,8 +201,12 @@ public final class ShardedRecordStore {
     // never ends a page mid-sequence. eventId — not seqNum — is the identity: sequence
     // counters are per generation, so both generations issue the same numbers and deduping on
     // seqNum would silently drop previous-generation records during a migration window.
-    private Page<ShardedRecord> mergeDevicePages(Page<ShardedRecord> current,
-                                                 Page<ShardedRecord> previous, int limit) {
+    // Package-private and static on purpose: it needs no Redis and no instance state, so
+    // ShardedRecordStoreMergeTest can drive it directly with hand-built pages. That test is the
+    // only coverage this method has in the PR gate — every integration test that reaches it is
+    // @Tag("docker") and the -Presilience profile excludes that tag.
+    static Page<ShardedRecord> mergeDevicePages(Page<ShardedRecord> current,
+                                                Page<ShardedRecord> previous, int limit) {
         java.util.LinkedHashMap<String, ShardedRecord> byKey = new java.util.LinkedHashMap<>();
         for (ShardedRecord r : current.records()) byKey.put(r.deviceId() + ":" + r.eventId(), r);
         for (ShardedRecord r : previous.records()) byKey.putIfAbsent(r.deviceId() + ":" + r.eventId(), r);
@@ -224,13 +239,33 @@ public final class ShardedRecordStore {
         boolean truncated = cut < merged.size();
         List<ShardedRecord> page = truncated ? new ArrayList<>(merged.subList(0, cut)) : merged;
 
-        // The cursor comes from the last record actually returned. Taking it from the current
-        // generation's own page — as this did before — skips every current-generation record
-        // that truncation dropped, because that page's cursor is its own highest sequence.
-        boolean moreRemains = truncated || current.next() != null || previous.next() != null;
-        ShardCursor next = moreRemains
-                ? ShardCursor.seq(page.get(page.size() - 1).seqNum())
-                : null;
+        // The cursor is the LOWEST of three ceilings, because resuming above any one of them
+        // strands records:
+        //
+        //   1. the last record actually returned, but only when truncation dropped some of the
+        //      merge — otherwise the page carries everything both inputs handed over and this
+        //      ceiling would pin the cursor to a record, not to how far the inputs were read;
+        //   2. current.next()  — "I returned every index entry up to here; more may exist above";
+        //   3. previous.next() — the same for the other generation.
+        //
+        // null means "that generation is exhausted", i.e. no constraint, which is exactly how
+        // lowerOf treats it. Ceilings 2 and 3 are the ones the returned page cannot see:
+        // fetchRecords silently drops tuples whose record hash is gone, so a generation can fill
+        // `limit` with tuples and contribute ZERO records. Taking the cursor from the last record
+        // returned then jumps past that generation's ceiling and everything in between is
+        // returned by no page, ever. A reshard resets the new generation's counter, so
+        // previous-generation sequences are usually much LARGER than current's — which makes the
+        // silent generation the current one, holding the device's NEWEST records.
+        //
+        // Termination: every candidate is >= minScore = oldCursor + 1 (records and tuples alike
+        // come from a range query bounded below by it), so the cursor strictly increases and a
+        // `while (cursor != null)` loop is bounded by the highest sequence in the two indexes.
+        // The cost is re-delivering records across a page boundary — the at-least-once contract
+        // already documented in 03 sharp edge 8 and 15 sharp edge 8. Skipping is unrecoverable;
+        // re-reading is not.
+        ShardCursor next = lowerOf(
+                truncated ? ShardCursor.seq(page.get(page.size() - 1).seqNum()) : null,
+                lowerOf(current.next(), previous.next()));
         return new Page<>(page, next);
     }
 

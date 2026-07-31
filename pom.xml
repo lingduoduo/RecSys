@@ -345,6 +345,7 @@
                 <include>**/sharding/ShardKeysTest.java</include>
                 <include>**/sharding/ShardTopologySnapshotFormatTest.java</include>
                 <include>**/sharding/ShardedRecordStoreAtomicWriteTest.java</include>
+                <include>**/sharding/ShardedRecordStoreMergeTest.java</include>
                 <include>**/sharding/ShardTopologyProviderTest.java</include>
                 <include>**/sharding/ShardCursorKindTest.java</include>
                 <include>**/store/ShardedRecordServiceCursorTest.java</include>
