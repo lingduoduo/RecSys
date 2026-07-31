@@ -185,15 +185,19 @@ public final class ShardedRecordStore {
         return new Page<>(records, next);
     }
 
-    // Merge current + previous device records, dedupe by (deviceId, seqNum) preferring current,
-    // sort by seqNum ascending, cap at `limit`. Cursor: current's cursor drives pagination
-    // (previous-generation data is finite and TTLs out within the window).
+    // Merge current + previous device records, dedupe by (deviceId, eventId) preferring current,
+    // sort by seqNum ascending, cap at `limit`. eventId — not seqNum — is the identity: sequence
+    // counters are per generation, so both generations issue the same numbers and deduping on
+    // seqNum would silently drop previous-generation records during a migration window.
     private Page<ShardedRecord> mergeDevicePages(Page<ShardedRecord> current,
                                                  Page<ShardedRecord> previous, int limit) {
         java.util.LinkedHashMap<String, ShardedRecord> byKey = new java.util.LinkedHashMap<>();
-        for (ShardedRecord r : current.records()) byKey.put(r.deviceId() + ":" + r.seqNum(), r);
-        for (ShardedRecord r : previous.records()) byKey.putIfAbsent(r.deviceId() + ":" + r.seqNum(), r);
+        for (ShardedRecord r : current.records()) byKey.put(r.deviceId() + ":" + r.eventId(), r);
+        for (ShardedRecord r : previous.records()) byKey.putIfAbsent(r.deviceId() + ":" + r.eventId(), r);
         List<ShardedRecord> merged = new ArrayList<>(byKey.values());
+        // Ordering across generations is approximate for the same reason: two generations can
+        // issue equal sequence numbers, so a merged page is not a strict chronological sequence.
+        // Within one generation it is exact, and previous-generation data TTLs out of the window.
         merged.sort(java.util.Comparator.comparingLong(ShardedRecord::seqNum));
         if (merged.size() > limit) merged = new ArrayList<>(merged.subList(0, limit));
         // Pagination is driven by the current generation's cursor; previous-generation records

@@ -172,22 +172,14 @@ class ShardedRecordStoreAtomicWriteIntegrationTest extends RedisShardingTestBase
 
         ShardTopology v1 = new ShardTopology(1, 2, VNODES, 0L, ShardKeys.FORMAT_UNTAGGED);
         ShardKeys v1Keys = ShardKeys.of(PREFIX, v1);
-        int v1Shard = v1.shardFor(device);
-
-        // Sequence ranges are separated deliberately: each generation's counter starts at 1, and
-        // readDevice's merge dedupes on (deviceId, seqNum) without a generation, so equal
-        // sequences across generations hide the previous generation's record. See the Task 8
-        // report — that collision is a separate, pre-existing defect in mergeDevicePages, and
-        // letting it confound this test would say nothing about the key formats under test.
-        cmd().set(v1Keys.seq(v1Shard), "100");
 
         WriteResult old = storeOn(ShardTopologyProvider.fixedAtVersion(
                 1, 2, VNODES, ShardKeys.FORMAT_UNTAGGED))
                 .write(new ShardedRecord(device, 0, RecordType.EVENT, "evt-old", "old", 1L));
 
-        assertThat(old.seqNum()).isEqualTo(101L);
+        assertThat(old.seqNum()).isEqualTo(1L);
         String oldRecKey = v1Keys.rec(old.shardIndex(), old.seqNum());
-        assertThat(oldRecKey).doesNotContain("{").isEqualTo("sr:rec:" + old.shardIndex() + ":101");
+        assertThat(oldRecKey).doesNotContain("{").isEqualTo("sr:rec:" + old.shardIndex() + ":1");
         assertThat(cmd().exists(oldRecKey)).isEqualTo(1L);
 
         // Publish the reshard: version 2, tagged, with untagged version 1 as previous.
@@ -220,6 +212,50 @@ class ShardedRecordStoreAtomicWriteIntegrationTest extends RedisShardingTestBase
         assertThat(store.readDevice(device, ShardCursor.start(), 10).records())
                 .extracting(ShardedRecord::eventId)
                 .containsExactlyInAnyOrder("evt-old", "evt-new");
+    }
+
+    @Test
+    void deviceReadKeepsBothGenerationsWhenSequenceNumbersCollide() {
+        // Sequence counters are per generation, so both generations independently issue seq 1
+        // for the same device. Deduping on (deviceId, seqNum) would drop the older record.
+        // Deliberately does NOT seed the counters apart — the collision is the point.
+        String device = "dev-collide";
+        String topologyKey = "shard:topology:collision";
+
+        // Generation 1: bootstrapped fresh, so it is tagged like the rest of this class.
+        ShardTopologyStore topoStore = new ShardTopologyStore(exec, topologyKey);
+        ShardTopologyStore.Snapshot v1 = topoStore.bootstrap(2, VNODES, 0L);
+        assertThat(v1.version()).isEqualTo(1);
+        assertThat(v1.effectiveKeyFormat()).isEqualTo(ShardKeys.FORMAT_TAGGED);
+
+        WriteResult old = storeOn(ShardTopologyProvider.fixedAtVersion(
+                1, 2, VNODES, ShardKeys.FORMAT_TAGGED))
+                .write(new ShardedRecord(device, 0, RecordType.EVENT, "evt-gen1", "old", 1L));
+        assertThat(old.seqNum()).isEqualTo(1L);
+
+        // Reshard to generation 2, with generation 1 still inside the dual-read window.
+        ShardTopologyStore.Snapshot v2 = topoStore.publishReshard(4, 1_000L, 60_000L);
+        assertThat(v2.version()).isEqualTo(2);
+
+        ShardTopologyProvider migrating =
+                new ShardTopologyProvider(topoStore, VNODES, 4, 0L, () -> 2_000L);
+        migrating.start();
+        assertThat(migrating.previousIfActive()).isNotNull();
+
+        WriteResult fresh = storeOn(migrating)
+                .write(new ShardedRecord(device, 0, RecordType.EVENT, "evt-gen2", "new", 2L));
+
+        // The collision itself: generation 2's counter also started at 1, so the two records
+        // carry the same sequence number under the same deviceId. If this assertion ever fails,
+        // the test is no longer exercising the collision and the read assertion below is vacuous.
+        assertThat(fresh.seqNum()).isEqualTo(old.seqNum());
+        assertThat(cmd().get(ShardKeys.of(PREFIX, migrating.current()).seq(fresh.shardIndex())))
+                .isEqualTo("1");
+
+        // Both records exist; the dual read must return both, not silently drop the older one.
+        assertThat(storeOn(migrating).readDevice(device, ShardCursor.start(), 10).records())
+                .extracting(ShardedRecord::eventId)
+                .containsExactlyInAnyOrder("evt-gen1", "evt-gen2");
     }
 
     @Test
