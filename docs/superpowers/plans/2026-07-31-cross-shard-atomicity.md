@@ -195,7 +195,7 @@ Append to the `## Sharp edges — notes` numbered list, continuing from the exis
 - [ ] **Step 5: Verify the documentation gate passes**
 
 ```bash
-JAVA_HOME=$(/usr/libexec/java_home -v 17) mvn test -Dtest=DocumentedMechanismTest+DocumentationIndexTest
+JAVA_HOME=$(/usr/libexec/java_home -v 17) mvn test -Dtest=DocumentedMechanismTest,DocumentationIndexTest
 ```
 
 Expected: PASS. A failure here almost always means a relative source link in the new
@@ -273,7 +273,7 @@ Replace the row-03 description with:
 - [ ] **Step 5: Verify the documentation gate passes**
 
 ```bash
-JAVA_HOME=$(/usr/libexec/java_home -v 17) mvn test -Dtest=DocumentedMechanismTest+DocumentationIndexTest
+JAVA_HOME=$(/usr/libexec/java_home -v 17) mvn test -Dtest=DocumentedMechanismTest,DocumentationIndexTest
 ```
 
 Expected: PASS.
@@ -299,7 +299,7 @@ Also scopes the "cluster-ready without a data migration" claim in 03 §6 and 14 
 single-key operations, not for multi-key ones.
 
 ## Test plan
-- `mvn test -Dtest=DocumentedMechanismTest+DocumentationIndexTest` (both are in the PR gate)
+- `mvn test -Dtest=DocumentedMechanismTest,DocumentationIndexTest` (both are in the PR gate)
 
 ## Follow-up
 Stage 2 closes sharp edges 6 and 7. Spec:
@@ -468,7 +468,7 @@ If `ShardTopologyTest.java` lacks the AssertJ import, add
 - [ ] **Step 3: Run the tests to verify they fail**
 
 ```bash
-JAVA_HOME=$(/usr/libexec/java_home -v 17) mvn test -Dtest=ShardKeysTest+ShardTopologyTest
+JAVA_HOME=$(/usr/libexec/java_home -v 17) mvn test -Dtest=ShardKeysTest,ShardTopologyTest
 ```
 
 Expected: FAIL — compilation error; neither `ShardKeys` nor `ShardTopology.keyFormat()` exists.
@@ -586,7 +586,7 @@ topology that predates the field.
 - [ ] **Step 6: Run the tests to verify they pass**
 
 ```bash
-JAVA_HOME=$(/usr/libexec/java_home -v 17) mvn test -Dtest=ShardKeysTest+ShardTopologyTest
+JAVA_HOME=$(/usr/libexec/java_home -v 17) mvn test -Dtest=ShardKeysTest,ShardTopologyTest
 ```
 
 Expected: PASS, all tests in both classes.
@@ -781,7 +781,7 @@ format it was written under, defaulting to untagged for a document that predates
 - [ ] **Step 6: Run the tests to verify they pass**
 
 ```bash
-JAVA_HOME=$(/usr/libexec/java_home -v 17) mvn test -Dtest=ShardTopologySnapshotFormatTest+ShardKeysTest+ShardTopologyTest
+JAVA_HOME=$(/usr/libexec/java_home -v 17) mvn test -Dtest=ShardTopologySnapshotFormatTest,ShardKeysTest,ShardTopologyTest
 ```
 
 Expected: PASS.
@@ -891,7 +891,7 @@ Next to the existing `fixedAtVersion`:
 - [ ] **Step 5: Run the tests to verify they pass**
 
 ```bash
-JAVA_HOME=$(/usr/libexec/java_home -v 17) mvn test -Dtest=ShardTopologyProviderTest+ShardTopologySnapshotFormatTest+ShardKeysTest+ShardTopologyTest
+JAVA_HOME=$(/usr/libexec/java_home -v 17) mvn test -Dtest=ShardTopologyProviderTest,ShardTopologySnapshotFormatTest,ShardKeysTest,ShardTopologyTest
 ```
 
 Expected: PASS.
@@ -1062,7 +1062,7 @@ In `SequenceGeneratorGenerationTest.java` and `SequenceGeneratorTest.java`, repl
 - [ ] **Step 6: Run the tests to verify they pass**
 
 ```bash
-JAVA_HOME=$(/usr/libexec/java_home -v 17) mvn test -Dtest=SequenceGeneratorTest+SequenceGeneratorGenerationTest
+JAVA_HOME=$(/usr/libexec/java_home -v 17) mvn test -Dtest=SequenceGeneratorTest,SequenceGeneratorGenerationTest
 ```
 
 Expected: PASS.
@@ -1346,7 +1346,7 @@ class ShardedRecordStoreGenerationKeyTest {
 - [ ] **Step 6: Run the full sharding suite**
 
 ```bash
-JAVA_HOME=$(/usr/libexec/java_home -v 17) mvn test -Dtest='Shard*Test+SequenceGenerator*Test'
+JAVA_HOME=$(/usr/libexec/java_home -v 17) mvn test -Dtest='Shard*Test,SequenceGenerator*Test'
 ```
 
 Expected: PASS, except any `@Tag("docker")` class, which is skipped without Docker. If
