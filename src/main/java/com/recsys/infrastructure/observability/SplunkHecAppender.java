@@ -191,8 +191,13 @@ public final class SplunkHecAppender extends UnsynchronizedAppenderBase<ILogging
             return;
         }
         failed.addAndGet(serialized.size());
+        // Include Splunk's own explanation — "Incorrect index", "Server is busy", "Invalid
+        // token". Without it the operator sees only the Outcome enum and cannot tell a
+        // misconfiguration from back-pressure.
+        String detail = client.lastFailureDetail();
         warnThrottled(outcome, "Splunk HEC delivery failed (" + outcome + "); dropped "
-                + serialized.size() + " events. Total failed: " + failed.get());
+                + serialized.size() + " events. Total failed: " + failed.get()
+                + (detail == null ? "" : ". Splunk said: " + detail));
     }
 
     /**

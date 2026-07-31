@@ -131,7 +131,8 @@ class SplunkHecIntegrationTest {
                 "SPLUNK_HEC_TIMEOUT_MS", "10000"));
         assertThat(config.isEnabled()).isTrue();
 
-        SplunkHecAppender appender = new SplunkHecAppender(config, new SplunkHecClient(config));
+        SplunkHecClient client = new SplunkHecClient(config);
+        SplunkHecAppender appender = new SplunkHecAppender(config, client);
         appender.setContext(new LoggerContext());
         appender.start();
         try {
@@ -144,11 +145,20 @@ class SplunkHecIntegrationTest {
             appender.stop();
         }
 
-        assertThat(appender.snapshot().dropped()).isZero();
-        assertThat(appender.snapshot().failed())
-                .as("no batch should have been rejected by a real collector")
+        SplunkHecAppender.Snapshot snapshot = appender.snapshot();
+        // Splunk's own rejection text, surfaced by SplunkHecClient. Without it a failure here
+        // says only "3 failed" and gives no way to tell a misconfiguration from back-pressure.
+        String diagnostics = "snapshot=" + snapshot
+                + ", lastFailureDetail=" + client.lastFailureDetail();
+
+        assertThat(snapshot.dropped())
+                .as("queue capacity is 10000 and we sent 10; nothing should be dropped. %s",
+                        diagnostics)
                 .isZero();
-        assertThat(appender.snapshot().sent()).isEqualTo(10);
+        assertThat(snapshot.failed())
+                .as("no batch should be rejected by a real collector. %s", diagnostics)
+                .isZero();
+        assertThat(snapshot.sent()).as(diagnostics).isEqualTo(10);
 
         String hits = searchUntilFound(marker, 10);
 

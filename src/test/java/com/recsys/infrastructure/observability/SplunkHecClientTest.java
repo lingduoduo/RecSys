@@ -32,10 +32,16 @@ class SplunkHecClientTest {
                         return HttpResponse.of(HttpStatus.OK, com.linecorp.armeria.common.MediaType.JSON,
                                 "{\"text\":\"Success\",\"code\":0}");
                     })));
+            // Mirrors a real HEC rejection body — that text is the whole reason the client
+            // reads the response instead of discarding it.
             sb.service("/services/collector/unavailable", (ctx, req) ->
-                    HttpResponse.of(HttpStatus.SERVICE_UNAVAILABLE));
+                    HttpResponse.of(HttpStatus.SERVICE_UNAVAILABLE,
+                            com.linecorp.armeria.common.MediaType.JSON,
+                            "{\"text\":\"Server is busy\",\"code\":9}"));
             sb.service("/services/collector/forbidden", (ctx, req) ->
-                    HttpResponse.of(HttpStatus.FORBIDDEN));
+                    HttpResponse.of(HttpStatus.FORBIDDEN,
+                            com.linecorp.armeria.common.MediaType.JSON,
+                            "{\"text\":\"Invalid token\",\"code\":4}"));
         }
     };
 
@@ -75,6 +81,45 @@ class SplunkHecClientTest {
     void forbiddenIsReportedAsAuthRejected() {
         assertThat(clientFor("/services/collector/forbidden").send("{}"))
                 .isEqualTo(SplunkHecClient.Outcome.AUTH_REJECTED);
+    }
+
+    @Test
+    void capturesSplunksOwnRejectionText() {
+        // The Outcome enum alone cannot distinguish a bad index from back-pressure from a
+        // revoked token. HEC explains itself in the response body; the appender puts this
+        // string in its warning so an operator has something to act on.
+        SplunkHecClient busy = clientFor("/services/collector/unavailable");
+        busy.send("{}");
+        assertThat(busy.lastFailureDetail()).contains("HTTP 503").contains("Server is busy");
+
+        SplunkHecClient rejected = clientFor("/services/collector/forbidden");
+        rejected.send("{}");
+        assertThat(rejected.lastFailureDetail()).contains("HTTP 403").contains("Invalid token");
+    }
+
+    @Test
+    void failureDetailIsClearedAfterASuccess() {
+        // A stale detail from an earlier outage must not be reported alongside a later,
+        // unrelated failure — it would send the operator after the wrong cause.
+        SplunkHecClient client = clientFor("/services/collector/event");
+        assertThat(client.lastFailureDetail()).isNull();
+
+        client.send("{\"event\":{\"message\":\"ok\"}}");
+        assertThat(client.lastFailureDetail()).isNull();
+    }
+
+    @Test
+    void transportFailureDetailNamesTheCause() {
+        SplunkHecClient client = new SplunkHecClient(SplunkHecConfig.from(Map.of(
+                "SPLUNK_HEC_TOKEN", "tok-abc",
+                "SPLUNK_HEC_URL", "http://127.0.0.1:1/services/collector/event",
+                "SPLUNK_HEC_TIMEOUT_MS", "500")));
+
+        client.send("{}");
+
+        assertThat(client.lastFailureDetail())
+                .as("a connect failure should name the exception, not be empty")
+                .isNotBlank();
     }
 
     @Test

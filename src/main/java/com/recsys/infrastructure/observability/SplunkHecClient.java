@@ -43,6 +43,9 @@ class SplunkHecClient {
     private final String token;
     private final Duration timeout;
 
+    /** Written by the drain thread, read by the appender's reporting path and by tests. */
+    private volatile String lastFailureDetail;
+
     SplunkHecClient(SplunkHecConfig config) {
         this(buildHttpClient(config), config);
     }
@@ -63,20 +66,50 @@ class SplunkHecClient {
                     .POST(HttpRequest.BodyPublishers.ofString(body))
                     .build();
 
-            HttpResponse<Void> response =
-                    httpClient.send(request, HttpResponse.BodyHandlers.discarding());
+            // Read the body rather than discarding it: HEC explains every rejection in a small
+            // JSON payload ("Incorrect index", "Invalid token", "Server is busy", ...). Without
+            // it an operator sees only SERVER_ERROR and has nothing to act on. Responses are
+            // tens of bytes, so this costs nothing.
+            HttpResponse<String> response =
+                    httpClient.send(request, HttpResponse.BodyHandlers.ofString());
             int status = response.statusCode();
-            if (status >= 200 && status < 300) return Outcome.SUCCESS;
+            if (status >= 200 && status < 300) {
+                lastFailureDetail = null;
+                return Outcome.SUCCESS;
+            }
+            recordFailureDetail("HTTP " + status + ": " + truncate(response.body()));
             if (status == 401 || status == 403) return Outcome.AUTH_REJECTED;
             return Outcome.SERVER_ERROR;
         } catch (InterruptedException e) {
             // Shutdown in progress. Restore the flag so the drain loop sees it and exits.
             Thread.currentThread().interrupt();
+            recordFailureDetail("interrupted during send");
             return Outcome.TRANSPORT_FAILURE;
         } catch (Exception e) {
             // Connect refused, DNS failure, timeout, TLS failure — all the same to the caller.
+            recordFailureDetail(e.getClass().getSimpleName() + ": " + e.getMessage());
             return Outcome.TRANSPORT_FAILURE;
         }
+    }
+
+    /**
+     * Why the most recent failed send failed, or {@code null} after a success. Best-effort
+     * diagnostics for the appender's throttled warning — deliberately not a queue of every
+     * failure, which would be one more unbounded buffer on the path this design keeps bounded.
+     */
+    String lastFailureDetail() {
+        return lastFailureDetail;
+    }
+
+    private void recordFailureDetail(String detail) {
+        lastFailureDetail = detail;
+    }
+
+    /** HEC error bodies are small, but a misconfigured URL can return an HTML error page. */
+    private static String truncate(String body) {
+        if (body == null || body.isBlank()) return "<empty response body>";
+        String collapsed = body.strip().replaceAll("\\s+", " ");
+        return collapsed.length() <= 300 ? collapsed : collapsed.substring(0, 300) + "...";
     }
 
     private static HttpClient buildHttpClient(SplunkHecConfig config) {
