@@ -31,6 +31,8 @@ public final class SplunkHecAppender extends UnsynchronizedAppenderBase<ILogging
 
     private static final long WARN_THROTTLE_NANOS = TimeUnit.SECONDS.toNanos(60);
     private static final long FLUSH_WAIT_MILLIS = 2_000;
+    /** Grace after an escalated interrupt, so shutdown stays bounded at ~2.5s worst case. */
+    private static final long INTERRUPT_WAIT_MILLIS = 500;
 
     private final SplunkHecConfig injectedConfig;
     private final SplunkHecClient injectedClient;
@@ -114,12 +116,19 @@ public final class SplunkHecAppender extends UnsynchronizedAppenderBase<ILogging
             return;
         }
         running = false;
-        drainThread.interrupt();
+        // Do NOT interrupt first. Clearing `running` is already enough for the drain loop to
+        // exit — it re-checks the flag after each poll, so it stops within one linger interval.
+        // An immediate interrupt instead aborts whatever the thread is doing, and if that is an
+        // in-flight POST the batch is counted failed even though Splunk may well have accepted
+        // it. A real collector takes long enough for that window to be hit routinely; a stub
+        // answers instantly, which is why only the real-Splunk integration test caught it.
         if (Thread.currentThread() != drainThread) {
-            try {
-                drainThread.join(FLUSH_WAIT_MILLIS);
-            } catch (InterruptedException interrupted) {
-                Thread.currentThread().interrupt();
+            joinQuietly(FLUSH_WAIT_MILLIS);
+            if (drainThread.isAlive()) {
+                // It overran the budget — most likely blocked on a send with a longer timeout
+                // than we are willing to wait. Now escalate.
+                drainThread.interrupt();
+                joinQuietly(INTERRUPT_WAIT_MILLIS);
             }
         }
         List<ILoggingEvent> remaining = new ArrayList<>();
@@ -139,6 +148,14 @@ public final class SplunkHecAppender extends UnsynchronizedAppenderBase<ILogging
     public Snapshot snapshot() {
         return new Snapshot(queue == null ? 0 : queue.size(),
                 sent.get(), dropped.get(), failed.get());
+    }
+
+    private void joinQuietly(long millis) {
+        try {
+            drainThread.join(millis);
+        } catch (InterruptedException interrupted) {
+            Thread.currentThread().interrupt();
+        }
     }
 
     private void drainLoop() {

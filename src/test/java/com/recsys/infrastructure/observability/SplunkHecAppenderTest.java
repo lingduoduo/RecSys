@@ -340,6 +340,56 @@ class SplunkHecAppenderTest {
     }
 
     @Test
+    void stopLetsAnInFlightSendFinishInsteadOfAbortingIt() throws Exception {
+        // Regression test for a bug only a real collector surfaced: stop() used to interrupt
+        // the drain thread immediately, which aborted whatever POST was in flight. Those
+        // events were counted failed even though Splunk had very likely accepted them. A stub
+        // that answers instantly never opens the window; a real Splunk hit it on 3 of every
+        // 10 events. Clearing `running` is sufficient to stop the loop, so the interrupt is
+        // now an escalation that only fires if the graceful join times out.
+        SplunkHecConfig config = enabledConfig(Map.of("SPLUNK_HEC_BATCH_SIZE", "3"));
+
+        CountDownLatch sendStarted = new CountDownLatch(1);
+        AtomicInteger interruptedSends = new AtomicInteger();
+        AtomicInteger completedSends = new AtomicInteger();
+        SplunkHecClient slowClient = new SplunkHecClient(config) {
+            @Override
+            Outcome send(String body) {
+                sendStarted.countDown();
+                try {
+                    // Well under stop()'s 2s graceful budget, but long enough that an
+                    // immediate interrupt would land squarely inside it.
+                    Thread.sleep(300);
+                } catch (InterruptedException e) {
+                    Thread.currentThread().interrupt();
+                    interruptedSends.incrementAndGet();
+                    return Outcome.TRANSPORT_FAILURE;
+                }
+                completedSends.incrementAndGet();
+                return Outcome.SUCCESS;
+            }
+        };
+
+        SplunkHecAppender appender = newAppender(config, slowClient);
+        appender.start();
+        for (int i = 0; i < 3; i++) {
+            appender.doAppend(event("inflight-" + i));
+        }
+        // Only call stop() once the drain thread is genuinely inside send().
+        assertThat(sendStarted.await(5, TimeUnit.SECONDS)).isTrue();
+        appender.stop();
+
+        assertThat(interruptedSends.get())
+                .as("stop() must not abort a send that is already on the wire")
+                .isZero();
+        assertThat(completedSends.get()).isPositive();
+        assertThat(appender.snapshot().failed())
+                .as("an in-flight batch that completes successfully is not a failure")
+                .isZero();
+        assertThat(appender.snapshot().sent()).isEqualTo(3);
+    }
+
+    @Test
     void stopChunksALargeShutdownFlushIntoMultipleSends() {
         // A large queue-capacity default with a small batch size, so 23 leftover events is
         // several times over one batch's worth.
