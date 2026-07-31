@@ -347,7 +347,7 @@ loop. It will not stack-overflow (Logback's per-thread re-entrancy guard in
 the loop indefinitely, which is arguably worse: quieter, and it stops shipping every
 other log line while it happens.
 
-`SplunkHecClient.send` classifies every outcome into one of four values
+`SplunkHecClient.send` classifies every outcome into one of five values
 (`SplunkHecClient.Outcome`), and a warning is throttled to once per outcome kind per
 minute (an unthrottled warning per failed batch would itself become a log flood during
 an outage):
@@ -357,7 +357,52 @@ an outage):
 | `SUCCESS` | Splunk accepted the batch (2xx). |
 | `AUTH_REJECTED` | Splunk returned 401/403 — the token is wrong, expired, or was never actually created for this index. Logged as `addError`, with an explicit "Check SPLUNK_HEC_TOKEN." suffix. |
 | `SERVER_ERROR` | Splunk returned some other non-2xx status. |
-| `TRANSPORT_FAILURE` | Connection refused, DNS failure, timeout, TLS failure, or any other exception from the HTTP call — including a batch that failed to serialize, and including a caught `Throwable` from the drain loop itself (an `OutOfMemoryError` or `StackOverflowError` most likely to fire during the very burst this appender exists to survive). |
+| `TRANSPORT_FAILURE` | The request never left the host — connection refused, DNS failure. Also covers a batch that failed to serialize, and a caught `Throwable` from the drain loop itself (an `OutOfMemoryError` or `StackOverflowError` most likely to fire during the very burst this appender exists to survive). **These events are definitely lost.** |
+| `INDETERMINATE` | The request was sent and no response came back — a read timeout, or an interrupt while awaiting the response. **Delivery is genuinely unknown:** Splunk may have indexed the batch. |
+
+**`INDETERMINATE` is not a softer `TRANSPORT_FAILURE`, and the distinction is
+operational.** A failed event is lost, full stop. An indeterminate event is lost *or*
+already in Splunk — so it is the set that a retry, whether added here or bolted on
+upstream, would duplicate. Collapsing the two would report a definite loss that may not
+have happened and hide the duplicate risk entirely. Counting them separately means an
+`indeterminate` figure of zero is a real statement: everything the appender handed to
+Splunk was acknowledged one way or the other.
+
+**Splunk's own rejection text is included in the warning.** `SplunkHecClient` reads the
+HEC response body rather than discarding it, so the warning carries `Splunk said: HTTP
+400: {"text":"Incorrect index",...}` instead of a bare `SERVER_ERROR`. That string is
+what distinguishes a misconfiguration from back-pressure. It is bounded to 300
+characters, has control characters stripped, and has the HEC token and any
+`Authorization`-looking header redacted — because the body is whatever answered on the
+configured URL, which is not guaranteed to be Splunk, and a proxy that echoes request
+headers would otherwise put the token straight into `logs/*.log` and into Splunk itself.
+
+### Shutdown
+
+`stop()` emits one summary line describing what happened to the tail of the log stream —
+the moment an operator most needs the detail and normally gets the least:
+
+```
+Splunk HEC appender stopped. queuedAtShutdown=812 inFlightBatchesAtShutdown=1
+flushedAtShutdown=812 gracefulDrainMillis=143 forcedInterrupt=false confirmed=4096
+failed=0 indeterminate=0 droppedQueueFull=0
+```
+
+- `queuedAtShutdown` / `inFlightBatchesAtShutdown` — what was still pending when the stop
+  began.
+- `flushedAtShutdown` — events drained and shipped by `stop()` itself, after the drain
+  thread finished.
+- `gracefulDrainMillis` — how long the drain thread took to wind down.
+- `forcedInterrupt` — whether the drain thread overran its 2 s budget and had to be
+  interrupted. **`true` means the tail of the stream is uncertain**, and the line is
+  emitted at WARN rather than INFO.
+- `confirmed` / `failed` / `indeterminate` / `droppedQueueFull` — the final tallies.
+
+`stop()` deliberately joins the drain thread *before* interrupting it, so a POST already
+on the wire is allowed to complete within the budget; the interrupt is an escalation only.
+This is pinned by `stopLetsAnInFlightSendFinishInsteadOfAbortingIt` — a regression test
+worth keeping, because the original ordering was wrong and six review rounds against a
+stub collector did not catch it.
 
 Startup itself logs one line either way, also through the status API: either
 `Splunk HEC appender shipping to <url> (index=..., source=...)` when enabled, or
@@ -387,3 +432,40 @@ ingestion, not an emulation of a production Splunk deployment.
 
 This is a wiring harness for the appender's HEC contract, not a production Splunk
 stand-in.
+
+## A note on secret scanning
+
+GitGuardian raised one incident against this feature's branch. **It was resolved as a
+false positive, not by rotating anything**, and the reasoning is recorded here so nobody
+has to reconstruct it from a dashboard.
+
+**What it flagged:** the literal `changeme-splunk-admin`, used as `SPLUNK_PASSWORD` in
+the bring-up example in this runbook and in `docker-compose.splunk.yml`'s header. An
+accompanying `local-dev-hec-token` placeholder was flagged with it.
+
+**Why it was not a secret.** It set the admin password of a throwaway `splunk/splunk`
+container started by `docker-compose.splunk.yml` on a developer's laptop, published on
+localhost. That stack has never run anywhere but a disposable container: it is not
+deployed, not reachable from outside the host, and holds no real data. The value was
+never a credential for any Splunk instance, AWS account, or other system belonging to
+this project, and it grants access to nothing that outlives a `docker compose down`.
+Real deployments take `SPLUNK_HEC_TOKEN` from the `recsys-splunk` Kubernetes Secret,
+provisioned out-of-band and referenced by `secretKeyRef` — never committed.
+
+**Current state: removed from the tree.** Both call sites now generate a value at run
+time (`openssl rand -base64 18` for the password, `uuidgen` for the token), matching how
+this repo already handles `RECOMMENDATION_CURSOR_SIGNING_KEY`. A copy-pasteable literal
+password in a runbook is a mild real risk regardless of what a scanner thinks — people
+paste them into environments that are not local — so this is worth doing on its own
+merits.
+
+**It still exists in history**, in the merged `feat/splunk-hec-log-shipping` commits
+(`80749ab`, `197b1d8`, `208fc6d`). That is deliberate. Rewriting shared history to purge
+a value that was never sensitive trades a real disruption — every clone and open branch
+needing recovery — for no security gain. `.gitguardian.yaml` carries ignore rules so the
+same placeholder does not re-flag on future PRs.
+
+**If a future scan flags something here, do not assume it is this.** Check the value
+against `.gitguardian.yaml`'s entries first. A genuine `SPLUNK_HEC_TOKEN` for a real
+collector appearing in a diff is a real incident and must be rotated in Splunk, not
+ignored.

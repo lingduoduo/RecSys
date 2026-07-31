@@ -3,10 +3,14 @@ package com.recsys.infrastructure.observability;
 import javax.net.ssl.SSLContext;
 import javax.net.ssl.TrustManager;
 import javax.net.ssl.X509TrustManager;
+import java.net.ConnectException;
 import java.net.URI;
+import java.net.UnknownHostException;
 import java.net.http.HttpClient;
 import java.net.http.HttpRequest;
 import java.net.http.HttpResponse;
+import java.net.http.HttpTimeoutException;
+import java.nio.channels.UnresolvedAddressException;
 import java.security.cert.X509Certificate;
 import java.time.Duration;
 
@@ -36,7 +40,29 @@ import java.time.Duration;
  */
 class SplunkHecClient {
 
-    enum Outcome { SUCCESS, AUTH_REJECTED, SERVER_ERROR, TRANSPORT_FAILURE }
+    /**
+     * The result of one batch POST.
+     *
+     * <p>{@link #INDETERMINATE} is deliberately distinct from {@link #TRANSPORT_FAILURE}. Once
+     * the request has been written, a timeout or an interrupt tells us the <em>response</em>
+     * never arrived — not that Splunk rejected the batch. Splunk may well have indexed it. The
+     * two cases carry opposite risks: {@code TRANSPORT_FAILURE} means those events are lost,
+     * {@code INDETERMINATE} means they may be lost <em>or</em> duplicated if anything ever
+     * retries. Collapsing them into one counter reports a definite loss that may not have
+     * happened, and hides the duplicate risk entirely.
+     */
+    enum Outcome {
+        /** 2xx. Splunk accepted the batch. */
+        SUCCESS,
+        /** 401/403. The token is wrong, revoked, or lacks the index. Events are lost. */
+        AUTH_REJECTED,
+        /** Any other non-2xx. Splunk answered and refused. Events are lost. */
+        SERVER_ERROR,
+        /** Never reached Splunk — connection refused, DNS failure. Events are lost. */
+        TRANSPORT_FAILURE,
+        /** Request sent, response never seen. Delivery genuinely unknown. */
+        INDETERMINATE
+    }
 
     private final HttpClient httpClient;
     private final URI uri;
@@ -77,18 +103,32 @@ class SplunkHecClient {
                 lastFailureDetail = null;
                 return Outcome.SUCCESS;
             }
-            recordFailureDetail("HTTP " + status + ": " + truncate(response.body()));
+            recordFailureDetail("HTTP " + status + ": " + sanitize(response.body()));
             if (status == 401 || status == 403) return Outcome.AUTH_REJECTED;
             return Outcome.SERVER_ERROR;
         } catch (InterruptedException e) {
             // Shutdown in progress. Restore the flag so the drain loop sees it and exits.
+            // The request was already handed to the client, so Splunk may or may not have
+            // taken it — that is INDETERMINATE, not a known loss.
             Thread.currentThread().interrupt();
-            recordFailureDetail("interrupted during send");
+            recordFailureDetail("interrupted while awaiting the response; delivery unknown");
+            return Outcome.INDETERMINATE;
+        } catch (HttpTimeoutException e) {
+            // The request went out; the response did not come back in time. Splunk may have
+            // indexed the batch regardless.
+            recordFailureDetail("timed out after " + timeout.toMillis() + "ms awaiting the "
+                    + "response; delivery unknown");
+            return Outcome.INDETERMINATE;
+        } catch (ConnectException | UnresolvedAddressException | UnknownHostException e) {
+            // Never left the host: nothing was delivered, so this is a definite loss.
+            recordFailureDetail(sanitize(e.getClass().getSimpleName() + ": " + e.getMessage()));
             return Outcome.TRANSPORT_FAILURE;
         } catch (Exception e) {
-            // Connect refused, DNS failure, timeout, TLS failure — all the same to the caller.
-            recordFailureDetail(e.getClass().getSimpleName() + ": " + e.getMessage());
-            return Outcome.TRANSPORT_FAILURE;
+            // Anything else — a TLS failure, a truncated response, an IO error mid-exchange.
+            // We cannot tell whether the request was written, so do not claim a definite loss.
+            recordFailureDetail(sanitize(e.getClass().getSimpleName() + ": " + e.getMessage())
+                    + " (delivery unknown)");
+            return Outcome.INDETERMINATE;
         }
     }
 
@@ -105,12 +145,44 @@ class SplunkHecClient {
         lastFailureDetail = detail;
     }
 
-    /** HEC error bodies are small, but a misconfigured URL can return an HTML error page. */
-    private static String truncate(String body) {
-        if (body == null || body.isBlank()) return "<empty response body>";
-        String collapsed = body.strip().replaceAll("\\s+", " ");
-        return collapsed.length() <= 300 ? collapsed : collapsed.substring(0, 300) + "...";
+    private static final int MAX_DETAIL_CHARS = 300;
+
+    /**
+     * Bounds and scrubs anything that reaches a log line.
+     *
+     * <p>A genuine HEC rejection body is a few dozen bytes of JSON. But this string is whatever
+     * answered on the configured URL, and that is not guaranteed to be Splunk — point
+     * {@code SPLUNK_HEC_URL} at the wrong host and it could be an HTML error page, a proxy's
+     * diagnostic dump echoing the request headers (including our {@code Authorization: Splunk
+     * <token>}), or megabytes of anything. So:
+     *
+     * <ul>
+     *   <li>the HEC token is redacted wherever it appears, so a header-echoing proxy cannot
+     *       leak the credential into logs that ship to Splunk and sit in {@code logs/*.log};
+     *   <li>anything that looks like an {@code Authorization} header is redacted too, covering
+     *       a token that differs from ours (a stale one, or another service's);
+     *   <li>control characters are stripped, so a hostile body cannot forge extra log lines;
+     *   <li>the result is truncated, so one bad response cannot dump megabytes into the log.
+     * </ul>
+     */
+    private String sanitize(String raw) {
+        if (raw == null || raw.isBlank()) return "<empty response body>";
+        // Strip CR/LF and other control characters first: a body containing a newline could
+        // otherwise fake a second log entry in a file-based collector.
+        String collapsed = raw.replaceAll("[\\p{Cntrl}\\s]+", " ").strip();
+        if (token != null && !token.isBlank()) {
+            collapsed = collapsed.replace(token, "<redacted-token>");
+        }
+        collapsed = AUTH_HEADER.matcher(collapsed).replaceAll("$1 <redacted>");
+        if (collapsed.isBlank()) return "<empty response body>";
+        return collapsed.length() <= MAX_DETAIL_CHARS
+                ? collapsed
+                : collapsed.substring(0, MAX_DETAIL_CHARS) + "...<truncated>";
     }
+
+    /** Matches `Authorization: Splunk xxx`, `Authorization=Bearer xxx`, and similar. */
+    private static final java.util.regex.Pattern AUTH_HEADER = java.util.regex.Pattern.compile(
+            "(?i)(authorization\\s*[:=]?\\s*(?:splunk|bearer|basic)?)\\s*[A-Za-z0-9._~+/=-]{8,}");
 
     private static HttpClient buildHttpClient(SplunkHecConfig config) {
         HttpClient.Builder builder = HttpClient.newBuilder()

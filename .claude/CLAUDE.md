@@ -88,7 +88,13 @@ services ship structured JSON log events to `SPLUNK_HEC_URL`, default
 console logging is unaffected either way). `SPLUNK_SERVICE_NAME` sets the Splunk `source`
 field per service; `SPLUNK_HEC_INDEX` / `_SOURCETYPE` / `_QUEUE_CAPACITY` / `_BATCH_SIZE` /
 `_LINGER_MS` / `_TIMEOUT_MS` / `_INSECURE_TLS` tune the appender. Delivery is **at-most-once**
-by design, so a Splunk search is a lower bound on what was logged — see
+by design, so a Splunk search is a lower bound on what was logged. The appender counts
+`indeterminate` separately from `failed` — a batch that was sent but never acknowledged may
+still have been indexed, so it is the set a retry would duplicate rather than a known loss —
+and `stop()` joins the drain thread before interrupting it, so an in-flight POST completes
+within the shutdown budget instead of being aborted. The end-to-end path is verified against a
+real Splunk by `SplunkHecIntegrationTest` (`@Tag("docker")`) on x86_64 CI only; it cannot run
+on arm64, where `splunkd` segfaults under emulation. See
 `docs/runbooks/splunk-hec-logging.md`.
 
 ## Architecture

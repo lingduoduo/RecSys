@@ -42,6 +42,17 @@ class SplunkHecClientTest {
                     HttpResponse.of(HttpStatus.FORBIDDEN,
                             com.linecorp.armeria.common.MediaType.JSON,
                             "{\"text\":\"Invalid token\",\"code\":4}"));
+            // A proxy that echoes the request headers back in its error page — the realistic
+            // way our own Authorization header ends up in a response body.
+            sb.service("/services/collector/echoes-token", (ctx, req) ->
+                    HttpResponse.of(HttpStatus.INTERNAL_SERVER_ERROR,
+                            com.linecorp.armeria.common.MediaType.PLAIN_TEXT_UTF_8,
+                            "Bad gateway. Request was:\nAuthorization: Splunk tok-abc\nHost: x"));
+            // Oversized body with embedded newlines: bounds + control-character stripping.
+            sb.service("/services/collector/huge", (ctx, req) ->
+                    HttpResponse.of(HttpStatus.INTERNAL_SERVER_ERROR,
+                            com.linecorp.armeria.common.MediaType.HTML_UTF_8,
+                            "<html>\n" + "PADDING\n".repeat(500) + "</html>"));
         }
     };
 
@@ -136,7 +147,7 @@ class SplunkHecClientTest {
     }
 
     @Test
-    void interruptionIsReportedAndFlagRestored() throws Exception {
+    void interruptionIsIndeterminateAndRestoresTheFlag() throws Exception {
         SplunkHecClient client = new SplunkHecClient(SplunkHecConfig.from(Map.of(
                 "SPLUNK_HEC_TOKEN", "tok-abc",
                 "SPLUNK_HEC_URL", "http://127.0.0.1:1/services/collector/event",
@@ -144,10 +155,55 @@ class SplunkHecClientTest {
 
         Thread.currentThread().interrupt();
         try {
-            assertThat(client.send("{}")).isEqualTo(SplunkHecClient.Outcome.TRANSPORT_FAILURE);
+            // INDETERMINATE, not TRANSPORT_FAILURE: an InterruptedException does not tell us
+            // whether the request was written. Reporting a definite loss we cannot substantiate
+            // is worse than reporting "unknown" — and it would hide that these are precisely
+            // the events a retry could duplicate.
+            assertThat(client.send("{}")).isEqualTo(SplunkHecClient.Outcome.INDETERMINATE);
             assertThat(Thread.currentThread().isInterrupted()).isTrue();
+            assertThat(client.lastFailureDetail()).contains("delivery unknown");
         } finally {
             Thread.interrupted(); // clear so it does not leak into the next test
         }
+    }
+
+    @Test
+    void connectionRefusedIsADefiniteLossNotIndeterminate() {
+        // Nothing was ever written to a socket, so unlike an interrupt or a timeout this one
+        // IS a known loss. Keeping the two apart is the whole point of the distinction.
+        SplunkHecClient client = new SplunkHecClient(SplunkHecConfig.from(Map.of(
+                "SPLUNK_HEC_TOKEN", "tok-abc",
+                "SPLUNK_HEC_URL", "http://127.0.0.1:1/services/collector/event",
+                "SPLUNK_HEC_TIMEOUT_MS", "500")));
+
+        assertThat(client.send("{}")).isEqualTo(SplunkHecClient.Outcome.TRANSPORT_FAILURE);
+    }
+
+    @Test
+    void redactsTheHecTokenFromALoggedResponseBody() {
+        // A proxy or misrouted endpoint can echo the request back, including our Authorization
+        // header. That body reaches a WARN line and lands in logs/*.log and Splunk itself, so
+        // the token must not survive the trip.
+        SplunkHecClient client = clientFor("/services/collector/echoes-token");
+
+        assertThat(client.send("{}")).isEqualTo(SplunkHecClient.Outcome.SERVER_ERROR);
+
+        assertThat(client.lastFailureDetail())
+                .as("the configured token must never reach a log line")
+                .doesNotContain("tok-abc")
+                .contains("<redacted");
+    }
+
+    @Test
+    void boundsAnOversizedResponseBodyAndStripsControlCharacters() {
+        SplunkHecClient client = clientFor("/services/collector/huge");
+        client.send("{}");
+
+        String detail = client.lastFailureDetail();
+        assertThat(detail).endsWith("...<truncated>");
+        // 300 chars + the "HTTP 500: " prefix + the truncation marker — bounded, not megabytes.
+        assertThat(detail.length()).isLessThan(400);
+        // A body containing newlines must not be able to forge extra log lines.
+        assertThat(detail).doesNotContain("\n").doesNotContain("\r");
     }
 }

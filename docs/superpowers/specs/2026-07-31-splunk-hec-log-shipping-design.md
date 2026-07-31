@@ -288,7 +288,43 @@ searchable logs at `localhost:8000` with no manual UI steps.
 | 403 (bad or rotated token) | `addError` once, then throttled; draining continues, since the token may be rotated in place. |
 | Serialization throws on one event | That event is skipped; the rest of the batch still ships. |
 | Hostname resolution fails at start | `host` becomes `unknown`; the appender still starts. |
-| JVM shutdown | `stop()` interrupts the drain thread and flushes the remainder with a bounded 2s wait, mirroring `AsyncEventPublisher.close()`. It runs when the `LoggerContext` is stopped, which each Armeria main now does explicitly at the end of its own shutdown hook (after its drain completes) rather than via a Logback `<shutdownHook/>` — see "Logback wiring" above for why. |
+| JVM shutdown | `stop()` **joins** the drain thread first, giving an in-flight POST its 2s budget to complete, and only interrupts as an escalation if that budget expires (+500ms grace). It then flushes the remainder in `batchSize` chunks. It runs when the `LoggerContext` is stopped, which each Armeria main does explicitly at the end of its own shutdown hook (after its drain completes) rather than via a Logback `<shutdownHook/>` — see "Logback wiring" above for why. |
+| Sent, no response (read timeout, or interrupt while awaiting) | Counted `indeterminate`, **not** `failed` — see below. |
+
+### Why `indeterminate` is a separate counter
+
+An earlier `stop()` interrupted the drain thread *before* joining it, aborting whatever POST
+was on the wire and counting that batch as failed. The first run against a real Splunk showed
+`sent=7, failed=3` for ten events. Two things were wrong, and only one was the ordering:
+
+Once a request has been written, a timeout or an interrupt tells us the *response* never
+arrived — not that Splunk refused the batch. Splunk may well have indexed it. Reporting that
+as `failed` asserts a loss that may not have happened, and hides the fact that these are
+precisely the events a retry would duplicate. `TRANSPORT_FAILURE` (connection refused, DNS
+failure — nothing was written) and `INDETERMINATE` (written, unacknowledged) carry opposite
+risks, so they are counted apart. An `indeterminate` of zero is then a real statement:
+everything handed to Splunk was acknowledged one way or the other.
+
+This distinction was not visible against a stub collector, which answers instantly and never
+opens the window.
+
+### Shutdown reporting
+
+`stop()` emits one summary through the status API: `queuedAtShutdown`,
+`inFlightBatchesAtShutdown`, `flushedAtShutdown`, `gracefulDrainMillis`, `forcedInterrupt`,
+and the final `confirmed` / `failed` / `indeterminate` / `droppedQueueFull` tallies. It is a
+WARN rather than an INFO when `forcedInterrupt` is true or any events are indeterminate,
+because in those cases the tail of the log stream is genuinely uncertain.
+
+### Logged response bodies are bounded and scrubbed
+
+`SplunkHecClient` reads the HEC response body rather than discarding it — HEC names every
+rejection (`Incorrect index`, `Server is busy`, `Invalid token`), and without it an operator
+sees only an enum. But that body is whatever answered on the configured URL, which is not
+guaranteed to be Splunk. So before it reaches a log line it is truncated to 300 characters,
+has control characters stripped (so a hostile body cannot forge extra log entries), and has
+the HEC token and any `Authorization`-looking header redacted — a proxy that echoes request
+headers would otherwise write the credential into `logs/*.log` and into Splunk itself.
 
 **No retry is a deliberate choice, not an omission.** Retrying inside the drain thread
 converts a Splunk outage into a growing backlog and delays every subsequent batch;

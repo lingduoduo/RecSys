@@ -47,6 +47,11 @@ public final class SplunkHecAppender extends UnsynchronizedAppenderBase<ILogging
     private final AtomicLong sent = new AtomicLong();
     private final AtomicLong dropped = new AtomicLong();
     private final AtomicLong failed = new AtomicLong();
+    /** Sent but never acknowledged — see {@link SplunkHecClient.Outcome#INDETERMINATE}. */
+    private final AtomicLong indeterminate = new AtomicLong();
+    /** Batches currently inside {@code client.send()}; read at shutdown for the summary. */
+    private final java.util.concurrent.atomic.AtomicInteger inFlightBatches =
+            new java.util.concurrent.atomic.AtomicInteger();
     private final Map<SplunkHecClient.Outcome, Long> lastWarnedAt =
             new EnumMap<>(SplunkHecClient.Outcome.class);
 
@@ -116,10 +121,19 @@ public final class SplunkHecAppender extends UnsynchronizedAppenderBase<ILogging
             return;
         }
         running = false;
+
+        // Shutdown is the one moment where an operator most needs to know what happened to the
+        // tail of the log stream, and it is exactly when the least is normally reported. These
+        // are captured before anything drains so the numbers describe the shutdown itself.
+        long startedAtNanos = System.nanoTime();
+        int queuedAtShutdown = queue.size();
+        int inFlightAtShutdown = inFlightBatches.get();
+        boolean forcedInterrupt = false;
+
         // Do NOT interrupt first. Clearing `running` is already enough for the drain loop to
         // exit — it re-checks the flag after each poll, so it stops within one linger interval.
         // An immediate interrupt instead aborts whatever the thread is doing, and if that is an
-        // in-flight POST the batch is counted failed even though Splunk may well have accepted
+        // in-flight POST the batch cannot be confirmed even though Splunk may well have accepted
         // it. A real collector takes long enough for that window to be hit routinely; a stub
         // answers instantly, which is why only the real-Splunk integration test caught it.
         if (Thread.currentThread() != drainThread) {
@@ -127,10 +141,13 @@ public final class SplunkHecAppender extends UnsynchronizedAppenderBase<ILogging
             if (drainThread.isAlive()) {
                 // It overran the budget — most likely blocked on a send with a longer timeout
                 // than we are willing to wait. Now escalate.
+                forcedInterrupt = true;
                 drainThread.interrupt();
                 joinQuietly(INTERRUPT_WAIT_MILLIS);
             }
         }
+        long drainMillis = TimeUnit.NANOSECONDS.toMillis(System.nanoTime() - startedAtNanos);
+
         List<ILoggingEvent> remaining = new ArrayList<>();
         queue.drainTo(remaining);
         // Chunk like the drain loop does: one unbounded ship() here could hand Splunk a
@@ -141,13 +158,32 @@ public final class SplunkHecAppender extends UnsynchronizedAppenderBase<ILogging
             int end = Math.min(start + config.batchSize(), remaining.size());
             ship(remaining.subList(start, end));
         }
-        addInfo("Splunk HEC appender stopped; " + snapshot());
+
+        Snapshot finalSnapshot = snapshot();
+        String summary = "Splunk HEC appender stopped."
+                + " queuedAtShutdown=" + queuedAtShutdown
+                + " inFlightBatchesAtShutdown=" + inFlightAtShutdown
+                + " flushedAtShutdown=" + remaining.size()
+                + " gracefulDrainMillis=" + drainMillis
+                + " forcedInterrupt=" + forcedInterrupt
+                + " confirmed=" + finalSnapshot.sent()
+                + " failed=" + finalSnapshot.failed()
+                + " indeterminate=" + finalSnapshot.indeterminate()
+                + " droppedQueueFull=" + finalSnapshot.dropped();
+        // A forced interrupt means we gave up on an in-flight batch, so the tail of the log
+        // stream is genuinely uncertain. That is a warning, not an FYI.
+        if (forcedInterrupt || finalSnapshot.indeterminate() > 0) {
+            addWarn(summary + ". Events counted indeterminate were sent but never acknowledged —"
+                    + " Splunk may or may not have indexed them.");
+        } else {
+            addInfo(summary);
+        }
         super.stop();
     }
 
     public Snapshot snapshot() {
         return new Snapshot(queue == null ? 0 : queue.size(),
-                sent.get(), dropped.get(), failed.get());
+                sent.get(), dropped.get(), failed.get(), indeterminate.get());
     }
 
     private void joinQuietly(long millis) {
@@ -201,17 +237,37 @@ public final class SplunkHecAppender extends UnsynchronizedAppenderBase<ILogging
         }
         if (serialized.isEmpty()) return;
 
-        SplunkHecClient.Outcome outcome =
-                client.send(SplunkHecEventSerializer.toBatchBody(serialized));
+        SplunkHecClient.Outcome outcome;
+        inFlightBatches.incrementAndGet();
+        try {
+            outcome = client.send(SplunkHecEventSerializer.toBatchBody(serialized));
+        } finally {
+            inFlightBatches.decrementAndGet();
+        }
+
         if (outcome == SplunkHecClient.Outcome.SUCCESS) {
             sent.addAndGet(serialized.size());
             return;
         }
-        failed.addAndGet(serialized.size());
+
         // Include Splunk's own explanation — "Incorrect index", "Server is busy", "Invalid
         // token". Without it the operator sees only the Outcome enum and cannot tell a
         // misconfiguration from back-pressure.
         String detail = client.lastFailureDetail();
+
+        if (outcome == SplunkHecClient.Outcome.INDETERMINATE) {
+            // The request went out and no answer came back. Counting these as `failed` would
+            // assert a loss we cannot substantiate, and would hide that these are the events
+            // a retry — here or upstream — could duplicate.
+            indeterminate.addAndGet(serialized.size());
+            warnThrottled(outcome, "Splunk HEC delivery UNKNOWN for " + serialized.size()
+                    + " events: the batch was sent but never acknowledged, so Splunk may or may"
+                    + " not have indexed it. Total indeterminate: " + indeterminate.get()
+                    + (detail == null ? "" : ". Cause: " + detail));
+            return;
+        }
+
+        failed.addAndGet(serialized.size());
         warnThrottled(outcome, "Splunk HEC delivery failed (" + outcome + "); dropped "
                 + serialized.size() + " events. Total failed: " + failed.get()
                 + (detail == null ? "" : ". Splunk said: " + detail));
@@ -244,5 +300,14 @@ public final class SplunkHecAppender extends UnsynchronizedAppenderBase<ILogging
         }
     }
 
-    public record Snapshot(int queued, long sent, long dropped, long failed) {}
+    /**
+     * @param queued        events still waiting in the bounded queue
+     * @param sent          confirmed by a 2xx from Splunk
+     * @param dropped       never sent: the queue was full when {@code append()} ran
+     * @param failed        sent and definitively refused, or never left the host
+     * @param indeterminate sent but never acknowledged — Splunk may or may not hold them.
+     *                      Kept separate from {@code failed} because the risks differ: failed
+     *                      events are lost, indeterminate ones are lost <em>or</em> duplicated.
+     */
+    public record Snapshot(int queued, long sent, long dropped, long failed, long indeterminate) {}
 }
