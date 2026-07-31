@@ -3,6 +3,7 @@ package com.recsys.infrastructure.observability;
 import ch.qos.logback.classic.Level;
 import ch.qos.logback.classic.LoggerContext;
 import ch.qos.logback.classic.spi.LoggingEvent;
+import ch.qos.logback.classic.util.LogbackMDCAdapter;
 import com.fasterxml.jackson.databind.JsonNode;
 import com.fasterxml.jackson.databind.ObjectMapper;
 import org.junit.jupiter.api.Test;
@@ -22,6 +23,7 @@ class SplunkHecEventSerializerTest {
 
     private static LoggingEvent event(Level level, String message) {
         LoggerContext context = new LoggerContext();
+        context.setMDCAdapter(new LogbackMDCAdapter());
         LoggingEvent event = new LoggingEvent();
         event.setLoggerContext(context);
         event.setLoggerName("com.recsys.application.gateway.LlmProxy");
@@ -97,13 +99,22 @@ class SplunkHecEventSerializerTest {
     @Test
     void reservedKeysWinOverMdc() throws Exception {
         LoggingEvent event = event(Level.ERROR, "real message");
-        event.setMDCPropertyMap(Map.of("level", "INFO", "message", "spoofed", "logger", "evil"));
+        java.util.Map<String, String> mdc = new java.util.HashMap<>();
+        mdc.put("level", "INFO");
+        mdc.put("logger", "evil");
+        mdc.put("thread", "spoofed-thread");
+        mdc.put("message", "spoofed");
+        mdc.put("exception", "fake-exception");
+        event.setMDCPropertyMap(mdc);
 
         JsonNode payload = parse(serializer.toJson(event)).get("event");
 
+        // All five reserved keys must hold their real values, not MDC-spoofed values
         assertThat(payload.get("level").asText()).isEqualTo("ERROR");
-        assertThat(payload.get("message").asText()).isEqualTo("real message");
         assertThat(payload.get("logger").asText()).isEqualTo("com.recsys.application.gateway.LlmProxy");
+        assertThat(payload.get("thread").asText()).isEqualTo("armeria-common-worker-1");
+        assertThat(payload.get("message").asText()).isEqualTo("real message");
+        assertThat(payload.has("exception")).isFalse(); // No exception in this event, so not present
     }
 
     @Test

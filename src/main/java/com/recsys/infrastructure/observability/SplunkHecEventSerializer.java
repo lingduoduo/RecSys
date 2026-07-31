@@ -60,13 +60,7 @@ final class SplunkHecEventSerializer {
             payload.put("exception", ThrowableProxyUtil.asString(throwable));
         }
 
-        Map<String, String> mdc;
-        try {
-            mdc = event.getMDCPropertyMap();
-        } catch (NullPointerException e) {
-            // MDC adapter may not be initialized in some LoggerContext instances
-            mdc = null;
-        }
+        Map<String, String> mdc = event.getMDCPropertyMap();
         if (mdc != null) {
             for (Map.Entry<String, String> entry : mdc.entrySet()) {
                 String key = entry.getKey();
