@@ -1780,7 +1780,13 @@ In `pom.xml`, alongside `**/sharding/SequenceGeneratorGenerationTest.java`:
                 <include>**/sharding/ShardKeysTest.java</include>
                 <include>**/sharding/ShardTopologySnapshotFormatTest.java</include>
                 <include>**/sharding/ShardedRecordStoreAtomicWriteTest.java</include>
+                <include>**/sharding/ShardTopologyProviderTest.java</include>
 ```
+
+`ShardTopologyProviderTest` joins them because Task 5 added the tests proving each generation
+carries its own key format — the property the whole migration depends on — and it is a pure
+Mockito unit test with no Redis. Confirm that before adding it: if it turns out to need a
+container, leave it out rather than putting a skipped test in the gate.
 
 All three are pure unit tests with mocked Redis, which is what that profile's comment
 requires. Do **not** add the Task 8 integration class — `<excludedGroups>` would skip it and
@@ -1832,6 +1838,46 @@ therefore one Cluster slot, which is what makes the multi-key script legal.
    dual-read window per-device reads span both formats — see
    [03 sharp edge 7](03_DB_Scaling_Sharding.md#sharp-edges--notes).
 ```
+
+- [ ] **Step 5a: Record what the dual-read fixes changed, and what they did not**
+
+Tasks 10 and 11 fixed two data-loss defects in the dual-read merge that the Docker tests
+surfaced. Both predate this work, and neither is described anywhere in the docs. Add sharp
+edge 8 to 03:
+
+```markdown
+8. **The dual-read merge identifies records by `eventId`, and its page cap is soft.**
+   Sequence numbers are per generation — each generation's counter starts again at 1 — so
+   they are not an identity and not a total order across a migration window. The merge
+   therefore dedupes on `(deviceId, eventId)`, the device index's own member. Two
+   consequences. A merged page never ends part-way through a group of records sharing one
+   sequence, because the cursor *is* a sequence and a straggler at that same sequence could
+   never be reached by a later page — so a page may return `limit + 1` records during a
+   window. And a record whose `eventId` exists in both generations at different sequences
+   can still be skipped or delivered twice: the merge sees one page at a time and cannot
+   know the other generation holds the same event further along. That case needs the same
+   `eventId` written on both sides of a reshard, and reads remain at-least-once, not
+   exactly-once, for its duration.
+```
+
+And add the matching entry to 15's sharp-edge list as item 8:
+
+```markdown
+8. **Per-device reads are at-least-once during a reshard window, not exactly-once.** The
+   dual-read merge dedupes on `(deviceId, eventId)` within a single merged page. An event
+   written on both sides of a reshard can be skipped or returned twice across page
+   boundaries — see [03 sharp edge 8](03_DB_Scaling_Sharding.md#sharp-edges--notes).
+```
+
+Do not write that the dual read is lossless. It is materially better than it was, and the
+two specific defects are gone, but the remaining case above is real and undocumented
+elsewhere.
+
+- [ ] **Step 5b: Finish the correction Task 2 started**
+
+03's sharp edge 2 still reads "The ring is cluster-ready" with no caveat, while sharp edge 7
+and 14_Partitioning both now scope that claim to single-key operations. Bring edge 2 into
+line — a one-clause change pointing at edge 7, not a rewrite.
 
 - [ ] **Step 6: Run the full gate profile**
 
