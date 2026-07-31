@@ -76,7 +76,7 @@ public final class ShardedRecordStore {
         ShardTopology topo = provider.current();
         int version    = topo.version();
         int shardIndex = topo.shardFor(record.deviceId());
-        long seqNum    = seqGen.next(version, shardIndex);
+        long seqNum    = seqGen.next(topo, shardIndex);
 
         String recKey    = recKey(version, shardIndex, seqNum);
         String devKey    = devKey(version, shardIndex, record.deviceId());

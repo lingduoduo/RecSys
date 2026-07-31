@@ -337,7 +337,7 @@ public final class OnlinePredictionServer {
             try {
                 ShardTopology topo = provider.current();
                 for (int shard = 0; shard < topo.shardCount(); shard++) {
-                    if (!seqGen.ensureCounterValid(topo.version(), shard, budgetMs)) {
+                    if (!seqGen.ensureCounterValid(topo, shard, budgetMs)) {
                         log.warn("Sequence-counter repair for generation {} shard {} exceeded its {}ms "
                                         + "budget; counter raised only as far as the partial scan reached",
                                 topo.version(), shard, budgetMs);

@@ -32,14 +32,15 @@ public final class SequenceGenerator {
         this.clockMs = clockMs;
     }
 
-    /** Next sequence for (version, shard). Always >= 1. */
-    public long next(int version, int shardIndex) {
-        return exec.execute(c -> c.incr(seqKey(version, shardIndex)));
+    /** Next sequence for this generation's shard. Always >= 1. */
+    public long next(ShardTopology topology, int shardIndex) {
+        String key = ShardKeys.of(prefix, topology).seq(shardIndex);
+        return exec.execute(c -> c.incr(key));
     }
 
-    /** Back-compat: version-1 (unversioned) sequence. */
+    /** Back-compat: version-1, untagged sequence. */
     public long next(int shardIndex) {
-        return next(1, shardIndex);
+        return next(new ShardTopology(1, shardIndex + 1, 150, 0L), shardIndex);
     }
 
     /**
@@ -61,11 +62,12 @@ public final class SequenceGenerator {
      *
      * @return {@code true} if the scan completed, {@code false} if the budget truncated it
      */
-    public boolean ensureCounterValid(int version, int shardIndex, long budgetMs) {
-        ScanResult scan = findMaxSeqInShard(version, shardIndex, budgetMs);
+    public boolean ensureCounterValid(ShardTopology topology, int shardIndex, long budgetMs) {
+        ShardKeys keys = ShardKeys.of(prefix, topology);
+        ScanResult scan = findMaxSeqInShard(keys, shardIndex, budgetMs);
         if (scan.maxSeq() <= 0) return scan.completed();
 
-        String key = seqKey(version, shardIndex);
+        String key = keys.seq(shardIndex);
         String current = exec.execute(c -> c.get(key));
         long currentVal = current == null ? 0L : Long.parseLong(current);
         if (currentVal < scan.maxSeq()) {
@@ -74,9 +76,8 @@ public final class SequenceGenerator {
         return scan.completed();
     }
 
-    private ScanResult findMaxSeqInShard(int version, int shardIndex, long budgetMs) {
-        String pattern = prefix + Generations.keyPrefix(version) + "dev:" + shardIndex + ":*";
-        ScanArgs params = ScanArgs.Builder.matches(pattern).limit(200);
+    private ScanResult findMaxSeqInShard(ShardKeys keys, int shardIndex, long budgetMs) {
+        ScanArgs params = ScanArgs.Builder.matches(keys.devScanPattern(shardIndex)).limit(200);
         long deadline = clockMs.getAsLong() + Math.max(1L, budgetMs);
 
         return exec.execute(c -> {
@@ -95,10 +96,6 @@ public final class SequenceGenerator {
                 cursor = c.scan(cursor, params);
             }
         });
-    }
-
-    private String seqKey(int version, int shardIndex) {
-        return prefix + Generations.keyPrefix(version) + "seq:" + shardIndex;
     }
 
     /** Outcome of one bounded scan: the highest score seen, and whether the scan finished. */
