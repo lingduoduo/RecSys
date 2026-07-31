@@ -128,7 +128,7 @@ A batch is the newline-concatenation of these objects in a single POST body — 
 | `SPLUNK_SERVICE_NAME` | `recsys` | Per-service `source` field |
 | `SPLUNK_HEC_QUEUE_CAPACITY` | `10000` | Bounded queue depth |
 | `SPLUNK_HEC_BATCH_SIZE` | `100` | Max events per POST |
-| `SPLUNK_HEC_LINGER_MS` | `1000` | Max time a partial batch waits before being sent |
+| `SPLUNK_HEC_LINGER_MS` | `1000` | How long the drain thread waits for a batch's first event |
 | `SPLUNK_HEC_TIMEOUT_MS` | `2000` | Connect + request timeout |
 | `SPLUNK_HEC_INSECURE_TLS` | `false` | Accept a self-signed cert when the URL is `https://` |
 
@@ -152,6 +152,11 @@ still wins in both.
 with a self-signed certificate. The local stack disables HEC TLS entirely (below) so
 plain HTTP works as specified; the flag is for pointing a developer at a real Splunk
 instance without minting a trusted cert.
+
+`SPLUNK_HEC_LINGER_MS` bounds only the wait for a batch's *first* event; once one is
+available the batch ships immediately, topped up with whatever else is already queued. So
+batches fill naturally under load and a lone event is never held back — the same drain
+shape as `AsyncEventPublisher.drainLoop`.
 
 Malformed numeric values fall back to the default rather than failing startup, matching
 `AsyncEventPublisher.readIntEnv`. A blank or malformed `SPLUNK_HEC_URL` with a token
