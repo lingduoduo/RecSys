@@ -1660,9 +1660,12 @@ Create `src/main/resources/logback-common.xml`:
 <!--
   Shared appender definitions for all four service mains.
 
-  Included by logback-spring.xml (Spring Boot prefers that file, so the model service on
-  8080 takes that path) and by logback.xml (plain Logback, so the three Armeria mains on
-  6010/7010/8010 take this one). Keeping one definition means the four services cannot
+  Included by logback.xml, which Logback self-initializes from for all four services
+  (including Spring Boot on port 8080). Spring Boot's LogbackLoggingSystem checks
+  standard locations — logback-test.xml, then logback.xml — BEFORE it ever looks at a
+  -spring location, so once logback.xml exists on the classpath it wins for all four
+  mains, including the model service; logback-spring.xml is unreachable and would be
+  dead code. Keeping one shared appender definition means the four services cannot
   drift apart.
 
   CONSOLE is attached unconditionally: whatever Splunk is doing, nothing that reaches
@@ -1689,32 +1692,27 @@ Create `src/main/resources/logback.xml`:
 ```xml
 <?xml version="1.0" encoding="UTF-8"?>
 <!--
-  Entry point for the three Armeria mains (RecSysServer, OnlinePredictionServer,
-  MicroserviceGatewayServer), which run outside Spring and so never load
-  logback-spring.xml. Logback prefers logback-test.xml over this file, so the test
-  suite is unaffected.
+  Single entry point for all four service mains: the Spring Boot model service
+  (port 8080) and the three Armeria mains (RecSysServer 6010, OnlinePredictionServer
+  7010, MicroserviceGatewayServer 8010). Spring Boot defers to standard-location config
+  files when present, so this file wins for all four. Logback prefers logback-test.xml
+  over this file, so the test suite is unaffected.
 -->
 <configuration>
   <include resource="logback-common.xml"/>
 </configuration>
 ```
 
-Replace the contents of `src/main/resources/logback-spring.xml` with:
+There is no `logback-spring.xml`. It cannot be reached while `logback.xml` exists on the
+classpath — Spring Boot's precedence check is standard locations first, `-spring`
+locations only as a fallback when none of those exist — so a separate Spring config
+would be dead code. All four services load the single `logback.xml` above.
 
-```xml
-<?xml version="1.0" encoding="UTF-8"?>
-<!--
-  Entry point for the Spring Boot model service. Spring's LogbackLoggingSystem checks its
-  -spring locations before the standard ones, so this file wins over both logback.xml and
-  logback-test.xml. Appenders live in logback-common.xml so all four services share one
-  definition.
--->
-<configuration>
-  <include resource="logback-common.xml"/>
-</configuration>
-```
-
-The `springProperty`-sourced `appName` is deliberately dropped: it was unused by the console pattern, and the service identity that matters here comes from `SPLUNK_SERVICE_NAME`. Keeping it would force a Spring-only tag into the shared fragment, which plain Logback cannot parse.
+The `springProperty`-sourced `appName` some earlier drafts of this plan carried is
+deliberately dropped: it was unused by the console pattern, and the service identity
+that matters here comes from `SPLUNK_SERVICE_NAME`. Since there is no `-spring` file in
+the shipped design, `springProperty`/`springProfile` could not be used in the shared
+fragment anyway — they only work from a `-spring` file, and there isn't one.
 
 - [ ] **Step 4: Run test to verify it passes**
 
