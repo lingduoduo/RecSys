@@ -1431,11 +1431,42 @@ class ShardedRecordStoreAtomicWriteIntegrationTest extends RedisShardingTestBase
         // Seed a tagged device ZSet with a high score, set the counter behind it, run the
         // repair, and assert the counter was raised.
     }
+
+    @Test
+    void everyArgvFieldLandsInTheRightPlace() {
+        // Write one record with distinct values in every field, then assert the stored hash's
+        // deviceId/type/eventId/payload/timestamp and the stream entry's deviceId/seq/type/
+        // eventId each carry the value they were given. Catches a positional ARGV transposition
+        // — the failure mode that corrupts every record while still returning OK.
+    }
+
+    @Test
+    void zeroTtlLeavesTheRecordKeyWithoutAnExpiry() {
+        // write(record) with no TTL argument must leave TTL == -1 on the record key, not -2 and
+        // not a positive value. Only the positive-TTL case is covered today.
+    }
+
+    @Test
+    void theSequenceRendersAsAnIntegerNotAFloat() {
+        // The script concatenates a Lua number into the record key. Assert the key at
+        // "<recPrefix><seq>" exists and that "<recPrefix><seq>.0" does not, so a %.14g
+        // rendering regression is caught rather than silently producing unreadable keys.
+    }
 }
 ```
 
 Fill in each body against the real store — the comments state the exact assertion each test
 owes. Do not leave a body empty; an empty `@Test` passes and proves nothing.
+
+**Use a `FORMAT_TAGGED` topology wherever the test does not specifically need format 1.** Every
+existing Docker test in this package builds an untagged topology, so before this task the Lua
+script has never executed against tagged keys at all — and tagged keys are the entire point of
+the format work. `deviceReadMergesAnUntaggedPreviousWithATaggedCurrentGeneration` is the one
+test that deliberately mixes them.
+
+These ten tests exist because a task review found the write path's guarantees asserted nowhere:
+the mock-based unit test cannot execute Lua, and every pre-existing Docker test predates the
+script. Treat the list as the coverage contract, not as suggestions.
 
 - [ ] **Step 2: Run against Docker**
 
