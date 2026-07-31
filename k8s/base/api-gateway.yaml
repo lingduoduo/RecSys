@@ -56,6 +56,20 @@ spec:
                   name: recsys-gateway-origin-secret
                   key: secret
                   optional: true
+            # Splunk HEC log shipping. Inert until the recsys-splunk Secret exists, so
+            # optional: true keeps pods schedulable before it is provisioned — same pattern
+            # as recsys-online-admin / SHARD_ADMIN_TOKEN. See
+            # docs/runbooks/splunk-hec-logging.md.
+            - name: SPLUNK_SERVICE_NAME
+              value: "api-gateway"
+            - name: SPLUNK_HEC_URL
+              value: "http://splunk:8088/services/collector/event"
+            - name: SPLUNK_HEC_TOKEN
+              valueFrom:
+                secretKeyRef:
+                  name: recsys-splunk
+                  key: hec-token
+                  optional: true
           ports:
             - name: http
               containerPort: 8010

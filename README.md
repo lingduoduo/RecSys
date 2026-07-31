@@ -517,6 +517,7 @@ Operational runbooks — **all of them**, same index rule as above:
 - [Overload protection](docs/runbooks/overload-protection.md) — overload symptoms, controls, validation, recovery.
 - [Overload characterization](docs/runbooks/overload-characterization.md) — the opt-in `@Tag("load")` harnesses and the invariants they lock in.
 - [Gateway auth](docs/runbooks/gateway-auth.md) — API keys, Cognito JWT, and the fail-closed startup rule.
+- [Splunk HEC logging](docs/runbooks/splunk-hec-logging.md) — shipping structured application logs to Splunk, and the at-most-once limits of what lands there.
 
 *Data and delivery*
 - [Durable eventual consistency](docs/runbooks/durable-eventual-consistency.md) — outbox, saga state, relay, consistency tokens, reconciliation.

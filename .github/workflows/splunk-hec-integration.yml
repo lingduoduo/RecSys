@@ -1,0 +1,76 @@
+# Verifies the Splunk HEC path against a REAL Splunk.
+#
+# This exists because the feature cannot be verified on an arm64 workstation: Splunk publishes
+# no arm64 image, and under emulation splunkd segfaults during first-boot indexing. GitHub's
+# ubuntu runners are x86_64, so this is where the two questions the unit tests cannot answer
+# get settled — whether the provisioning actually enables plain-HTTP HEC, and whether what the
+# appender emits really parses and indexes in Splunk.
+#
+# Path-filtered rather than run on every PR: it boots a full Splunk (several minutes), and the
+# repo's PR gate is a deliberately fast deterministic allow-list. The weekly `docker` job in
+# resilience-scheduled.yml also picks this test up via -Dgroups=docker, so an unrelated change
+# that breaks it is still caught within the week.
+name: splunk-hec-integration
+
+on:
+  pull_request:
+    paths:
+      - "src/main/java/com/recsys/infrastructure/observability/**"
+      - "src/test/java/com/recsys/infrastructure/observability/**"
+      - "src/main/resources/logback*.xml"
+      - "docker-compose.splunk.yml"
+      - "docker/splunk/**"
+      - ".github/workflows/splunk-hec-integration.yml"
+  push:
+    branches: [main]
+    paths:
+      - "src/main/java/com/recsys/infrastructure/observability/**"
+      - "src/test/java/com/recsys/infrastructure/observability/**"
+      - "src/main/resources/logback*.xml"
+      - "docker-compose.splunk.yml"
+      - "docker/splunk/**"
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+jobs:
+  splunk:
+    runs-on: ubuntu-latest
+    timeout-minutes: 30
+    steps:
+      - uses: actions/checkout@11bd71901bbe5b1630ceea73d27597364c9af683 # v4.2.2
+      - uses: actions/setup-java@d7793b545071e98d581d3bf084a51c3213318a07 # v4
+        with:
+          distribution: temurin
+          java-version: "17"
+          cache: maven
+
+      - name: Confirm the runner is x86_64
+        # The whole point of this workflow. If GitHub ever changes the default runner
+        # architecture, fail loudly here rather than spending ten minutes watching splunkd
+        # segfault and reporting it as a product bug.
+        run: |
+          arch="$(uname -m)"
+          echo "runner architecture: ${arch}"
+          if [ "${arch}" != "x86_64" ]; then
+            echo "::error::Splunk publishes no arm64 image; splunkd segfaults under emulation." \
+                 "This workflow requires an x86_64 runner, got ${arch}."
+            exit 1
+          fi
+
+      - name: Run the Splunk HEC integration test
+        run: >-
+          mvn --batch-mode test
+          -DexcludedGroups=load
+          -Dgroups=docker
+          -Dtest=SplunkHecIntegrationTest
+
+      - name: Upload surefire reports
+        if: always()
+        uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02 # v4.6.2
+        with:
+          name: splunk-hec-integration-surefire
+          path: target/surefire-reports/
+          if-no-files-found: warn
+          retention-days: 30

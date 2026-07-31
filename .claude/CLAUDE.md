@@ -82,6 +82,14 @@ With none of those set the gateway authenticates nobody, so `GatewayAuthenticato
 (dev/local only; logs a loud WARN). `k8s/base` opts in (`true`); the EKS overlays flip it to
 `false` and inject `GATEWAY_API_KEYS` from the `recsys-gateway-auth` Secret. See
 `docs/runbooks/gateway-auth.md`.
+`SPLUNK_HEC_TOKEN` (default unset = Splunk log shipping is off; setting it makes all four
+services ship structured JSON log events to `SPLUNK_HEC_URL`, default
+`http://splunk:8088/services/collector/event`, via a bounded drop-on-full Logback appender —
+console logging is unaffected either way). `SPLUNK_SERVICE_NAME` sets the Splunk `source`
+field per service; `SPLUNK_HEC_INDEX` / `_SOURCETYPE` / `_QUEUE_CAPACITY` / `_BATCH_SIZE` /
+`_LINGER_MS` / `_TIMEOUT_MS` / `_INSECURE_TLS` tune the appender. Delivery is **at-most-once**
+by design, so a Splunk search is a lower bound on what was logged — see
+`docs/runbooks/splunk-hec-logging.md`.
 
 ## Architecture
 

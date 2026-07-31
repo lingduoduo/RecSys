@@ -1,4 +1,5 @@
 package com.recsys.api.gateway;
+import ch.qos.logback.classic.LoggerContext;
 import com.recsys.application.gateway.ApiDeprecationDecorator;
 import com.recsys.application.gateway.ApiVersion;
 import com.recsys.application.gateway.GatewayProxyService;
@@ -193,6 +194,12 @@ public final class MicroserviceGatewayServer {
             }
             if (llmFactoryToClose != null) {
                 llmFactoryToClose.close();
+            }
+            // Flushes the Splunk appender's queued events. Must run last: stopping the
+            // LoggerContext detaches and stops every appender (console included), so any
+            // logging after this point would be silently dropped.
+            if (LoggerFactory.getILoggerFactory() instanceof LoggerContext loggerContext) {
+                loggerContext.stop();
             }
         }));
 

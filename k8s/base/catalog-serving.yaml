@@ -63,6 +63,20 @@ spec:
                   optional: true
             - name: JAVA_OPTS
               value: "-Xms512m -Xmx1g"
+            # Splunk HEC log shipping. Inert until the recsys-splunk Secret exists, so
+            # optional: true keeps pods schedulable before it is provisioned — same pattern
+            # as recsys-online-admin / SHARD_ADMIN_TOKEN. See
+            # docs/runbooks/splunk-hec-logging.md.
+            - name: SPLUNK_SERVICE_NAME
+              value: "recsys-serving"
+            - name: SPLUNK_HEC_URL
+              value: "http://splunk:8088/services/collector/event"
+            - name: SPLUNK_HEC_TOKEN
+              valueFrom:
+                secretKeyRef:
+                  name: recsys-splunk
+                  key: hec-token
+                  optional: true
           ports:
             - name: http
               containerPort: 6010

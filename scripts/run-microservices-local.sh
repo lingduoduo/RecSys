@@ -6,6 +6,17 @@ Set RECOMMENDATION_CURSOR_SIGNING_KEY before starting recommendation services.
 Generate one with: export RECOMMENDATION_CURSOR_SIGNING_KEY=\"\$(openssl rand -hex 32)\"}"
 
 mkdir -p logs
+
+# Splunk HEC log shipping is off unless SPLUNK_HEC_TOKEN is exported.
+#   docker compose -f docker-compose.splunk.yml up -d
+#   export SPLUNK_HEC_TOKEN=local-dev-hec-token
+# The default URL targets the Docker service name `splunk`, which is right inside the
+# compose network and in EKS. These four JVMs run on the HOST, where only the published
+# localhost port resolves — so default to that instead.
+SPLUNK_HEC_TOKEN="${SPLUNK_HEC_TOKEN:-}"
+SPLUNK_HEC_URL="${SPLUNK_HEC_URL:-http://localhost:8088/services/collector/event}"
+export SPLUNK_HEC_TOKEN SPLUNK_HEC_URL
+
 pids=""
 
 cleanup() {
@@ -33,6 +44,7 @@ start_service() {
 # When enabled, MYSQL_URL/USER/PASSWORD and a >=32-byte MYSQL_CURSOR_SIGNING_KEY are all
 # required — the server fails fast at startup if any is missing.
 start_service recsys-serving env PORT=6010 \
+  SPLUNK_SERVICE_NAME=recsys-serving \
   RECOMMENDATION_CURSOR_SIGNING_KEY="$RECOMMENDATION_CURSOR_SIGNING_KEY" \
   MYSQL_ENABLED="${MYSQL_ENABLED:-false}" \
   MYSQL_URL="${MYSQL_URL:-jdbc:mysql://localhost:3306/recsys?useSSL=false&serverTimezone=UTC}" \
@@ -43,11 +55,13 @@ start_service recsys-serving env PORT=6010 \
   mvn exec:java -Dexec.mainClass=com.recsys.api.serving.RecSysServer
 
 start_service model-serving env SERVER_PORT=8080 \
+  SPLUNK_SERVICE_NAME=model-serving \
   RECOMMENDATION_CURSOR_SIGNING_KEY="$RECOMMENDATION_CURSOR_SIGNING_KEY" \
   sh scripts/run-with-jvm-tuning.sh model-serving -- \
   mvn spring-boot:run
 
 start_service online-serving env ONLINE_DEMO_PORT=7010 \
+  SPLUNK_SERVICE_NAME=online-serving \
   RECOMMENDATION_CURSOR_SIGNING_KEY="$RECOMMENDATION_CURSOR_SIGNING_KEY" \
   sh scripts/run-with-jvm-tuning.sh online-serving -- \
   mvn exec:java -Dexec.mainClass=com.recsys.api.online.OnlinePredictionServer
@@ -59,6 +73,7 @@ sleep "${GATEWAY_START_DELAY_SECONDS:-10}"
 # To enable: export LLM_SERVICE_URL=http://localhost:11434 before running this script
 # (requires Ollama: brew install ollama && ollama serve).
 start_service api-gateway env GATEWAY_PORT=8010 \
+  SPLUNK_SERVICE_NAME=api-gateway \
   USER_PROFILE_SERVICE_URL="${USER_PROFILE_SERVICE_URL:-http://localhost:6010}" \
   MOVIE_METADATA_SERVICE_URL="${MOVIE_METADATA_SERVICE_URL:-http://localhost:6010}" \
   FEATURE_SERVICE_URL="${FEATURE_SERVICE_URL:-http://localhost:7010}" \
