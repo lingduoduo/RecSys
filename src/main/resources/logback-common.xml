@@ -2,13 +2,18 @@
 <!--
   Shared appender definitions for all four service mains.
 
-  Included by logback-spring.xml (Spring Boot prefers that file, so the model service on
-  8080 takes that path) and by logback.xml (plain Logback, so the three Armeria mains on
-  6010/7010/8010 take this one). Keeping one definition means the four services cannot
-  drift apart.
+  Included by logback.xml, which Logback self-initializes from for all four services
+  (including Spring Boot on port 8080). When a standard-location config file exists,
+  Spring Boot defers to it rather than checking -spring locations. The test suite
+  always loads from logback-test.xml, which this fragment never touches.
 
   CONSOLE is attached unconditionally: whatever Splunk is doing, nothing that reaches
   Logback is ever lost from stdout. SPLUNK is inert unless SPLUNK_HEC_TOKEN is set.
+
+  CONSTRAINT: Spring-only Logback tags (springProfile, springProperty) cannot be used
+  in this fragment. They only work from a -spring file, and logback-spring.xml can
+  never be reached while logback.xml exists on the classpath. If you need Spring-aware
+  configuration, move it to a separate phase before Logback initialization.
 -->
 <included>
   <appender name="CONSOLE" class="ch.qos.logback.core.ConsoleAppender">

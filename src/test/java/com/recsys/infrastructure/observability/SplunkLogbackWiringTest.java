@@ -22,7 +22,7 @@ import static org.junit.jupiter.api.Assumptions.assumeTrue;
  *
  * <p>Note there is no test that configures {@code logback-common.xml} directly: its root
  * element is {@code <included>}, which Joran only accepts through an {@code <include>}, not
- * as a standalone configuration. It is covered transitively by both tests below.
+ * as a standalone configuration. It is covered transitively by the config tests below.
  */
 class SplunkLogbackWiringTest {
 
@@ -49,22 +49,8 @@ class SplunkLogbackWiringTest {
     }
 
     @Test
-    void plainLogbackConfigAttachesConsoleAndSplunk() throws Exception {
+    void logbackConfigAttachesConsoleAndSplunk() throws Exception {
         LoggerContext context = configure("src/main/resources/logback.xml");
-        try {
-            List<Appender<?>> appenders = rootAppendersOf(context);
-
-            assertThat(appenders).hasSize(2);
-            assertThat(appenders).anyMatch(a -> a instanceof ConsoleAppender);
-            assertThat(appenders).anyMatch(a -> a instanceof SplunkHecAppender);
-        } finally {
-            context.stop();
-        }
-    }
-
-    @Test
-    void springConfigAttachesConsoleAndSplunk() throws Exception {
-        LoggerContext context = configure("src/main/resources/logback-spring.xml");
         try {
             List<Appender<?>> appenders = rootAppendersOf(context);
 

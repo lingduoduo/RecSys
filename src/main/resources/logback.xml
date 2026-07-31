@@ -1,9 +1,10 @@
 <?xml version="1.0" encoding="UTF-8"?>
 <!--
-  Entry point for the three Armeria mains (RecSysServer, OnlinePredictionServer,
-  MicroserviceGatewayServer), which run outside Spring and so never load
-  logback-spring.xml. Logback prefers logback-test.xml over this file, so the test
-  suite is unaffected.
+  Single entry point for all four service mains: the Spring Boot model service
+  (port 8080) and the three Armeria mains (RecSysServer 6010, OnlinePredictionServer
+  7010, MicroserviceGatewayServer 8010). Spring Boot defers to standard-location config
+  files when present, so this file wins for all four. Logback prefers logback-test.xml
+  over this file, so the test suite is unaffected.
 -->
 <configuration>
   <include resource="logback-common.xml"/>

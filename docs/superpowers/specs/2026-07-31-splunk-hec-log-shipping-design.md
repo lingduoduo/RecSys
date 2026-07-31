@@ -172,31 +172,31 @@ factoring it out:
 
 - **new** `src/main/resources/logback-common.xml` — defines `CONSOLE` and `SPLUNK`
   appenders and the root logger.
-- `src/main/resources/logback-spring.xml` — reduced to `<include resource="logback-common.xml"/>`.
-  Spring Boot prefers this file over `logback.xml`, so the model service takes this path.
-- **new** `src/main/resources/logback.xml` — also just includes the common file. Plain
-  Logback (the three Armeria mains) finds this.
+- **new** `src/main/resources/logback.xml` — includes the common file. This is the single
+  entry point for all four mains. When Logback self-initializes, it checks standard
+  locations (`logback-test.xml`, `logback.xml`) *before* Spring Boot's `-spring` locations.
+  So `logback.xml` wins for all four services, including Spring Boot.
 - `src/test/resources/logback-test.xml` — **unchanged**.
+
+The old `logback-spring.xml` is deleted: it cannot be reached while `logback.xml` exists on
+the classpath, so it would be dead code.
 
 What the test suite actually loads is worth stating precisely, because it determines
 whether a test-only opt-out is needed:
 
-- Plain-Logback tests (the large majority) prefer `logback-test.xml` over `logback.xml`,
-  so they never construct the Splunk appender.
-- Spring Boot tests are the exception. Spring's `LogbackLoggingSystem` checks its
-  `-spring` locations *before* the standard ones, so `logback-spring.xml` wins over
-  `logback-test.xml` there — as it already does today, so this is not a regression.
-  Those tests will construct the appender.
+- All tests prefer `logback-test.xml` over `logback.xml`, so they never construct the
+  Splunk appender. This applies to Spring Boot tests and plain-Logback tests uniformly,
+  because Logback's precedence is checked *before* Spring Boot's.
 
 No opt-out flag is needed anyway, but the reason is the token check, not file precedence:
 with `SPLUNK_HEC_TOKEN` unset in CI the appender starts disabled and issues no request.
-`SplunkHecAppenderTest` asserts exactly that, so the property is enforced rather than
+`SplunkLogbackWiringTest` asserts exactly that, so the property is enforced rather than
 assumed.
 
-The `springProperty`-sourced `appName` in today's `logback-spring.xml` is dropped: it is
-unused by the console pattern, and the service identity that actually matters here comes
-from `SPLUNK_SERVICE_NAME`, which all four mains set uniformly. Keeping it would force
-the shared fragment to use a Spring-only tag that plain Logback cannot parse.
+Spring-only Logback tags (`springProfile`, `springProperty`) cannot be used in
+`logback-common.xml` because they only work from a `-spring` file, and `logback-spring.xml`
+can never be reached while `logback.xml` exists on the classpath. All service identity here
+comes from `SPLUNK_SERVICE_NAME`, set uniformly by all four mains.
 
 No conditional-processing (`<if>`) blocks, and therefore no Janino dependency: the
 enablement check lives inside `SplunkHecAppender.start()`. When disabled, `start()`
