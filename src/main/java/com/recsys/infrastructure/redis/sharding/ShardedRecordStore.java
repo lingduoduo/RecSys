@@ -186,7 +186,8 @@ public final class ShardedRecordStore {
     }
 
     // Merge current + previous device records, dedupe by (deviceId, eventId) preferring current,
-    // sort by seqNum ascending, cap at `limit`. eventId — not seqNum — is the identity: sequence
+    // sort by seqNum ascending, cap at `limit` — a soft cap: see the truncation below, which
+    // never ends a page mid-sequence. eventId — not seqNum — is the identity: sequence
     // counters are per generation, so both generations issue the same numbers and deduping on
     // seqNum would silently drop previous-generation records during a migration window.
     private Page<ShardedRecord> mergeDevicePages(Page<ShardedRecord> current,
@@ -199,10 +200,27 @@ public final class ShardedRecordStore {
         // issue equal sequence numbers, so a merged page is not a strict chronological sequence.
         // Within one generation it is exact, and previous-generation data TTLs out of the window.
         merged.sort(java.util.Comparator.comparingLong(ShardedRecord::seqNum));
-        if (merged.size() > limit) merged = new ArrayList<>(merged.subList(0, limit));
-        // Pagination is driven by the current generation's cursor; previous-generation records
-        // beyond the first page are not paged — they self-heal when the migration window closes.
-        return new Page<>(merged, current.next());
+        if (merged.isEmpty()) return new Page<>(merged, null);
+
+        // Never split a sequence number across pages. The cursor is a sequence, so a record
+        // sharing the last returned sequence could not be reached by any later page — the next
+        // page starts strictly above it. Extending past the boundary over-delivers by at most
+        // one record per generation; stranding records would be silent data loss.
+        int cut = Math.min(limit, merged.size());
+        while (cut < merged.size() && merged.get(cut).seqNum() == merged.get(cut - 1).seqNum()) {
+            cut++;
+        }
+        boolean truncated = cut < merged.size();
+        List<ShardedRecord> page = truncated ? new ArrayList<>(merged.subList(0, cut)) : merged;
+
+        // The cursor comes from the last record actually returned. Taking it from the current
+        // generation's own page — as this did before — skips every current-generation record
+        // that truncation dropped, because that page's cursor is its own highest sequence.
+        boolean moreRemains = truncated || current.next() != null || previous.next() != null;
+        ShardCursor next = moreRemains
+                ? ShardCursor.seq(page.get(page.size() - 1).seqNum())
+                : null;
+        return new Page<>(page, next);
     }
 
     public Page<ShardedRecord> readShard(int shardIndex, ShardCursor cursor, int limit) {

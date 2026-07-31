@@ -5,6 +5,7 @@ import io.lettuce.core.StreamMessage;
 import org.junit.jupiter.api.Tag;
 import org.junit.jupiter.api.Test;
 
+import java.util.ArrayList;
 import java.util.List;
 import java.util.Map;
 
@@ -256,6 +257,125 @@ class ShardedRecordStoreAtomicWriteIntegrationTest extends RedisShardingTestBase
         assertThat(storeOn(migrating).readDevice(device, ShardCursor.start(), 10).records())
                 .extracting(ShardedRecord::eventId)
                 .containsExactlyInAnyOrder("evt-gen1", "evt-gen2");
+    }
+
+    @Test
+    void pagingADualReadWindowReturnsEveryRecordAcrossPages() {
+        // Both generations hold more than one page of records for the same device, at overlapping
+        // sequence numbers (each generation's counter independently issues 1..6). Paging
+        // readDevice to exhaustion must return every record exactly once.
+        //
+        // Before the fix the merged first page returned the four LOWEST sequences but handed back
+        // the current generation's HIGHEST returned sequence as the cursor, so the next page
+        // started above records the page never returned: g1-3, g1-4, g2-3 and g2-4 were returned
+        // by no page at all.
+        String device = "dev-paging";
+        int limit = 4;
+        ShardTopologyProvider migrating = twoGenerations(device, "shard:topology:paging", 6, 6);
+
+        List<String> everythingWritten = new ArrayList<>();
+        for (int i = 1; i <= 6; i++) everythingWritten.add("g1-" + i);
+        for (int i = 1; i <= 6; i++) everythingWritten.add("g2-" + i);
+
+        ShardedRecordStore reader = storeOn(migrating);
+        List<String> seen = new ArrayList<>();
+        ShardCursor cursor = ShardCursor.start();
+        int pages = 0;
+        while (pages < 20) {
+            Page<ShardedRecord> page = reader.readDevice(device, cursor, limit);
+            for (ShardedRecord r : page.records()) seen.add(r.eventId());
+            pages++;
+            cursor = page.next();
+            if (cursor == null) break;
+        }
+
+        // A cursor that never goes null is an infinite paging loop, which is just as broken as
+        // losing records — pin the terminal case rather than letting the guard hide it.
+        assertThat(cursor).as("paging must terminate: the last page's cursor is null").isNull();
+        assertThat(pages).as("the setup must span more than one page").isGreaterThan(1);
+        assertThat(seen).containsExactlyInAnyOrderElementsOf(everythingWritten);
+    }
+
+    @Test
+    void aPageNeverEndsInTheMiddleOfASequenceNumber() {
+        // Both generations hold records at sequences 1, 2 and 3, so the merged page is
+        // [g2-1, g1-1, g2-2, g1-2, g2-3, g1-3] and a limit of 3 cuts *between* the two records
+        // that share sequence 2. The cursor is a sequence, so the next page starts strictly above
+        // it: a straggler left at sequence 2 could never be reached by any later page. The page
+        // must therefore hold both records at every sequence it touches, or neither.
+        String device = "dev-nosplit";
+        int limit = 3;
+        ShardTopologyProvider migrating = twoGenerations(device, "shard:topology:nosplit", 3, 3);
+
+        Page<ShardedRecord> first = storeOn(migrating).readDevice(device, ShardCursor.start(), limit);
+
+        // The truncation path really was reached; otherwise the assertion below is vacuous.
+        assertThat(first.next()).as("the merge must have truncated").isNotNull();
+
+        // eventIds are named after their sequence, so the complete group at sequence n is
+        // exactly {g1-n, g2-n}.
+        List<String> wholeGroups = first.records().stream()
+                .map(ShardedRecord::seqNum).distinct().sorted()
+                .flatMap(seq -> java.util.stream.Stream.of("g1-" + seq, "g2-" + seq))
+                .toList();
+        assertThat(first.records()).extracting(ShardedRecord::eventId)
+                .as("no sequence may be split across the page boundary")
+                .containsExactlyInAnyOrderElementsOf(wholeGroups);
+
+        // The cursor names the last record actually returned, not either input page's own high
+        // water mark, and paging on from it still reaches everything exactly once.
+        assertThat(first.next()).isEqualTo(ShardCursor.seq(
+                first.records().get(first.records().size() - 1).seqNum()));
+
+        List<String> seen = new ArrayList<>(
+                first.records().stream().map(ShardedRecord::eventId).toList());
+        ShardCursor cursor = first.next();
+        int pages = 1;
+        while (cursor != null && pages < 20) {
+            Page<ShardedRecord> page = storeOn(migrating).readDevice(device, cursor, limit);
+            for (ShardedRecord r : page.records()) seen.add(r.eventId());
+            pages++;
+            cursor = page.next();
+        }
+        assertThat(cursor).isNull();
+        assertThat(seen).containsExactlyInAnyOrder(
+                "g1-1", "g1-2", "g1-3", "g2-1", "g2-2", "g2-3");
+    }
+
+    /**
+     * Writes {@code gen1Count} records under a fresh generation 1 and {@code gen2Count} under
+     * generation 2 after a real reshard, for the one device, and returns a provider sitting
+     * inside the dual-read window. Sequence counters are per generation, so generation 2 reissues
+     * 1..n — the collision is deliberate, exactly as in
+     * {@link #deviceReadKeepsBothGenerationsWhenSequenceNumbersCollide}.
+     */
+    private ShardTopologyProvider twoGenerations(String device, String topologyKey,
+                                                 int gen1Count, int gen2Count) {
+        ShardTopologyStore topoStore = new ShardTopologyStore(exec, topologyKey);
+        assertThat(topoStore.bootstrap(2, VNODES, 0L).version()).isEqualTo(1);
+
+        ShardedRecordStore gen1 = storeOn(ShardTopologyProvider.fixedAtVersion(
+                1, 2, VNODES, ShardKeys.FORMAT_TAGGED));
+        for (int i = 1; i <= gen1Count; i++) {
+            WriteResult wr = gen1.write(new ShardedRecord(
+                    device, 0, RecordType.EVENT, "g1-" + i, "old-" + i, i));
+            assertThat(wr.seqNum()).isEqualTo((long) i);
+        }
+
+        assertThat(topoStore.publishReshard(4, 1_000L, 60_000L).version()).isEqualTo(2);
+        ShardTopologyProvider migrating =
+                new ShardTopologyProvider(topoStore, VNODES, 4, 0L, () -> 2_000L);
+        migrating.start();
+        assertThat(migrating.previousIfActive()).isNotNull();
+
+        ShardedRecordStore gen2 = storeOn(migrating);
+        for (int i = 1; i <= gen2Count; i++) {
+            WriteResult wr = gen2.write(new ShardedRecord(
+                    device, 0, RecordType.EVENT, "g2-" + i, "new-" + i, i));
+            // Generation 2's counter starts from scratch, so it reissues the same numbers.
+            assertThat(wr.seqNum()).isEqualTo((long) i);
+        }
+        return migrating;
     }
 
     @Test
