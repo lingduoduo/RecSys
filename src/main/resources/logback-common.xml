@@ -1,0 +1,26 @@
+<?xml version="1.0" encoding="UTF-8"?>
+<!--
+  Shared appender definitions for all four service mains.
+
+  Included by logback-spring.xml (Spring Boot prefers that file, so the model service on
+  8080 takes that path) and by logback.xml (plain Logback, so the three Armeria mains on
+  6010/7010/8010 take this one). Keeping one definition means the four services cannot
+  drift apart.
+
+  CONSOLE is attached unconditionally: whatever Splunk is doing, nothing that reaches
+  Logback is ever lost from stdout. SPLUNK is inert unless SPLUNK_HEC_TOKEN is set.
+-->
+<included>
+  <appender name="CONSOLE" class="ch.qos.logback.core.ConsoleAppender">
+    <encoder>
+      <pattern>%d{yyyy-MM-dd HH:mm:ss.SSS} [%thread] %-5level %logger{36} [traceId=%X{traceId:-none}] - %msg%n</pattern>
+    </encoder>
+  </appender>
+
+  <appender name="SPLUNK" class="com.recsys.infrastructure.observability.SplunkHecAppender"/>
+
+  <root level="INFO">
+    <appender-ref ref="CONSOLE"/>
+    <appender-ref ref="SPLUNK"/>
+  </root>
+</included>

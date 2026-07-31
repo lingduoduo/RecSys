@@ -1,0 +1,10 @@
+<?xml version="1.0" encoding="UTF-8"?>
+<!--
+  Entry point for the three Armeria mains (RecSysServer, OnlinePredictionServer,
+  MicroserviceGatewayServer), which run outside Spring and so never load
+  logback-spring.xml. Logback prefers logback-test.xml over this file, so the test
+  suite is unaffected.
+-->
+<configuration>
+  <include resource="logback-common.xml"/>
+</configuration>

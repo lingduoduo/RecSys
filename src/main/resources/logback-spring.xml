@@ -1,14 +1,10 @@
 <?xml version="1.0" encoding="UTF-8"?>
+<!--
+  Entry point for the Spring Boot model service. Spring's LogbackLoggingSystem checks its
+  -spring locations before the standard ones, so this file wins over both logback.xml and
+  logback-test.xml. Appenders live in logback-common.xml so all four services share one
+  definition.
+-->
 <configuration>
-  <springProperty scope="context" name="appName" source="spring.application.name" defaultValue="recsys"/>
-
-  <appender name="CONSOLE" class="ch.qos.logback.core.ConsoleAppender">
-    <encoder>
-      <pattern>%d{yyyy-MM-dd HH:mm:ss.SSS} [%thread] %-5level %logger{36} [traceId=%X{traceId:-none}] - %msg%n</pattern>
-    </encoder>
-  </appender>
-
-  <root level="INFO">
-    <appender-ref ref="CONSOLE"/>
-  </root>
+  <include resource="logback-common.xml"/>
 </configuration>
