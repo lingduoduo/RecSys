@@ -462,10 +462,28 @@ merits.
 **It still exists in history**, in the merged `feat/splunk-hec-log-shipping` commits
 (`80749ab`, `197b1d8`, `208fc6d`). That is deliberate. Rewriting shared history to purge
 a value that was never sensitive trades a real disruption — every clone and open branch
-needing recovery — for no security gain. `.gitguardian.yaml` carries ignore rules so the
-same placeholder does not re-flag on future PRs.
+needing recovery — for no security gain.
 
-**If a future scan flags something here, do not assume it is this.** Check the value
-against `.gitguardian.yaml`'s entries first. A genuine `SPLUNK_HEC_TOKEN` for a real
-collector appearing in a diff is a real incident and must be rotated in Splunk, not
-ignored.
+### Where the ignore actually lives — and where it does not
+
+The check on pull requests, **"GitGuardian Security Checks", comes from the GitGuardian
+GitHub App**, which scans server-side. Its incident state lives in the GitGuardian
+dashboard and **can only be changed there**: sign in at `dashboard.gitguardian.com` and
+resolve the incident as a false positive.
+
+`.gitguardian.yaml` in this repo does **not** suppress that check. That file is read by
+[ggshield](https://docs.gitguardian.com/ggshield-docs/configuration) only — the CLI, the
+pre-commit hook, and the ggshield GitHub Action — and this repo runs none of them (no
+ggshield step in `.github/workflows/`, no `.pre-commit-config.yaml`). It is a record of
+the reasoning plus a config that becomes live the moment ggshield is adopted, not a
+control that is doing anything today. An earlier version of this section claimed
+otherwise; that was wrong.
+
+Note also that the App is **not** blocking: `main` has no branch protection, so a red
+GitGuardian check does not prevent a merge (#259 was merged with it red).
+
+**If a future scan flags something here, do not assume it is this placeholder.** Check
+the value against `.gitguardian.yaml`'s documented entries first — they are the record of
+what has been judged benign, even though the file does not enforce it. A genuine
+`SPLUNK_HEC_TOKEN` for a real collector appearing in a diff is a real incident: rotate it
+in Splunk, do not resolve it as a false positive.
