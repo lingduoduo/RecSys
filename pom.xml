@@ -356,6 +356,8 @@
                 <include>**/redis/RedisPersistentKeyProbeTest.java</include>
                 <include>**/redis/RedisReplicaLagProbeTest.java</include>
                 <include>**/metrics/RedisCacheMetricsTest.java</include>
+                <include>**/metrics/SplunkHecMetricsTest.java</include>
+                <include>**/metrics/ScrapeTargetManifestTest.java</include>
                 <include>**/observability/SplunkHecConfigTest.java</include>
                 <include>**/observability/SplunkHecEventSerializerTest.java</include>
                 <include>**/observability/SplunkHecClientTest.java</include>
