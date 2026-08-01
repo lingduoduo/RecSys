@@ -1,0 +1,138 @@
+# Alerts for the recsys services.
+#
+# Every expression here uses a metric name that exists in src/main/java — verified with
+# `grep -rn '"<name>"' src/main/java` before this file was written. An alert on a metric
+# that is never emitted is worse than no alert: it looks like coverage and can never fire.
+#
+# Thresholds are deliberately loose starting points. An alert that cries wolf gets muted,
+# and a muted alert is worse than none. Tighten them with production data, not by guessing.
+apiVersion: monitoring.coreos.com/v1
+kind: PrometheusRule
+metadata:
+  name: recsys-alerts
+  namespace: recsys
+  labels:
+    app: recsys
+    release: kube-prometheus-stack
+spec:
+  groups:
+    - name: recsys.availability
+      rules:
+        # The meta-alert. This is the one that would have caught online-serving and the
+        # gateway publishing metrics nobody collected. Note its blind spot: `up` only
+        # exists for targets Prometheus already knows about, so a ServiceMonitor that was
+        # never created produces no series to be zero. ScrapeTargetManifestTest covers
+        # that side; this covers a target that existed and stopped answering.
+        - alert: RecsysTargetDown
+          expr: up{namespace="recsys"} == 0
+          for: 5m
+          labels:
+            severity: critical
+          annotations:
+            summary: "{{ $labels.job }} has not been scraped for 5 minutes"
+            description: >-
+              Prometheus cannot scrape {{ $labels.job }} ({{ $labels.instance }}). Either
+              the service is down or its metrics endpoint stopped answering. Its dashboards
+              and every other alert in this file are blind for that service until resolved.
+              Check the service pod status with kubectl and its logs for startup errors.
+
+    - name: recsys.logging
+      rules:
+        - alert: SplunkHecDroppingEvents
+          expr: increase(splunk_hec_events_dropped_total[10m]) > 0
+          for: 2m
+          labels:
+            severity: warning
+          annotations:
+            summary: "Splunk log shipping is dropping events on {{ $labels.job }}"
+            description: >-
+              The appender's bounded queue filled and events were discarded. Log delivery is
+              at-most-once by design, so these are gone from Splunk — stdout remains the
+              authoritative copy. Consider raising SPLUNK_HEC_QUEUE_CAPACITY, or investigate
+              why the drain thread fell behind.
+
+        - alert: SplunkHecIndeterminateDelivery
+          expr: increase(splunk_hec_events_indeterminate_total[10m]) > 0
+          for: 2m
+          labels:
+            severity: warning
+          annotations:
+            summary: "Splunk delivery outcome unknown on {{ $labels.job }}"
+            description: >-
+              Batches were sent but never acknowledged, so Splunk may or may not hold them.
+              Unlike dropped events these carry duplicate risk as well as loss risk. Usually
+              a read timeout or a shutdown that outran its budget.
+
+    - name: recsys.serving
+      rules:
+        - alert: GatewayRegistryStale
+          # GatewayRegistryMetrics reports the sentinel -1 (not NaN, not absent) when the
+          # gateway has never completed a refresh since boot — `-1 > 120` is false, so a
+          # gateway that has NEVER resolved anything would otherwise stay silent forever
+          # while one merely three minutes stale pages. Same shape as RedisReplicaLagHigh's
+          # NaN-vs-`>` trap below: a sentinel/failure value that looks like "no problem" to
+          # a bare `>` comparison needs its own explicit branch.
+          expr: gateway_registry_snapshot_age_seconds > 120 or gateway_registry_snapshot_age_seconds == -1
+          for: 5m
+          labels:
+            severity: warning
+          annotations:
+            summary: "Gateway service-registry snapshot is stale or has never refreshed"
+            description: >-
+              The gateway is resolving upstreams from a registry snapshot older than two
+              minutes, or has never completed a refresh since it started (reported as -1),
+              so it may route to addresses that have moved. Check Redis availability and
+              gateway_registry_refresh_failures_total.
+
+        - alert: OnlineServingShedding
+          expr: online_serving_rejected_rate > 0.1
+          for: 10m
+          labels:
+            severity: warning
+          annotations:
+            summary: "Online serving is shedding more than 10% of requests"
+            description: >-
+              Admission control has been rejecting a sustained share of traffic. Either
+              genuine overload or too tight a concurrency limit — check
+              recsys_load_shedder_utilization and the pod's CPU.
+
+    - name: recsys.data
+      rules:
+        - alert: RedisCacheUnavailable
+          expr: redis_cache_available == 0
+          for: 5m
+          labels:
+            severity: critical
+          annotations:
+            summary: "Redis is unreachable from {{ $labels.job }}"
+            description: >-
+              The cache probe cannot reach Redis. Serving degrades to stale or empty results
+              depending on the path. Check the Redis pods and the NetworkPolicy egress rules.
+
+        - alert: RedisReplicaLagHigh
+          expr: redis_replica_lag_seconds > 10 or redis_replica_lag_available == 0
+          for: 10m
+          labels:
+            severity: warning
+          annotations:
+            summary: "Redis replica lag above 10s or probe unavailable"
+            description: >-
+              AZ-aware replica reads are returning data more than ten seconds old, or the
+              replica probe cannot determine lag at all. Reads routed to a replica may
+              contradict a write that already succeeded. Check replica pod status and
+              network connectivity between replicas.
+
+        - alert: OutboxBacklogGrowing
+          # delta(), not increase(): this is a true gauge that rises AND falls, and increase()
+          # would read every drain as a counter reset. increase() is correct for the
+          # splunk_hec_* gauges above only because those are monotonic.
+          expr: outbox_pending_events > 1000 and delta(outbox_pending_events[15m]) > 0
+          for: 3m
+          labels:
+            severity: warning
+          annotations:
+            summary: "Transactional outbox backlog is growing"
+            description: >-
+              More than 1000 events are pending and the backlog is still increasing, so the
+              relay is not keeping up. Eventual consistency windows widen until it drains.
+              Check outbox_delivery_failures_total and outbox_delivery_lag_seconds.

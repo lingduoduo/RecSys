@@ -12,6 +12,7 @@ import com.recsys.application.outbox.DurableEventPublisher;
 import com.recsys.metrics.OnlineServingMetricsService;
 import com.recsys.metrics.ConsistencyMetrics;
 import com.recsys.metrics.RedisCacheMetrics;
+import com.recsys.metrics.SplunkHecMetrics;
 import com.recsys.infrastructure.redis.RedisCacheStatsProbe;
 import com.recsys.infrastructure.redis.RedisPersistentKeyProbe;
 import com.recsys.infrastructure.redis.RedisReplicaLagProbe;
@@ -148,6 +149,9 @@ public final class OnlinePredictionServer {
             OnlineRecommendationService recommendationService = new OnlineRecommendationService(
                     dataManager, recallService, onlineFeatureStore, topkStore, onlineLearner);
             PrometheusMeterRegistry registry = PrometheusMeterRegistries.defaultRegistry();
+            // The Splunk appender was built by Logback long before this registry existed, so it
+            // cannot register itself. No-op when SPLUNK_HEC_TOKEN is unset.
+            SplunkHecMetrics.register(registry);
             RecommendationPaginationRuntime pagination =
                     RecommendationPaginationRuntime.fromEnvironment(
                             registry, Clock.systemUTC());

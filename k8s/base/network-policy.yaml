@@ -1,4 +1,4 @@
-# API gateway: accepts external traffic on 8010; egress to serving pods and DNS only.
+# API gateway: accepts external traffic on 8010 and Prometheus; egress to serving pods and DNS only.
 # NLB in ip-target mode sends packets directly to pod IPs, so NetworkPolicy applies.
 apiVersion: networking.k8s.io/v1
 kind: NetworkPolicy
@@ -12,6 +12,15 @@ spec:
   policyTypes: [Ingress, Egress]
   ingress:
     - ports:
+        - port: 8010
+    - from:
+        - namespaceSelector:
+            matchLabels:
+              kubernetes.io/metadata.name: monitoring
+          podSelector:
+            matchLabels:
+              app.kubernetes.io/name: prometheus
+      ports:
         - port: 8010
   egress:
     - to:
@@ -118,7 +127,7 @@ spec:
         - port: 53
           protocol: TCP
 ---
-# Online serving: ingress from gateway only; egress to Redis and DNS.
+# Online serving: ingress from gateway and Prometheus; egress to Redis and DNS.
 apiVersion: networking.k8s.io/v1
 kind: NetworkPolicy
 metadata:
@@ -134,6 +143,15 @@ spec:
         - podSelector:
             matchLabels:
               app: recsys-api-gateway
+      ports:
+        - port: 7010
+    - from:
+        - namespaceSelector:
+            matchLabels:
+              kubernetes.io/metadata.name: monitoring
+          podSelector:
+            matchLabels:
+              app.kubernetes.io/name: prometheus
       ports:
         - port: 7010
   egress:

@@ -97,6 +97,15 @@ real Splunk by `SplunkHecIntegrationTest` (`@Tag("docker")`) on x86_64 CI only; 
 on arm64, where `splunkd` segfaults under emulation. See
 `docs/runbooks/splunk-hec-logging.md`.
 
+All four services also expose Prometheus metrics — three Armeria mains on `/metrics`
+(6010, 7010, 8010), the Spring model service on `/actuator/prometheus` (8080) — scraped by
+the four `ServiceMonitor`s in `k8s/base/servicemonitor.yaml`. Alerts live in
+`k8s/base/prometheus-rules.yaml` and are unit-tested against synthetic series by `promtool`
+in CI (`.github/workflows/prometheus-rules.yml`); both files assume a Prometheus Operator is
+already running in the cluster — they do nothing on their own otherwise. The Splunk
+appender's delivery counters surface here too, as `splunk_hec_*` gauges/counters
+(`SplunkHecMetrics`). See `docs/system_design/21_Observability.md`.
+
 ## Architecture
 
 The system demonstrates two recommendation paths:
