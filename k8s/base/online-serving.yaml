@@ -143,6 +143,10 @@ kind: Service
 metadata:
   name: recsys-online-serving
   namespace: recsys
+  # ServiceMonitor.spec.selector matches THESE labels — not spec.selector below, which
+  # selects pods. Without them the ServiceMonitor matches nothing and scrapes nothing.
+  labels:
+    app: recsys-online-serving
 spec:
   type: ClusterIP
   selector:

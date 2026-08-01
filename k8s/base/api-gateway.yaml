@@ -112,6 +112,10 @@ kind: Service
 metadata:
   name: recsys-api-gateway
   namespace: recsys
+  # ServiceMonitor.spec.selector matches THESE labels — not spec.selector below, which
+  # selects pods. Without them the ServiceMonitor matches nothing and scrapes nothing.
+  labels:
+    app: recsys-api-gateway
   annotations:
     service.beta.kubernetes.io/aws-load-balancer-type: external
     service.beta.kubernetes.io/aws-load-balancer-nlb-target-type: ip
