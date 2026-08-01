@@ -1,24 +1,38 @@
 # GitGuardian / ggshield configuration.
 #
-# Scope note: this file governs ggshield (CI and pre-commit scans). The GitGuardian
-# dashboard keeps its own incident state, so an incident already raised there must ALSO be
-# resolved there — adding a rule here prevents future re-flagging, it does not retroactively
-# close an open incident. See docs/runbooks/splunk-hec-logging.md ("A note on secret
-# scanning") for the one incident this repo has resolved as a false positive.
+# ===================================================================================
+# THIS FILE IS CURRENTLY INERT. IT SUPPRESSES NOTHING.
 #
-# Keep the ignore list narrow. Every entry is a place a scanner will stay quiet, so each one
-# needs a reason a reviewer can check, not just a path that was noisy.
+# It is read by ggshield only — the CLI, the pre-commit hook, and the ggshield GitHub
+# Action (https://docs.gitguardian.com/ggshield-docs/configuration). This repo runs
+# none of those: there is no ggshield step in .github/workflows/ and no
+# .pre-commit-config.yaml.
+#
+# The check you see on pull requests, "GitGuardian Security Checks", comes from the
+# GitGuardian GitHub App, which scans server-side and does NOT read this file. Its
+# ignore state lives in the GitGuardian dashboard and can only be changed there.
+#
+# So this file is a RECORD of a decision plus a ready-to-work config, not a control.
+# It starts taking effect the moment anyone adds ggshield to CI or to a pre-commit
+# hook — which is why the entries below are kept accurate rather than deleted.
+#
+# An earlier version of this header claimed the file prevented future re-flagging.
+# That was wrong, and the runbook section it pointed at has been corrected too.
+# ===================================================================================
+#
+# Keep the ignore list narrow. Every entry is a place a scanner would stay quiet, so each
+# one needs a reason a reviewer can check, not just a path that was noisy.
 
 version: 2
 
 secret:
-  ignored-paths:
+  ignored_paths:
     # Test sources under the observability package construct throwaway Splunk credentials for
     # containers that live and die inside a single test run. They are generated per run
     # (UUIDs), never reused, and never leave the runner — see SplunkHecIntegrationTest.
     - "src/test/java/com/recsys/infrastructure/observability/**"
 
-  ignored-matches:
+  ignored_matches:
     # ---------------------------------------------------------------------------------
     # Local-only Splunk admin placeholder, resolved as a FALSE POSITIVE.
     #
