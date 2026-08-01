@@ -34,12 +34,13 @@ spec:
               Prometheus cannot scrape {{ $labels.job }} ({{ $labels.instance }}). Either
               the service is down or its metrics endpoint stopped answering. Its dashboards
               and every other alert in this file are blind for that service until resolved.
+              Check the service pod status with kubectl and its logs for startup errors.
 
     - name: recsys.logging
       rules:
         - alert: SplunkHecDroppingEvents
           expr: increase(splunk_hec_events_dropped_total[10m]) > 0
-          for: 10m
+          for: 2m
           labels:
             severity: warning
           annotations:
@@ -52,7 +53,7 @@ spec:
 
         - alert: SplunkHecIndeterminateDelivery
           expr: increase(splunk_hec_events_indeterminate_total[10m]) > 0
-          for: 10m
+          for: 2m
           labels:
             severity: warning
           annotations:
@@ -102,22 +103,24 @@ spec:
               depending on the path. Check the Redis pods and the NetworkPolicy egress rules.
 
         - alert: RedisReplicaLagHigh
-          expr: redis_replica_lag_seconds > 10
+          expr: redis_replica_lag_seconds > 10 or redis_replica_lag_available == 0
           for: 10m
           labels:
             severity: warning
           annotations:
-            summary: "Redis replica lag above 10s"
+            summary: "Redis replica lag above 10s or probe unavailable"
             description: >-
-              AZ-aware replica reads are returning data more than ten seconds old. Reads
-              routed to a replica may contradict a write that already succeeded.
+              AZ-aware replica reads are returning data more than ten seconds old, or the
+              replica probe cannot determine lag at all. Reads routed to a replica may
+              contradict a write that already succeeded. Check replica pod status and
+              network connectivity between replicas.
 
         - alert: OutboxBacklogGrowing
           # delta(), not increase(): this is a true gauge that rises AND falls, and increase()
           # would read every drain as a counter reset. increase() is correct for the
           # splunk_hec_* gauges above only because those are monotonic.
           expr: outbox_pending_events > 1000 and delta(outbox_pending_events[15m]) > 0
-          for: 15m
+          for: 3m
           labels:
             severity: warning
           annotations:
