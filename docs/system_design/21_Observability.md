@@ -78,10 +78,17 @@ The three Armeria mains wire a `PrometheusMeterRegistry` directly and mount
 `MicroserviceGatewayServer.java`). The Spring model service uses Spring Boot Actuator's
 own `/actuator/prometheus` endpoint instead — a different path, same Prometheus text
 format, same Micrometer registry underneath. All four `ServiceMonitor`s live in
-[`k8s/base/servicemonitor.yaml`](../../k8s/base/servicemonitor.yaml), scrape every 15 s
-with a 10 s timeout, and select by the Service's `app` label at
-`release: kube-prometheus-stack` (the kube-prometheus-stack Helm chart's default
-`serviceMonitorSelector` — adjust if your cluster's Prometheus CR uses a different one).
+[`k8s/base/servicemonitor.yaml`](../../k8s/base/servicemonitor.yaml) and scrape every 15 s
+with a 10 s timeout. Two different selectors are involved here, on two different objects,
+and they are easy to blur into one: each `ServiceMonitor`'s own `spec.selector.matchLabels`
+picks the *Service* it scrapes (by the Service's `app` label — see §3.2 on why that is the
+Service's `metadata.labels`, not its pod selector); separately, the `release:
+kube-prometheus-stack` label sits on the `ServiceMonitor`'s **own** `metadata`, and is what
+the Prometheus custom resource's `serviceMonitorSelector` matches to decide which
+`ServiceMonitor` CRs it honours at all (the kube-prometheus-stack Helm chart's default —
+adjust if your cluster's Prometheus CR uses a different one). Get the first wrong and the
+monitor scrapes nothing; get the second wrong and Prometheus never even looks at the
+monitor.
 
 ### 3.2 The scrape gap was three layers deep
 
@@ -157,6 +164,62 @@ all in the one class because they share the online server's `ConsistencyMetrics`
 | Metric | Registered in |
 |---|---|
 | `splunk_hec_events_sent_total`, `_dropped_total`, `_failed_total`, `_indeterminate_total`, `splunk_hec_queue_depth` | [`metrics/SplunkHecMetrics.java`](../../src/main/java/com/recsys/metrics/SplunkHecMetrics.java) |
+
+**These five metrics nearly went dark on every restart, silently.** Micrometer's
+`Gauge.builder`/`FunctionCounter.builder` hold the *state* object you hand them (the thing
+the value function reads) as a `java.lang.ref.WeakReference` — by design, so tying a gauge
+to a request-scoped object doesn't leak it. The value *function* itself, by contrast, is
+held as an ordinary strong field on the registered meter. `SplunkHecMetrics.register()`
+originally built a `SnapshotHolder` as a plain local variable and handed it to all five
+builders as that state parameter; none of the five value-lambdas closed over `holder`
+(they took it as an explicit method parameter instead, e.g. `h -> h.getSnapshot().sent()`),
+so nothing else in the JVM held a strong reference to it once `register()` returned. The
+first GC cleared it.
+
+The two meter types then fail differently, and the difference is the whole reason this
+is dangerous rather than merely broken: a `Gauge` reading a cleared `WeakReference`
+reports `NaN` — visibly wrong. A `FunctionCounter` reading a cleared `WeakReference`
+**freezes at its last pre-GC value and reports no error at all** (verified against the
+actual Micrometer classes: `DefaultGauge.value()` returns `NaN` on a null dereference,
+while `CumulativeFunctionCounter.count()` falls back to a cached `last` field). A frozen
+counter looks exactly like a quiet system — `rate()` reads `0` forever, indistinguishable
+from "nothing is happening" — while the appender underneath keeps dropping or shipping
+events for real. Any alert built on it, including `SplunkHecDroppingEvents` above, would
+stop being able to fire the moment the JVM's first GC ran, with nothing in any dashboard
+to suggest why. The fix is `SplunkHecMetrics.RETAINED`, a static list that holds a strong
+reference to every `SnapshotHolder` ever constructed for the life of the JVM — registration
+happens at most a handful of times per process (once per service), so this is bounded,
+deliberate retention, not a leak; do not "clean up" that field. It is proven by
+`SplunkHecMetricsTest#metersSurviveGarbageCollectionOfTheirBackingState`, which forces a
+real garbage collection (verified via a canary `WeakReference`, not a hopeful bare
+`System.gc()`) and then asserts both meter types still track live state afterward.
+
+**The other classes in this inventory use the same builder shape without falling into
+this trap, verified individually rather than assumed** — each state object has a
+lifetime independent of the registration call itself: `RedisCacheMetrics` passes its own
+`AtomicLong` fields, and the enclosing instance is kept alive because
+`OnlinePredictionServer` passes `cacheMetrics::update` / `cacheMetrics::updateKeyspace` as
+long-lived callbacks to two background probes — the probes cannot function without
+retaining the receiver, so the metric fields ride along. `ConsistencyMetrics` keeps its
+real counters on a `State` object in a static `WeakHashMap<MeterRegistry, State>`; a
+`WeakHashMap` only weakly holds its *keys*, so `State` stays strongly reachable for as
+long as the (long-lived) `MeterRegistry` does, regardless of whether any particular
+`ConsistencyMetrics` wrapper instance survives. `InferenceMetricsService` and
+`LoadShedder` pass `this`, are Spring `@Service` singletons the container retains for the
+application's life, and additionally call `.strongReference(true)` — confirmed in the
+Micrometer bytecode to wrap the state and function in a `StrongReferenceGaugeFunction`
+that the registered meter then holds strongly, opting out of the weak reference entirely
+— and both classes' own comments already document exactly this Micrometer behavior.
+`GatewayRegistryMetrics`'s four `provider`-keyed meters are safe the same way: `provider`
+is the gateway's real `ServiceRegistryProvider`, started and used for actual request-time
+resolution, not an object created for the metric. Its fifth meter,
+`gateway_registry_services_total`, is a narrower case worth flagging rather than papering
+over: its state is a `names` list built only inside `register()` — the same shape as the
+bug above — and it survives today only because a sibling meter's value lambda
+(`gateway_registry_services_resolved`'s `p -> resolvedCount(p, names)`) happens to close
+over the identical list, keeping it strongly reachable as a side effect. That is real
+protection today, but it is incidental, not deliberate; removing or rewriting that
+sibling lambda would silently reintroduce this exact bug in that one gauge.
 
 **Two naming conventions coexist, deliberately.** Most of this system's own metrics
 (`gateway_registry_*`, `redis_cache_*`, `outbox_*`, `splunk_hec_*`) are registered with
