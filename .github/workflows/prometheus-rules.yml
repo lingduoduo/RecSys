@@ -1,0 +1,63 @@
+# Executes the alert rules against synthetic series.
+#
+# Alert expressions are the one part of observability that can be unit-tested, and an
+# untested alert is indistinguishable from a working one until the incident it was
+# supposed to catch. Path-filtered so it costs nothing on unrelated PRs.
+name: prometheus-rules
+
+on:
+  pull_request:
+    paths:
+      - "k8s/base/prometheus-rules.yaml"
+      - "k8s/base/prometheus-rules.test.yaml"
+      - ".github/workflows/prometheus-rules.yml"
+  push:
+    branches: [main]
+    paths:
+      - "k8s/base/prometheus-rules.yaml"
+      - "k8s/base/prometheus-rules.test.yaml"
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+env:
+  # Pinned deliberately. An unpinned `latest` makes the check that validates the alerts
+  # itself unreproducible — and a pin copied without verifying is how the setup-java SHA
+  # broke the weekly workflow for five days. This is the version actually verified locally
+  # against this rule file (via `brew install prometheus`); resolve any future bump from a
+  # real release, not by guessing: https://github.com/prometheus/prometheus/releases
+  PROMETHEUS_VERSION: "3.13.2"
+
+jobs:
+  rules:
+    runs-on: ubuntu-latest
+    timeout-minutes: 10
+    steps:
+      - uses: actions/checkout@11bd71901bbe5b1630ceea73d27597364c9af683 # v4.2.2
+
+      - name: Install promtool
+        run: |
+          set -euo pipefail
+          url="https://github.com/prometheus/prometheus/releases/download/v${PROMETHEUS_VERSION}/prometheus-${PROMETHEUS_VERSION}.linux-amd64.tar.gz"
+          curl -fsSL "$url" -o /tmp/prometheus.tar.gz
+          tar -xzf /tmp/prometheus.tar.gz -C /tmp
+          sudo mv "/tmp/prometheus-${PROMETHEUS_VERSION}.linux-amd64/promtool" /usr/local/bin/
+          promtool --version
+
+      - name: Extract bare rule file from the PrometheusRule CRD
+        # prometheus-rules.yaml is a Kubernetes PrometheusRule CRD (apiVersion/kind/metadata
+        # wrapping spec.groups). promtool's rule loader rejects those top-level fields
+        # outright, so both the syntax check and the unit tests run against this generated
+        # bare-format copy of `.spec` instead — never a hand-maintained duplicate. yq is
+        # preinstalled on ubuntu-latest.
+        working-directory: k8s/base
+        run: yq '.spec' prometheus-rules.yaml > prometheus-rules.rules.yaml
+
+      - name: Check rule syntax
+        working-directory: k8s/base
+        run: promtool check rules prometheus-rules.rules.yaml
+
+      - name: Run rule unit tests
+        working-directory: k8s/base
+        run: promtool test rules prometheus-rules.test.yaml

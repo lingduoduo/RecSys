@@ -1,0 +1,225 @@
+# promtool unit tests for prometheus-rules.yaml.
+#
+# prometheus-rules.yaml is a Kubernetes PrometheusRule CRD (apiVersion/kind/metadata
+# wrapping a `spec.groups` list); promtool's rule loader rejects those top-level fields
+# outright since it wants a bare `groups:` document. So rule_files below points at
+# prometheus-rules.rules.yaml — a bare-format copy of the CRD's `.spec`, generated (not
+# hand-maintained) immediately before the test run and gitignored. Regenerate it any
+# time prometheus-rules.yaml changes:
+#
+#   cd k8s/base
+#   yq '.spec' prometheus-rules.yaml > prometheus-rules.rules.yaml
+#   promtool test rules prometheus-rules.test.yaml
+#
+# See .github/workflows/prometheus-rules.yml for the CI form of the same two commands.
+#
+# Every alert gets a case that MUST fire and a near-miss that MUST NOT. The near-miss
+# matters more than it looks: an expression that fires on everything passes a
+# fire-only test suite while being useless.
+rule_files:
+  - prometheus-rules.rules.yaml
+
+evaluation_interval: 1m
+
+tests:
+  # --- RecsysTargetDown ---
+  - interval: 1m
+    input_series:
+      - series: 'up{namespace="recsys", job="recsys-api-gateway", instance="10.0.0.1:8010"}'
+        values: '1x5 0x10'
+    alert_rule_test:
+      - eval_time: 4m
+        alertname: RecsysTargetDown
+        exp_alerts: []          # still up at 4m
+      - eval_time: 12m
+        alertname: RecsysTargetDown
+        exp_alerts:
+          - exp_labels:
+              severity: critical
+              namespace: recsys
+              job: recsys-api-gateway
+              instance: 10.0.0.1:8010
+            exp_annotations:
+              summary: "recsys-api-gateway has not been scraped for 5 minutes"
+              description: >-
+                Prometheus cannot scrape recsys-api-gateway (10.0.0.1:8010). Either
+                the service is down or its metrics endpoint stopped answering. Its dashboards
+                and every other alert in this file are blind for that service until resolved.
+                Check the service pod status with kubectl and its logs for startup errors.
+
+  # --- SplunkHecDroppingEvents ---
+  - interval: 1m
+    input_series:
+      - series: 'splunk_hec_events_dropped_total{job="recsys-api-gateway"}'
+        values: '0+5x30'        # rising: events being dropped
+      - series: 'splunk_hec_events_dropped_total{job="recsys-online-serving"}'
+        values: '7+0x30'        # flat: some dropped historically, none now
+    alert_rule_test:
+      - eval_time: 20m
+        alertname: SplunkHecDroppingEvents
+        exp_alerts:
+          - exp_labels:
+              severity: warning
+              job: recsys-api-gateway
+            exp_annotations:
+              summary: "Splunk log shipping is dropping events on recsys-api-gateway"
+              description: >-
+                The appender's bounded queue filled and events were discarded. Log delivery
+                is at-most-once by design, so these are gone from Splunk — stdout remains
+                the authoritative copy. Consider raising SPLUNK_HEC_QUEUE_CAPACITY, or
+                investigate why the drain thread fell behind.
+
+  # --- SplunkHecIndeterminateDelivery ---
+  - interval: 1m
+    input_series:
+      - series: 'splunk_hec_events_indeterminate_total{job="recsys-online-serving"}'
+        values: '0+3x30'
+    alert_rule_test:
+      - eval_time: 20m
+        alertname: SplunkHecIndeterminateDelivery
+        exp_alerts:
+          - exp_labels:
+              severity: warning
+              job: recsys-online-serving
+            exp_annotations:
+              summary: "Splunk delivery outcome unknown on recsys-online-serving"
+              description: >-
+                Batches were sent but never acknowledged, so Splunk may or may not hold
+                them. Unlike dropped events these carry duplicate risk as well as loss risk.
+                Usually a read timeout or a shutdown that outran its budget.
+
+  # --- GatewayRegistryStale: fires above 120s, not below ---
+  - interval: 1m
+    input_series:
+      - series: 'gateway_registry_snapshot_age_seconds{job="recsys-api-gateway"}'
+        values: '200x20'
+      - series: 'gateway_registry_snapshot_age_seconds{job="recsys-catalog-serving"}'
+        values: '110x20'        # near miss: under the threshold
+    alert_rule_test:
+      - eval_time: 10m
+        alertname: GatewayRegistryStale
+        exp_alerts:
+          - exp_labels:
+              severity: warning
+              job: recsys-api-gateway
+            exp_annotations:
+              summary: "Gateway service-registry snapshot is stale"
+              description: >-
+                The gateway is resolving upstreams from a registry snapshot older than two
+                minutes, so it may route to addresses that have moved. Check Redis
+                availability and gateway_registry_refresh_failures_total.
+
+  # --- OnlineServingShedding: fires above 0.1, not at 0.05 ---
+  - interval: 1m
+    input_series:
+      - series: 'online_serving_rejected_rate{job="recsys-online-serving"}'
+        values: '0.3x20'
+      - series: 'online_serving_rejected_rate{job="recsys-catalog-serving"}'
+        values: '0.05x20'
+    alert_rule_test:
+      - eval_time: 15m
+        alertname: OnlineServingShedding
+        exp_alerts:
+          - exp_labels:
+              severity: warning
+              job: recsys-online-serving
+            exp_annotations:
+              summary: "Online serving is shedding more than 10% of requests"
+              description: >-
+                Admission control has been rejecting a sustained share of traffic. Either
+                genuine overload or too tight a concurrency limit — check
+                recsys_load_shedder_utilization and the pod's CPU.
+
+  # --- RedisCacheUnavailable ---
+  - interval: 1m
+    input_series:
+      - series: 'redis_cache_available{job="recsys-catalog-serving"}'
+        values: '1x5 0x10'
+    alert_rule_test:
+      - eval_time: 4m
+        alertname: RedisCacheUnavailable
+        exp_alerts: []
+      - eval_time: 12m
+        alertname: RedisCacheUnavailable
+        exp_alerts:
+          - exp_labels:
+              severity: critical
+              job: recsys-catalog-serving
+            exp_annotations:
+              summary: "Redis is unreachable from recsys-catalog-serving"
+              description: >-
+                The cache probe cannot reach Redis. Serving degrades to stale or empty
+                results depending on the path. Check the Redis pods and the NetworkPolicy
+                egress rules.
+
+  # --- RedisReplicaLagHigh: branch 1, high lag with a usable value ---
+  - interval: 1m
+    input_series:
+      - series: 'redis_replica_lag_seconds{job="recsys-catalog-serving"}'
+        values: '25x20'
+      - series: 'redis_replica_lag_available{job="recsys-catalog-serving"}'
+        values: '1x20'          # near miss for branch 2: probe is up
+      - series: 'redis_replica_lag_seconds{job="recsys-online-serving"}'
+        values: '2x20'          # near miss for branch 1: under the threshold
+      - series: 'redis_replica_lag_available{job="recsys-online-serving"}'
+        values: '1x20'          # near miss for branch 2: probe is up
+    alert_rule_test:
+      - eval_time: 15m
+        alertname: RedisReplicaLagHigh
+        exp_alerts:
+          - exp_labels:
+              severity: warning
+              job: recsys-catalog-serving
+            exp_annotations:
+              summary: "Redis replica lag above 10s or probe unavailable"
+              description: >-
+                AZ-aware replica reads are returning data more than ten seconds old, or the
+                replica probe cannot determine lag at all. Reads routed to a replica may
+                contradict a write that already succeeded. Check replica pod status and
+                network connectivity between replicas.
+
+  # --- RedisReplicaLagHigh: branch 2, probe unavailable with no usable lag value ---
+  # This is the branch the expression gained: when the replica is fully unreachable the
+  # lag gauge reports NaN (modeled here as no lag_seconds series at all), so
+  # `redis_replica_lag_seconds > 10` never matches — only `redis_replica_lag_available == 0`
+  # catches it. Without this case that branch is unproven.
+  - interval: 1m
+    input_series:
+      - series: 'redis_replica_lag_available{job="recsys-model-serving"}'
+        values: '0x20'          # probe cannot reach the replica at all; no lag series exists
+    alert_rule_test:
+      - eval_time: 15m
+        alertname: RedisReplicaLagHigh
+        exp_alerts:
+          - exp_labels:
+              severity: warning
+              job: recsys-model-serving
+            exp_annotations:
+              summary: "Redis replica lag above 10s or probe unavailable"
+              description: >-
+                AZ-aware replica reads are returning data more than ten seconds old, or the
+                replica probe cannot determine lag at all. Reads routed to a replica may
+                contradict a write that already succeeded. Check replica pod status and
+                network connectivity between replicas.
+
+  # --- OutboxBacklogGrowing: needs BOTH size and growth ---
+  - interval: 1m
+    input_series:
+      - series: 'outbox_pending_events{job="recsys-model-serving"}'
+        values: '1500+50x30'    # large AND growing -> fires
+      - series: 'outbox_pending_events{job="recsys-catalog-serving"}'
+        values: '2000+0x30'     # large but FLAT -> must not fire
+    alert_rule_test:
+      - eval_time: 20m
+        alertname: OutboxBacklogGrowing
+        exp_alerts:
+          - exp_labels:
+              severity: warning
+              job: recsys-model-serving
+            exp_annotations:
+              summary: "Transactional outbox backlog is growing"
+              description: >-
+                More than 1000 events are pending and the backlog is still increasing, so
+                the relay is not keeping up. Eventual consistency windows widen until it
+                drains. Check outbox_delivery_failures_total and
+                outbox_delivery_lag_seconds.

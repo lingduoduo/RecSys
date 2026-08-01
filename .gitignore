@@ -79,3 +79,10 @@ replay_pid*
 # stale within days and then makes claims about code that has since changed).
 # .understandignore stays tracked — it is the one file here a human would edit.
 .understand-anything/*.json
+
+# promtool cannot parse the PrometheusRule CRD envelope (apiVersion/kind/metadata/spec)
+# around k8s/base/prometheus-rules.yaml, so `promtool check rules` and
+# `promtool test rules` both run against this bare-format copy of its `.spec`, generated
+# on demand via `yq '.spec' prometheus-rules.yaml`. Never hand-edit or commit it — see
+# k8s/base/prometheus-rules.test.yaml for the regeneration command.
+k8s/base/prometheus-rules.rules.yaml
