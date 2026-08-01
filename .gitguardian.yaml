@@ -1,0 +1,52 @@
+# GitGuardian / ggshield configuration.
+#
+# Scope note: this file governs ggshield (CI and pre-commit scans). The GitGuardian
+# dashboard keeps its own incident state, so an incident already raised there must ALSO be
+# resolved there — adding a rule here prevents future re-flagging, it does not retroactively
+# close an open incident. See docs/runbooks/splunk-hec-logging.md ("A note on secret
+# scanning") for the one incident this repo has resolved as a false positive.
+#
+# Keep the ignore list narrow. Every entry is a place a scanner will stay quiet, so each one
+# needs a reason a reviewer can check, not just a path that was noisy.
+
+version: 2
+
+secret:
+  ignored-paths:
+    # Test sources under the observability package construct throwaway Splunk credentials for
+    # containers that live and die inside a single test run. They are generated per run
+    # (UUIDs), never reused, and never leave the runner — see SplunkHecIntegrationTest.
+    - "src/test/java/com/recsys/infrastructure/observability/**"
+
+  ignored-matches:
+    # ---------------------------------------------------------------------------------
+    # Local-only Splunk admin placeholder, resolved as a FALSE POSITIVE.
+    #
+    # What it was: the literal `changeme-splunk-admin`, used as SPLUNK_PASSWORD in the
+    # bring-up examples in docs/runbooks/splunk-hec-logging.md and the header of
+    # docker-compose.splunk.yml.
+    #
+    # Why it is not a secret:
+    #   - It only ever set the admin password of a throwaway `splunk/splunk` container
+    #     started by docker-compose.splunk.yml on a developer laptop, bound to localhost.
+    #   - That stack has never run anywhere but a disposable container. It is not deployed,
+    #     not reachable from outside the host, and holds no real data.
+    #   - It was never a credential for any Splunk instance, AWS account, or other system
+    #     belonging to this project, and grants access to nothing that outlives the container.
+    #   - Real deployments take SPLUNK_HEC_TOKEN from the `recsys-splunk` Kubernetes Secret,
+    #     provisioned out-of-band and never committed. The k8s manifests reference it by
+    #     secretKeyRef only.
+    #
+    # Current state: removed from the tree. Both call sites now generate a value at run time
+    # (`openssl rand -base64 18`), matching how this repo already handles
+    # RECOMMENDATION_CURSOR_SIGNING_KEY. It survives only in the history of the merged
+    # branch feat/splunk-hec-log-shipping (commits 80749ab, 197b1d8, 208fc6d), which is why
+    # this entry exists: history is not being rewritten to remove a value that was never
+    # sensitive, since rewriting shared history is the more disruptive of the two options.
+    - name: "Local-only Splunk container placeholder password (false positive, removed from tree)"
+      match: "changeme-splunk-admin"
+
+    # Same reasoning: the HEC token placeholder that accompanied it. Local container only,
+    # now generated per run via `uuidgen`.
+    - name: "Local-only Splunk HEC dev token placeholder (false positive, removed from tree)"
+      match: "local-dev-hec-token"

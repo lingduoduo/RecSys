@@ -161,6 +161,10 @@ class SplunkHecIntegrationTest {
         assertThat(snapshot.failed())
                 .as("no batch should be rejected by a real collector. %s", diagnostics)
                 .isZero();
+        assertThat(snapshot.indeterminate())
+                .as("a clean shutdown must not leave any batch unacknowledged — this is the "
+                        + "counter that caught stop() aborting an in-flight POST. %s", diagnostics)
+                .isZero();
         assertThat(snapshot.sent()).as(diagnostics).isEqualTo(10);
 
         String hits = searchUntilFound(marker, 10);

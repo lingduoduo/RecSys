@@ -341,12 +341,25 @@ class SplunkHecAppenderTest {
 
     @Test
     void stopLetsAnInFlightSendFinishInsteadOfAbortingIt() throws Exception {
-        // Regression test for a bug only a real collector surfaced: stop() used to interrupt
-        // the drain thread immediately, which aborted whatever POST was in flight. Those
-        // events were counted failed even though Splunk had very likely accepted them. A stub
-        // that answers instantly never opens the window; a real Splunk hit it on 3 of every
-        // 10 events. Clearing `running` is sufficient to stop the loop, so the interrupt is
-        // now an escalation that only fires if the graceful join times out.
+        // DO NOT DELETE OR WEAKEN. This pins stop()'s behavioural contract, in two parts:
+        //
+        //   1. An in-flight request is allowed to FINISH within the shutdown budget.
+        //   2. Interruption is an ESCALATION, used only once that budget is exhausted
+        //      (see stopReportsForcedInterruptWhenTheDrainThreadOverrunsItsBudget).
+        //
+        // Both halves matter. Only asserting (2) would let someone reintroduce the original
+        // bug — an immediate interrupt still "eventually stops" — and only asserting (1)
+        // would permit an unbounded shutdown.
+        //
+        // History: stop() used to interrupt the drain thread BEFORE joining it, aborting
+        // whatever POST was on the wire. Those events were counted failed even though Splunk
+        // had likely accepted them. Six review rounds against a stub collector missed it,
+        // because a stub answers instantly and the window never opens; the first run against
+        // a real Splunk hit it on 3 of every 10 events. Clearing `running` alone is enough to
+        // stop the loop — it re-checks the flag after each poll — so the interrupt buys
+        // nothing on the happy path and costs a batch whenever it lands mid-send.
+        //
+        // If this test becomes inconvenient, the fix is almost certainly in stop(), not here.
         SplunkHecConfig config = enabledConfig(Map.of("SPLUNK_HEC_BATCH_SIZE", "3"));
 
         CountDownLatch sendStarted = new CountDownLatch(1);
@@ -387,6 +400,119 @@ class SplunkHecAppenderTest {
                 .as("an in-flight batch that completes successfully is not a failure")
                 .isZero();
         assertThat(appender.snapshot().sent()).isEqualTo(3);
+    }
+
+    @Test
+    void indeterminateDeliveryIsCountedApartFromFailure() {
+        // A batch that was sent but never acknowledged is not a known loss. Folding it into
+        // `failed` asserts a loss we cannot substantiate AND hides that these are exactly the
+        // events a retry — here or upstream — could duplicate.
+        SplunkHecConfig config = enabledConfig(Map.of("SPLUNK_HEC_BATCH_SIZE", "10"));
+        FakeClient client = new FakeClient(SplunkHecClient.Outcome.INDETERMINATE, null);
+        SplunkHecAppender appender = newAppender(config, client);
+        StatusManager statusManager = appender.getContext().getStatusManager();
+        appender.start();
+        try {
+            for (int i = 0; i < 4; i++) {
+                appender.doAppend(event("unknown-" + i));
+            }
+            await().atMost(5, TimeUnit.SECONDS)
+                    .until(() -> appender.snapshot().indeterminate() == 4);
+
+            SplunkHecAppender.Snapshot snapshot = appender.snapshot();
+            assertThat(snapshot.failed())
+                    .as("an unacknowledged batch must not be reported as a definite failure")
+                    .isZero();
+            assertThat(snapshot.sent()).isZero();
+            assertThat(snapshot.dropped()).isZero();
+
+            assertThat(statusManager.getCopyOfStatusList())
+                    .anyMatch(s -> s.getMessage() != null
+                            && s.getMessage().contains("delivery UNKNOWN")
+                            && s.getMessage().contains("may or may not have indexed"));
+        } finally {
+            appender.stop();
+        }
+    }
+
+    @Test
+    void stopReportsShutdownMetrics() {
+        // Shutdown is when an operator most needs to know what happened to the tail of the log
+        // stream, and normally when the least is said about it.
+        SplunkHecConfig config = enabledConfig(Map.of(
+                "SPLUNK_HEC_BATCH_SIZE", "2",
+                "SPLUNK_HEC_LINGER_MS", "3000"));
+        CountDownLatch gate = new CountDownLatch(1);
+        FakeClient client = new FakeClient(SplunkHecClient.Outcome.SUCCESS, gate);
+        SplunkHecAppender appender = newAppender(config, client);
+        StatusManager statusManager = appender.getContext().getStatusManager();
+        appender.start();
+
+        for (int i = 0; i < 6; i++) {
+            appender.doAppend(event("metric-" + i));
+        }
+        gate.countDown();
+        appender.stop();
+
+        String summary = statusManager.getCopyOfStatusList().stream()
+                .map(s -> s.getMessage() == null ? "" : s.getMessage())
+                .filter(m -> m.contains("Splunk HEC appender stopped"))
+                .findFirst()
+                .orElseThrow(() -> new AssertionError("no shutdown summary was reported"));
+
+        assertThat(summary)
+                .contains("queuedAtShutdown=")
+                .contains("inFlightBatchesAtShutdown=")
+                .contains("flushedAtShutdown=")
+                .contains("gracefulDrainMillis=")
+                .contains("forcedInterrupt=false")
+                .contains("confirmed=")
+                .contains("indeterminate=0")
+                .contains("droppedQueueFull=0");
+    }
+
+    @Test
+    void stopReportsForcedInterruptWhenTheDrainThreadOverrunsItsBudget() {
+        // A client that blocks far longer than stop()'s 2s graceful budget forces the
+        // escalation path. The operator must be told, because the tail of the stream is then
+        // genuinely uncertain rather than merely delayed.
+        SplunkHecConfig config = enabledConfig(Map.of("SPLUNK_HEC_BATCH_SIZE", "1"));
+        CountDownLatch sendStarted = new CountDownLatch(1);
+        SplunkHecClient blocking = new SplunkHecClient(config) {
+            @Override
+            Outcome send(String body) {
+                sendStarted.countDown();
+                try {
+                    Thread.sleep(30_000);
+                } catch (InterruptedException e) {
+                    Thread.currentThread().interrupt();
+                    return Outcome.INDETERMINATE;
+                }
+                return Outcome.SUCCESS;
+            }
+        };
+        SplunkHecAppender appender = newAppender(config, blocking);
+        StatusManager statusManager = appender.getContext().getStatusManager();
+        appender.start();
+        try {
+            appender.doAppend(event("stuck"));
+            assertThat(sendStarted.await(5, TimeUnit.SECONDS)).isTrue();
+        } catch (InterruptedException e) {
+            Thread.currentThread().interrupt();
+            throw new AssertionError(e);
+        }
+
+        long startedAt = System.nanoTime();
+        appender.stop();
+        long elapsedMillis = (System.nanoTime() - startedAt) / 1_000_000;
+
+        assertThat(elapsedMillis)
+                .as("shutdown must stay bounded even when a send is wedged")
+                .isLessThan(5_000);
+
+        assertThat(statusManager.getCopyOfStatusList())
+                .anyMatch(s -> s.getMessage() != null
+                        && s.getMessage().contains("forcedInterrupt=true"));
     }
 
     @Test
