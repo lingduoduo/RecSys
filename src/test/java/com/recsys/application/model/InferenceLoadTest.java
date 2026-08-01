@@ -49,6 +49,22 @@ class InferenceLoadTest {
         // Mirror ModelRuntimeProvider.afterSingletonsInstantiated() so the timed loop
         // measures steady-state serving rather than cold first-build latency.
         runtimeProvider.warmUp();
+
+        // warmUp() only BUILDS the runtimes — it never runs an inference. Without the loop
+        // below the first real requests still pay JIT and ONNX first-run costs, and because
+        // the timed loop releases all 10 threads simultaneously, that cold cohort lands
+        // squarely in the P95: a dev-machine run measured avg 281ms against P95 2756ms, i.e.
+        // ~5 cold outliers dragging the tail while the steady state was an order of magnitude
+        // faster. That is a measurement artifact, not a latency regression, and it made the
+        // 2000ms P95 threshold unmeetable for reasons unrelated to what the test asserts.
+        //
+        // Two passes over every user ID, discarding the results, so the timed loop measures
+        // the steady state this test says it measures.
+        for (int pass = 0; pass < 2; pass++) {
+            for (String userId : USER_IDS) {
+                service.recommend(buildRequest(userId, 10));
+            }
+        }
     }
 
     @AfterAll
@@ -61,6 +77,10 @@ class InferenceLoadTest {
     void concurrentRequests_meetsLatencyAndThroughputTargets() throws InterruptedException {
         var latenciesMs = new ConcurrentLinkedQueue<Long>();
         var errors      = new AtomicInteger();
+        // A load test that reports "9% failed" without saying why is not actionable — the
+        // failure tells you to look, and then there is nothing to look at. Keep one sample
+        // per distinct failure so the assertion message names the actual cause.
+        var failureSamples = new ConcurrentHashMap<String, String>();
         var startGate   = new CountDownLatch(1);
         var doneLatch   = new CountDownLatch(TOTAL_REQUESTS);
         var pool        = Executors.newFixedThreadPool(CONCURRENCY);
@@ -77,6 +97,14 @@ class InferenceLoadTest {
                     } catch (RuntimeException e) {
                         latenciesMs.add(toMs(System.nanoTime() - t0));
                         errors.incrementAndGet();
+                        Throwable root = e;
+                        while (root.getCause() != null && root.getCause() != root) {
+                            root = root.getCause();
+                        }
+                        failureSamples.putIfAbsent(
+                                e.getClass().getSimpleName() + ": " + e.getMessage(),
+                                "userId=" + userId + " root=" + root.getClass().getName()
+                                        + ": " + root.getMessage());
                     }
                 } catch (InterruptedException e) {
                     Thread.currentThread().interrupt();
@@ -110,7 +138,8 @@ class InferenceLoadTest {
 
         // --- assert ---
         assertThat(successRate)
-                .as("success rate")
+                .as("success rate (%d/%d failed). Distinct failures: %s",
+                        errors.get(), n, failureSamples)
                 .isGreaterThanOrEqualTo(MIN_SUCCESS_RATE);
         assertThat(p95Ms)
                 .as("P95 latency ms")
