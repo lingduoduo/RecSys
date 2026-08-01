@@ -10,8 +10,12 @@ import io.micrometer.core.instrument.simple.SimpleMeterRegistry;
 import org.junit.jupiter.api.Test;
 
 import java.io.File;
+import java.io.IOException;
 import java.lang.ref.WeakReference;
+import java.nio.file.Files;
+import java.nio.file.Path;
 import java.util.Iterator;
+import java.util.List;
 import java.util.concurrent.atomic.AtomicInteger;
 import java.util.concurrent.atomic.AtomicLong;
 import java.util.function.Supplier;
@@ -99,6 +103,34 @@ class SplunkHecMetricsTest {
         assertThat(registry.get("splunk_hec_queue_depth").gauge().value())
                 .as("queue_depth should report queued field (1)")
                 .isEqualTo(1.0);
+    }
+
+    /**
+     * Every other test in this class constructs {@code SplunkHecMetrics} directly, so deleting
+     * the {@code SplunkHecMetrics.register(...)} call from any of the three Armeria mains, or
+     * from the Spring model service's {@code SplunkHecMetricsConfig}, would leave the whole
+     * suite green — the wiring, not just the class, would be untested. This is a
+     * source-scanning assertion in the same manifest-checking style
+     * {@code ScrapeTargetManifestTest} uses for the k8s manifests: it does not boot any
+     * service, it just proves the call site still exists in each of the four files that must
+     * make it, so a deleted registration call fails a test instead of only being noticed when
+     * the Splunk metrics silently stop appearing on `/metrics`.
+     */
+    @Test
+    void allFourServiceMainsCallSplunkHecMetricsRegister() throws IOException {
+        List<Path> mustRegister = List.of(
+                Path.of("src/main/java/com/recsys/api/serving/RecSysServer.java"),
+                Path.of("src/main/java/com/recsys/api/online/OnlinePredictionServer.java"),
+                Path.of("src/main/java/com/recsys/api/gateway/MicroserviceGatewayServer.java"),
+                Path.of("src/main/java/com/recsys/config/SplunkHecMetricsConfig.java"));
+
+        for (Path file : mustRegister) {
+            String source = Files.readString(file);
+            assertThat(source)
+                    .as("%s must call SplunkHecMetrics.register(...), or Splunk delivery "
+                            + "metrics silently stop being published from that service", file)
+                    .contains("SplunkHecMetrics.register(");
+        }
     }
 
     @Test

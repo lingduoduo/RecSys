@@ -13,6 +13,8 @@ import java.util.Map;
 import java.util.Set;
 import java.util.stream.Collectors;
 
+import static java.util.Map.entry;
+
 import static org.assertj.core.api.Assertions.assertThat;
 
 /**
@@ -38,6 +40,16 @@ class ScrapeTargetManifestTest {
             "recsys-catalog-serving",
             "recsys-online-serving",
             "recsys-api-gateway");
+
+    /** The port each target is actually scraped on (see docs/system_design/21_Observability.md §3.1). */
+    private static final Map<String, Integer> SCRAPE_PORTS = Map.ofEntries(
+            entry("recsys-online-serving", 7010),
+            entry("recsys-api-gateway", 8010),
+            entry("recsys-catalog-serving", 6010),
+            entry("recsys-model-serving", 8080));
+
+    private static final String PROMETHEUS_NAMESPACE_LABEL_VALUE = "monitoring";
+    private static final String PROMETHEUS_POD_LABEL_VALUE = "prometheus";
 
     private static final Path BASE = Path.of("k8s", "base");
 
@@ -81,6 +93,12 @@ class ScrapeTargetManifestTest {
         return metadata == null ? null : String.valueOf(metadata.get("name"));
     }
 
+    @SuppressWarnings("unchecked")
+    private static List<Map<String, Object>> listOf(Map<String, Object> map, String key) {
+        Object value = map == null ? null : map.get(key);
+        return value instanceof List<?> list ? (List<Map<String, Object>>) list : List.of();
+    }
+
     @Test
     void everyExposedServiceHasAServiceMonitor() throws IOException {
         List<Map<String, Object>> docs = allBaseDocuments();
@@ -121,24 +139,70 @@ class ScrapeTargetManifestTest {
         }
     }
 
+    /**
+     * Structural (not substring) check that a NetworkPolicy admits Prometheus on the exact port
+     * a service is actually scraped on. A prior version of this test did
+     * {@code assertThat(yamlDump).contains("app.kubernetes.io/name: prometheus")}, which passes
+     * for a rule on the wrong port, a rule with no namespace restriction (any namespace's
+     * "prometheus"-labelled pod, not just monitoring's), or the same selector fragment sitting
+     * under {@code egress} instead of {@code ingress} entirely — all reproduced and confirmed
+     * to slip past the old assertion while writing this version. The fix asserts there is an
+     * {@code ingress[]} rule whose {@code from[]} contains a single element carrying BOTH the
+     * monitoring namespaceSelector AND the prometheus podSelector (same list element, i.e.
+     * logical AND — two separate elements would be OR: "monitoring namespace" OR "anything
+     * named prometheus"), and whose {@code ports[]} includes the service's real scrape port.
+     */
     @Test
     void everyScrapedServiceAdmitsPrometheusIngress() throws IOException {
         List<Map<String, Object>> policies = ofKind(allBaseDocuments(), "NetworkPolicy");
 
         for (String target : EXPECTED_SCRAPE_TARGETS) {
+            int scrapePort = SCRAPE_PORTS.get(target);
             Map<String, Object> policy = policies.stream()
                     .filter(p -> target.equals(nameOf(p)))
                     .findFirst()
                     .orElse(null);
-            if (policy == null) {
-                continue; // No policy means no restriction; nothing to assert.
-            }
-            String rendered = new Yaml().dump(policy);
-            assertThat(rendered)
-                    .as("NetworkPolicy %s restricts ingress but does not admit Prometheus, so "
-                            + "its ServiceMonitor would be created and still scrape nothing",
-                            target)
-                    .contains("app.kubernetes.io/name: prometheus");
+
+            // A missing NetworkPolicy is a distinct failure from one that omits Prometheus:
+            // Kubernetes admits all ingress by default when no policy targets a pod, so
+            // Prometheus's scrape would technically get through — but so would everything
+            // else. These four services are documented (CLAUDE.md, 21_Observability.md §3.2)
+            // as deliberately ingress-restricted, so a policy silently disappearing is itself
+            // a regression this test should catch, not wave through as "nothing to restrict".
+            assertThat(policy)
+                    .as("expected a NetworkPolicy named %s restricting ingress to this scraped "
+                            + "service; if it were absent, ingress would be unrestricted rather "
+                            + "than Prometheus-only", target)
+                    .isNotNull();
+
+            List<Map<String, Object>> ingressRules = listOf(mapAt(policy, "spec"), "ingress");
+            boolean admitsPrometheus = ingressRules.stream().anyMatch(rule -> {
+                List<Map<String, Object>> fromSources = listOf(rule, "from");
+                List<Map<String, Object>> ports = listOf(rule, "ports");
+
+                boolean fromPrometheus = fromSources.stream().anyMatch(source -> {
+                    Map<String, Object> nsLabels = mapAt(source, "namespaceSelector", "matchLabels");
+                    Map<String, Object> podLabels = mapAt(source, "podSelector", "matchLabels");
+                    return nsLabels != null
+                            && PROMETHEUS_NAMESPACE_LABEL_VALUE.equals(nsLabels.get("kubernetes.io/metadata.name"))
+                            && podLabels != null
+                            && PROMETHEUS_POD_LABEL_VALUE.equals(podLabels.get("app.kubernetes.io/name"));
+                });
+
+                boolean admitsScrapePort = ports.stream()
+                        .anyMatch(p -> Integer.valueOf(scrapePort).equals(p.get("port")));
+
+                return fromPrometheus && admitsScrapePort;
+            });
+
+            assertThat(admitsPrometheus)
+                    .as("NetworkPolicy %s must have an ingress rule whose `from` admits a pod "
+                            + "carrying BOTH the monitoring namespaceSelector and the prometheus "
+                            + "podSelector (in the same list element) AND whose `ports` includes "
+                            + "%d, the port this service is actually scraped on. Without all of "
+                            + "that, its ServiceMonitor would be created and still scrape nothing",
+                            target, scrapePort)
+                    .isTrue();
         }
     }
 }

@@ -112,6 +112,29 @@ clearest example in the repo of instrumentation that looked present — metrics 
 computed, the exposition endpoint answered `curl` — and was not actually observable by
 anything.
 
+**This closed the gap for the four `EXPECTED_SCRAPE_TARGETS` services — not for every
+Prometheus-shaped endpoint in the cluster.** The outbox relay
+(`k8s/base/outbox-relay-deployment.yaml`) declares `prometheus.io/scrape: "true"`,
+`prometheus.io/path: "/metrics"`, `prometheus.io/port: "7020"`, and its `/metrics`
+endpoint really does answer (`OutboxRelayCommand` mounts
+`PrometheusExpositionService` on port 7020, backed by its own `ConsistencyMetrics`
+instance — the sole emitter of `outbox_delivery_failures_total` and
+`outbox_delivery_lag_seconds`). But there is **no `Service` for `recsys-outbox-relay`
+anywhere under `k8s/`** (verified with `grep -rn "outbox-relay" k8s/`: the Deployment is
+the only manifest that mentions it), so no `ServiceMonitor` can select it — a
+ServiceMonitor-driven Prometheus Operator scrapes `Service`+`Endpoints` objects, not bare
+`prometheus.io/*` pod annotations, which are a convention for a different, annotation-scraping
+Prometheus setup that this cluster does not run. The annotations are inert. `up{namespace="recsys"}`
+therefore has no series for the relay, `RecsysTargetDown` (§4) cannot cover it (its own
+blind spot, described there), and `ScrapeTargetManifestTest` does not check for it either
+— `EXPECTED_SCRAPE_TARGETS` deliberately lists only the four services this phase wired
+up. This costs real coverage: the relay is the component `OutboxBacklogGrowing` is about,
+and its own annotation tells an operator to check `outbox_delivery_failures_total` and
+`outbox_delivery_lag_seconds` next — metrics nothing is collecting. Adding a Service and
+ServiceMonitor for the relay is a deployment change, deliberately left to a separate PR;
+this document exists to say plainly that it has not happened yet, rather than let the
+"scrape gap closed" framing above be read as covering it.
+
 ### 3.3 Metric inventory, by subsystem
 
 Every metric below is named at its registration call site; the file is the source of
@@ -245,7 +268,7 @@ worse than no alert, because it looks like coverage and can never fire.
 | `RecsysTargetDown` | `up{namespace="recsys"} == 0` for 5 m — Prometheus cannot scrape a target at all | Pod crashed, is stuck starting, or its metrics endpoint hung | `kubectl get pods -n recsys`, then the pod's logs for startup errors. **Every other alert in this file is blind for that service until this resolves** — its blind spot is the mirror image of §3.2: `up` only exists for targets Prometheus already knows about, so a `ServiceMonitor` that was never created produces no series to be zero. `ScrapeTargetManifestTest` covers that side; this alert covers a target that existed and stopped answering. |
 | `SplunkHecDroppingEvents` | `increase(splunk_hec_events_dropped_total[10m]) > 0` for 2 m — the bounded queue filled and events were discarded | A burst of log volume outran the drain thread, or Splunk itself is slow/down | These log events are gone for good (at-most-once, §2) — check `SPLUNK_HEC_QUEUE_CAPACITY` headroom and whether Splunk is reachable; raise the capacity if this is a recurring burst pattern rather than a one-off. |
 | `SplunkHecIndeterminateDelivery` | `increase(splunk_hec_events_indeterminate_total[10m]) > 0` for 2 m — a batch was sent but never acknowledged | Usually a read timeout, or `stop()` running past its 2 s drain budget on shutdown | Delivery is unknown, not lost — check whether the events actually landed in Splunk before assuming loss; if this correlates with deploys, it is probably shutdown timing, not a live outage. |
-| `GatewayRegistryStale` | `gateway_registry_snapshot_age_seconds > 120` for 5 m — the gateway is resolving upstreams from an old registry snapshot | Redis is unreachable from the gateway, or `SERVICE_REGISTRY_REFRESH_MS` polling has stalled | Check Redis availability from the gateway pod and `gateway_registry_refresh_failures_total`; the gateway falls back to static routes when a service is unregistered, so this is a staleness warning, not an outage by itself. |
+| `GatewayRegistryStale` | `gateway_registry_snapshot_age_seconds > 120 or gateway_registry_snapshot_age_seconds == -1` for 5 m — the gateway is resolving upstreams from an old registry snapshot, or has never completed one | Redis is unreachable from the gateway, or `SERVICE_REGISTRY_REFRESH_MS` polling has stalled | Check Redis availability from the gateway pod and `gateway_registry_refresh_failures_total`; the gateway falls back to static routes when a service is unregistered, so this is a staleness warning, not an outage by itself. |
 | `OnlineServingShedding` | `online_serving_rejected_rate > 0.1` for 10 m — admission control is rejecting more than 10% of traffic on a sustained basis | Genuine overload, or `ONLINE_MAX_CONCURRENT_REQUESTS` set too low for real traffic | Check `recsys_load_shedder_utilization` and the pod's CPU; this is a partial-degradation warning (90%+ of traffic still succeeds), not a full outage. |
 | `RedisCacheUnavailable` | `redis_cache_available == 0` for 5 m — the cache stats probe cannot reach Redis at all | Redis pod down, or a NetworkPolicy egress rule blocking the connection | Check Redis pod status and the relevant service's egress rule in `k8s/base/network-policy.yaml`; serving degrades to stale-or-empty results depending on the path (§1 of [02_Caching](02_Caching.md)) rather than erroring outright. |
 | `RedisReplicaLagHigh` | `redis_replica_lag_seconds > 10 or redis_replica_lag_available == 0` for 10 m — replica reads are stale, or the lag probe itself can't tell | Replica pod slow/overloaded, or a network partition to the replica | Check replica pod status and network connectivity between replicas; a read routed to a lagging replica can contradict a write that already succeeded elsewhere. |
@@ -273,6 +296,29 @@ them elsewhere:**
   handle the missing-data case. Any alert built on a probe-driven gauge should ask
   whether the probe's own failure mode already looks like "no problem" to the comparison
   operator.
+- **A sentinel value can defeat a `>` comparison the same way `NaN` does, without even
+  needing missing data.** `GatewayRegistryStale` originally read only
+  `gateway_registry_snapshot_age_seconds > 120`. `GatewayRegistryMetrics` reports the
+  literal value `-1` (not `NaN`, not an absent series) when
+  `ServiceRegistryProvider.lastRefreshAtMs()` is still `0` — i.e. the gateway has never
+  completed a registry refresh since it started. `-1 > 120` is false, so a gateway that
+  has *never* resolved anything from the registry stayed silent indefinitely, while one
+  merely three minutes stale correctly paged. The fix adds an explicit
+  `or gateway_registry_snapshot_age_seconds == -1` branch, the identical shape as the
+  `NaN` fix above. `prometheus-rules.test.yaml` has a dedicated case holding a `-1` series
+  for the alert's `for:` window, confirmed to fail if the `== -1` clause is removed.
+  Anyone reading a gauge for staleness should check what value it reports for "never
+  happened yet", not only for "happened too long ago" — the two are easy to conflate and
+  a bare `>` only catches the second.
+- **This alert cannot fire in any configuration this repo currently ships.**
+  `SERVICE_REGISTRY_ENABLED` (CLAUDE.md, Build & Test env vars) defaults to `false` and
+  does not appear anywhere under `k8s/` — no overlay sets it `true`. With the registry
+  disabled the gateway never constructs the `ServiceRegistryProvider`
+  `GatewayRegistryMetrics` reads, so `gateway_registry_snapshot_age_seconds` is never
+  registered at all and the alert has no series to evaluate, ever. This is the same
+  honest register §5 already uses for Prometheus itself: the rule is correct and tested,
+  but nothing in this repo's shipped configuration would let it evaluate against real
+  data today.
 
 `prometheus-rules.test.yaml` (run by `promtool test rules` in
 [`.github/workflows/prometheus-rules.yml`](../../.github/workflows/prometheus-rules.yml))
@@ -308,8 +354,8 @@ following works.
 - **No Prometheus.** Every manifest in this change — the four `ServiceMonitor`s, the one
   `PrometheusRule` — is a Kubernetes custom resource that a **Prometheus Operator**
   interprets. Nothing here installs one. This is not a new assumption introduced by this
-  change: the two `ServiceMonitor`s that predate it (for Redis and for whatever this
-  cluster already ran) made exactly the same assumption, silently, the whole time. If no
+  change: the two `ServiceMonitor`s that predate it — for **model-serving and
+  catalog-serving** — made exactly the same assumption, silently, the whole time. If no
   Prometheus Operator is running in a given cluster, every `ServiceMonitor` and the
   `PrometheusRule` here are inert YAML — `kubectl apply` succeeds, the objects exist, and
   nothing evaluates them, scrapes anything, or fires an alert. **A committed alert file
@@ -317,6 +363,23 @@ following works.
   the two is precisely the failure this investigation exists to prevent, and it is the
   same shape of failure as §3.2's three-layer scrape gap: a manifest that looks like
   working observability and is not, until someone checks.
+- **The API gateway's `/metrics` is public by design, and this change's own NetworkPolicy
+  addition to it is redundant.** Nothing authenticates a request to gateway `/metrics`:
+  `GatewayOriginSecret.EXEMPT_PATHS` includes `/metrics` (so `GATEWAY_ORIGIN_SECRET`
+  doesn't gate it either), and the EKS ALB routes `/` to the gateway, so the full
+  exposition — upstream names, registry resolution counts, circuit-breaker and
+  rate-limit counters, and now Splunk queue depth and log-drop/indeterminate counts — is
+  reachable from the internet behind only WAF. Separately,
+  `k8s/base/network-policy.yaml`'s `recsys-api-gateway` policy already had, before this
+  change, an ingress rule `- ports: [{port: 8010}]` with **no `from:`** — i.e. all sources,
+  not just Prometheus, were already admitted on 8010. The Prometheus-only ingress rule
+  this phase added to that same policy is therefore dead weight: it restricts nothing
+  that the pre-existing unrestricted rule wasn't already letting through. Both claims are
+  checkable directly against the manifests (`k8s/base/network-policy.yaml`,
+  `GatewayOriginSecret.EXEMPT_PATHS`). Fixing either — restricting 8010 ingress, or
+  gating `/metrics` — is a production-ingress change with its own risk profile and is
+  deliberately left out of this phase; this bullet exists so nobody reads "NetworkPolicy
+  ingress rules added for Prometheus" as "gateway metrics are now access-controlled."
 
 ## 6. How this stays honest
 
@@ -324,7 +387,12 @@ Four separate mechanisms, each closing a gap the others cannot see:
 
 - **`RecsysTargetDown`** (§4) catches a target that existed and went silent — but its
   blind spot is a target that never existed in the first place: `up{}` has no series for
-  a `ServiceMonitor` that was never created, so there is nothing to be zero.
+  a `ServiceMonitor` that was never created, so there is nothing to be zero. The outbox
+  relay (§3.2) is a live instance of exactly this blind spot today, not a hypothetical:
+  it has `prometheus.io/*` pod annotations and a working `/metrics` endpoint but no
+  `Service`, so no `ServiceMonitor` is possible, `up{namespace="recsys"}` has no series
+  for it, and `RecsysTargetDown` — and every mechanism below that reasons about
+  `EXPECTED_SCRAPE_TARGETS` — cannot see it.
 - **`ScrapeTargetManifestTest`** ([`src/test/java/com/recsys/metrics/ScrapeTargetManifestTest.java`](../../src/test/java/com/recsys/metrics/ScrapeTargetManifestTest.java))
   closes exactly that blind spot, statically, for the three silent layers in §3.2: it
   asserts every service in `EXPECTED_SCRAPE_TARGETS` has a `ServiceMonitor`, that every

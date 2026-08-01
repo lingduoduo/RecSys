@@ -66,16 +66,23 @@ spec:
     - name: recsys.serving
       rules:
         - alert: GatewayRegistryStale
-          expr: gateway_registry_snapshot_age_seconds > 120
+          # GatewayRegistryMetrics reports the sentinel -1 (not NaN, not absent) when the
+          # gateway has never completed a refresh since boot — `-1 > 120` is false, so a
+          # gateway that has NEVER resolved anything would otherwise stay silent forever
+          # while one merely three minutes stale pages. Same shape as RedisReplicaLagHigh's
+          # NaN-vs-`>` trap below: a sentinel/failure value that looks like "no problem" to
+          # a bare `>` comparison needs its own explicit branch.
+          expr: gateway_registry_snapshot_age_seconds > 120 or gateway_registry_snapshot_age_seconds == -1
           for: 5m
           labels:
             severity: warning
           annotations:
-            summary: "Gateway service-registry snapshot is stale"
+            summary: "Gateway service-registry snapshot is stale or has never refreshed"
             description: >-
               The gateway is resolving upstreams from a registry snapshot older than two
-              minutes, so it may route to addresses that have moved. Check Redis
-              availability and gateway_registry_refresh_failures_total.
+              minutes, or has never completed a refresh since it started (reported as -1),
+              so it may route to addresses that have moved. Check Redis availability and
+              gateway_registry_refresh_failures_total.
 
         - alert: OnlineServingShedding
           expr: online_serving_rejected_rate > 0.1

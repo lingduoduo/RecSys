@@ -105,11 +105,36 @@ tests:
               severity: warning
               job: recsys-api-gateway
             exp_annotations:
-              summary: "Gateway service-registry snapshot is stale"
+              summary: "Gateway service-registry snapshot is stale or has never refreshed"
               description: >-
                 The gateway is resolving upstreams from a registry snapshot older than two
-                minutes, so it may route to addresses that have moved. Check Redis
-                availability and gateway_registry_refresh_failures_total.
+                minutes, or has never completed a refresh since it started (reported as -1),
+                so it may route to addresses that have moved. Check Redis availability and
+                gateway_registry_refresh_failures_total.
+
+  # --- GatewayRegistryStale: the -1 "never refreshed since startup" sentinel ---
+  # GatewayRegistryMetrics.snapshotAgeSeconds returns -1 (not NaN, not absent) when
+  # lastRefreshAtMs() == 0. `-1 > 120` is false, so without the explicit `== -1` branch this
+  # series never fires no matter how long it holds -1 — proven by deleting that clause and
+  # rerunning this file, which turns this case red.
+  - interval: 1m
+    input_series:
+      - series: 'gateway_registry_snapshot_age_seconds{job="recsys-api-gateway"}'
+        values: '-1x20'
+    alert_rule_test:
+      - eval_time: 10m
+        alertname: GatewayRegistryStale
+        exp_alerts:
+          - exp_labels:
+              severity: warning
+              job: recsys-api-gateway
+            exp_annotations:
+              summary: "Gateway service-registry snapshot is stale or has never refreshed"
+              description: >-
+                The gateway is resolving upstreams from a registry snapshot older than two
+                minutes, or has never completed a refresh since it started (reported as -1),
+                so it may route to addresses that have moved. Check Redis availability and
+                gateway_registry_refresh_failures_total.
 
   # --- OnlineServingShedding: fires above 0.1, not at 0.05 ---
   - interval: 1m
@@ -180,15 +205,20 @@ tests:
                 contradict a write that already succeeded. Check replica pod status and
                 network connectivity between replicas.
 
-  # --- RedisReplicaLagHigh: branch 2, probe unavailable with no usable lag value ---
+  # --- RedisReplicaLagHigh: branch 2, probe unavailable with a real NaN lag value ---
   # This is the branch the expression gained: when the replica is fully unreachable the
-  # lag gauge reports NaN (modeled here as no lag_seconds series at all), so
-  # `redis_replica_lag_seconds > 10` never matches — only `redis_replica_lag_available == 0`
-  # catches it. Without this case that branch is unproven.
+  # lag gauge is still registered but reports NaN (the gauge is never absent — modeling
+  # this as "no lag_seconds series at all" would test a premise that doesn't hold in
+  # production). `redis_replica_lag_seconds > 10` is false for NaN in PromQL — verified by
+  # dropping the `or redis_replica_lag_available == 0` branch and rerunning this file, which
+  # turns this case red — so only that second branch catches it. Without this case that
+  # branch is unproven.
   - interval: 1m
     input_series:
+      - series: 'redis_replica_lag_seconds{job="recsys-model-serving"}'
+        values: 'NaN NaN NaN NaN NaN NaN NaN NaN NaN NaN NaN NaN NaN NaN NaN NaN NaN NaN NaN NaN'
       - series: 'redis_replica_lag_available{job="recsys-model-serving"}'
-        values: '0x20'          # probe cannot reach the replica at all; no lag series exists
+        values: '0x20'          # probe cannot reach the replica at all
     alert_rule_test:
       - eval_time: 15m
         alertname: RedisReplicaLagHigh
