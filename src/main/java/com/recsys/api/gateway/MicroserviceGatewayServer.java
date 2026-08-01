@@ -27,6 +27,7 @@ import com.linecorp.armeria.server.Server;
 import com.linecorp.armeria.server.ServerBuilder;
 import com.linecorp.armeria.server.metric.PrometheusExpositionService;
 import com.recsys.metrics.GatewayRegistryMetrics;
+import com.recsys.metrics.SplunkHecMetrics;
 import io.micrometer.prometheus.PrometheusMeterRegistry;
 import org.slf4j.Logger;
 import org.slf4j.LoggerFactory;
@@ -127,6 +128,9 @@ public final class MicroserviceGatewayServer {
         // are registered only when the registry consumer is active.
         PrometheusMeterRegistry meterRegistry = PrometheusMeterRegistries.defaultRegistry();
         sb.service("/metrics", PrometheusExpositionService.of(meterRegistry.getPrometheusRegistry()));
+        // The Splunk appender was built by Logback long before this registry existed, so it
+        // cannot register itself. No-op when SPLUNK_HEC_TOKEN is unset.
+        SplunkHecMetrics.register(meterRegistry);
         if (registryProvider != null) {
             List<String> registrySvcNames = proxyRoutes.stream()
                     .map(MicroserviceRoute::serviceName)

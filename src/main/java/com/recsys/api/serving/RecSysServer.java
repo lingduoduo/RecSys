@@ -39,6 +39,7 @@ import com.recsys.application.retrieval.multichannel.MultiChannelRecallService;
 import com.recsys.application.retrieval.multichannel.RecallConfig;
 import com.recsys.application.retrieval.multichannel.RecallDegradationMetrics;
 import com.recsys.infrastructure.store.TrendingStore;
+import com.recsys.metrics.SplunkHecMetrics;
 import io.micrometer.core.instrument.MeterRegistry;
 import io.micrometer.prometheus.PrometheusMeterRegistry;
 import org.slf4j.Logger;
@@ -113,6 +114,9 @@ public class RecSysServer {
                     EnvConfig.readInt("RECALL_BULKHEAD_QUEUE_CAPACITY", recallPoolSize * 4));
             ExecutorService executor = recallBulkhead.asExecutorService();
             PrometheusMeterRegistry registry = PrometheusMeterRegistries.defaultRegistry();
+            // The Splunk appender was built by Logback long before this registry existed, so it
+            // cannot register itself. No-op when SPLUNK_HEC_TOKEN is unset.
+            SplunkHecMetrics.register(registry);
             RecallDegradationMetrics recallMetrics = createRecallMetrics(registry);
 
             MultiChannelRecallService recallService = MultiChannelRecallService.from(
