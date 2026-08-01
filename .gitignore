@@ -22,8 +22,26 @@ logs/
 __pycache__/
 *.py[cod]
 
-# Model artifacts — large binary files exported by external pipelines, not bundled in the JAR
-src/main/resources/artifacts/
+# Model artifacts — large binary files exported by external pipelines, not bundled in the JAR.
+#
+# EXCEPT the per-variant feature configs. Those are ~380 bytes of JSON (vocab maps plus a
+# model_file pointer), not pipeline binaries, and the serving path CANNOT START without them:
+# ModelArtifactService.loadFeatureConfig throws when
+# artifacts/model/<variant>/feature_config.json is missing. While the blanket rule hid them,
+# InferenceLoadTest could never pass on a fresh checkout — it only worked on machines where
+# someone had generated them locally, and that went unnoticed for as long as the scheduled
+# workflow that runs it was itself broken (#260). The ONNX model they point at
+# (dssm_model.onnx) is already committed at the resources root.
+#
+# Written as a descend-ladder rather than a plain negation: git never looks inside an excluded
+# DIRECTORY, so re-including a nested file requires excluding each level's *contents* while
+# leaving the directory itself traversable.
+src/main/resources/artifacts/*
+!src/main/resources/artifacts/model/
+src/main/resources/artifacts/model/*
+!src/main/resources/artifacts/model/*/
+src/main/resources/artifacts/model/*/*
+!src/main/resources/artifacts/model/*/feature_config.json
 
 # Local configuration / secrets
 .env
