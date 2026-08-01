@@ -4,6 +4,7 @@ import ch.qos.logback.classic.Logger;
 import ch.qos.logback.classic.LoggerContext;
 import ch.qos.logback.classic.joran.JoranConfigurator;
 import ch.qos.logback.core.Appender;
+import com.recsys.infrastructure.observability.SplunkHecAppender;
 import io.micrometer.core.instrument.MeterRegistry;
 import io.micrometer.core.instrument.simple.SimpleMeterRegistry;
 import org.junit.jupiter.api.Test;
@@ -25,20 +26,20 @@ class SplunkHecMetricsTest {
                 .as("a JVM whose Logback config has no SPLUNK appender must not blow up")
                 .doesNotThrowAnyException();
 
-        assertThat(registry.find("splunk_hec_events_sent_total").gauge()).isNull();
+        assertThat(registry.find("splunk_hec_events_sent_total").functionCounter()).isNull();
     }
 
     @Test
-    void registersGaugesWhenTheAppenderIsPresent() throws Exception {
+    void registersMetersWhenTheAppenderIsPresent() throws Exception {
         MeterRegistry registry = new SimpleMeterRegistry();
         LoggerContext context = configuredContext();
         try {
             SplunkHecMetrics.register(registry, context);
 
-            assertThat(registry.find("splunk_hec_events_sent_total").gauge()).isNotNull();
-            assertThat(registry.find("splunk_hec_events_dropped_total").gauge()).isNotNull();
-            assertThat(registry.find("splunk_hec_events_failed_total").gauge()).isNotNull();
-            assertThat(registry.find("splunk_hec_events_indeterminate_total").gauge()).isNotNull();
+            assertThat(registry.find("splunk_hec_events_sent_total").functionCounter()).isNotNull();
+            assertThat(registry.find("splunk_hec_events_dropped_total").functionCounter()).isNotNull();
+            assertThat(registry.find("splunk_hec_events_failed_total").functionCounter()).isNotNull();
+            assertThat(registry.find("splunk_hec_events_indeterminate_total").functionCounter()).isNotNull();
             assertThat(registry.find("splunk_hec_queue_depth").gauge()).isNotNull();
         } finally {
             context.stop();
@@ -46,7 +47,7 @@ class SplunkHecMetricsTest {
     }
 
     @Test
-    void gaugesReportTheAppendersSnapshot() throws Exception {
+    void metersReportTheAppendersSnapshot() throws Exception {
         MeterRegistry registry = new SimpleMeterRegistry();
         LoggerContext context = configuredContext();
         try {
@@ -54,12 +55,46 @@ class SplunkHecMetricsTest {
 
             // With no SPLUNK_HEC_TOKEN the appender is inert, so every counter is zero —
             // which is exactly what a healthy idle service should report.
-            assertThat(registry.get("splunk_hec_events_sent_total").gauge().value()).isZero();
-            assertThat(registry.get("splunk_hec_events_dropped_total").gauge().value()).isZero();
+            assertThat(registry.get("splunk_hec_events_sent_total").functionCounter().count()).isZero();
+            assertThat(registry.get("splunk_hec_events_dropped_total").functionCounter().count()).isZero();
             assertThat(registry.get("splunk_hec_queue_depth").gauge().value()).isZero();
         } finally {
             context.stop();
         }
+    }
+
+    @Test
+    void eachMeterReportsItsOwnFieldWithDistinctValues() {
+        // All non-appender-backed tests run against a disabled appender where every field is 0.
+        // Swapping any two lambdas in the implementation leaves all tests green (0 == 0).
+        // This test drives distinct non-zero values through each field and asserts the mapping.
+        // Transposing any two lambdas will fail this test.
+        MeterRegistry registry = new SimpleMeterRegistry();
+        SplunkHecAppender.Snapshot snapshot = new SplunkHecAppender.Snapshot(
+                1, // queued (int)
+                2, // sent (long)
+                3, // dropped (long)
+                4, // failed (long)
+                5  // indeterminate (long)
+        );
+
+        SplunkHecMetrics.register(registry, () -> snapshot);
+
+        assertThat(registry.get("splunk_hec_events_sent_total").functionCounter().count())
+                .as("sent_total should report sent field (2)")
+                .isEqualTo(2.0);
+        assertThat(registry.get("splunk_hec_events_dropped_total").functionCounter().count())
+                .as("dropped_total should report dropped field (3)")
+                .isEqualTo(3.0);
+        assertThat(registry.get("splunk_hec_events_failed_total").functionCounter().count())
+                .as("failed_total should report failed field (4)")
+                .isEqualTo(4.0);
+        assertThat(registry.get("splunk_hec_events_indeterminate_total").functionCounter().count())
+                .as("indeterminate_total should report indeterminate field (5)")
+                .isEqualTo(5.0);
+        assertThat(registry.get("splunk_hec_queue_depth").gauge().value())
+                .as("queue_depth should report queued field (1)")
+                .isEqualTo(1.0);
     }
 
     @Test

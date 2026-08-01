@@ -5,23 +5,26 @@ import ch.qos.logback.classic.LoggerContext;
 import ch.qos.logback.classic.spi.ILoggingEvent;
 import ch.qos.logback.core.Appender;
 import com.recsys.infrastructure.observability.SplunkHecAppender;
+import io.micrometer.core.instrument.FunctionCounter;
 import io.micrometer.core.instrument.Gauge;
 import io.micrometer.core.instrument.MeterRegistry;
 import org.slf4j.LoggerFactory;
 
 import java.util.Iterator;
+import java.util.function.Supplier;
 
 /**
- * Publishes {@link SplunkHecAppender}'s delivery counters as Micrometer gauges.
+ * Publishes {@link SplunkHecAppender}'s delivery counters as Micrometer metrics.
  *
  * <p>Phase 1 shipped those counters and exposed them to nothing: log-shipping loss shows up
  * only as {@code WARN in ch.qos.logback...} lines on stdout, which is not where anyone looks
  * when asking "are we losing logs?". This is the bridge that makes them alertable.
  *
- * <p>Registered as <strong>gauges over a monotonic source</strong> rather than counters. The
- * appender already owns {@code AtomicLong}s; a Micrometer {@code Counter} would need a second
- * increment site and would double-count. Prometheus {@code rate()} and {@code increase()}
- * work correctly over a monotonically increasing gauge.
+ * <p>The four {@code _total} metrics are registered as {@link FunctionCounter}s wrapping the
+ * appender's externally-owned monotonic {@code AtomicLong}s; {@code queue_depth} is a
+ * {@link Gauge} because it rises and falls. {@code FunctionCounter} is designed precisely for
+ * this: reading an already-monotonic external value without a second increment site or
+ * double-counting.
  *
  * <p>The appender is constructed by Logback before any {@link MeterRegistry} exists, which is
  * why this looks it up from the root logger instead of being handed one. It is a no-op when
@@ -46,30 +49,45 @@ public final class SplunkHecMetrics {
         if (appender == null) {
             return; // No Splunk appender configured — nothing to publish.
         }
-
-        gauge(registry, "splunk_hec_events_sent_total", appender,
-                a -> a.snapshot().sent(),
-                "Log events confirmed accepted by Splunk (2xx).");
-        gauge(registry, "splunk_hec_events_dropped_total", appender,
-                a -> a.snapshot().dropped(),
-                "Log events discarded because the bounded queue was full.");
-        gauge(registry, "splunk_hec_events_failed_total", appender,
-                a -> a.snapshot().failed(),
-                "Log events Splunk definitively refused, or that never left the host.");
-        gauge(registry, "splunk_hec_events_indeterminate_total", appender,
-                a -> a.snapshot().indeterminate(),
-                "Log events sent but never acknowledged: possibly delivered, possibly lost.");
-        gauge(registry, "splunk_hec_queue_depth", appender,
-                a -> a.snapshot().queued(),
-                "Log events currently waiting in the appender's bounded queue.");
+        register(registry, appender::snapshot);
     }
 
-    private static void gauge(MeterRegistry registry, String name, SplunkHecAppender appender,
-                              java.util.function.ToDoubleFunction<SplunkHecAppender> value,
-                              String description) {
-        Gauge.builder(name, appender, value)
-                .description(description)
+    /** Package-private overload for testing with a custom snapshot supplier. */
+    static void register(MeterRegistry registry, Supplier<SplunkHecAppender.Snapshot> snapshotSupplier) {
+        SnapshotHolder holder = new SnapshotHolder(snapshotSupplier);
+        FunctionCounter.builder("splunk_hec_events_sent_total", holder,
+                h -> h.getSnapshot().sent())
+                .description("Log events confirmed accepted by Splunk (2xx).")
                 .register(registry);
+        FunctionCounter.builder("splunk_hec_events_dropped_total", holder,
+                h -> h.getSnapshot().dropped())
+                .description("Log events discarded because the bounded queue was full.")
+                .register(registry);
+        FunctionCounter.builder("splunk_hec_events_failed_total", holder,
+                h -> h.getSnapshot().failed())
+                .description("Log events Splunk definitively refused, or that never left the host.")
+                .register(registry);
+        FunctionCounter.builder("splunk_hec_events_indeterminate_total", holder,
+                h -> h.getSnapshot().indeterminate())
+                .description("Log events sent but never acknowledged: possibly delivered, possibly lost.")
+                .register(registry);
+        Gauge.builder("splunk_hec_queue_depth", holder,
+                h -> h.getSnapshot().queued())
+                .description("Log events currently waiting in the appender's bounded queue.")
+                .register(registry);
+    }
+
+    /** Helper to hold a snapshot supplier for use with Micrometer builders. */
+    private static class SnapshotHolder {
+        private final Supplier<SplunkHecAppender.Snapshot> supplier;
+
+        SnapshotHolder(Supplier<SplunkHecAppender.Snapshot> supplier) {
+            this.supplier = supplier;
+        }
+
+        SplunkHecAppender.Snapshot getSnapshot() {
+            return supplier.get();
+        }
     }
 
     private static SplunkHecAppender findAppender(LoggerContext context) {
