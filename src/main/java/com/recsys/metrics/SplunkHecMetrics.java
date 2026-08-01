@@ -11,6 +11,8 @@ import io.micrometer.core.instrument.MeterRegistry;
 import org.slf4j.LoggerFactory;
 
 import java.util.Iterator;
+import java.util.List;
+import java.util.concurrent.CopyOnWriteArrayList;
 import java.util.function.Supplier;
 
 /**
@@ -35,6 +37,24 @@ public final class SplunkHecMetrics {
     /** Must match the appender's name in {@code logback-common.xml}. */
     private static final String APPENDER_NAME = "SPLUNK";
 
+    /**
+     * Strong references to every {@link SnapshotHolder} ever registered, kept alive for the
+     * life of the JVM.
+     *
+     * <p>The five meter builders below hand Micrometer the holder as a <em>state object</em>
+     * and a lambda that reads a field off its parameter (e.g. {@code h -> h.getSnapshot().sent()})
+     * rather than closing over {@code holder} directly. Micrometer stores that state object as a
+     * {@link java.lang.ref.WeakReference} by design — so once {@link #register(MeterRegistry,
+     * Supplier)} returns, nothing else in the JVM held a strong reference to the holder, and it
+     * became collectable. A GC then leaves a {@code Gauge} permanently reporting {@code NaN}, and
+     * — worse — freezes every {@code FunctionCounter} at its last pre-GC value with no error,
+     * which is silent, alertable-metric-shaped data loss: exactly the failure mode this whole
+     * class exists to make visible. Do not remove this list to "clean up" apparently-unused
+     * state; registration happens once per JVM (at most a handful of times across the process's
+     * lifetime — one per service), so this is bounded, intentional retention, not a leak.
+     */
+    private static final List<Object> RETAINED = new CopyOnWriteArrayList<>();
+
     private SplunkHecMetrics() {}
 
     /** Registers against the JVM's active Logback context. */
@@ -55,6 +75,7 @@ public final class SplunkHecMetrics {
     /** Package-private overload for testing with a custom snapshot supplier. */
     static void register(MeterRegistry registry, Supplier<SplunkHecAppender.Snapshot> snapshotSupplier) {
         SnapshotHolder holder = new SnapshotHolder(snapshotSupplier);
+        RETAINED.add(holder); // see RETAINED's javadoc — must survive a GC, or these meters go dark.
         FunctionCounter.builder("splunk_hec_events_sent_total", holder,
                 h -> h.getSnapshot().sent())
                 .description("Log events confirmed accepted by Splunk (2xx).")

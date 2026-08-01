@@ -10,7 +10,11 @@ import io.micrometer.core.instrument.simple.SimpleMeterRegistry;
 import org.junit.jupiter.api.Test;
 
 import java.io.File;
+import java.lang.ref.WeakReference;
 import java.util.Iterator;
+import java.util.concurrent.atomic.AtomicInteger;
+import java.util.concurrent.atomic.AtomicLong;
+import java.util.function.Supplier;
 
 import static org.assertj.core.api.Assertions.assertThat;
 import static org.assertj.core.api.Assertions.assertThatCode;
@@ -117,6 +121,75 @@ class SplunkHecMetricsTest {
         } finally {
             context.stop();
         }
+    }
+
+    @Test
+    void metersSurviveGarbageCollectionOfTheirBackingState() {
+        // Micrometer stores the state object handed to FunctionCounter/Gauge builders as a
+        // WeakReference. register()'s local `holder` variable is not captured by any of the
+        // five value-lambdas (they take it as a parameter instead), so unless register() keeps
+        // its own strong reference alive, `holder` is eligible for collection the moment
+        // register() returns — and a GC then freezes every counter and NaNs the gauge, silently.
+        // This test proves the fix survives a *real* GC, not a hopeful one: it forces an actual
+        // collection (verified via a canary WeakReference) before making its assertions.
+        MeterRegistry registry = new SimpleMeterRegistry();
+        AtomicLong failed = new AtomicLong(7);
+        AtomicInteger queued = new AtomicInteger(3);
+        Supplier<SplunkHecAppender.Snapshot> mutableSupplier = () ->
+                new SplunkHecAppender.Snapshot(queued.get(), 0, 0, failed.get(), 0);
+
+        SplunkHecMetrics.register(registry, mutableSupplier);
+
+        assertThat(registry.get("splunk_hec_events_failed_total").functionCounter().count())
+                .isEqualTo(7.0);
+        assertThat(registry.get("splunk_hec_queue_depth").gauge().value()).isEqualTo(3.0);
+
+        // Confirm the meters track live state before touching the GC at all.
+        failed.set(20);
+        queued.set(9);
+        assertThat(registry.get("splunk_hec_events_failed_total").functionCounter().count())
+                .isEqualTo(20.0);
+        assertThat(registry.get("splunk_hec_queue_depth").gauge().value()).isEqualTo(9.0);
+
+        forceARealGarbageCollection();
+
+        // Post-GC: if register()'s state object was collected, the counter freezes at 20.0
+        // forever and the gauge goes NaN. Neither may happen.
+        failed.set(999);
+        queued.set(42);
+        assertThat(registry.get("splunk_hec_events_failed_total").functionCounter().count())
+                .as("a FunctionCounter must keep tracking its backing state after a GC, "
+                        + "not silently freeze at its last pre-GC value")
+                .isEqualTo(999.0);
+        assertThat(registry.get("splunk_hec_queue_depth").gauge().value())
+                .as("a Gauge must not go NaN after a GC collects its Micrometer-weakly-held "
+                        + "state object")
+                .isEqualTo(42.0);
+    }
+
+    /**
+     * Forces an actual garbage collection and proves it happened, rather than merely hoping
+     * {@code System.gc()} did something. A canary object is wrapped in a {@link WeakReference};
+     * once that reference clears, a real collection is known to have run, so the test's own
+     * premise — "a GC occurred" — is not itself a flaky assumption.
+     */
+    private static void forceARealGarbageCollection() {
+        WeakReference<Object> canary = new WeakReference<>(new Object());
+        for (int attempt = 0; attempt < 50 && canary.get() != null; attempt++) {
+            System.gc();
+            System.runFinalization();
+            // Allocate pressure: a bare System.gc() call is only ever a JVM hint. Forcing real
+            // allocation churn makes an actual young-gen collection far more likely to run.
+            byte[][] pressure = new byte[64][];
+            for (int i = 0; i < pressure.length; i++) {
+                pressure[i] = new byte[1024 * 1024];
+            }
+            pressure = null;
+        }
+        assertThat(canary.get())
+                .as("test bug, not product bug: could not force a real GC to occur, "
+                        + "so this test cannot prove anything")
+                .isNull();
     }
 
     /** Configures a context from the real logback.xml, as the running services do. */
