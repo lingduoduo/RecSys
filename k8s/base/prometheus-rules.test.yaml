@@ -73,7 +73,9 @@ tests:
   - interval: 1m
     input_series:
       - series: 'splunk_hec_events_indeterminate_total{job="recsys-online-serving"}'
-        values: '0+3x30'
+        values: '0+3x30'        # rising: indeterminate deliveries happening
+      - series: 'splunk_hec_events_indeterminate_total{job="recsys-api-gateway"}'
+        values: '5+0x30'        # flat: some indeterminate historically, none now
     alert_rule_test:
       - eval_time: 20m
         alertname: SplunkHecIndeterminateDelivery
