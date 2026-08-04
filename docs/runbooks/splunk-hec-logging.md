@@ -176,10 +176,31 @@ if ! (umask 077; printf 'SPLUNK_PASSWORD=%s\nSPLUNK_HEC_TOKEN=%s\n' \
   rm -f "$tmp_splunk_env"
   exit 1
 fi
-if ! chmod 600 "$tmp_splunk_env" || ! mv "$tmp_splunk_env" /tmp/recsys-splunk.env; then
+if ! chmod 600 "$tmp_splunk_env"; then
   rm -f "$tmp_splunk_env"
   exit 1
 fi
+case "$(uname -s)" in
+  Darwin|FreeBSD|NetBSD|OpenBSD)
+    if ! mv -h "$tmp_splunk_env" /tmp/recsys-splunk.env; then
+      rm -f "$tmp_splunk_env"
+      printf '%s\n' 'Could not safely replace the env file; keeping the existing target.' >&2
+      exit 1
+    fi
+    ;;
+  Linux)
+    if ! mv -T "$tmp_splunk_env" /tmp/recsys-splunk.env; then
+      rm -f "$tmp_splunk_env"
+      printf '%s\n' 'Could not safely replace the env file; keeping the existing target.' >&2
+      exit 1
+    fi
+    ;;
+  *)
+    rm -f "$tmp_splunk_env"
+    printf '%s\n' 'Unsupported platform for safe env-file replacement; keeping the existing target.' >&2
+    exit 1
+    ;;
+esac
 ```
 
 If the container was recreated after credentials changed, `docker inspect` can return
