@@ -187,3 +187,127 @@ git add -- README.md docs/superpowers/plans/2026-08-04-local-splunk-runbook.md
 git commit -m "docs: link local Splunk setup from README"
 git push origin docs/local-splunk-runbook
 ```
+
+### Task 3: Integrate validated local troubleshooting and search workflows
+
+**Files:**
+- Modify: `docs/runbooks/splunk-hec-logging.md`
+- Modify: `docs/superpowers/plans/2026-08-04-local-splunk-runbook.md`
+- Reference: `scripts/run-microservices-local.sh`
+- Reference: `docker-compose.streaming.yml`
+- Test: `src/test/java/com/recsys/docs/DocumentationIndexTest.java`
+
+**Interfaces:**
+- Consumes: `/tmp/recsys-splunk.env`, the running `splunk` container environment,
+  HEC endpoints on port 8088, streaming infrastructure from
+  `docker-compose.streaming.yml`, and host services on ports 6010, 7010, 8080, and
+  8010.
+- Produces: One linear, validated workflow from Splunk startup through backend log
+  searches, with recovery steps for credential drift and stale host processes.
+
+- [ ] **Step 1: Add credential recovery and HEC validation**
+
+After the stable-credential warning, explain that HTTP 403 or a rejected UI login can
+mean the env file was regenerated while initialized volumes were retained. Recover both
+values from the local container and recreate the restricted env file:
+
+```bash
+export SPLUNK_PASSWORD="$(
+  docker inspect --format '{{range .Config.Env}}{{println .}}{{end}}' splunk |
+  sed -n 's/^SPLUNK_PASSWORD=//p'
+)"
+export SPLUNK_HEC_TOKEN="$(
+  docker inspect --format '{{range .Config.Env}}{{println .}}{{end}}' splunk |
+  sed -n 's/^SPLUNK_HEC_TOKEN=//p'
+)"
+umask 077
+printf 'SPLUNK_PASSWORD=%s\nSPLUNK_HEC_TOKEN=%s\n' \
+  "$SPLUNK_PASSWORD" "$SPLUNK_HEC_TOKEN" > /tmp/recsys-splunk.env
+```
+
+Validate HEC before application startup:
+
+```bash
+curl --fail http://localhost:8088/services/collector/health
+```
+
+Expected body: `{"text":"HEC is healthy","code":17}`. Retain the direct event POST
+and its expected `{"text":"Success","code":0}` response as the token check.
+
+- [ ] **Step 2: Replace the application startup subsection with explicit gates**
+
+Document streaming dependency startup first:
+
+```bash
+docker compose -f docker-compose.streaming.yml up -d
+```
+
+Then load the stable credentials and required development-only values:
+
+```bash
+set -a
+. /tmp/recsys-splunk.env
+set +a
+export RECOMMENDATION_CURSOR_SIGNING_KEY="$(openssl rand -hex 32)"
+export GATEWAY_ALLOW_ANONYMOUS=true
+export SPLUNK_HEC_URL="http://localhost:8088/services/collector/event"
+printf 'HEC token=%s signing key=%s anonymous=%s\n' \
+  "${SPLUNK_HEC_TOKEN:+SET}" \
+  "${RECOMMENDATION_CURSOR_SIGNING_KEY:+SET}" \
+  "$GATEWAY_ALLOW_ANONYMOUS"
+```
+
+The expected check is `HEC token=SET signing key=SET anonymous=true`; it must not print
+either secret. Check ports 6010, 7010, 8080, and 8010 with `lsof` before running
+`sh scripts/run-microservices-local.sh`, and explain that a listener left by an earlier
+run must be stopped before relaunching.
+
+- [ ] **Step 3: Add service monitoring and health verification**
+
+Keep `scripts/run-microservices-local.sh` in the foreground. In a second terminal,
+document:
+
+```bash
+tail -f logs/recsys-serving.log logs/online-serving.log \
+  logs/model-serving.log logs/api-gateway.log
+```
+
+Check every service independently:
+
+```bash
+curl http://localhost:6010/health
+curl http://localhost:7010/health
+curl http://localhost:8080/health/ready
+curl http://localhost:8010/health
+```
+
+State that one healthy endpoint does not prove the script completed, and mention that
+model serving can fail when required local model artifacts are absent.
+
+- [ ] **Step 4: Expand the local search cookbook**
+
+Add copy-pasteable searches for all events, one service, counts by source, counts by
+source and level, recent warnings/errors, a message fragment, a one-minute time chart,
+and exceptions. Every query uses `index=recsys sourcetype="recsys:app:log"`. Retain the
+warning that only model serving currently supplies `traceId`.
+
+- [ ] **Step 5: Consolidate overlapping troubleshooting**
+
+Move the existing password-only recovery guidance into one credential-mismatch section
+that covers both UI login failure and HEC `403 Invalid token`. Keep destructive
+`down -v` as the fallback only when the running container credentials cannot be used or
+a clean reset is intended.
+
+- [ ] **Step 6: Verify and publish the revision**
+
+Run:
+
+```bash
+rg -n 'collector/health|RECOMMENDATION_CURSOR_SIGNING_KEY|GATEWAY_ALLOW_ANONYMOUS|docker-compose.streaming.yml|lsof -nP|logs/recsys-serving.log|stats count by source level' docs/runbooks/splunk-hec-logging.md
+mvn --batch-mode test -Dtest=DocumentationIndexTest -DexcludedGroups=load,docker
+git diff --check
+```
+
+Expected: every new workflow marker is present, `DocumentationIndexTest` passes 2/2,
+and `git diff --check` emits no output. Mark Task 3 complete, commit the runbook and plan,
+and push `docs/local-splunk-runbook` to the existing PR.
