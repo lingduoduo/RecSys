@@ -526,6 +526,7 @@ Operational runbooks — **all of them**, same index rule as above:
 - [Splunk HEC logging](docs/runbooks/splunk-hec-logging.md) — shipping structured application logs to Splunk, and the at-most-once limits of what lands there.
 
 *Data and delivery*
+- [Serving data freshness](docs/runbooks/serving-data-freshness.md) — the online feature-view and outbox-delivery SLOs, and why a freshness gauge can read healthy while nothing is measuring it.
 - [Durable eventual consistency](docs/runbooks/durable-eventual-consistency.md) — outbox, saga state, relay, consistency tokens, reconciliation.
 - [Kafka partition cutover](docs/runbooks/kafka-partition-cutover.md) — moving to a new topic generation without breaking per-user ordering.
 - [Cursor key rotation](docs/runbooks/recommendation-cursor-key-rotation.md) — rotating the HMAC signing key behind pagination cursors.

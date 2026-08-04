@@ -72,6 +72,7 @@ into Phase 2 — see §5.
 | Online Serving (`OnlinePredictionServer`) | 7010 | `/metrics` | `recsys-online-serving` |
 | API Gateway (`MicroserviceGatewayServer`) | 8010 | `/metrics` | `recsys-api-gateway` |
 | Model Serving (Spring Boot, `ModelApplication`) | 8080 | `/actuator/prometheus` | `recsys-model-serving` |
+| Outbox relay (`OutboxRelayCommand`) | 7020 | `/metrics` | `recsys-outbox-relay` |
 
 The three Armeria mains wire a `PrometheusMeterRegistry` directly and mount
 `PrometheusExpositionService` at `/metrics` (`RecSysServer.java`, `OnlinePredictionServer.java`,
@@ -112,28 +113,35 @@ clearest example in the repo of instrumentation that looked present — metrics 
 computed, the exposition endpoint answered `curl` — and was not actually observable by
 anything.
 
-**This closed the gap for the four `EXPECTED_SCRAPE_TARGETS` services — not for every
-Prometheus-shaped endpoint in the cluster.** The outbox relay
-(`k8s/base/outbox-relay-deployment.yaml`) declares `prometheus.io/scrape: "true"`,
-`prometheus.io/path: "/metrics"`, `prometheus.io/port: "7020"`, and its `/metrics`
-endpoint really does answer (`OutboxRelayCommand` mounts
+**The outbox relay was the fifth target, and it was missed here — closed 2026-08-04.** It
+is worth keeping the original diagnosis, because the relay failed in a *different* way than
+the four services above and the difference is the instructive part.
+
+The relay's `/metrics` endpoint always answered: `OutboxRelayCommand` mounts
 `PrometheusExpositionService` on port 7020, backed by its own `ConsistencyMetrics`
 instance — the sole emitter of `outbox_delivery_failures_total` and
-`outbox_delivery_lag_seconds`). But there is **no `Service` for `recsys-outbox-relay`
-anywhere under `k8s/`** (verified with `grep -rn "outbox-relay" k8s/`: the Deployment is
-the only manifest that mentions it), so no `ServiceMonitor` can select it — a
-ServiceMonitor-driven Prometheus Operator scrapes `Service`+`Endpoints` objects, not bare
-`prometheus.io/*` pod annotations, which are a convention for a different, annotation-scraping
-Prometheus setup that this cluster does not run. The annotations are inert. `up{namespace="recsys"}`
-therefore has no series for the relay, `RecsysTargetDown` (§4) cannot cover it (its own
-blind spot, described there), and `ScrapeTargetManifestTest` does not check for it either
-— `EXPECTED_SCRAPE_TARGETS` deliberately lists only the four services this phase wired
-up. This costs real coverage: the relay is the component `OutboxBacklogGrowing` is about,
-and its own annotation tells an operator to check `outbox_delivery_failures_total` and
-`outbox_delivery_lag_seconds` next — metrics nothing is collecting. Adding a Service and
-ServiceMonitor for the relay is a deployment change, deliberately left to a separate PR;
-this document exists to say plainly that it has not happened yet, rather than let the
-"scrape gap closed" framing above be read as covering it.
+`outbox_delivery_lag_seconds`. And unlike the four services, it *looked* configured:
+`k8s/base/outbox-relay-deployment.yaml` carried `prometheus.io/scrape: "true"`,
+`prometheus.io/path: "/metrics"` and `prometheus.io/port: "7020"` on the pod template. Those
+annotations are a convention for an annotation-scraping Prometheus setup that this cluster
+does not run. A ServiceMonitor-driven Prometheus Operator discovers `Service`+`Endpoints`
+objects and never reads them, and there was no `Service` for `recsys-outbox-relay` anywhere
+under `k8s/` for a `ServiceMonitor` to select. The annotations were inert — **configuration
+that documents an intent nobody implemented is worse than none, because it reads as
+evidence the wiring exists.**
+
+The cost was concrete: `up{namespace="recsys"}` had no series for the relay, so
+`RecsysTargetDown` (§4) could not cover it; the relay is the very component
+`OutboxBacklogGrowing` is about, and its annotation told operators to go check two metrics
+nothing was collecting.
+
+All three layers now exist — a labelled `Service` beside the Deployment, a
+`recsys-outbox-relay` `ServiceMonitor`, and an ingress rule admitting Prometheus to 7020 —
+and the misleading annotations are gone. `EXPECTED_SCRAPE_TARGETS` in
+`ScrapeTargetManifestTest` now lists **five** services, so the relay is held to the same
+three-layer contract as the rest. This landed together with the data-freshness alerts
+(§4) that read the relay's series: an alert on an uncollected metric is false coverage, so
+the scrape path had to exist before those alerts could mean anything.
 
 ### 3.3 Metric inventory, by subsystem
 
@@ -160,8 +168,19 @@ truth, not this table — verify by reading it, not by trusting the prose.
 | Metric | Registered in |
 |---|---|
 | `redis_cache_available`, `_used_memory_bytes`, `_max_memory_bytes`, `_evicted_keys`, `_keyspace_hits`, `_keyspace_misses`, `_evicts_only_volatile_keys`, `redis_keyspace_sampled_keys`, `redis_keyspace_sample_available`, `redis_unexpected_persistent_keys` | [`metrics/RedisCacheMetrics.java`](../../src/main/java/com/recsys/metrics/RedisCacheMetrics.java) |
-| `redis_replica_lag_available`, `redis_replica_lag_seconds`, `redis_feature_version_min`, `_max`, `_age_seconds` | [`metrics/ConsistencyMetrics.java`](../../src/main/java/com/recsys/metrics/ConsistencyMetrics.java) |
+| `redis_replica_lag_available`, `redis_replica_lag_seconds`, `redis_feature_version_min`, `_max`, `_age_seconds`, `redis_feature_version_sample_available` | [`metrics/ConsistencyMetrics.java`](../../src/main/java/com/recsys/metrics/ConsistencyMetrics.java) |
 | `recsys_online_rate_limit_decisions_total` (tagged `source`, `result`) | [`ratelimit/RedisRateLimiter.java`](../../src/main/java/com/recsys/ratelimit/RedisRateLimiter.java) |
+
+`redis_feature_version_sample_available` is the same availability-companion pattern as
+`redis_keyspace_sample_available` in the row above, and exists for the same reason:
+`redis_feature_version_age_seconds` initializes to `0` and is written only by a *successful*
+sample from [`RedisFeatureVersionSampler`](../../src/main/java/com/recsys/infrastructure/redis/RedisFeatureVersionSampler.java),
+and is deliberately **not** cleared on failure so the last known-good age survives for
+diagnosis. Both properties mean a low age is not by itself evidence of fresh data — a
+process that never sampled, and one whose sampler died, both read as a small healthy number
+forever. Only the companion gauge distinguishes them. Note it is registered by *every*
+`ConsistencyMetrics`, including the relay's, which runs no sampler and so reports `0`
+permanently; §4's alerts scope to `job="recsys-online-serving"` for that reason.
 
 **Outbox / consistency** — transactional outbox backlog and durable-delivery bookkeeping,
 all in the one class because they share the online server's `ConsistencyMetrics` instance.
@@ -257,7 +276,7 @@ form is just the Spring/Micrometer-idiomatic way of writing the same name in Jav
 
 ## 4. Alerts
 
-All eight live in
+All thirteen live in
 [`k8s/base/prometheus-rules.yaml`](../../k8s/base/prometheus-rules.yaml), one
 `PrometheusRule` CR. Every expression was checked against a real metric name in
 `src/main/java` before being written — an alert on a metric that is never emitted is
@@ -273,6 +292,36 @@ worse than no alert, because it looks like coverage and can never fire.
 | `RedisCacheUnavailable` | `redis_cache_available == 0` for 5 m — the cache stats probe cannot reach Redis at all | Redis pod down, or a NetworkPolicy egress rule blocking the connection | Check Redis pod status and the relevant service's egress rule in `k8s/base/network-policy.yaml`; serving degrades to stale-or-empty results depending on the path (§1 of [02_Caching](02_Caching.md)) rather than erroring outright. |
 | `RedisReplicaLagHigh` | `redis_replica_lag_seconds > 10 or redis_replica_lag_available == 0` for 10 m — replica reads are stale, or the lag probe itself can't tell | Replica pod slow/overloaded, or a network partition to the replica | Check replica pod status and network connectivity between replicas; a read routed to a lagging replica can contradict a write that already succeeded elsewhere. |
 | `OutboxBacklogGrowing` | `outbox_pending_events > 1000 and delta(outbox_pending_events[15m]) > 0` for 3 m — more than 1000 events pending **and** still rising | The outbox relay is falling behind its publish target (Kafka or SNS) | Check `outbox_delivery_failures_total` and `outbox_delivery_lag_seconds` to identify which destination is backed up; eventual-consistency windows widen for as long as this holds. |
+
+**Serving data freshness SLOs** (added 2026-08-04) — five more alerts in the same
+`recsys.data` group, watching the *data* at two boundaries rather than the request path.
+Full incident procedure lives in the
+[serving data freshness runbook](../runbooks/serving-data-freshness.md); this table is the
+inventory. These are internal objectives, not customer SLAs.
+
+| Alert | Means | Likely cause | First response |
+|---|---|---|---|
+| `OnlineFeatureDataStale` | `redis_feature_version_age_seconds{job="recsys-online-serving"} > 60` for 5 m | The Flink online-feature job is stalled, restarting, or falling behind its Kafka sources | 60 s is the entire stale-on-error budget `OnlineFeatureStore` may serve within, so this means five minutes outside serving's own contract. Check the Flink job's state and checkpoints first, then Kafka consumer lag. Serving continues on bounded stale data — restore the writer, do **not** delete feature keys. |
+| `OnlineFeatureDataCriticallyStale` | Same series `> 300` for 5 m — **critical** | The feature view has effectively stopped advancing | Treat recommendations as built from abandoned data. Same diagnosis order; also check whether Redis lost the feature keyspace entirely. |
+| `OnlineFeatureVersionSampleUnavailable` | `redis_feature_version_sample_available{job="recsys-online-serving"} == 0` for 5 m | Redis unreachable from online serving, no `*:updated_at` keys exist, or the sampler never started | **The two alerts above are blind while this fires.** The age gauge is frozen at its last good value, so a low age is stale evidence, not fresh data. Cross-check `RedisCacheUnavailable`: if both fire, this is a Redis connectivity incident. |
+| `OutboxDeliveryLatencyHigh` | `outbox_delivery_lag_seconds_max{destination="kafka_online"} > 30` for 10 m | Relay throughput, Kafka partition leadership churn, or a contended MySQL outbox table | `_max`, not the bare meter name — Micrometer exposes a Timer as `_count`/`_sum`/`_max`. It is a *decaying window* max, so a relay that stops delivering **entirely** falls back toward 0 and does not raise this; that case is `OutboxBacklogGrowing`'s. The two are complementary. |
+| `OutboxDeliveryFailuresSustained` | `increase(outbox_delivery_failures_total{destination="kafka_online"}[5m]) > 0` for 10 m | A destination that keeps rejecting — auth, unknown topic, timeout, serialization | Events stay durable in the MySQL outbox; the consistency window widens until delivery recovers. Check relay logs for the failure class. Do not clear the outbox table to silence it. |
+
+Two things about that group are deliberate and easy to "fix" into being wrong:
+
+- **The `job` selector on the three feature alerts is load-bearing, not decoration.** Every
+  process that builds a `ConsistencyMetrics` registers the feature gauges — including the
+  outbox relay, which runs no sampler and reports a permanent age and availability of `0`,
+  and which is now genuinely scraped (§3.2). Unscoped, `OnlineFeatureVersionSampleUnavailable`
+  would page forever about a process that was never meant to observe the feature view.
+- **`OutboxDeliveryFailuresSustained` inverts the range/`for:` rule below on purpose.** The
+  first trap in the list that follows says to keep `for:` well below the range window — which
+  is right for a *burst* alert. This one is the opposite case: the counter increments once per
+  failed **attempt** and the relay retries, so a short burst is routine and must not page. A
+  window as long as the hold keeps a finished burst true long enough to satisfy it — measured
+  with `promtool`, a four-attempt burst under `[10m]`/`for: 10m` fires spuriously at t=11 m.
+  The 5 m window cannot span the 10 m hold, so only continuing failures fire. Both directions
+  are pinned by cases in `prometheus-rules.test.yaml` confirmed to turn red under mutation.
 
 **Two general traps this file already fell into once, worth naming so nobody repeats
 them elsewhere:**
