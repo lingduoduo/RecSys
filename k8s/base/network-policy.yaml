@@ -167,6 +167,35 @@ spec:
         - port: 53
           protocol: TCP
 ---
+# Outbox relay: ingress from Prometheus only. Nothing else in the cluster calls the relay —
+# 7020 serves /metrics and the two health probes, not request traffic.
+#
+# Ingress-only on purpose. The relay's whole job is reaching MySQL and Kafka (and, in EKS,
+# ElastiCache), so declaring policyTypes: [Ingress] leaves egress unrestricted rather than
+# black-holing delivery the moment this file lands. Kubelet probes originate from the node
+# rather than a pod and are not matched by any `from` selector here; they pass for the same
+# CNI reason the four services above already depend on.
+apiVersion: networking.k8s.io/v1
+kind: NetworkPolicy
+metadata:
+  name: recsys-outbox-relay
+  namespace: recsys
+spec:
+  podSelector:
+    matchLabels:
+      app: recsys-outbox-relay
+  policyTypes: [Ingress]
+  ingress:
+    - from:
+        - namespaceSelector:
+            matchLabels:
+              kubernetes.io/metadata.name: monitoring
+          podSelector:
+            matchLabels:
+              app.kubernetes.io/name: prometheus
+      ports:
+        - port: 7020
+---
 # Redis: ingress from serving pods only; no egress needed.
 apiVersion: networking.k8s.io/v1
 kind: NetworkPolicy
