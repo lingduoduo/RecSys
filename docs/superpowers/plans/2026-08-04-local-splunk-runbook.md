@@ -32,7 +32,7 @@
 - Consumes: Compose services `splunk` and `splunk-init`, published ports `8000` and `8088`, and environment variables `SPLUNK_PASSWORD` and `SPLUNK_HEC_TOKEN`.
 - Produces: A single local workflow whose commands consistently reuse `/tmp/recsys-splunk.env` and whose search examples target `index=recsys` and `sourcetype="recsys:app:log"`.
 
-- [ ] **Step 1: Replace the local support-boundary introduction**
+- [x] **Step 1: Replace the local support-boundary introduction**
 
 Document both paths at the beginning of `## Local bring-up`: x86_64 Docker is the
 supported reference path and Apple Silicon uses a dedicated Colima VZ/Rosetta profile
@@ -44,7 +44,7 @@ docker context show
 docker info
 ```
 
-- [ ] **Step 2: Add Apple Silicon Colima/Rosetta setup**
+- [x] **Step 2: Add Apple Silicon Colima/Rosetta setup**
 
 Add the isolated-profile commands and state that the final command must print `x86_64`:
 
@@ -55,7 +55,7 @@ docker context use colima-splunk
 docker run --rm --platform linux/amd64 alpine uname -m
 ```
 
-- [ ] **Step 3: Add persistent credential generation and startup**
+- [x] **Step 3: Add persistent credential generation and startup**
 
 Use a mode-restricted env file and make every Compose command pass it:
 
@@ -73,7 +73,7 @@ docker compose --env-file /tmp/recsys-splunk.env \
 Explain normal first-boot timing and warn that the orphan message is informational;
 do not recommend `--remove-orphans`.
 
-- [ ] **Step 4: Add readiness and UI-login checks**
+- [x] **Step 4: Add readiness and UI-login checks**
 
 Document:
 
@@ -89,7 +89,7 @@ open http://localhost:8000
 Expected initialization text is `HEC is accepting events over plain HTTP. Ready.`;
 the UI username is `admin`.
 
-- [ ] **Step 5: Add application and end-to-end HEC verification**
+- [x] **Step 5: Add application and end-to-end HEC verification**
 
 Load credentials and start services:
 
@@ -103,7 +103,7 @@ sh scripts/run-microservices-local.sh
 Include a direct HEC POST expecting `{"text":"Success","code":0}`, an application
 health request, and searches for the manual event and counts by service source.
 
-- [ ] **Step 6: Add symptom-oriented local troubleshooting**
+- [x] **Step 6: Add symptom-oriented local troubleshooting**
 
 Cover missing Compose variables, missing Colima socket, a long `Waiting` state,
 misleading health while port 8000 is unavailable, credential mismatch, and ARM signal
@@ -114,7 +114,7 @@ docker inspect --format '{{range .Config.Env}}{{println .}}{{end}}' splunk \
   | sed -n 's/^SPLUNK_PASSWORD=//p'
 ```
 
-- [ ] **Step 7: Add cleanup and verification**
+- [x] **Step 7: Add cleanup and verification**
 
 Provide stop and destructive reset separately:
 
@@ -129,7 +129,7 @@ docker ps -a --filter name=splunk
 State before `down -v` that it permanently removes local Splunk indexes and
 configuration. Include placeholder variables only for cleanup after the env file is gone.
 
-- [ ] **Step 8: Verify the documentation**
+- [x] **Step 8: Verify the documentation**
 
 Run:
 
@@ -150,4 +150,3 @@ missing-env cleanup fallback; `--remove-orphans` appears only in a warning not t
 git add docs/runbooks/splunk-hec-logging.md
 git commit -m "docs: expand local Splunk runbook"
 ```
-
