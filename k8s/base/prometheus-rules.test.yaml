@@ -255,3 +255,231 @@ tests:
                 the relay is not keeping up. Eventual consistency windows widen until it
                 drains. Check outbox_delivery_failures_total and
                 outbox_delivery_lag_seconds.
+
+  # --- OnlineFeatureDataStale / OnlineFeatureDataCriticallyStale: thresholds and job scoping ---
+  # The job selector is load-bearing, not decoration. Every process that builds a
+  # ConsistencyMetrics registers the feature gauges, including the outbox relay — which runs no
+  # sampler and so publishes a permanent age of 0 and availability of 0. Task 2 made the relay
+  # scrapeable, so those series are now real. Unscoped expressions would alert on a process that
+  # was never meant to observe the feature view. The relay series below prove the scoping holds.
+  - interval: 1m
+    input_series:
+      - series: 'redis_feature_version_age_seconds{job="recsys-online-serving", instance="10.0.0.9:7010"}'
+        values: '61x20'         # one second past the serve-stale window -> fires
+      - series: 'redis_feature_version_age_seconds{job="recsys-outbox-relay", instance="10.0.0.5:7020"}'
+        values: '900x20'        # a process with no sampler must never page this alert
+    alert_rule_test:
+      - eval_time: 15m
+        alertname: OnlineFeatureDataStale
+        exp_alerts:
+          - exp_labels:
+              severity: warning
+              job: recsys-online-serving
+              instance: 10.0.0.9:7010
+            exp_annotations:
+              summary: "Online feature view older than 60s on 10.0.0.9:7010"
+              description: >-
+                The newest *:updated_at version in Redis is more than 60 seconds old, which is
+                the whole stale-on-error budget OnlineFeatureStore is allowed to serve within.
+                Recommendations are being built from a feature view that stopped advancing.
+                Check the Flink online-feature job for a stalled or restarting task, then Kafka
+                consumer lag on its source topics. See docs/runbooks/serving-data-freshness.md.
+      - eval_time: 15m
+        alertname: OnlineFeatureDataCriticallyStale
+        exp_alerts: []          # 61 is nowhere near the critical threshold
+
+  # Exactly at each threshold: `>` must not fire, or the SLO boundary is off by one.
+  - interval: 1m
+    input_series:
+      - series: 'redis_feature_version_age_seconds{job="recsys-online-serving", instance="10.0.0.9:7010"}'
+        values: '60x20'
+    alert_rule_test:
+      - eval_time: 15m
+        alertname: OnlineFeatureDataStale
+        exp_alerts: []
+
+  - interval: 1m
+    input_series:
+      - series: 'redis_feature_version_age_seconds{job="recsys-online-serving", instance="10.0.0.9:7010"}'
+        values: '300x20'
+    alert_rule_test:
+      - eval_time: 15m
+        alertname: OnlineFeatureDataCriticallyStale
+        exp_alerts: []
+
+  - interval: 1m
+    input_series:
+      - series: 'redis_feature_version_age_seconds{job="recsys-online-serving", instance="10.0.0.9:7010"}'
+        values: '301x20'
+    alert_rule_test:
+      - eval_time: 15m
+        alertname: OnlineFeatureDataCriticallyStale
+        exp_alerts:
+          - exp_labels:
+              severity: critical
+              job: recsys-online-serving
+              instance: 10.0.0.9:7010
+            exp_annotations:
+              summary: "Online feature view older than 300s on 10.0.0.9:7010"
+              description: >-
+                The online feature view has been more than five minutes old for five minutes,
+                far outside the 60-second window serving is designed to tolerate. Treat the
+                recommendations being served as built from abandoned data. Check the Flink job
+                and Kafka first, then whether Redis lost the feature keyspace entirely.
+                See docs/runbooks/serving-data-freshness.md.
+
+  # A brief spike must not page: the `for: 5m` hold is the only thing separating one slow
+  # refresh from a stalled pipeline.
+  - interval: 1m
+    input_series:
+      - series: 'redis_feature_version_age_seconds{job="recsys-online-serving", instance="10.0.0.9:7010"}'
+        values: '10 10 90 90 10 10 10 10 10 10 10 10 10 10 10'
+    alert_rule_test:
+      - eval_time: 14m
+        alertname: OnlineFeatureDataStale
+        exp_alerts: []
+
+  # --- OnlineFeatureVersionSampleUnavailable ---
+  # The reason this alert exists at all: redis_feature_version_age_seconds initializes to 0 and
+  # only moves on a successful sample, so a sampler that has never once reached Redis reads as
+  # "0 seconds old" — indistinguishable from perfectly fresh — and OnlineFeatureDataStale can
+  # never fire for it. This is the only rule that catches that state.
+  - interval: 1m
+    input_series:
+      - series: 'redis_feature_version_sample_available{job="recsys-online-serving", instance="10.0.0.9:7010"}'
+        values: '0x20'
+      - series: 'redis_feature_version_age_seconds{job="recsys-online-serving", instance="10.0.0.9:7010"}'
+        values: '0x20'          # the trap: looks maximally fresh, means nothing
+      - series: 'redis_feature_version_sample_available{job="recsys-outbox-relay", instance="10.0.0.5:7020"}'
+        values: '0x20'          # permanently 0 by construction; must never page
+    alert_rule_test:
+      - eval_time: 15m
+        alertname: OnlineFeatureVersionSampleUnavailable
+        exp_alerts:
+          - exp_labels:
+              severity: warning
+              job: recsys-online-serving
+              instance: 10.0.0.9:7010
+            exp_annotations:
+              summary: "Online feature version sampling is not succeeding on 10.0.0.9:7010"
+              description: >-
+                No feature-version sample has succeeded for five minutes, so
+                redis_feature_version_age_seconds is frozen at its last good value and cannot be
+                trusted as a freshness reading — a low age here is stale evidence, not fresh
+                data. Either Redis is unreachable from online serving or no *:updated_at keys
+                exist. See docs/runbooks/serving-data-freshness.md.
+      - eval_time: 15m
+        alertname: OnlineFeatureDataStale
+        exp_alerts: []          # proves the frozen 0 age genuinely cannot page on its own
+
+  - interval: 1m
+    input_series:
+      - series: 'redis_feature_version_sample_available{job="recsys-online-serving", instance="10.0.0.9:7010"}'
+        values: '1x20'
+    alert_rule_test:
+      - eval_time: 15m
+        alertname: OnlineFeatureVersionSampleUnavailable
+        exp_alerts: []
+
+  # --- OutboxDeliveryLatencyHigh ---
+  # The series name is outbox_delivery_lag_seconds_max, NOT the meter name
+  # outbox_delivery_lag_seconds: Micrometer exposes a Timer as _count/_sum/_max and the bare
+  # name matches nothing. ConsistencyMetricsTest pins the exact scraped line so a Micrometer
+  # upgrade that renames it fails there instead of silently disarming this alert.
+  - interval: 1m
+    input_series:
+      - series: 'outbox_delivery_lag_seconds_max{job="recsys-outbox-relay", destination="kafka_online"}'
+        values: '31x25'
+      - series: 'outbox_delivery_lag_seconds_max{job="recsys-outbox-relay", destination="saga_sns"}'
+        values: '120x25'        # a different destination with its own budget; not this SLO
+    alert_rule_test:
+      - eval_time: 20m
+        alertname: OutboxDeliveryLatencyHigh
+        exp_alerts:
+          - exp_labels:
+              severity: warning
+              job: recsys-outbox-relay
+              destination: kafka_online
+            exp_annotations:
+              summary: "kafka_online outbox delivery slower than 30s"
+              description: >-
+                Durable online-event delivery has been taking longer than 30 seconds for ten
+                minutes, so writes accepted by the API are reaching Kafka well outside the
+                intended consistency window. Check relay logs, the MySQL outbox backlog
+                (outbox_pending_events), and Kafka broker reachability from the relay.
+                See docs/runbooks/serving-data-freshness.md.
+
+  - interval: 1m
+    input_series:
+      - series: 'outbox_delivery_lag_seconds_max{job="recsys-outbox-relay", destination="kafka_online"}'
+        values: '30x25'
+    alert_rule_test:
+      - eval_time: 20m
+        alertname: OutboxDeliveryLatencyHigh
+        exp_alerts: []
+
+  # --- OutboxDeliveryFailuresSustained ---
+  # Lookback is 5m under a 10m hold, deliberately shorter than the hold. recordDeliveryFailure
+  # increments once per failed ATTEMPT, and the relay retries — so a single transient Kafka blip
+  # is routine, not an incident. With a 10m lookback a lone increment would keep the expression
+  # true for a full 10m and page on its own; a 5m lookback cannot span the 10m hold, so only
+  # failures that keep arriving can fire this. The brief-burst case below is what proves it.
+  - interval: 1m
+    input_series:
+      - series: 'outbox_delivery_failures_total{job="recsys-outbox-relay", destination="kafka_online"}'
+        values: '0+2x30'        # failing continuously -> fires
+    alert_rule_test:
+      - eval_time: 25m
+        alertname: OutboxDeliveryFailuresSustained
+        exp_alerts:
+          - exp_labels:
+              severity: warning
+              job: recsys-outbox-relay
+              destination: kafka_online
+            exp_annotations:
+              summary: "kafka_online outbox deliveries are failing continuously"
+              description: >-
+                Delivery attempts to kafka_online have been failing without a break for ten
+                minutes, so the relay is retrying rather than draining. Events remain durable in
+                the MySQL outbox, but the consistency window widens for as long as this lasts,
+                and events that exhaust the retry policy are marked dead. Check relay logs for
+                the failure class and Kafka reachability.
+                See docs/runbooks/serving-data-freshness.md.
+
+  - interval: 1m
+    input_series:
+      - series: 'outbox_delivery_failures_total{job="recsys-outbox-relay", destination="kafka_online"}'
+        values: '5x30'          # a flat counter is not a failing one
+    alert_rule_test:
+      - eval_time: 25m
+        alertname: OutboxDeliveryFailuresSustained
+        exp_alerts: []
+
+  # A four-attempt burst that then stops — one flaky minute the relay retried through — must
+  # not page. This is the case that pins the 5m lookback. A lookback window keeps increase()
+  # positive for its own duration after the last increment, so with [10m] these four failures
+  # hold the expression true from t=1 to t=12: twelve minutes, comfortably longer than the 10m
+  # hold, and the alert fires spuriously at t=11. With [5m] the same burst holds it true only
+  # to t=7, which cannot span the hold. Note the eval times — checking only a late t=25m would
+  # miss the spurious alert entirely, since by then it has already resolved. Verified by
+  # mutating the rule to [10m] and confirming this case turns red.
+  - interval: 1m
+    input_series:
+      - series: 'outbox_delivery_failures_total{job="recsys-outbox-relay", destination="kafka_online"}'
+        values: '0 1 2 3 4 4 4 4 4 4 4 4 4 4 4 4 4 4 4 4 4 4 4 4 4 4 4 4 4 4'
+    alert_rule_test:
+      - eval_time: 11m
+        alertname: OutboxDeliveryFailuresSustained
+        exp_alerts: []
+      - eval_time: 12m
+        alertname: OutboxDeliveryFailuresSustained
+        exp_alerts: []
+      - eval_time: 13m
+        alertname: OutboxDeliveryFailuresSustained
+        exp_alerts: []
+      - eval_time: 14m
+        alertname: OutboxDeliveryFailuresSustained
+        exp_alerts: []
+      - eval_time: 25m
+        alertname: OutboxDeliveryFailuresSustained
+        exp_alerts: []

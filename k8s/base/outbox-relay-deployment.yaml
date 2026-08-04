@@ -17,10 +17,6 @@ spec:
     metadata:
       labels:
         app: recsys-outbox-relay
-      annotations:
-        prometheus.io/scrape: "true"
-        prometheus.io/path: "/metrics"
-        prometheus.io/port: "7020"
     spec:
       terminationGracePeriodSeconds: 30
       securityContext:
@@ -83,3 +79,21 @@ spec:
       volumes:
         - name: tmp
           emptyDir: {}
+---
+# Exists solely so the Prometheus Operator has an endpoint to discover: the relay takes no
+# request traffic. The ServiceMonitor's selector matches THESE metadata.labels, not the pod
+# selector below — see ScrapeTargetManifestTest.
+apiVersion: v1
+kind: Service
+metadata:
+  name: recsys-outbox-relay
+  namespace: recsys
+  labels:
+    app: recsys-outbox-relay
+spec:
+  selector:
+    app: recsys-outbox-relay
+  ports:
+    - name: http
+      port: 7020
+      targetPort: http

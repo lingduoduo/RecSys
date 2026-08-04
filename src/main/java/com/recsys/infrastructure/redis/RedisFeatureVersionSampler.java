@@ -17,20 +17,35 @@ public final class RedisFeatureVersionSampler implements AutoCloseable {
         this.clock = Objects.requireNonNull(clock); if (limit < 1) throw new IllegalArgumentException("limit must be positive");
         this.limit = limit;
     }
+    /**
+     * Returns whether a version was actually observed. Either way the availability gauge is left
+     * describing this attempt: a scan that matched nothing, held nothing parseable, or could not
+     * run at all leaves {@code redis_feature_version_age_seconds} frozen at its last good value,
+     * and that stale reading must not be mistaken for a fresh one. Failures are rethrown — the
+     * scheduler in {@link #start} is what decides to swallow them, not this method.
+     */
     public boolean sample() {
-        return redis.executePrimaryRead(commands -> {
-            KeyScanCursor<String> cursor = commands.scan(ScanArgs.Builder.matches("*:updated_at").limit(limit));
-            long min = Long.MAX_VALUE, max = Long.MIN_VALUE; int sampled = 0;
-            for (String key : cursor.getKeys()) {
-                if (sampled++ >= limit) break;
-                String raw = commands.get(key); if (raw == null) continue;
-                try { long version = Long.parseLong(raw); min = Math.min(min, version); max = Math.max(max, version); }
-                catch (NumberFormatException ignored) { }
-            }
-            if (min == Long.MAX_VALUE) return false;
-            metrics.updateFeatureVersions(min, max, Duration.ofMillis(Math.max(0, clock.millis() - max)));
-            return true;
-        });
+        boolean sampled;
+        try {
+            sampled = redis.executePrimaryRead(commands -> {
+                KeyScanCursor<String> cursor = commands.scan(ScanArgs.Builder.matches("*:updated_at").limit(limit));
+                long min = Long.MAX_VALUE, max = Long.MIN_VALUE; int scanned = 0;
+                for (String key : cursor.getKeys()) {
+                    if (scanned++ >= limit) break;
+                    String raw = commands.get(key); if (raw == null) continue;
+                    try { long version = Long.parseLong(raw); min = Math.min(min, version); max = Math.max(max, version); }
+                    catch (NumberFormatException ignored) { }
+                }
+                if (min == Long.MAX_VALUE) return false;
+                metrics.updateFeatureVersions(min, max, Duration.ofMillis(Math.max(0, clock.millis() - max)));
+                return true;
+            });
+        } catch (RuntimeException e) {
+            metrics.markFeatureVersionSampleUnavailable();
+            throw e;
+        }
+        if (!sampled) metrics.markFeatureVersionSampleUnavailable();
+        return sampled;
     }
     public synchronized void start(Duration interval) {
         if (interval.isZero() || interval.isNegative()) throw new IllegalArgumentException("interval must be positive");

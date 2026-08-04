@@ -39,14 +39,20 @@ class ScrapeTargetManifestTest {
             "recsys-model-serving",
             "recsys-catalog-serving",
             "recsys-online-serving",
-            "recsys-api-gateway");
+            "recsys-api-gateway",
+            // The relay is the producer of every outbox_* series the data-freshness alerts read.
+            // It carried prometheus.io/* pod annotations for a while, which look like a scrape
+            // configuration but are inert under the Prometheus Operator — the Operator discovers
+            // Service endpoints via ServiceMonitors and never reads those annotations.
+            "recsys-outbox-relay");
 
     /** The port each target is actually scraped on (see docs/system_design/21_Observability.md §3.1). */
     private static final Map<String, Integer> SCRAPE_PORTS = Map.ofEntries(
             entry("recsys-online-serving", 7010),
             entry("recsys-api-gateway", 8010),
             entry("recsys-catalog-serving", 6010),
-            entry("recsys-model-serving", 8080));
+            entry("recsys-model-serving", 8080),
+            entry("recsys-outbox-relay", 7020));
 
     private static final String PROMETHEUS_NAMESPACE_LABEL_VALUE = "monitoring";
     private static final String PROMETHEUS_POD_LABEL_VALUE = "prometheus";

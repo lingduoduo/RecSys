@@ -90,3 +90,30 @@ spec:
       interval: 15s
       scrapeTimeout: 10s
       scheme: http
+---
+# The outbox relay is the sole producer of outbox_delivery_lag_seconds,
+# outbox_delivery_failures_total, and outbox_pending_events. Without this the
+# recsys.data alerts that read them would evaluate against a series that is
+# published but never collected — an alert that can never fire.
+apiVersion: monitoring.coreos.com/v1
+kind: ServiceMonitor
+metadata:
+  name: recsys-outbox-relay
+  namespace: recsys
+  labels:
+    app: recsys-outbox-relay
+    # Must match the Prometheus CR's serviceMonitorSelector; adjust for your cluster.
+    release: kube-prometheus-stack
+spec:
+  namespaceSelector:
+    matchNames:
+      - recsys
+  selector:
+    matchLabels:
+      app: recsys-outbox-relay
+  endpoints:
+    - port: http
+      path: /metrics
+      interval: 15s
+      scrapeTimeout: 10s
+      scheme: http

@@ -358,6 +358,16 @@
                 <include>**/metrics/RedisCacheMetricsTest.java</include>
                 <include>**/metrics/SplunkHecMetricsTest.java</include>
                 <include>**/metrics/ScrapeTargetManifestTest.java</include>
+                <!-- These two are the producer half of the data-freshness alerts.
+                     ScrapeTargetManifestTest above proves the series get collected;
+                     ConsistencyMetricsTest pins the exact scraped text those alerts
+                     select on (a Timer is exposed as _max, never as its meter name), and
+                     RedisFeatureVersionSamplerTest pins the availability semantics that
+                     stop a frozen age gauge from reading as fresh. Without both in the
+                     gate, a Micrometer upgrade could rename the series and silently
+                     disarm every alert in the recsys.data group without failing a PR. -->
+                <include>**/metrics/ConsistencyMetricsTest.java</include>
+                <include>**/redis/RedisFeatureVersionSamplerTest.java</include>
                 <include>**/observability/SplunkHecConfigTest.java</include>
                 <include>**/observability/SplunkHecEventSerializerTest.java</include>
                 <include>**/observability/SplunkHecClientTest.java</include>

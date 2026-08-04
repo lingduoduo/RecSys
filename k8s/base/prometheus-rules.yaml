@@ -136,3 +136,100 @@ spec:
               More than 1000 events are pending and the backlog is still increasing, so the
               relay is not keeping up. Eventual consistency windows widen until it drains.
               Check outbox_delivery_failures_total and outbox_delivery_lag_seconds.
+
+        # --- Serving data freshness SLOs (internal objectives, not customer SLAs) ---
+        # See docs/runbooks/serving-data-freshness.md and
+        # docs/superpowers/specs/2026-08-04-serving-data-freshness-slos-design.md.
+        #
+        # Every one of these reads a series produced by a real process: the feature gauges come
+        # from OnlinePredictionServer's RedisFeatureVersionSampler, the outbox series from the
+        # relay — which only became scrapeable alongside these rules. ScrapeTargetManifestTest
+        # holds that scrape path together and ConsistencyMetricsTest pins the exposition names.
+
+        - alert: OnlineFeatureDataStale
+          # Scoped to online serving on purpose. EVERY process that builds a ConsistencyMetrics
+          # registers these gauges, including the outbox relay, which runs no sampler and so
+          # reports a permanent age of 0. Unscoped, this would evaluate against processes that
+          # were never meant to observe the feature view.
+          expr: redis_feature_version_age_seconds{job="recsys-online-serving"} > 60
+          for: 5m
+          labels:
+            severity: warning
+          annotations:
+            summary: "Online feature view older than 60s on {{ $labels.instance }}"
+            description: >-
+              The newest *:updated_at version in Redis is more than 60 seconds old, which is
+              the whole stale-on-error budget OnlineFeatureStore is allowed to serve within.
+              Recommendations are being built from a feature view that stopped advancing.
+              Check the Flink online-feature job for a stalled or restarting task, then Kafka
+              consumer lag on its source topics. See docs/runbooks/serving-data-freshness.md.
+
+        - alert: OnlineFeatureDataCriticallyStale
+          expr: redis_feature_version_age_seconds{job="recsys-online-serving"} > 300
+          for: 5m
+          labels:
+            severity: critical
+          annotations:
+            summary: "Online feature view older than 300s on {{ $labels.instance }}"
+            description: >-
+              The online feature view has been more than five minutes old for five minutes,
+              far outside the 60-second window serving is designed to tolerate. Treat the
+              recommendations being served as built from abandoned data. Check the Flink job
+              and Kafka first, then whether Redis lost the feature keyspace entirely.
+              See docs/runbooks/serving-data-freshness.md.
+
+        - alert: OnlineFeatureVersionSampleUnavailable
+          # The companion the two rules above depend on. redis_feature_version_age_seconds
+          # initializes to 0 and only moves when a sample succeeds, and it is deliberately NOT
+          # cleared on failure — so a sampler that has never reached Redis, or has stopped
+          # reaching it, reads as a low, healthy-looking age that can never trip a `>`
+          # comparison. Without this rule that failure is invisible.
+          expr: redis_feature_version_sample_available{job="recsys-online-serving"} == 0
+          for: 5m
+          labels:
+            severity: warning
+          annotations:
+            summary: "Online feature version sampling is not succeeding on {{ $labels.instance }}"
+            description: >-
+              No feature-version sample has succeeded for five minutes, so
+              redis_feature_version_age_seconds is frozen at its last good value and cannot be
+              trusted as a freshness reading — a low age here is stale evidence, not fresh
+              data. Either Redis is unreachable from online serving or no *:updated_at keys
+              exist. See docs/runbooks/serving-data-freshness.md.
+
+        - alert: OutboxDeliveryLatencyHigh
+          # _max, not the bare meter name: Micrometer exposes a Timer as _count/_sum/_max and
+          # `outbox_delivery_lag_seconds` alone matches no series at all. It is a decaying
+          # window max, so it falls back toward 0 when deliveries stop entirely — that case is
+          # OutboxBacklogGrowing's, not this rule's.
+          expr: outbox_delivery_lag_seconds_max{destination="kafka_online"} > 30
+          for: 10m
+          labels:
+            severity: warning
+          annotations:
+            summary: "kafka_online outbox delivery slower than 30s"
+            description: >-
+              Durable online-event delivery has been taking longer than 30 seconds for ten
+              minutes, so writes accepted by the API are reaching Kafka well outside the
+              intended consistency window. Check relay logs, the MySQL outbox backlog
+              (outbox_pending_events), and Kafka broker reachability from the relay.
+              See docs/runbooks/serving-data-freshness.md.
+
+        - alert: OutboxDeliveryFailuresSustained
+          # 5m lookback under a 10m hold, deliberately shorter than the hold. The counter
+          # increments once per failed ATTEMPT and the relay retries, so one transient blip is
+          # routine. A 10m lookback would keep a single increment true for a full 10m and page
+          # on it; a 5m lookback cannot span the hold, so only continuing failures fire.
+          expr: increase(outbox_delivery_failures_total{destination="kafka_online"}[5m]) > 0
+          for: 10m
+          labels:
+            severity: warning
+          annotations:
+            summary: "kafka_online outbox deliveries are failing continuously"
+            description: >-
+              Delivery attempts to kafka_online have been failing without a break for ten
+              minutes, so the relay is retrying rather than draining. Events remain durable in
+              the MySQL outbox, but the consistency window widens for as long as this lasts,
+              and events that exhaust the retry policy are marked dead. Check relay logs for
+              the failure class and Kafka reachability.
+              See docs/runbooks/serving-data-freshness.md.

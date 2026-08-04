@@ -38,6 +38,7 @@ public final class ConsistencyMetrics {
     private final AtomicLong featureMin;
     private final AtomicLong featureMax;
     private final AtomicLong featureAgeBits;
+    private final AtomicLong featureSampleAvailable;
 
     public ConsistencyMetrics(MeterRegistry registry) {
         this(registry, null);
@@ -63,6 +64,7 @@ public final class ConsistencyMetrics {
         featureMin = state.featureMin;
         featureMax = state.featureMax;
         featureAgeBits = state.featureAgeBits;
+        featureSampleAvailable = state.featureSampleAvailable;
     }
 
     private static final class State {
@@ -79,6 +81,7 @@ public final class ConsistencyMetrics {
         final AtomicLong featureMin = new AtomicLong();
         final AtomicLong featureMax = new AtomicLong();
         final AtomicLong featureAgeBits = new AtomicLong();
+        final AtomicLong featureSampleAvailable = new AtomicLong();
         volatile LongSupplier pendingSupplier;
         final Timer waitDuration;
         State(MeterRegistry registry) {
@@ -106,6 +109,11 @@ public final class ConsistencyMetrics {
         Gauge.builder("redis_feature_version_max", featureMax, AtomicLong::get).register(registry);
         Gauge.builder("redis_feature_version_age_seconds", featureAgeBits,
                 bits -> Double.longBitsToDouble(bits.get())).register(registry);
+        // Companion to the age gauge. The age gauge initializes to 0 and only moves when a
+        // sample succeeds, so "0 seconds old" and "never sampled" are the same reading. This
+        // separates them: 0 here means no successful sample is backing the age beside it.
+        Gauge.builder("redis_feature_version_sample_available", featureSampleAvailable,
+                AtomicLong::get).register(registry);
         }
     }
 
@@ -131,6 +139,15 @@ public final class ConsistencyMetrics {
     public void updateFeatureVersions(long minimum, long maximum, Duration age) {
         featureMin.set(minimum); featureMax.set(maximum);
         featureAgeBits.set(Double.doubleToRawLongBits(nonnegative(age).toNanos() / 1_000_000_000d));
+        featureSampleAvailable.set(1);
+    }
+    /**
+     * Marks the feature-version sample as not currently backed by a successful Redis read.
+     * Deliberately leaves min, max, and age at their last good values: an operator responding to
+     * the unavailability alert needs to know how old the last view we could actually see was.
+     */
+    public void markFeatureVersionSampleUnavailable() {
+        featureSampleAvailable.set(0);
     }
     private static Duration nonnegative(Duration value) {
         Objects.requireNonNull(value); return value.isNegative() ? Duration.ZERO : value;
