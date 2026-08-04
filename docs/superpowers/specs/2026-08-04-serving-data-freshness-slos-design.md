@@ -40,6 +40,13 @@ feature freshness, delivery latency, or sustained delivery failures. No new appl
 instrumentation is planned unless a focused exposition test proves that an existing
 signal cannot express the SLO safely.
 
+The outbox relay currently exposes `/metrics` on port 7020 but is not scrapeable by the
+repository's Prometheus Operator configuration: it has pod annotations, but no Service or
+ServiceMonitor, and the Operator discovers Service endpoints rather than those annotations.
+This change closes that three-layer gap with a Service, ServiceMonitor, and matching
+Prometheus-only NetworkPolicy ingress rule. An alert on an uncollected metric would be
+false coverage and is not acceptable.
+
 ## SLOs and alerts
 
 ### Online feature freshness
@@ -80,6 +87,26 @@ cumulative sum.
 
 The existing `OutboxBacklogGrowing` and `RedisReplicaLagHigh` alerts remain unchanged.
 They describe different failure modes and complement the new rules.
+
+## Outbox relay scrape path
+
+Add a `recsys-outbox-relay` Service selecting the existing relay pods and exposing named
+port `http` at 7020. Add a `ServiceMonitor` whose selector matches the Service's
+`metadata.labels`, scrapes `/metrics` on that named port at the repository's existing
+15-second interval and 10-second timeout, and carries the
+`release: kube-prometheus-stack` discovery label.
+
+Extend the relay's NetworkPolicy coverage so ingress on port 7020 is allowed only from
+pods labelled `app.kubernetes.io/name: prometheus` in namespaces labelled
+`kubernetes.io/metadata.name: monitoring`. The existing relay Deployment, replica count,
+probes, scheduling, and runtime behavior remain unchanged. Remove the now-misleading
+`prometheus.io/*` pod annotations once the Operator-native scrape path exists.
+
+Extend `ScrapeTargetManifestTest` so the relay joins `EXPECTED_SCRAPE_TARGETS` and must
+have all three layers: a labelled Service, matching ServiceMonitor, and NetworkPolicy rule
+that combines the monitoring namespace selector with the Prometheus pod selector. This
+prevents a future edit from leaving valid alert rules attached to an undiscoverable
+target.
 
 ## Missing and invalid telemetry
 
@@ -139,6 +166,12 @@ Expected modifications:
 
 - `k8s/base/prometheus-rules.yaml` — new SLO alerts;
 - `k8s/base/prometheus-rules.test.yaml` — firing and non-firing rule cases;
+- `k8s/base/outbox-relay-deployment.yaml` — remove inert scrape annotations and add the
+  Service next to the Deployment it selects;
+- `k8s/base/servicemonitor.yaml` — add the relay ServiceMonitor;
+- `k8s/base/network-policy.yaml` — admit Prometheus to relay port 7020;
+- `src/test/java/com/recsys/metrics/ScrapeTargetManifestTest.java` — require the complete
+  relay scrape path;
 - `src/test/java/com/recsys/metrics/ConsistencyMetricsTest.java` or a focused new metrics
   exposition test — exact Prometheus timer/gauge contract;
 - `src/main/java/com/recsys/metrics/ConsistencyMetrics.java` only if a proven availability
@@ -149,7 +182,9 @@ Expected modifications:
 - `README.md` plus `DocumentationIndexTest` if required by its runbook-index contract.
 
 Do not modify the serving request path, Redis freshness windows, outbox retry policy,
-Flink processing semantics, or Kubernetes deployment topology as part of this change.
+Flink processing semantics, relay replica count, or application deployment behavior as
+part of this change. Kubernetes changes are limited to exposing and scraping the existing
+relay metrics endpoint and permitting Prometheus ingress to it.
 
 ## Verification
 
@@ -157,6 +192,8 @@ Flink processing semantics, or Kubernetes deployment topology as part of this ch
 - Generate the bare rule file and run every `promtool` unit test.
 - Run `ScrapeTargetManifestTest`, `DocumentationIndexTest`, and any documentation contract
   test affected by the new runbook link.
+- Verify the rendered manifests contain one relay Service, one matching ServiceMonitor,
+  and one Prometheus-only ingress rule for port 7020.
 - Run `kubectl kustomize k8s/base` to ensure the rule CRD still renders.
 - Run `git diff --check`.
 - Run the Maven suite excluding `load,docker`; the clean-checkout baseline currently has
@@ -169,6 +206,8 @@ Flink processing semantics, or Kubernetes deployment topology as part of this ch
   and a critical alert when they remain older than 300 seconds.
 - Operators receive tested warnings for sustained `kafka_online` outbox latency above 30
   seconds and sustained delivery failures.
+- Prometheus Operator can discover and scrape the outbox relay through a contract-tested
+  Service, ServiceMonitor, and NetworkPolicy path.
 - A missing or never-successful measurement cannot look healthy.
 - Every PromQL metric name is pinned to real application exposition.
 - The runbook provides a direct path from alert to Kafka, Flink, Redis, outbox, and log
