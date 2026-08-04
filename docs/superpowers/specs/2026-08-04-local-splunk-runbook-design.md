@@ -24,6 +24,13 @@ EKS operations, tuning, and production-divergence sections. The local guide will
 - stopping the stack, optionally deleting its volumes, and verifying cleanup; and
 - the reliable x86_64 and CI alternatives when ARM emulation fails.
 
+Add one contextual entry point in `README.md` under **Start the
+artifact-dependent full stack**. It will tell contributors that structured Splunk
+logging is optional and link to `docs/runbooks/splunk-hec-logging.md` for local
+collector, UI, credential, and HEC verification setup. Keep the existing link in the
+complete operational-runbook index; do not duplicate the runbook's commands in the
+README or add a separate top-level Splunk section.
+
 ## Structure
 
 The existing `Local bring-up` section becomes a local-first sequence:
@@ -48,4 +55,5 @@ to other repository Compose stacks.
 - Check shell examples for consistent context/profile names and line continuations.
 - Run `git diff --check`.
 - Review the rendered Markdown structure and links around the edited section.
-
+- Run `DocumentationIndexTest` so the new README link and the retained runbook-index
+  link are both covered by the repository's documentation contract.
