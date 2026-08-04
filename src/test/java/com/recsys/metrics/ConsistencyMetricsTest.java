@@ -1,6 +1,8 @@
 package com.recsys.metrics;
 
 import io.micrometer.core.instrument.simple.SimpleMeterRegistry;
+import io.micrometer.prometheus.PrometheusConfig;
+import io.micrometer.prometheus.PrometheusMeterRegistry;
 import org.junit.jupiter.api.Test;
 
 import java.time.Duration;
@@ -48,6 +50,51 @@ class ConsistencyMetricsTest {
         metrics.updateReplicaLag(new ConsistencyMetrics.ReplicaLag(false, 0));
         assertThat(registry.get("redis_replica_lag_available").gauge().value()).isZero();
         assertThat(registry.get("redis_replica_lag_seconds").gauge().value()).isNaN();
+    }
+
+    /**
+     * PromQL in {@code k8s/base/prometheus-rules.yaml} names series, not Micrometer meters, and
+     * the two are not the same string. A {@code Timer} named {@code outbox_delivery_lag_seconds}
+     * is exposed as three derived series ({@code _count}, {@code _sum}, {@code _max}) and none of
+     * them is the bare meter name — so an alert written against the meter name matches nothing
+     * and stays silent forever. This pins the exact scraped text the alerts depend on, so a
+     * Micrometer upgrade that renames or drops a series fails here rather than in production.
+     */
+    @Test void prometheusExpositionPinsFeatureAvailabilityAndDeliveryLagNames() {
+        var registry = new PrometheusMeterRegistry(PrometheusConfig.DEFAULT);
+        var metrics = new ConsistencyMetrics(registry);
+
+        assertThat(registry.get("redis_feature_version_sample_available").gauge().value())
+                .as("no sample has succeeded yet, so availability must start at 0 — a zero age "
+                        + "before the first successful sample is not evidence of fresh data")
+                .isZero();
+
+        metrics.updateFeatureVersions(7, 11, Duration.ofSeconds(8));
+        metrics.recordDelivered(ConsistencyMetrics.Destination.KAFKA_ONLINE, Duration.ofSeconds(45));
+
+        assertThat(registry.get("redis_feature_version_sample_available").gauge().value()).isOne();
+        assertThat(registry.scrape())
+                .contains("redis_feature_version_sample_available 1.0")
+                .contains("outbox_delivery_lag_seconds_max")
+                .contains("destination=\"kafka_online\"");
+    }
+
+    /**
+     * The freshness alerts read age and availability as two independent signals. Clearing age on
+     * a failed sample would make a stalled sampler look instantaneously fresh; clearing
+     * availability without preserving age would throw away the operator's only clue about how
+     * old the last known-good view was.
+     */
+    @Test void featureSampleCanReturnToUnavailableWithoutErasingLastGoodValues() {
+        var registry = new SimpleMeterRegistry();
+        var metrics = new ConsistencyMetrics(registry);
+
+        metrics.updateFeatureVersions(7, 11, Duration.ofSeconds(8));
+        metrics.markFeatureVersionSampleUnavailable();
+
+        assertThat(registry.get("redis_feature_version_sample_available").gauge().value()).isZero();
+        assertThat(registry.get("redis_feature_version_age_seconds").gauge().value()).isEqualTo(8);
+        assertThat(registry.get("redis_feature_version_max").gauge().value()).isEqualTo(11);
     }
 
     @Test void facadesForSameRegistryShareStateAndRegisterMetersOnce() {
