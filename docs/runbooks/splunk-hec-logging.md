@@ -150,6 +150,65 @@ Do not regenerate this file while reusing existing `splunk-etc` and `splunk-var`
 The admin password and HEC token are established during volume initialization; changing a
 later shell variable does not change the credentials stored by Splunk.
 
+#### Credential mismatch recovery
+
+A rejected UI login or HEC `403 Invalid token` usually means this env file was
+regenerated while initialized volumes were retained. This recovery is only for **file-only
+drift** while the original container has not been recreated: it exports both secrets into
+the current shell, so use it only in a trusted local session. It does not print either
+value or replace the existing env file unless inspection and extraction both succeed:
+
+```bash
+splunk_env="$(docker inspect --format '{{range .Config.Env}}{{println .}}{{end}}' splunk)" || {
+  printf '%s\n' 'Could not inspect the running splunk container; keeping the existing env file.' >&2
+  exit 1
+}
+SPLUNK_PASSWORD="$(printf '%s\n' "$splunk_env" | sed -n 's/^SPLUNK_PASSWORD=//p')"
+SPLUNK_HEC_TOKEN="$(printf '%s\n' "$splunk_env" | sed -n 's/^SPLUNK_HEC_TOKEN=//p')"
+if [ -z "$SPLUNK_PASSWORD" ] || [ -z "$SPLUNK_HEC_TOKEN" ]; then
+  printf '%s\n' 'Missing Splunk credentials on the running container; keeping the existing env file.' >&2
+  exit 1
+fi
+export SPLUNK_PASSWORD SPLUNK_HEC_TOKEN
+tmp_splunk_env="$(mktemp /tmp/recsys-splunk.env.XXXXXX)" || exit 1
+if ! (umask 077; printf 'SPLUNK_PASSWORD=%s\nSPLUNK_HEC_TOKEN=%s\n' \
+  "$SPLUNK_PASSWORD" "$SPLUNK_HEC_TOKEN" > "$tmp_splunk_env"); then
+  rm -f "$tmp_splunk_env"
+  exit 1
+fi
+if ! chmod 600 "$tmp_splunk_env"; then
+  rm -f "$tmp_splunk_env"
+  exit 1
+fi
+case "$(uname -s)" in
+  Darwin|FreeBSD|NetBSD|OpenBSD)
+    if ! mv -h "$tmp_splunk_env" /tmp/recsys-splunk.env; then
+      rm -f "$tmp_splunk_env"
+      printf '%s\n' 'Could not safely replace the env file; keeping the existing target.' >&2
+      exit 1
+    fi
+    ;;
+  Linux)
+    if ! mv -T "$tmp_splunk_env" /tmp/recsys-splunk.env; then
+      rm -f "$tmp_splunk_env"
+      printf '%s\n' 'Could not safely replace the env file; keeping the existing target.' >&2
+      exit 1
+    fi
+    ;;
+  *)
+    rm -f "$tmp_splunk_env"
+    printf '%s\n' 'Unsupported platform for safe env-file replacement; keeping the existing target.' >&2
+    exit 1
+    ;;
+esac
+```
+
+If the container was recreated after credentials changed, `docker inspect` can return
+those new invalid values instead of the credentials stored in the retained volumes. Run
+the direct HEC event test below after recovery to distinguish that case. A persistent
+`403 Invalid token` requires the documented clean `down -v` reset; it deletes the local
+indexes and Splunk configuration.
+
 ### Start Splunk and wait for HEC
 
 ```bash
@@ -223,10 +282,22 @@ set -a
 set +a
 ```
 
+Validate that HEC is healthy before starting the applications:
+
+```bash
+curl --fail --show-error --max-time 10 http://localhost:8088/services/collector/health
+```
+
+Expected response:
+
+```json
+{"text":"HEC is healthy","code":17}
+```
+
 Send one event without involving the application:
 
 ```bash
-curl \
+curl --fail --show-error --max-time 10 \
   -H "Authorization: Splunk ${SPLUNK_HEC_TOKEN}" \
   -H 'Content-Type: application/json' \
   --data '{"event":{"level":"INFO","message":"manual UI verification"},"index":"recsys","sourcetype":"recsys:app:log","source":"manual-test"}' \
@@ -245,29 +316,133 @@ In **Search & Reporting**, set the time picker to **All time** if necessary and 
 index=recsys source="manual-test" "manual UI verification"
 ```
 
-### Start the services and search their logs
+### Start the services, verify readiness, and search their logs
 
-Keep the credentials loaded in the shell used to start the services:
+Start the streaming dependencies first:
 
 ```bash
+docker compose -f docker-compose.streaming.yml up -d
+```
+
+This independent Compose file does not consume Splunk credentials, so it does not need
+`/tmp/recsys-splunk.env`.
+
+Load the stable credentials and the local-development values in the shell used to start
+the services:
+
+```bash
+set -a
+. /tmp/recsys-splunk.env
+set +a
 export RECOMMENDATION_CURSOR_SIGNING_KEY="$(openssl rand -hex 32)"
+export GATEWAY_ALLOW_ANONYMOUS=true
+export SPLUNK_HEC_URL="http://localhost:8088/services/collector/event"
+printf 'HEC token=%s signing key=%s anonymous=%s\n' \
+  "${SPLUNK_HEC_TOKEN:+SET}" \
+  "${RECOMMENDATION_CURSOR_SIGNING_KEY:+SET}" \
+  "$GATEWAY_ALLOW_ANONYMOUS"
+```
+
+The check must print the following without exposing either secret:
+
+```text
+HEC token=SET signing key=SET anonymous=true
+```
+
+Before launching, make sure an earlier run did not leave a listener on any service port:
+
+```bash
+lsof -nP -iTCP:6010 -sTCP:LISTEN
+lsof -nP -iTCP:7010 -sTCP:LISTEN
+lsof -nP -iTCP:8080 -sTCP:LISTEN
+lsof -nP -iTCP:8010 -sTCP:LISTEN
+```
+
+Stop any listener left by an earlier run before relaunching. Then keep the startup script
+in the foreground:
+
+```bash
 sh scripts/run-microservices-local.sh
 ```
 
-The script defaults `SPLUNK_HEC_URL` to
-`http://localhost:8088/services/collector/event` rather than the
-`http://splunk:8088/...` address resolved inside the Compose network. The four JVMs run
-on the host, so the published localhost port is the correct endpoint.
+In a second terminal, follow all four service logs:
 
-After the services are ready, generate traffic and count indexed events by service:
+```bash
+tail -f logs/recsys-serving.log logs/online-serving.log \
+  logs/model-serving.log logs/api-gateway.log
+```
+
+Check every service independently:
+
+```bash
+curl --fail --show-error --max-time 10 http://localhost:6010/health
+curl --fail --show-error --max-time 10 http://localhost:7010/health
+curl --fail --show-error --max-time 10 http://localhost:8080/health/ready
+curl --fail --show-error --max-time 10 http://localhost:8010/health
+```
+
+One healthy endpoint does not prove the startup script completed: each process must be
+healthy. Model serving can fail when the required local model artifacts are absent.
+
+After the services are ready, generate traffic:
 
 ```bash
 curl --fail http://localhost:8010/health
 ```
 
+In **Search & Reporting**, set the time picker to **All time** if necessary. The
+following local cookbook uses the same index and sourcetype for every search:
+
+All events:
+
+```spl
+index=recsys sourcetype="recsys:app:log"
+```
+
+One service:
+
+```spl
+index=recsys sourcetype="recsys:app:log" source="recsys-serving"
+```
+
+Counts by source:
+
 ```spl
 index=recsys sourcetype="recsys:app:log" | stats count by source
 ```
+
+Counts by source and level:
+
+```spl
+index=recsys sourcetype="recsys:app:log" | stats count by source level
+```
+
+Recent warnings and errors:
+
+```spl
+index=recsys sourcetype="recsys:app:log" earliest=-15m (level=WARN OR level=ERROR)
+```
+
+A message fragment:
+
+```spl
+index=recsys sourcetype="recsys:app:log" message="manual UI verification"
+```
+
+One-minute event counts:
+
+```spl
+index=recsys sourcetype="recsys:app:log" | timechart span=1m count
+```
+
+Exceptions:
+
+```spl
+index=recsys sourcetype="recsys:app:log" exception=*
+```
+
+`traceId` is currently populated only by model serving (port 8080); see
+[Useful searches](#useful-searches) for its limitation across the other three services.
 
 ### Troubleshooting local bring-up
 
@@ -328,19 +503,12 @@ docker logs --tail=100 splunk-init
 If `splunkd` is not running and the logs stop progressing, the UI cannot work even though
 Docker still displays `healthy`.
 
-#### The UI rejects the password
+#### UI login fails or HEC returns `403 Invalid token`
 
-The env file may have been regenerated after the container or volumes were created. The
-following local-development recovery command deliberately displays the password configured
-on the running container:
-
-```bash
-docker inspect --format '{{range .Config.Env}}{{println .}}{{end}}' splunk \
-  | sed -n 's/^SPLUNK_PASSWORD=//p'
-```
-
-Use username `admin`. If that password also fails, discard the disposable volumes as
-described under cleanup and start from a single stable env file.
+This is credential drift: the env file no longer matches the credentials established in
+the initialized volumes. Follow [Credential mismatch recovery](#credential-mismatch-recovery)
+to restore both values from the running container. Use `down -v` only if the running
+container cannot supply them or if a clean reset is intended.
 
 #### Splunk crashes on Apple Silicon
 
