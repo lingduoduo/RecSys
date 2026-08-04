@@ -205,7 +205,7 @@ git push origin docs/local-splunk-runbook
 - Produces: One linear, validated workflow from Splunk startup through backend log
   searches, with recovery steps for credential drift and stale host processes.
 
-- [ ] **Step 1: Add credential recovery and HEC validation**
+- [x] **Step 1: Add credential recovery and HEC validation**
 
 After the stable-credential warning, explain that HTTP 403 or a rejected UI login can
 mean the env file was regenerated while initialized volumes were retained. Recover both
@@ -234,7 +234,7 @@ curl --fail http://localhost:8088/services/collector/health
 Expected body: `{"text":"HEC is healthy","code":17}`. Retain the direct event POST
 and its expected `{"text":"Success","code":0}` response as the token check.
 
-- [ ] **Step 2: Replace the application startup subsection with explicit gates**
+- [x] **Step 2: Replace the application startup subsection with explicit gates**
 
 Document streaming dependency startup first:
 
@@ -262,7 +262,7 @@ either secret. Check ports 6010, 7010, 8080, and 8010 with `lsof` before running
 `sh scripts/run-microservices-local.sh`, and explain that a listener left by an earlier
 run must be stopped before relaunching.
 
-- [ ] **Step 3: Add service monitoring and health verification**
+- [x] **Step 3: Add service monitoring and health verification**
 
 Keep `scripts/run-microservices-local.sh` in the foreground. In a second terminal,
 document:
@@ -284,21 +284,21 @@ curl http://localhost:8010/health
 State that one healthy endpoint does not prove the script completed, and mention that
 model serving can fail when required local model artifacts are absent.
 
-- [ ] **Step 4: Expand the local search cookbook**
+- [x] **Step 4: Expand the local search cookbook**
 
 Add copy-pasteable searches for all events, one service, counts by source, counts by
 source and level, recent warnings/errors, a message fragment, a one-minute time chart,
 and exceptions. Every query uses `index=recsys sourcetype="recsys:app:log"`. Retain the
 warning that only model serving currently supplies `traceId`.
 
-- [ ] **Step 5: Consolidate overlapping troubleshooting**
+- [x] **Step 5: Consolidate overlapping troubleshooting**
 
 Move the existing password-only recovery guidance into one credential-mismatch section
 that covers both UI login failure and HEC `403 Invalid token`. Keep destructive
 `down -v` as the fallback only when the running container credentials cannot be used or
 a clean reset is intended.
 
-- [ ] **Step 6: Verify and publish the revision**
+- [x] **Step 6: Verify and publish the revision**
 
 Run:
 
