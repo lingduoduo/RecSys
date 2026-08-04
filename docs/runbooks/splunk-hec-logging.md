@@ -288,6 +288,9 @@ Start the streaming dependencies first:
 docker compose -f docker-compose.streaming.yml up -d
 ```
 
+This independent Compose file does not consume Splunk credentials, so it does not need
+`/tmp/recsys-splunk.env`.
+
 Load the stable credentials and the local-development values in the shell used to start
 the services:
 

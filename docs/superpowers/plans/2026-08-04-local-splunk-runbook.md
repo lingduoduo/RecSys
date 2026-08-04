@@ -12,7 +12,8 @@
 
 - Genuine x86_64 remains the reliable reference environment.
 - Apple Silicon with Rosetta is explicitly best-effort and may still fail in Splunk KVStore/indexing.
-- `/tmp/recsys-splunk.env` is the canonical local credential source for every Compose command.
+- `/tmp/recsys-splunk.env` is the canonical local credential source for every Compose
+  command that parses `docker-compose.splunk.yml`.
 - Never recommend `--remove-orphans`; those containers may belong to other repository Compose stacks.
 - State explicitly before `down -v` that it deletes local indexes and Splunk configuration.
 - Never print credentials unless the command's purpose is explicitly credential retrieval for local login.
