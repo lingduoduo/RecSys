@@ -153,25 +153,40 @@ later shell variable does not change the credentials stored by Splunk.
 #### Credential mismatch recovery
 
 A rejected UI login or HEC `403 Invalid token` usually means this env file was
-regenerated while initialized volumes were retained. Recover both stable values from the
-running local container and recreate the restricted env file; do not print either value:
+regenerated while initialized volumes were retained. This recovery is only for **file-only
+drift** while the original container has not been recreated: it exports both secrets into
+the current shell, so use it only in a trusted local session. It does not print either
+value or replace the existing env file unless inspection and extraction both succeed:
 
 ```bash
-export SPLUNK_PASSWORD="$(
-  docker inspect --format '{{range .Config.Env}}{{println .}}{{end}}' splunk |
-  sed -n 's/^SPLUNK_PASSWORD=//p'
-)"
-export SPLUNK_HEC_TOKEN="$(
-  docker inspect --format '{{range .Config.Env}}{{println .}}{{end}}' splunk |
-  sed -n 's/^SPLUNK_HEC_TOKEN=//p'
-)"
-umask 077
-printf 'SPLUNK_PASSWORD=%s\nSPLUNK_HEC_TOKEN=%s\n' \
-  "$SPLUNK_PASSWORD" "$SPLUNK_HEC_TOKEN" > /tmp/recsys-splunk.env
+splunk_env="$(docker inspect --format '{{range .Config.Env}}{{println .}}{{end}}' splunk)" || {
+  printf '%s\n' 'Could not inspect the running splunk container; keeping the existing env file.' >&2
+  exit 1
+}
+SPLUNK_PASSWORD="$(printf '%s\n' "$splunk_env" | sed -n 's/^SPLUNK_PASSWORD=//p')"
+SPLUNK_HEC_TOKEN="$(printf '%s\n' "$splunk_env" | sed -n 's/^SPLUNK_HEC_TOKEN=//p')"
+if [ -z "$SPLUNK_PASSWORD" ] || [ -z "$SPLUNK_HEC_TOKEN" ]; then
+  printf '%s\n' 'Missing Splunk credentials on the running container; keeping the existing env file.' >&2
+  exit 1
+fi
+export SPLUNK_PASSWORD SPLUNK_HEC_TOKEN
+tmp_splunk_env="$(mktemp /tmp/recsys-splunk.env.XXXXXX)" || exit 1
+if ! (umask 077; printf 'SPLUNK_PASSWORD=%s\nSPLUNK_HEC_TOKEN=%s\n' \
+  "$SPLUNK_PASSWORD" "$SPLUNK_HEC_TOKEN" > "$tmp_splunk_env"); then
+  rm -f "$tmp_splunk_env"
+  exit 1
+fi
+if ! chmod 600 "$tmp_splunk_env" || ! mv "$tmp_splunk_env" /tmp/recsys-splunk.env; then
+  rm -f "$tmp_splunk_env"
+  exit 1
+fi
 ```
 
-Use `down -v` only when the running container cannot supply its credentials or when a
-clean reset is intended; it deletes the local indexes and Splunk configuration.
+If the container was recreated after credentials changed, `docker inspect` can return
+those new invalid values instead of the credentials stored in the retained volumes. Run
+the direct HEC event test below after recovery to distinguish that case. A persistent
+`403 Invalid token` requires the documented clean `down -v` reset; it deletes the local
+indexes and Splunk configuration.
 
 ### Start Splunk and wait for HEC
 
@@ -249,7 +264,7 @@ set +a
 Validate that HEC is healthy before starting the applications:
 
 ```bash
-curl --fail http://localhost:8088/services/collector/health
+curl --fail --show-error --max-time 10 http://localhost:8088/services/collector/health
 ```
 
 Expected response:
@@ -261,7 +276,7 @@ Expected response:
 Send one event without involving the application:
 
 ```bash
-curl \
+curl --fail --show-error --max-time 10 \
   -H "Authorization: Splunk ${SPLUNK_HEC_TOKEN}" \
   -H 'Content-Type: application/json' \
   --data '{"event":{"level":"INFO","message":"manual UI verification"},"index":"recsys","sourcetype":"recsys:app:log","source":"manual-test"}' \
@@ -339,10 +354,10 @@ tail -f logs/recsys-serving.log logs/online-serving.log \
 Check every service independently:
 
 ```bash
-curl http://localhost:6010/health
-curl http://localhost:7010/health
-curl http://localhost:8080/health/ready
-curl http://localhost:8010/health
+curl --fail --show-error --max-time 10 http://localhost:6010/health
+curl --fail --show-error --max-time 10 http://localhost:7010/health
+curl --fail --show-error --max-time 10 http://localhost:8080/health/ready
+curl --fail --show-error --max-time 10 http://localhost:8010/health
 ```
 
 One healthy endpoint does not prove the startup script completed: each process must be
