@@ -75,8 +75,10 @@ class ConsistencyMetricsTest {
         assertThat(registry.get("redis_feature_version_sample_available").gauge().value()).isOne();
         assertThat(registry.scrape())
                 .contains("redis_feature_version_sample_available 1.0")
-                .contains("outbox_delivery_lag_seconds_max")
-                .contains("destination=\"kafka_online\"");
+                // Name and label pinned together, not as two loose substrings: an alert selects
+                // outbox_delivery_lag_seconds_max{destination="kafka_online"}, and that whole
+                // selector has to match one real line for the alert to ever fire.
+                .contains("outbox_delivery_lag_seconds_max{destination=\"kafka_online\",} 45.0");
     }
 
     /**
