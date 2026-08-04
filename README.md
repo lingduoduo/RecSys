@@ -150,6 +150,11 @@ export RECOMMENDATION_CURSOR_SIGNING_KEY="$(openssl rand -hex 32)"
 GATEWAY_ALLOW_ANONYMOUS=true sh scripts/run-microservices-local.sh
 ```
 
+Structured Splunk log shipping is optional. See the
+[Splunk HEC logging runbook](docs/runbooks/splunk-hec-logging.md) to start the local
+collector and web UI, configure stable credentials, verify HEC ingestion, troubleshoot
+local startup, and clean up the stack.
+
 > **Development only:** anonymous mode deliberately disables gateway
 > authentication. Never use it in production. Without anonymous mode, API keys,
 > or Cognito configuration, the gateway fails closed at startup. Configure a

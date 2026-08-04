@@ -150,3 +150,40 @@ missing-env cleanup fallback; `--remove-orphans` appears only in a warning not t
 git add docs/runbooks/splunk-hec-logging.md
 git commit -m "docs: expand local Splunk runbook"
 ```
+
+### Task 2: Add a contextual README entry point
+
+**Files:**
+- Modify: `README.md`
+- Reference: `docs/runbooks/splunk-hec-logging.md`
+- Test: `src/test/java/com/recsys/docs/DocumentationIndexTest.java`
+
+**Interfaces:**
+- Consumes: The existing **Start the artifact-dependent full stack** contributor workflow.
+- Produces: One contextual link to `docs/runbooks/splunk-hec-logging.md`, while retaining the existing complete runbook-index link.
+
+- [x] **Step 1: Add the contextual link**
+
+Immediately after the full-stack startup command, add a short paragraph stating that
+Splunk log shipping is optional and linking to the runbook for local collector, web UI,
+credentials, HEC verification, troubleshooting, and cleanup. Do not duplicate commands
+from the runbook or add a new top-level README section.
+
+- [x] **Step 2: Verify documentation links and formatting**
+
+Run:
+
+```bash
+mvn --batch-mode test -Dtest=DocumentationIndexTest -DexcludedGroups=load,docker
+git diff --check
+```
+
+Expected: `DocumentationIndexTest` passes 2/2 and `git diff --check` emits no output.
+
+- [x] **Step 3: Commit and publish to the existing PR branch**
+
+```bash
+git add -- README.md docs/superpowers/plans/2026-08-04-local-splunk-runbook.md
+git commit -m "docs: link local Splunk setup from README"
+git push origin docs/local-splunk-runbook
+```
