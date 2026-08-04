@@ -144,7 +144,7 @@ Expected: local Compose examples use the env file except the explicitly document
 missing-env cleanup fallback; `--remove-orphans` appears only in a warning not to use it;
 `git diff --check` emits no output.
 
-- [ ] **Step 9: Commit the runbook update**
+- [x] **Step 9: Commit the runbook update**
 
 ```bash
 git add docs/runbooks/splunk-hec-logging.md
