@@ -67,7 +67,13 @@ gated) is the authoritative copy. State this plainly to anyone who wants to use 
 
 ## Local bring-up
 
-**Status: verified in CI, not on an arm64 workstation.**
+The reliable reference environment is Docker on a genuine x86_64 host. The repository's
+real-Splunk integration test uses that environment in CI. Apple Silicon can also be useful
+for local development when Colima runs the amd64 image through VZ/Rosetta, but that path is
+**best-effort**: Splunk has also crashed in indexing/KVStore under emulation. The procedure
+below makes the Mac path reproducible without claiming that every Splunk image or macOS
+release will run it successfully.
+
 [`SplunkHecIntegrationTest`](../../src/test/java/com/recsys/infrastructure/observability/SplunkHecIntegrationTest.java)
 boots a real Splunk, runs **this exact `docker/splunk/init.sh`** inside it, ships events
 through a real `SplunkHecAppender`, and asserts they come back from Splunk's search API
@@ -78,12 +84,320 @@ whenever anything under the appender, the Logback configs, the compose file, or
 `docker/splunk/` changes — and weekly through `resilience-scheduled.yml`'s `docker` job.
 Check that workflow's most recent run for the current status.
 
-That test is the answer to "has this actually been proven". What follows is why you
-cannot reproduce it locally on a Mac.
+### Check the host and Docker daemon
 
-**It requires an x86_64 host.** `splunk/splunk` publishes no arm64 image. On Apple
-Silicon, Docker Desktop will run the image emulated (the compose file forces
-`platform: linux/amd64`), but `splunkd` segfaults during first-boot indexing under
+Run all commands from the repository root. First identify the host architecture and make
+sure the intended Docker provider is running:
+
+```bash
+uname -m
+docker context show
+docker info
+```
+
+`uname -m` prints `x86_64` on the reliable reference path and `arm64` on an Apple Silicon
+Mac. If `docker info` reports a missing `~/.colima/.../docker.sock`, that Docker context
+points to a stopped Colima profile. Start the intended profile or select the context that
+owns the containers; switching contexts does not move containers or volumes between Docker
+daemons.
+
+### Apple Silicon: create a Rosetta-enabled Colima profile
+
+Skip this subsection on a genuine x86_64 host. On Apple Silicon, use a separate profile so
+the experiment does not replace the repository's default Colima VM or its Redis/Kafka/Flink
+containers:
+
+```bash
+/usr/sbin/softwareupdate --install-rosetta --agree-to-license
+colima start splunk \
+  --vm-type vz \
+  --vz-rosetta \
+  --runtime docker \
+  --cpu 4 \
+  --memory 8 \
+  --disk 60
+docker context use colima-splunk
+docker run --rm --platform linux/amd64 alpine uname -m
+```
+
+The last command must print `x86_64`. Colima 0.10 or newer exposes the `--vz-rosetta`
+option. The Compose file also pins the Splunk container to `platform: linux/amd64`.
+
+### Create stable local credentials
+
+Compose validates its required variables even for commands such as `ps` and `down`. Keep
+one credential pair in a permission-restricted temporary env file and pass it to every
+Compose command:
+
+```bash
+umask 077
+printf 'SPLUNK_PASSWORD=%s\nSPLUNK_HEC_TOKEN=%s\n' \
+  "$(openssl rand -hex 18)" \
+  "$(uuidgen)" \
+  > /tmp/recsys-splunk.env
+
+cut -d= -f1 /tmp/recsys-splunk.env
+```
+
+The check prints only the two variable names, not their values:
+
+```text
+SPLUNK_PASSWORD
+SPLUNK_HEC_TOKEN
+```
+
+Do not regenerate this file while reusing existing `splunk-etc` and `splunk-var` volumes.
+The admin password and HEC token are established during volume initialization; changing a
+later shell variable does not change the credentials stored by Splunk.
+
+### Start Splunk and wait for HEC
+
+```bash
+docker compose --env-file /tmp/recsys-splunk.env \
+  -f docker-compose.splunk.yml up -d
+```
+
+First boot normally takes 1–3 minutes and can take longer under emulation. `up -d` waits
+because `splunk-init` depends on the Splunk health check. A warning about orphan Redis,
+Kafka, ZooKeeper, or Flink containers is informational: those containers belong to the
+repository's other Compose stack. **Do not add `--remove-orphans`**, or Compose may delete
+local infrastructure that the services still need.
+
+In another terminal, check progress without reparsing the Compose file:
+
+```bash
+docker ps -a --filter name=splunk \
+  --format 'table {{.Names}}\t{{.Status}}\t{{.Ports}}'
+docker logs -f splunk
+```
+
+Stop following a log with Ctrl-C; that does not stop the container. Once Splunk is healthy,
+follow the one-shot provisioner:
+
+```bash
+docker logs -f splunk-init
+```
+
+Wait for:
+
+```text
+HEC is accepting events over plain HTTP. Ready.
+```
+
+The Compose view should then show Splunk healthy and `splunk-init` exited successfully:
+
+```bash
+docker compose --env-file /tmp/recsys-splunk.env \
+  -f docker-compose.splunk.yml ps -a
+```
+
+### Open and log into the Splunk UI
+
+Verify the web endpoint before opening it:
+
+```bash
+curl --fail --max-time 10 http://localhost:8000/ >/dev/null && \
+  echo "Splunk UI is ready"
+```
+
+The following command deliberately prints the local UI password:
+
+```bash
+sed -n 's/^SPLUNK_PASSWORD=//p' /tmp/recsys-splunk.env
+```
+
+Open `http://localhost:8000` (on macOS, `open http://localhost:8000`) and sign in with:
+
+```text
+Username: admin
+Password: output from the previous command
+```
+
+### Verify HEC directly
+
+Load the same credentials into the current shell:
+
+```bash
+set -a
+. /tmp/recsys-splunk.env
+set +a
+```
+
+Send one event without involving the application:
+
+```bash
+curl \
+  -H "Authorization: Splunk ${SPLUNK_HEC_TOKEN}" \
+  -H 'Content-Type: application/json' \
+  --data '{"event":{"level":"INFO","message":"manual UI verification"},"index":"recsys","sourcetype":"recsys:app:log","source":"manual-test"}' \
+  http://localhost:8088/services/collector/event
+```
+
+Expected response:
+
+```json
+{"text":"Success","code":0}
+```
+
+In **Search & Reporting**, set the time picker to **All time** if necessary and run:
+
+```spl
+index=recsys source="manual-test" "manual UI verification"
+```
+
+### Start the services and search their logs
+
+Keep the credentials loaded in the shell used to start the services:
+
+```bash
+export RECOMMENDATION_CURSOR_SIGNING_KEY="$(openssl rand -hex 32)"
+sh scripts/run-microservices-local.sh
+```
+
+The script defaults `SPLUNK_HEC_URL` to
+`http://localhost:8088/services/collector/event` rather than the
+`http://splunk:8088/...` address resolved inside the Compose network. The four JVMs run
+on the host, so the published localhost port is the correct endpoint.
+
+After the services are ready, generate traffic and count indexed events by service:
+
+```bash
+curl --fail http://localhost:8010/health
+```
+
+```spl
+index=recsys sourcetype="recsys:app:log" | stats count by source
+```
+
+### Troubleshooting local bring-up
+
+#### Compose says a required variable is missing
+
+Compose interpolates the entire file before executing any subcommand. Use the stable env
+file even for `ps` and `down`:
+
+```bash
+docker compose --env-file /tmp/recsys-splunk.env \
+  -f docker-compose.splunk.yml ps -a
+```
+
+#### Docker cannot connect to a Colima socket
+
+Check which profile owns the active context:
+
+```bash
+docker context show
+docker context ls
+colima status
+colima status splunk
+```
+
+For this Mac workflow, start and select the dedicated profile:
+
+```bash
+colima start splunk
+docker context use colima-splunk
+```
+
+#### Compose remains at `Container splunk Waiting`
+
+Do not start the JVM services yet. Inspect actual progress:
+
+```bash
+docker ps -a --filter name=splunk \
+  --format 'table {{.Names}}\t{{.Status}}\t{{.Ports}}'
+docker logs --tail=200 splunk
+docker logs --tail=100 splunk-init
+```
+
+During a normal first boot, continue waiting. `splunk-init` retries HEC for up to 150
+seconds after the main container's health check succeeds.
+
+#### The container says `healthy`, but port 8000 does not work
+
+The management health check can briefly retain a successful result while Splunk's Ansible
+startup restarts `splunkd`. Check both the web endpoint and the real process state:
+
+```bash
+curl -I --max-time 5 http://localhost:8000/
+docker exec -u splunk splunk /opt/splunk/bin/splunk status
+docker logs --tail=200 splunk
+docker logs --tail=100 splunk-init
+```
+
+If `splunkd` is not running and the logs stop progressing, the UI cannot work even though
+Docker still displays `healthy`.
+
+#### The UI rejects the password
+
+The env file may have been regenerated after the container or volumes were created. The
+following local-development recovery command deliberately displays the password configured
+on the running container:
+
+```bash
+docker inspect --format '{{range .Config.Env}}{{println .}}{{end}}' splunk \
+  | sed -n 's/^SPLUNK_PASSWORD=//p'
+```
+
+Use username `admin`. If that password also fails, discard the disposable volumes as
+described under cleanup and start from a single stable env file.
+
+#### Splunk crashes on Apple Silicon
+
+The image has no native arm64 build. These messages indicate the known emulation failure,
+not an application or browser problem:
+
+```text
+Received fatal signal 11 (Segmentation fault)
+IndexerTPoolWorker
+KVStore service will not start because kvstore process terminated
+```
+
+This reproduced against fresh volumes under some emulation configurations. Rosetta may
+work better than ordinary QEMU/binfmt, but it is not a guarantee. Use the x86_64 GitHub
+integration workflow or a genuine x86_64 host when the failure repeats.
+
+### Cleanup
+
+Stop the containers while keeping the local index and configuration:
+
+```bash
+docker compose --env-file /tmp/recsys-splunk.env \
+  -f docker-compose.splunk.yml down
+```
+
+The next command permanently deletes the local Splunk index, admin configuration, and HEC
+token along with the containers:
+
+```bash
+docker compose --env-file /tmp/recsys-splunk.env \
+  -f docker-compose.splunk.yml down -v
+```
+
+If the env file is already gone, placeholders are sufficient for cleanup because Compose
+only needs them to parse the file:
+
+```bash
+SPLUNK_PASSWORD=unused SPLUNK_HEC_TOKEN=unused \
+  docker compose -f docker-compose.splunk.yml down -v
+```
+
+Verify that no Splunk containers remain:
+
+```bash
+docker ps -a --filter name=splunk
+```
+
+If the dedicated profile is no longer needed, stop it after cleanup:
+
+```bash
+colima stop splunk
+```
+
+### Why the Mac path remains best-effort
+
+`splunk/splunk` publishes no arm64 image. On Apple Silicon, the Compose file forces
+`platform: linux/amd64`, but `splunkd` can segfault during first-boot indexing under
 emulation:
 
 ```
@@ -98,9 +412,9 @@ Failed to start mongod on first attempt reason=KVStore service will not start be
 
 This reproduced on two independent boots, including one against freshly emptied
 volumes, so it is not stale state — it is `splunkd` faulting under x86_64-on-arm64
-emulation, most plausibly in the KVStore/mongod component. Run this stack on a genuine
-x86_64 host (a Linux box, an amd64 CI runner, or a Docker Desktop emulation setup that
-doesn't hit this fault) to actually exercise it.
+emulation, most plausibly in the KVStore/mongod component. A Rosetta-enabled Colima
+profile has progressed through UI startup and authentication on this project, but that
+does not invalidate the failures on other boots. Treat genuine x86_64 as authoritative.
 
 **What the unit tests cover**, independent of a running Splunk: the appender's HEC wire
 format, its batching behavior, and the `Authorization: Splunk <token>` header are proven
@@ -120,34 +434,13 @@ only the outcome:
    REST API (create the index, force HEC's global `enableSSL` off, create the token with a
    pinned value) and then polls the plain-HTTP collector endpoint until it accepts an event.
 
-The belt-and-braces is not redundant: upstream `splunk/docker-splunk#40` documents
+The belt-and-braces approach is not redundant: upstream `splunk/docker-splunk#40` documents
 `SPLUNK_HEC_TOKEN` historically not being reliably honoured for *standalone* instances,
 which is why `init.sh`'s management-API repair exists rather than trusting the env var
 alone. If you want to know which one is load-bearing on a given image tag, remove one and
 watch whether `initScriptEnablesPlainHttpHec` still passes.
 
-### Bring-up sequence
-
-```bash
-export SPLUNK_PASSWORD="$(openssl rand -base64 18)"
-export SPLUNK_HEC_TOKEN="$(uuidgen)"
-docker compose -f docker-compose.splunk.yml up -d
-# First boot takes 1-3 minutes — splunk-init waits on the splunk service's healthcheck,
-# then polls the plain-HTTP collector endpoint for up to 150s. Be patient.
-
-sh scripts/run-microservices-local.sh   # picks up SPLUNK_HEC_TOKEN from the environment
-open http://localhost:8000              # Splunk web UI: admin / $SPLUNK_PASSWORD
-```
-
-`scripts/run-microservices-local.sh` defaults `SPLUNK_HEC_URL` to
-`http://localhost:8088/services/collector/event` rather than the `http://splunk:8088/...`
-the compose network resolves — the four JVMs run on the host, not inside the compose
-network, so only the published `localhost` port is reachable from them.
-
-Once services are up, exercise at least one endpoint (e.g. `curl localhost:8010/health`
-or a real recommendation request) and check the useful searches below.
-
-### Recovering from an interrupted first boot
+### Recovering from an interrupted first boot or token change
 
 If the `splunk` container is killed (or the host restarts) before it finishes
 initializing, `splunk-etc`/`splunk-var` are left half-provisioned, and the next start
@@ -160,13 +453,13 @@ ERROR: appserver port [127.0.0.1:8065] - port is already bound.
 
 This looks alarming — it names a port — but nothing external is bound there; it is an
 internal port check tripping over a second `splunkd` starting against stale state. The
-fix is to discard the half-initialized volumes and start clean:
+fix is to discard the half-initialized volumes and start clean. This permanently deletes
+the local index and configuration:
 
 ```bash
-docker compose -f docker-compose.splunk.yml down -v
+docker compose --env-file /tmp/recsys-splunk.env \
+  -f docker-compose.splunk.yml down -v
 ```
-
-### Token rotation on surviving volumes
 
 `init.sh` is idempotent for a **stable** token: re-running it against existing volumes
 (e.g. a plain restart) is a no-op. It is not idempotent across a token *change*. Splunk
@@ -176,13 +469,6 @@ If `SPLUNK_HEC_TOKEN` changes between runs against volumes that already have a `
 token provisioned, the **old** token stays live and `splunk-init` exits 1 trying to
 verify the new one. Recovery is the same as above: `down -v`, then bring the stack up
 with the new token from empty volumes.
-
-### Resourcing
-
-Splunk wants more CPU and memory than Docker Desktop's 2 CPU / 4 GB default. This does
-not cause the arm64 segfault above (that is an emulated-instruction fault, not a
-resource limit), but it will slow first boot further on any host. Give the Splunk
-container more room if you can.
 
 ## Enabling in EKS
 
