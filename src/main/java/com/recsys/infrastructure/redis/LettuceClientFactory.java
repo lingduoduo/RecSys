@@ -7,6 +7,8 @@ import io.lettuce.core.RedisURI;
 import io.lettuce.core.TimeoutOptions;
 import io.lettuce.core.api.StatefulRedisConnection;
 import org.apache.commons.pool2.impl.GenericObjectPoolConfig;
+import org.slf4j.Logger;
+import org.slf4j.LoggerFactory;
 
 import java.time.Duration;
 import java.util.ArrayList;
@@ -22,6 +24,8 @@ import java.util.Map;
  */
 public final class LettuceClientFactory {
 
+    private static final Logger log = LoggerFactory.getLogger(LettuceClientFactory.class);
+
     static final int DEFAULT_MAX_TOTAL   = 50;
     static final int DEFAULT_MAX_IDLE    = 10;
     static final int DEFAULT_MIN_IDLE    = 2;
@@ -34,7 +38,9 @@ public final class LettuceClientFactory {
      * Refuses to open a connection to an unauthenticated Redis unless something says so out loud.
      * Mirrors GatewayAuthenticator.fromEnvironment: REDIS_PASSWORD was supported by this class and
      * set by no manifest, which is exactly how every service ended up connecting as the
-     * unauthenticated default user. A warning would not have changed that.
+     * unauthenticated default user. A warning would not have changed that, which is why this
+     * throws. The opt-out still warns, on the same precedent: it makes a cluster that took the
+     * escape hatch visible in its own logs, where the refusal is what keeps it out of production.
      *
      * <p>Guards the public entry points only. The package-private URI builders and the map-taking
      * router overload stay unguarded so unit tests can construct and inspect URIs without a
@@ -42,7 +48,12 @@ public final class LettuceClientFactory {
      */
     static void requireAuthentication(String password, Map<String, String> env) {
         if (password != null && !password.isBlank()) return;
-        if (Boolean.parseBoolean(env.getOrDefault("REDIS_ALLOW_NO_AUTH", "false"))) return;
+        if (Boolean.parseBoolean(env.getOrDefault("REDIS_ALLOW_NO_AUTH", "false"))) {
+            log.warn("Redis authentication is DISABLED (REDIS_ALLOW_NO_AUTH=true): this service "
+                    + "connects to Redis as the unauthenticated default user. Never use this in "
+                    + "production.");
+            return;
+        }
         throw new IllegalStateException(
                 "REDIS_PASSWORD is not set, so this service would connect to Redis as the "
                         + "unauthenticated default user. Redis holds the item and user embeddings, "
@@ -140,9 +151,8 @@ public final class LettuceClientFactory {
                 node = node.strip();
                 if (node.isEmpty()) continue;
                 ReplicaConfig cfg = ReplicaConfig.parse(node);
-                RedisURI uri = replicaUri(cfg, props.getUsername(), props.getPassword(),
-                        props.isTls(), props.getTimeoutMs());
-                replicas.add(new RedisReadReplicaRouter.AzExecutor(executor(uri, poolCfg), cfg.az()));
+                replicas.add(new RedisReadReplicaRouter.AzExecutor(
+                        executor(replicaUriFrom(cfg, props), poolCfg), cfg.az()));
             }
         }
         return new RedisReadReplicaRouter(primary, replicas, localAz);
@@ -249,6 +259,16 @@ public final class LettuceClientFactory {
     static RedisURI replicaUri(ReplicaConfig cfg, String username, String password,
                                boolean tls, int timeoutMs) {
         return standaloneUri(cfg.host(), cfg.port(), username, password, tls, timeoutMs);
+    }
+
+    /**
+     * The Spring-properties replica URI, extracted for the same reason as {@link #replicaUri}:
+     * this is the model-serving production path, and reading the credentials off the wrong object
+     * — or off none at all — is invisible in a diff of {@link #routerFrom}.
+     */
+    static RedisURI replicaUriFrom(ReplicaConfig cfg, RedisProperties props) {
+        return replicaUri(cfg, props.getUsername(), props.getPassword(),
+                props.isTls(), props.getTimeoutMs());
     }
 
     // ── Pool config ─────────────────────────────────────────────────────────────

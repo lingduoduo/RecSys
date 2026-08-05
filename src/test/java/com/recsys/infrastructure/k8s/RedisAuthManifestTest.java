@@ -3,6 +3,7 @@ package com.recsys.infrastructure.k8s;
 import org.junit.jupiter.api.Test;
 
 import java.io.IOException;
+import java.nio.file.Files;
 import java.nio.file.Path;
 import java.util.List;
 import java.util.Map;
@@ -143,6 +144,41 @@ class RedisAuthManifestTest {
                         + "Checking only the 'sentinel auth-pass mymaster' prefix would still pass if "
                         + "the __REDIS_PASSWORD__ placeholder were accidentally dropped")
                 .contains("sentinel auth-pass mymaster __REDIS_PASSWORD__");
+    }
+
+    /**
+     * The guard has an opt-out, and an opt-out with no detector is a matter of time. Sharp edge 2
+     * of 20_AuthN_AuthZ is this exact drift, already realised once: {@code GATEWAY_ALLOW_ANONYMOUS}
+     * sits in the base configmap and only the eks-shared component turns it off, so an overlay that
+     * composes base alone inherits anonymous access silently. The realistic path here is an operator
+     * adding {@code REDIS_ALLOW_NO_AUTH} to a configmap while debugging a crash-loop and leaving it;
+     * the guard cannot object, because the flag is exactly how you tell it not to.
+     *
+     * <p>Every overlay is scanned, not just base — an overlay is where the flag would be added, and
+     * it is where the other tests here do not look. Comment lines are skipped so the manifests can
+     * still say why the flag is absent.
+     */
+    @Test
+    void noManifestOptsOutOfRedisAuthentication() throws IOException {
+        Set<String> offenders = new TreeSet<>();
+        try (var paths = Files.walk(Path.of("k8s"))) {
+            for (Path p : paths.filter(Files::isRegularFile)
+                    .filter(p -> p.toString().endsWith(".yaml"))
+                    .toList()) {
+                for (String line : Files.readAllLines(p)) {
+                    if (line.strip().startsWith("#")) continue;
+                    if (line.contains("REDIS_ALLOW_NO_AUTH")) offenders.add(p.toString());
+                }
+            }
+        }
+
+        assertThat(offenders)
+                .as("REDIS_ALLOW_NO_AUTH is the escape hatch for a passwordless local Redis. In a "
+                        + "cluster it silently restores the unauthenticated default-user connection "
+                        + "this change exists to end, and it does it without a single failing pod — "
+                        + "which is why it must not be reachable from any manifest. If a cluster "
+                        + "genuinely has no Redis password, fix the Secret")
+                .isEmpty();
     }
 
     @Test
