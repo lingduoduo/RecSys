@@ -87,6 +87,10 @@ With none of those set the gateway authenticates nobody, so `GatewayAuthenticato
 (dev/local only; logs a loud WARN). `k8s/base` opts in (`true`); the EKS overlays flip it to
 `false` and inject `GATEWAY_API_KEYS` from the `recsys-gateway-auth` Secret. See
 `docs/runbooks/gateway-auth.md`.
+`GATEWAY_COGNITO_USER_ID_CLAIM` (default `sub`) names the JWT claim carrying the application
+userId. A JWT caller is user-tier and may only name its own `userId` on user-scoped routes;
+API-key and anonymous callers are service-tier and unrestricted. Denials are 403 and counted in
+`gateway_user_scope_rejected_total`. See `docs/system_design/20_AuthN_AuthZ.md` §10.
 `SPLUNK_HEC_TOKEN` (default unset = Splunk log shipping is off; setting it makes all four
 services ship structured JSON log events to `SPLUNK_HEC_URL`, default
 `http://splunk:8088/services/collector/event`, via a bounded drop-on-full Logback appender —

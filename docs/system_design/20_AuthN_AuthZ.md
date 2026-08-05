@@ -296,16 +296,67 @@ that decides which node 6379 *is*.
 
 Design: [Redis transport authentication](../superpowers/specs/2026-08-05-redis-transport-auth-design.md).
 
+## 10. User-scope authorization — is this caller allowed to name this user?
+
+§1–§4 answer "is this caller authenticated". This section answers "may this caller act on *this*
+user", which is a separate question and was, until now, unasked: `userId` is an ordinary request
+field, so any authenticated caller could name any user.
+
+The rule is one comparison, applied at the gateway:
+
+- **Credential type decides the tier.** `GatewayPrincipal.Tier` is `USER` for a JWT caller and
+  `SERVICE` for an API key or (dev-only) anonymous. Service-tier callers are exempt — the trust
+  model is that they are backends legitimately acting for many users, which is what
+  `ModelRateLimiter` already assumes when it keys on the served userId rather than the caller.
+- **User-tier callers may act only on their own id.** `GATEWAY_COGNITO_USER_ID_CLAIM` (default
+  `sub`) names the JWT claim carrying the application userId; the gateway compares it, as an exact
+  string, to the `userId` in the request.
+- **Anything indeterminate is a denial.** A blank claim, a missing `userId`, an unparseable body
+  — all 403. Tiering by credential type rather than by claim presence is what makes this hold: a
+  JWT whose claim did not resolve stays user-tier and is denied, instead of falling through to
+  service-tier freedom.
+
+`UserScopedRoutes` declares which backend routes take a `userId` and how it arrives, keyed on
+`(backend service, backend path)` — not on the gateway path, because `/api/users`, `/api/movies`,
+and `/api/catalog` all resolve to 6010 and `MicroserviceRoute.rewrite` forwards the suffix
+verbatim, so one handler is reachable under three prefixes. Three source kinds cover every route:
+`QUERY` (a query-string parameter), `BODY` (a top-level `userId` field), and `BODY_INSTANCES`
+(every element of a TF-Serving-shaped `instances[]` array must name the same user). The third kind
+exists because `POST /v1/models/recmodel:predict` turned out to be user-scoped: `PredictInstance`
+carries a caller-supplied `userId`, and `PairPredictionService` loads `u2vEmb:<userId>` and returns
+scores derived from it — a fact the route had first been excused past, and only the conformance
+test below caught. `UserScopedRouteCoverageTest` requires every gateway-reachable backend route to
+be declared in `UserScopedRoutes` or explicitly listed as not user-scoped, so the enforcement
+cannot silently develop holes as routes are added; a second test in the same class sweeps the
+whole `src/main/java` tree for route registrations and Spring controllers outside the locations
+the first test scans, so the coverage claim cannot be undermined by a route registered somewhere
+the scanner never looks.
+
+Enforcement lives in `GatewayRequestForwarder.forward`, beside the credential stripping and
+identity injection of §2 — one function is the whole identity story, in both directions. It runs
+after rate limiting (so a probing caller spends their own tokens) and before the circuit-breaker
+permit is acquired (so a denial cannot leak one). Denials return `403` with a fixed body
+(`forbidden: request is not scoped to the authenticated user`), increment
+`gateway_user_scope_rejected_total`, and log once.
+
+**What this does not yet prove.** No environment sets `GATEWAY_COGNITO_ISSUER`, so every caller
+today is service-tier and this section describes a path that is never taken in production. Tests
+construct verified claims directly; the extraction of a real claim from a real user pool is
+untested until the first deployment that enables Cognito. Its failure mode is a 403 on every
+user-scoped route, not an opening.
+
+Design: [user-scope authorization](../superpowers/specs/2026-08-05-gateway-user-scope-authorization-design.md).
+
 ## Sharp edges — notes
 
-1. **Authentication is binary; there is no authorization model.** Outside the 7010
-   operator token, any authenticated caller can reach every routed data-plane path —
-   including control-plane writes such as `/api/catalog/setembedding` (overwrite item
-   embeddings on 6010) and `/api/model/api/v1/model/versions/activate` and
-   `/rollback` (swap the serving model). Those sit in the same privilege tier as a
-   catalog read. The trust model is "callers are trusted backends", so this is
-   consistent — but it means an API-key leak is a control-plane compromise, not just
-   a data-plane one.
+1. **Authorization is one comparison and one privilege tier.** §10 scopes user-tier callers to
+   their own `userId`, but that is the only authorization rule in the system. Beyond it — and for
+   every service-tier caller — any authenticated caller can reach every routed data-plane path,
+   including control-plane writes such as `/api/catalog/setembedding` (overwrite item embeddings
+   on 6010) and `/api/model/api/v1/model/versions/activate` and `/rollback` (swap the serving
+   model). Those sit in the same privilege tier as a catalog read. The trust model is "callers are
+   trusted backends", so this is consistent — but it means an API-key leak is still a
+   control-plane compromise, and, because API keys are service-tier, still a read of every user.
 2. **`k8s/base` runs wide open.** `GATEWAY_ALLOW_ANONYMOUS: "true"` lives in the base
    configmap; only the `eks-shared` component flips it to `false`. A new overlay that
    composes `../base` without `../eks-shared` inherits anonymous access silently —
