@@ -11,7 +11,21 @@ import java.util.stream.Stream;
  * Cognito verification parameters. Built from the GATEWAY_COGNITO_* environment.
  * A blank issuer means Cognito auth is not configured ({@link #isConfigured()} is false).
  */
-record CognitoConfig(String issuer, String audience, Set<String> tokenUses) {
+record CognitoConfig(String issuer, String audience, Set<String> tokenUses, String userIdClaim) {
+
+    /** Cognito's own subject claim. The default, so a pool that mints app userIds as `sub` needs no config. */
+    static final String DEFAULT_USER_ID_CLAIM = "sub";
+
+    /** Callers that predate the user-scope work; `sub` is the claim they implicitly meant. */
+    CognitoConfig(String issuer, String audience, Set<String> tokenUses) {
+        this(issuer, audience, tokenUses, DEFAULT_USER_ID_CLAIM);
+    }
+
+    CognitoConfig {
+        userIdClaim = userIdClaim == null || userIdClaim.isBlank()
+                ? DEFAULT_USER_ID_CLAIM
+                : userIdClaim.trim();
+    }
 
     static CognitoConfig fromEnvironment(EnvVars.EnvReader env) {
         String issuer = stripTrailingSlash(read(env, "GATEWAY_COGNITO_ISSUER", ""));
@@ -25,7 +39,8 @@ record CognitoConfig(String issuer, String audience, Set<String> tokenUses) {
                 .map(value -> value.trim().toLowerCase(Locale.ROOT))
                 .filter(value -> !value.isBlank())
                 .collect(Collectors.toUnmodifiableSet());
-        return new CognitoConfig(issuer, audience, tokenUses);
+        String userIdClaim = read(env, "GATEWAY_COGNITO_USER_ID_CLAIM", DEFAULT_USER_ID_CLAIM);
+        return new CognitoConfig(issuer, audience, tokenUses, userIdClaim);
     }
 
     boolean isConfigured() {

@@ -79,6 +79,10 @@ public final class MicroserviceGatewayServer {
         GatewayRateLimiter rateLimiter = GatewayRateLimiter.fromEnvironment(proxyRoutes);
         GatewayAuthenticator authenticator = GatewayAuthenticator.fromEnvironment();
 
+        // Created before the forwarder so it can register gateway_user_scope_rejected_total.
+        // PrometheusMeterRegistries.defaultRegistry() is a JVM-wide singleton; order is free.
+        PrometheusMeterRegistry meterRegistry = PrometheusMeterRegistries.defaultRegistry();
+
         // Upstream addressing: static route/env addresses by default. When the service registry is
         // enabled, the gateway resolves upstreams from Redis (falling back to the static address per
         // route) and rebuilds its endpoint groups when a resolved address changes. Redis is only
@@ -101,13 +105,14 @@ public final class MicroserviceGatewayServer {
             registryProvider = new ServiceRegistryProvider(registryStore, serviceNames, refreshMs,
                     () -> { if (holder[0] != null) holder[0].rebuildUpstreamsIfChanged(); });
             forwarder = GatewayRequestForwarder.registryBacked(
-                    proxyRoutes, timeout, circuitBreakers, rateLimiter, registryProvider);
+                    proxyRoutes, timeout, circuitBreakers, rateLimiter, registryProvider, meterRegistry);
             holder[0] = forwarder;
             registryProvider.start();
             log.info("Service registry consumer enabled ({} services, refresh {} ms)",
                     serviceNames.size(), refreshMs);
         } else {
-            forwarder = new GatewayRequestForwarder(proxyRoutes, timeout, circuitBreakers, rateLimiter);
+            forwarder = new GatewayRequestForwarder(
+                    proxyRoutes, timeout, circuitBreakers, rateLimiter, meterRegistry);
         }
 
         RecommendationGatewayService recommendationService =
@@ -125,8 +130,8 @@ public final class MicroserviceGatewayServer {
         ServerBuilder sb = Server.builder().http(port);
 
         // Prometheus metrics endpoint (always present, matching the other services). Registry meters
-        // are registered only when the registry consumer is active.
-        PrometheusMeterRegistry meterRegistry = PrometheusMeterRegistries.defaultRegistry();
+        // are registered only when the registry consumer is active. The registry itself is created
+        // above, before the forwarder, so the forwarder can register its own meters into it.
         sb.service("/metrics", PrometheusExpositionService.of(meterRegistry.getPrometheusRegistry()));
         // The Splunk appender was built by Logback long before this registry existed, so it
         // cannot register itself. No-op when SPLUNK_HEC_TOKEN is unset.

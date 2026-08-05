@@ -17,6 +17,8 @@ import org.slf4j.LoggerFactory;
 import java.nio.charset.StandardCharsets;
 import java.security.MessageDigest;
 import java.util.Arrays;
+import java.util.LinkedHashSet;
+import java.util.List;
 import java.util.Set;
 import java.util.stream.Collectors;
 
@@ -25,12 +27,35 @@ public final class GatewayAuthenticator {
     private static final GatewayAuthenticator DISABLED = new GatewayAuthenticator(Set.of(), Set.of("/health"), null);
     private static final String AUTHORIZATION_PREFIX = "Bearer ";
 
-    // User-data read routes that must NEVER be anonymously reachable, regardless of
+    // User-data prefixes that must NEVER be anonymously reachable, regardless of
     // GATEWAY_PUBLIC_PATHS. Defense-in-depth against a configmap typo (e.g. a bare "/api/catalog"
     // public prefix that would otherwise expose "/api/catalog/user"). Matched with the same
     // boundary rule as public paths, so "/api/users/profile" is guarded but "/api/usersettings"
     // is not.
-    private static final Set<String> PROTECTED_PREFIXES = Set.of("/api/catalog/user", "/api/users");
+    private static final Set<String> HAND_LISTED_PROTECTED_PREFIXES =
+            Set.of("/api/catalog/user", "/api/users");
+
+    /**
+     * The hand-listed prefixes above, plus every user-scoped route {@link UserScopedRoutes}
+     * declares, derived rather than restated.
+     *
+     * <p>Making a user-scoped route public is not merely "unauthenticated" — an anonymous caller is
+     * SERVICE tier, and service tier is exempt from the user-scope check, so listing
+     * {@code /api/catalog/getrecommendation} in {@code GATEWAY_PUBLIC_PATHS} would turn off §10's
+     * enforcement for that route without any warning firing. Deriving the guard from the same
+     * declaration the check reads is what keeps the two from drifting; a second hand-maintained
+     * list beside {@code UserScopedRoutes} is precisely the failure mode being closed.
+     *
+     * <p>The hand-listed entries are kept: {@code /api/users} guards a whole prefix, which is
+     * broader than the specific handlers the derivation produces.
+     */
+    private static final Set<String> PROTECTED_PREFIXES = protectedPrefixes();
+
+    private static Set<String> protectedPrefixes() {
+        Set<String> prefixes = new LinkedHashSet<>(HAND_LISTED_PROTECTED_PREFIXES);
+        prefixes.addAll(UserScopedRoutes.gatewayPaths(MicroserviceRoute.defaults()));
+        return Set.copyOf(prefixes);
+    }
 
     private final Set<String> apiKeys;
     private final Set<String> publicPaths;
@@ -92,12 +117,17 @@ public final class GatewayAuthenticator {
      */
     private static void warnOnProtectedOverlap(Set<String> publicPaths) {
         for (String configured : publicPaths) {
-            for (String protectedPrefix : PROTECTED_PREFIXES) {
-                if (protectedPrefix.equals(configured) || protectedPrefix.startsWith(configured + "/")) {
-                    log.warn("GATEWAY_PUBLIC_PATHS entry \"{}\" would expose protected user-data path "
-                            + "\"{}\"; it stays auth-required (never-public guard). Fix the config to "
-                            + "list only exact non-sensitive read paths.", configured, protectedPrefix);
-                }
+            // One line per configured entry, not per pair: a bare "/api/catalog" now overlaps every
+            // user-scoped catalog route, and ten near-identical warnings read as noise rather than
+            // as one misconfiguration.
+            List<String> exposed = PROTECTED_PREFIXES.stream()
+                    .filter(p -> p.equals(configured) || p.startsWith(configured + "/"))
+                    .sorted()
+                    .toList();
+            if (!exposed.isEmpty()) {
+                log.warn("GATEWAY_PUBLIC_PATHS entry \"{}\" would expose protected user-data paths "
+                        + "{}; they stay auth-required (never-public guard). Fix the config to "
+                        + "list only exact non-sensitive read paths.", configured, exposed);
             }
         }
     }

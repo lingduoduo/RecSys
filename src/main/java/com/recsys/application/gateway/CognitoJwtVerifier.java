@@ -81,7 +81,8 @@ final class CognitoJwtVerifier {
         String subject = text(payload, "sub");
         String clientId = firstText(payload, "client_id", "aud");
         String tokenUse = text(payload, "token_use");
-        return new VerifiedClaims(subject, clientId, tokenUse);
+        String appUserId = scalarText(payload, config.userIdClaim());
+        return new VerifiedClaims(subject, clientId, tokenUse, appUserId);
     }
 
     private void validateClaims(JsonNode payload) {
@@ -162,12 +163,39 @@ final class CognitoJwtVerifier {
         return value.isBlank() ? text(node, second) : value;
     }
 
+    /**
+     * A claim value usable as an identity: textual or numeric only. An object or array is
+     * rejected explicitly via {@link JsonNode#isContainerNode()} rather than relying on
+     * {@code asText()} to fall through to blank on its own.
+     *
+     * <p>On this project's pinned Jackson (2.17.2), that fallback already happens —
+     * {@code ObjectNode}/{@code ArrayNode#asText(String)} return the default because
+     * {@code textValue()} is null for a container, so today this guard does not change
+     * {@code verify()}'s observable behavior versus calling {@link #text(JsonNode, String)}
+     * here instead. It is kept as defense against a Jackson upgrade changing that fallback,
+     * or a future edit to this method that reads the value some other way (e.g.
+     * {@code textValue()} directly, which is null for a container rather than empty) and
+     * would otherwise silently let a container claim through as an identity.
+     */
+    private static String scalarText(JsonNode node, String field) {
+        JsonNode value = node.get(field);
+        if (value == null || value.isNull() || value.isContainerNode()) {
+            return "";
+        }
+        return value.asText("").trim();
+    }
+
     private static long longClaim(JsonNode node, String field, long defaultValue) {
         JsonNode value = node.get(field);
         return value == null || !value.canConvertToLong() ? defaultValue : value.asLong();
     }
 
-    record VerifiedClaims(String subject, String clientId, String tokenUse) {
+    record VerifiedClaims(String subject, String clientId, String tokenUse, String appUserId) {
+
+        /** The default claim is `sub`, so a caller that supplies no appUserId means exactly the subject. */
+        VerifiedClaims(String subject, String clientId, String tokenUse) {
+            this(subject, clientId, tokenUse, subject);
+        }
     }
 
     interface JwkProvider {

@@ -3,8 +3,9 @@
 An investigation of who proves their identity, where that proof is checked, and what
 the proof entitles them to. The short answer: **authentication happens once, at the
 gateway**, and everything behind it trusts the gateway. Authorization is deliberately
-coarse — there is exactly one privilege tier above "authenticated caller", and it
-guards operator surfaces on online serving.
+coarse — two narrow privilege tiers sit above "authenticated caller": one guards
+operator surfaces on online serving (§5), the other scopes a JWT caller to their own
+`userId` (§10).
 
 ## The big picture
 
@@ -30,8 +31,8 @@ Three structural facts shape everything below:
   their `/metrics` scrape, and online serving admits nothing else. The backends'
   lack of their own authentication is a deliberate consequence, not an oversight.
 - **There is no authorization *model*.** No roles, no scopes, no per-resource
-  ownership checks. A caller is authenticated or not; the single exception is the
-  operator token in §5.
+  ownership checks. A caller is authenticated or not; the two exceptions are the
+  operator token in §5 and the user-scope check in §10.
 - **No security framework is used.** There is no `spring-boot-starter-security`, no
   `jjwt`, no `nimbus-jose-jwt` in [`pom.xml`](../../pom.xml). JWT verification is
   hand-rolled on the JDK plus Jackson (§1), which is a deliberate dependency
@@ -116,8 +117,15 @@ entirely. Matching is **prefix-with-boundary** — `path.equals(prefix)` or
 That boundary rule is also the trap: a bare `/api/catalog` entry *would* match
 `/api/catalog/user`. Two mechanisms make the mistake survivable:
 
-- **`PROTECTED_PREFIXES`** (`/api/catalog/user`, `/api/users`) is consulted **first**
-  in `isPublic`, so those paths are never anonymous regardless of configuration.
+- **`PROTECTED_PREFIXES`** is consulted **first** in `isPublic`, so those paths are never
+  anonymous regardless of configuration. It is two hand-listed prefixes (`/api/catalog/user`,
+  `/api/users`) **plus every user-scoped route derived from `UserScopedRoutes`** —
+  `route.prefix() + backendPath` for each gateway prefix that reaches a declared handler, so
+  `/api/catalog/getrecommendation`, `/api/movies/getuser` and `/api/online/online/features` are
+  all covered. Deriving matters because making a user-scoped route public does more than skip
+  authentication: an anonymous caller is SERVICE tier, and service tier is exempt from §10, so a
+  public entry would silently switch that route's user-scope check off. A second hand-maintained
+  list beside `UserScopedRoutes` would drift; this one cannot.
 - **`warnOnProtectedOverlap`** logs at startup when a configured public path would
   have exposed a protected prefix — the guard silently saving you is itself a
   misconfiguration worth fixing.
@@ -154,7 +162,7 @@ Two design details matter operationally:
 Rejections increment `gateway_origin_secret_rejected_total` and log **once** — a
 scan or a botched rotation would otherwise flood the log with a per-request warning.
 
-## 5. Operator authorization — the one privilege tier
+## 5. Operator authorization — a privilege tier
 
 Once edge auth is on, the `/api/online` passthrough lets **any authenticated client**
 reach online serving's introspection surfaces. Those are operator tools, not client
@@ -296,16 +304,111 @@ that decides which node 6379 *is*.
 
 Design: [Redis transport authentication](../superpowers/specs/2026-08-05-redis-transport-auth-design.md).
 
+## 10. User-scope authorization — is this caller allowed to name this user?
+
+§1–§4 answer "is this caller authenticated". This section answers "may this caller act on *this*
+user", which is a separate question and was, until now, unasked: `userId` is an ordinary request
+field, so any authenticated caller could name any user.
+
+The rule is one comparison, applied at the gateway:
+
+- **Credential type decides the tier.** `GatewayPrincipal.Tier` is `USER` for a JWT caller and
+  `SERVICE` for an API key or (dev-only) anonymous. Service-tier callers are exempt — the trust
+  model is that they are backends legitimately acting for many users, which is what
+  `ModelRateLimiter` already assumes when it keys on the served userId rather than the caller.
+- **User-tier callers may act only on their own id.** `GATEWAY_COGNITO_USER_ID_CLAIM` (default
+  `sub`) names the JWT claim carrying the application userId; the gateway compares it, as an exact
+  string, to the `userId` in the request.
+- **Anything indeterminate is a denial.** A blank claim, a missing `userId`, an unparseable body
+  — all 403. Tiering by credential type rather than by claim presence is what makes this hold: a
+  JWT whose claim did not resolve stays user-tier and is denied, instead of falling through to
+  service-tier freedom.
+
+`UserScopedRoutes` declares which backend routes take a `userId` and how it arrives, keyed on
+`(backend service, backend path)` — not on the gateway path, because `/api/users`, `/api/movies`,
+and `/api/catalog` all resolve to 6010 and `MicroserviceRoute.rewrite` forwards the suffix
+verbatim, so one handler is reachable under three prefixes. Three source kinds cover every route:
+`QUERY` (a query-string parameter), `BODY` (a top-level `userId` field), and `BODY_INSTANCES`
+(every element of a TF-Serving-shaped `instances[]` array must name the same user). The third kind
+exists because `POST /v1/models/recmodel:predict` turned out to be user-scoped: `PredictInstance`
+carries a caller-supplied `userId`, and `PairPredictionService` loads `u2vEmb:<userId>` and returns
+scores derived from it — a fact the route had first been excused past, and only the conformance
+test below caught. `UserScopedRouteCoverageTest` requires every gateway-reachable backend route to
+be declared in `UserScopedRoutes` or explicitly listed as not user-scoped, so the enforcement
+cannot silently develop holes as routes are added; a second test in the same class sweeps the
+whole `src/main/java` tree for route registrations and Spring controllers outside the locations
+the first test scans, so the coverage claim cannot be undermined by a route registered somewhere
+the scanner never looks.
+
+Enforcement lives in `GatewayRequestForwarder.forward`, beside the credential stripping and
+identity injection of §2. It runs after rate limiting (so a probing caller spends their own
+tokens) and before the circuit-breaker permit is acquired (so a denial cannot leak one). Denials
+return `403` with a fixed body (`forbidden: request is not scoped to the authenticated user`),
+increment `gateway_user_scope_rejected_total`, and log once.
+
+`forward` is the choke point for every *proxied* route — `GatewayProxyService` and
+`RecommendationGatewayService` both reach it — but it is **not** the gateway's only forwarding
+path. `LlmProxyService` forwards to the LLM upstream itself, duplicating §2's stripping and
+injection, and does not run the user-scope check. That is sound only because no LLM route can be
+user-scoped, and that premise is enforced rather than asserted: `LlmProxyService`'s constructor
+refuses a route that reaches a backend declaring any user-scoped route, naming this section in the
+failure. Adding a user-scoped LLM route therefore fails at startup instead of forwarding
+unchecked. Two forwarding paths is the real shape here; treating it as one was the mistake.
+
+The guard resolves the route's **target**, not its label, and so does `forward`'s own lookup —
+both go through `UserScopedRoutes.effectiveServiceName`, which falls back to the `serviceName` of
+whichever known route shares the same authority. A guard on the declared name alone could never
+have fired: `MicroserviceRoute.fromEnvOptional`, the only thing that builds an LLM route in
+production, always passes `serviceName = null`, and the 5-arg constructor defaults it to null too.
+So the realistic misconfiguration — `LLM_SERVICE_URL` pointed at 8080 — produced a route both the
+guard and the lookup waved through, and `/api/llm/api/v1/recommend` forwarded with no check at all.
+A route cannot opt out of user-scope enforcement by declining to name itself.
+
+**The path the check sees must be the path the backend sees.** Armeria preserves a `.` segment
+(it rejects only `..`); Tomcat, which serves 8080, collapses it. So
+`/api/model/api/v1/./recommend` missed the `UserScopedRoutes` table — matching there is exact, by
+design — while still reaching the Spring handler registered for `/api/v1/recommend`, which made
+every 8080 user-scoped route bypassable by respelling the path. `GatewayProxyService.serve`
+rejects any path carrying a `.` or `..` segment with `400`, immediately after `ApiVersion.parse`
+and before routing. Rejecting at the edge rather than canonicalizing at the lookup is the point:
+route matching, `GATEWAY_PUBLIC_PATHS`, rate-limit keying, and the CloudFront cache key all key on
+the same string, and a fix inside the lookup would have left the other four on whatever spelling
+the client chose. This is the one control in §10 that also applies to service-tier callers — it is
+a malformed-request rejection, not an authorization decision, and no published route contains a
+dot segment. `RecommendationGatewayService` needs no equivalent guard: it is registered at two
+exact paths and builds a constant `targetPath` of `/v2/recommend`, so no client-supplied path
+segment reaches an upstream through it.
+
+A percent-encoded separator is the same disagreement reached by a different spelling, and is
+rejected alongside it. Armeria decodes unreserved characters but deliberately leaves `%2F`
+encoded, so `/api/model/api/v1/.%2Frecommend` is *one* segment to every control here and two to
+any backend that decodes it. Tomcat rejects an encoded solidus by default, which made this inert —
+but that is a setting (`encodedSolidusHandling`), not a guarantee, and no route the gateway
+publishes takes a path segment containing a literal `/`. Depending on a downstream default to hold
+a security boundary is how the `.` case got missed in the first place.
+
+**What this does not yet prove.** No environment sets `GATEWAY_COGNITO_ISSUER`, so every caller
+today is service-tier and this section describes a path that is never taken in production. Tests
+construct verified claims directly; the extraction of a real claim from a real user pool is
+untested until the first deployment that enables Cognito. Its failure mode is a 403 on every
+user-scoped route, not an opening.
+
+Design: [user-scope authorization](../superpowers/specs/2026-08-05-gateway-user-scope-authorization-design.md).
+
 ## Sharp edges — notes
 
-1. **Authentication is binary; there is no authorization model.** Outside the 7010
-   operator token, any authenticated caller can reach every routed data-plane path —
-   including control-plane writes such as `/api/catalog/setembedding` (overwrite item
-   embeddings on 6010) and `/api/model/api/v1/model/versions/activate` and
-   `/rollback` (swap the serving model). Those sit in the same privilege tier as a
-   catalog read. The trust model is "callers are trusted backends", so this is
-   consistent — but it means an API-key leak is a control-plane compromise, not just
-   a data-plane one.
+1. **Authorization is two narrow checks, not a model.** §5's operator token predates this work
+   and still gates only online serving's introspection surfaces — `GET /online/ops`,
+   `GET /shards/shard`, and `POST /shards/topology` — behind its own independent fail-closed
+   default. §10 adds a second, unrelated check: a JWT (user-tier) caller may act only on its own
+   `userId`, and only on the routes `UserScopedRoutes` declares. Outside those two checks — and for
+   every service-tier caller, including on a user-scoped route — any authenticated caller can reach
+   every other routed data-plane path, including control-plane writes such as
+   `/api/catalog/setembedding` (overwrite item embeddings on 6010) and
+   `/api/model/api/v1/model/versions/activate` and `/rollback` (swap the serving model). Those sit
+   in the same privilege tier as a catalog read. The trust model is "callers are trusted backends",
+   so this is consistent — but it means an API-key leak is still a control-plane compromise, and,
+   because API keys are service-tier, still a read of every user.
 2. **`k8s/base` runs wide open.** `GATEWAY_ALLOW_ANONYMOUS: "true"` lives in the base
    configmap; only the `eks-shared` component flips it to `false`. A new overlay that
    composes `../base` without `../eks-shared` inherits anonymous access silently —

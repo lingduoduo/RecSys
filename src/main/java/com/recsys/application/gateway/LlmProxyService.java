@@ -111,6 +111,26 @@ public final class LlmProxyService implements HttpService {
                     long maxRetryWaitMs,
                     GatewayAuthenticator authenticator,
                     ClientFactory clientFactory) {
+        // This class is a second forwarding path: it duplicates the credential stripping and
+        // identity injection of GatewayRequestForwarder, but it does NOT run
+        // authorizeUserScope. That is sound only while no LLM route can reach a user-scoped
+        // backend, so the premise is enforced rather than commented: an LLM route pointed at one
+        // fails at construction instead of forwarding unchecked. Whoever hits this should add the
+        // check here, not delete the guard.
+        //
+        // Resolved by target, not by label. MicroserviceRoute.fromEnvOptional — the only thing
+        // that builds an LLM route in production — always passes serviceName = null, so a guard on
+        // the name alone could never fire, and LLM_SERVICE_URL pointed at 8080 would forward
+        // /api/llm/api/v1/recommend with no user-scope check at all.
+        String targetService = UserScopedRoutes.effectiveServiceName(route, MicroserviceRoute.defaults());
+        if (UserScopedRoutes.declaresAnyFor(targetService)) {
+            throw new IllegalArgumentException(
+                    "LlmProxyService does not enforce user-scope authorization, but route \""
+                            + route.name() + "\" targets \"" + targetService
+                            + "\", which declares user-scoped routes in UserScopedRoutes. Route it "
+                            + "through GatewayProxyService/GatewayRequestForwarder, or implement the "
+                            + "check here first (see 20_AuthN_AuthZ §10).");
+        }
         this.route = route;
         this.circuitBreaker = circuitBreaker;
         this.tokenRateLimiter = tokenRateLimiter;
