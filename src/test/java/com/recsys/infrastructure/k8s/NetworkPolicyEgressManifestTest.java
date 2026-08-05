@@ -64,6 +64,10 @@ class NetworkPolicyEgressManifestTest {
      */
     static final Set<String> EXTERNALLY_DEPLOYED = Set.of("ollama", "mysql", "kafka");
 
+    /** Key shapes that name a network destination. Anything matching these needs an owner. */
+    private static final List<String> UPSTREAM_KEY_SUFFIXES =
+            List.of("_SERVICE_URL", "_HOST", "_URL", "_NODES", "_BOOTSTRAP_SERVERS");
+
     private static List<Map<String, Object>> baseDocuments() throws IOException {
         return ManifestDocuments.allIn(BASE);
     }
@@ -275,5 +279,54 @@ class NetworkPolicyEgressManifestTest {
                         + "nothing observable — the connection still fails, and it fails identically "
                         + "to having no egress rule at all. Add the matching ingress rule")
                 .isEmpty();
+    }
+
+    /**
+     * The drift catcher. Adding an upstream to the ConfigMap without claiming it here is exactly
+     * how the policy fell six rules behind reality — every one of those gaps was a config change
+     * that nobody paired with a policy change. Claiming a key is cheap; the claim is what makes
+     * {@link #everyDeclaredUpstreamIsPermittedByEgress} require a rule for it.
+     */
+    @Test
+    void everyConfigMapUpstreamKeyIsClaimed() throws IOException {
+        Map<String, String> cfg = configMap(baseDocuments());
+
+        Set<String> claimed = OWNED_KEYS.values().stream()
+                .flatMap(Set::stream).collect(java.util.stream.Collectors.toSet());
+
+        Set<String> unclaimed = new TreeSet<>();
+        for (String key : cfg.keySet()) {
+            boolean isUpstream = UPSTREAM_KEY_SUFFIXES.stream().anyMatch(key::endsWith);
+            if (isUpstream && !claimed.contains(key)) unclaimed.add(key);
+        }
+
+        assertThat(unclaimed)
+                .as("these ConfigMap keys name a network destination that no workload claims in "
+                        + "OWNED_KEYS. Either add the key to the workload that dials it — which "
+                        + "will then require a matching egress rule — or, if nothing dials it, "
+                        + "delete it from the ConfigMap rather than leaving dead configuration "
+                        + "that reads like a live dependency")
+                .isEmpty();
+    }
+
+    /**
+     * The relay declares policyTypes: [Ingress] deliberately: its whole job is reaching MySQL,
+     * Kafka and (in EKS) ElastiCache, so an egress allow-list there would black-hole delivery the
+     * moment it drifted. That makes it satisfy the egress assertion trivially, which is precisely
+     * why it needs asserting — a later edit "completing" the policy with an Egress type would
+     * pass every other test in this class while stopping outbox delivery in production.
+     */
+    @Test
+    void theOutboxRelayEgressIsDeliberatelyUnrestricted() throws IOException {
+        Map<String, Object> policy = policyFor("recsys-outbox-relay", baseDocuments());
+
+        assertThat(policy).as("no NetworkPolicy named recsys-outbox-relay in k8s/base").isNotNull();
+        assertThat(restrictsEgress(policy))
+                .as("recsys-outbox-relay must NOT declare Egress in policyTypes. Its destinations "
+                        + "(MySQL, Kafka, ElastiCache) are partly external and partly per-overlay, "
+                        + "so an allow-list here silently stops outbox delivery. If you are adding "
+                        + "Egress deliberately, extend OWNED_KEYS to cover every destination it "
+                        + "dials and delete this assertion in the same commit")
+                .isFalse();
     }
 }
