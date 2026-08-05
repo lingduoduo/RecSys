@@ -32,6 +32,12 @@ public class RedisProperties {
 
     private String password = "";
 
+    /** ACL username. Blank means legacy default-user AUTH. */
+    private String username = "";
+
+    /** Connect over TLS. Required by ElastiCache with encryption-in-transit enabled. */
+    private boolean tls = false;
+
     @Positive
     private int timeoutMs = 2000;
 
@@ -65,6 +71,12 @@ public class RedisProperties {
 
     public String getPassword() { return password; }
     public void setPassword(String password) { this.password = password == null ? "" : password; }
+
+    public String getUsername() { return username; }
+    public void setUsername(String username) { this.username = username == null ? "" : username; }
+
+    public boolean isTls() { return tls; }
+    public void setTls(boolean tls) { this.tls = tls; }
 
     public int getTimeoutMs() { return timeoutMs; }
     public void setTimeoutMs(int timeoutMs) { this.timeoutMs = timeoutMs; }

@@ -96,6 +96,8 @@ recsys:
     host: ${REDIS_HOST:localhost}
     port: ${REDIS_PORT:6379}
     password: ${REDIS_PASSWORD:}
+    username: ${REDIS_USERNAME:}
+    tls: ${REDIS_TLS:false}
     mode: ${REDIS_MODE:standalone}
     timeout-ms: ${REDIS_TIMEOUT_MS:2000}
     # Comma-separated read-replica specs: host:port@az (e.g. redis-b:6379@us-east-1b)

@@ -111,4 +111,63 @@ class LettuceClientFactoryTest {
         assertEquals("localhost", uri.getHost());
         assertNotNull(uri.getCredentialsProvider(), "password should configure a credentials provider");
     }
+
+    @Test
+    void tlsIsOffByDefault() {
+        RedisURI uri = LettuceClientFactory.uriFromEnv(
+                Map.of("REDIS_HOST", "cache"), Integer.MAX_VALUE);
+        assertFalse(uri.isSsl(), "REDIS_TLS must default to false");
+    }
+
+    @Test
+    void tlsFlagEnablesSslOnTheUri() {
+        RedisURI uri = LettuceClientFactory.uriFromEnv(
+                Map.of("REDIS_HOST", "cache", "REDIS_TLS", "true"), Integer.MAX_VALUE);
+        assertTrue(uri.isSsl(), "REDIS_TLS=true must produce an SSL RedisURI");
+    }
+
+    @Test
+    void usernameProducesAnAclLogin() {
+        RedisURI uri = LettuceClientFactory.uriFromEnv(
+                Map.of("REDIS_HOST", "cache", "REDIS_USERNAME", "catalog",
+                        "REDIS_PASSWORD", "s3cret"),
+                Integer.MAX_VALUE);
+        assertEquals("catalog", uri.getUsername());
+    }
+
+    @Test
+    void passwordWithoutUsernameStaysOnTheDefaultUser() {
+        RedisURI uri = LettuceClientFactory.uriFromEnv(
+                Map.of("REDIS_HOST", "cache", "REDIS_PASSWORD", "s3cret"), Integer.MAX_VALUE);
+        String username = uri.getUsername();
+        assertTrue(username == null || username.isBlank(),
+                "no REDIS_USERNAME means legacy default-user AUTH");
+    }
+
+    @Test
+    void sentinelUriCarriesAuthAndTls() {
+        RedisURI uri = LettuceClientFactory.uriFromEnv(
+                Map.of("REDIS_MODE", "sentinel", "REDIS_SENTINEL_NODES", "s1:26379",
+                        "REDIS_USERNAME", "catalog", "REDIS_PASSWORD", "s3cret",
+                        "REDIS_TLS", "true"),
+                Integer.MAX_VALUE);
+        assertTrue(uri.isSsl());
+        assertEquals("catalog", uri.getUsername());
+    }
+
+    /**
+     * The replica URIs are built outside uriFromEnv, so a change that updates only the primary
+     * path leaves every replica connection unauthenticated and in the clear while the primary
+     * looks correct — and reads route to replicas, so that is most of the traffic. Nothing in the
+     * diff makes the omission visible, which is why this assertion exists.
+     */
+    @Test
+    void replicaUriInheritsAuthAndTls() {
+        RedisURI uri = LettuceClientFactory.replicaUri(
+                ReplicaConfig.parse("replica-a:6379@us-east-1b"),
+                "catalog", "s3cret", true, 2000);
+        assertEquals("replica-a", uri.getHost());
+        assertEquals("catalog", uri.getUsername());
+        assertTrue(uri.isSsl());
+    }
 }

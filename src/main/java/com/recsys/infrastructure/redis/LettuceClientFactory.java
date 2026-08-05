@@ -77,7 +77,9 @@ public final class LettuceClientFactory {
     static RedisReadReplicaRouter routerFromEnv(Map<String, String> env, int maxTimeoutMs) {
         GenericObjectPoolConfig<StatefulRedisConnection<String, String>> poolCfg = poolConfig(defaultPoolKnobs(env));
         int timeoutMs = Math.min(readPositiveInt(env, "REDIS_TIMEOUT_MS", DEFAULT_TIMEOUT_MS), maxTimeoutMs);
+        String username = env.getOrDefault("REDIS_USERNAME", "");
         String password = env.getOrDefault("REDIS_PASSWORD", "");
+        boolean tls = Boolean.parseBoolean(env.getOrDefault("REDIS_TLS", "false"));
         RedisExecutor primary = executor(uriFromEnv(env, maxTimeoutMs), poolCfg);
         String localAz = env.getOrDefault("AWS_AZ", env.getOrDefault("AVAILABILITY_ZONE", "unknown"));
 
@@ -88,7 +90,7 @@ public final class LettuceClientFactory {
                 node = node.strip();
                 if (node.isEmpty()) continue;
                 ReplicaConfig cfg = ReplicaConfig.parse(node);
-                RedisURI uri = standaloneUri(cfg.host(), cfg.port(), password, timeoutMs);
+                RedisURI uri = replicaUri(cfg, username, password, tls, timeoutMs);
                 replicas.add(new RedisReadReplicaRouter.AzExecutor(executor(uri, poolCfg), cfg.az()));
             }
         }
@@ -108,7 +110,8 @@ public final class LettuceClientFactory {
                 node = node.strip();
                 if (node.isEmpty()) continue;
                 ReplicaConfig cfg = ReplicaConfig.parse(node);
-                RedisURI uri = standaloneUri(cfg.host(), cfg.port(), props.getPassword(), props.getTimeoutMs());
+                RedisURI uri = replicaUri(cfg, props.getUsername(), props.getPassword(),
+                        props.isTls(), props.getTimeoutMs());
                 replicas.add(new RedisReadReplicaRouter.AzExecutor(executor(uri, poolCfg), cfg.az()));
             }
         }
@@ -142,37 +145,57 @@ public final class LettuceClientFactory {
 
     static RedisURI uriFromEnv(Map<String, String> env, int maxTimeoutMs) {
         String mode = env.getOrDefault("REDIS_MODE", "standalone");
+        String username = env.getOrDefault("REDIS_USERNAME", "");
         String password = env.getOrDefault("REDIS_PASSWORD", "");
+        boolean tls = Boolean.parseBoolean(env.getOrDefault("REDIS_TLS", "false"));
         int timeoutMs = Math.min(readPositiveInt(env, "REDIS_TIMEOUT_MS", DEFAULT_TIMEOUT_MS),
                 Math.max(1, maxTimeoutMs));
         if ("sentinel".equalsIgnoreCase(mode)) {
             String master = env.getOrDefault("REDIS_SENTINEL_MASTER", "mymaster");
             String nodes = env.getOrDefault("REDIS_SENTINEL_NODES", "localhost:26379");
-            return sentinelUri(master, nodes, password, timeoutMs);
+            return sentinelUri(master, nodes, username, password, tls, timeoutMs);
         }
         return standaloneUri(env.getOrDefault("REDIS_HOST", "localhost"),
-                parsePort(env.getOrDefault("REDIS_PORT", "6379")), password, timeoutMs);
+                parsePort(env.getOrDefault("REDIS_PORT", "6379")), username, password, tls, timeoutMs);
     }
 
     static RedisURI uriFrom(RedisProperties props) {
         if (props.isSentinelMode()) {
             String nodes = props.getSentinelNodes() == null || props.getSentinelNodes().isBlank()
                     ? "localhost:26379" : props.getSentinelNodes();
-            return sentinelUri(props.getSentinelMaster(), nodes, props.getPassword(), props.getTimeoutMs());
+            return sentinelUri(props.getSentinelMaster(), nodes, props.getUsername(),
+                    props.getPassword(), props.isTls(), props.getTimeoutMs());
         }
-        return standaloneUri(props.getHost(), props.getPort(), props.getPassword(), props.getTimeoutMs());
+        return standaloneUri(props.getHost(), props.getPort(), props.getUsername(),
+                props.getPassword(), props.isTls(), props.getTimeoutMs());
     }
 
-    static RedisURI standaloneUri(String host, int port, String password, int timeoutMs) {
+    /**
+     * AUTH with a username is a Redis 6 ACL login; without one it is the legacy default-user
+     * AUTH. Kept in one place so the standalone, sentinel and replica paths cannot drift apart —
+     * the replica URIs are built separately and are the easiest of the three to forget.
+     */
+    private static RedisURI.Builder withAuth(RedisURI.Builder b, String username, String password) {
+        boolean hasPassword = password != null && !password.isBlank();
+        if (username != null && !username.isBlank()) {
+            return b.withAuthentication(username, hasPassword ? password : "");
+        }
+        return hasPassword ? b.withPassword((CharSequence) password) : b;
+    }
+
+    static RedisURI standaloneUri(String host, int port, String username, String password,
+                                  boolean tls, int timeoutMs) {
         RedisURI.Builder b = RedisURI.builder()
                 .withHost(host)
                 .withPort(port)
                 .withTimeout(Duration.ofMillis(Math.max(1, timeoutMs)));
-        if (password != null && !password.isBlank()) b = b.withPassword((CharSequence) password);
+        b = withAuth(b, username, password);
+        if (tls) b = b.withSsl(true);
         return b.build();
     }
 
-    static RedisURI sentinelUri(String master, String nodes, String password, int timeoutMs) {
+    static RedisURI sentinelUri(String master, String nodes, String username, String password,
+                                boolean tls, int timeoutMs) {
         RedisURI.Builder b = RedisURI.builder().withSentinelMasterId(master);
         for (String node : nodes.split(",")) {
             node = node.strip();
@@ -184,8 +207,18 @@ public final class LettuceClientFactory {
                 b = b.withSentinel(node, 26379);
             }
         }
-        if (password != null && !password.isBlank()) b = b.withPassword((CharSequence) password);
+        b = withAuth(b, username, password);
+        if (tls) b = b.withSsl(true);
         return b.withTimeout(Duration.ofMillis(Math.max(1, timeoutMs))).build();
+    }
+
+    /**
+     * A read-replica URI. Extracted from the router loops so the auth and TLS wiring is directly
+     * assertable: these URIs are built outside uriFromEnv and are where credentials go missing.
+     */
+    static RedisURI replicaUri(ReplicaConfig cfg, String username, String password,
+                               boolean tls, int timeoutMs) {
+        return standaloneUri(cfg.host(), cfg.port(), username, password, tls, timeoutMs);
     }
 
     // ── Pool config ─────────────────────────────────────────────────────────────
