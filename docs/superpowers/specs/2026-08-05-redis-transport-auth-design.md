@@ -80,7 +80,9 @@ actually opens a connection is gated.
 
 `REDIS_ALLOW_NO_AUTH=true` is the opt-out, set only where Redis is genuinely passwordless:
 
-- `scripts/run-microservices-local.sh` and the `docker-compose*.yml` services, for local dev.
+- `scripts/run-microservices-local.sh`, the only local entry point that starts the services against
+  a passwordless Redis. None of the `docker-compose*.yml` files runs a Java service — `cdn` is
+  nginx, and `streaming` and `splunk` are infrastructure — so none of them needs the flag.
 - Surefire's `<environmentVariables>` in `pom.xml`, so the existing suite needs no per-test edits.
 
 `k8s/base` does **not** set it, because base now supplies a real password. That asymmetry is the
