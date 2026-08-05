@@ -764,6 +764,28 @@ class UserScopeAuthorizationTest {
     }
 
     @Test
+    void aDenialNeverConsumesTheCircuitBreakerProbeSlot() {
+        // Not a style point. A HALF_OPEN permit claims the breaker's single probe slot and is
+        // released only by recordSuccess/recordFailure, which run on the upstream-response path.
+        // A 403 returned while holding one would wedge the route into 503s until process restart.
+        // threshold 1, cooldown 0: one failure opens the breaker and elapsed >= 0 makes it
+        // immediately HALF_OPEN — deterministic, no clock injection needed.
+        RouteCircuitBreaker cb = new RouteCircuitBreaker(1, 0L);
+        cb.recordFailure(cb.tryAcquirePermit());
+        assertEquals(RouteCircuitBreaker.State.HALF_OPEN, cb.state());
+
+        GatewayRequestForwarder forwarder = forwarder(null, Map.of(CATALOG.name(), cb));
+        AggregatedHttpRequest request = get();
+        AggregatedHttpResponseAssert.assertForbidden(forwarder.forward(
+                ServiceRequestContext.of(request.toHttpRequest()),
+                request, CATALOG, "/getuser?userId=43", user("42")));
+
+        assertNotNull(cb.tryAcquirePermit(),
+                "the 403 must be returned before the probe permit is acquired — otherwise the "
+                        + "unsettled permit wedges the route open forever");
+    }
+
+    @Test
     void denialsAreCounted() {
         SimpleMeterRegistry registry = new SimpleMeterRegistry();
         GatewayRequestForwarder forwarder = forwarder(registry);
@@ -794,9 +816,13 @@ class UserScopeAuthorizationTest {
     }
 
     private static GatewayRequestForwarder forwarder(io.micrometer.core.instrument.MeterRegistry registry) {
+        // Health checking off: this test never intends a network call, and probing dead localhost
+        // ports costs ~12s and floods the PR gate with Connection refused traces. Reachable
+        // because the test shares the package with the 6-arg constructor.
         return new GatewayRequestForwarder(
                 List.of(CATALOG, LLM), Duration.ofSeconds(1), Map.of(),
-                GatewayRateLimiter.disabled(), registry);
+                GatewayRateLimiter.disabled(),
+                new UpstreamEndpointGroups.HealthCheckConfig(false, 0L), registry);
     }
 
     /** Keeps the status assertion in one place; the body must never echo the requested id. */
@@ -812,6 +838,9 @@ class UserScopeAuthorizationTest {
 ```
 
 `GatewayRateLimiter.disabled()` lives in `com.recsys.ratelimit` — hence the import above.
+
+Give the `forwarder(...)` helper a second overload taking the circuit-breaker map, so the
+placement test can pass a real breaker while every other test passes `Map.of()`.
 
 - [ ] **Step 2: Run the tests to verify they fail**
 
