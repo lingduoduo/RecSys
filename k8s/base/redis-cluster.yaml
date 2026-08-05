@@ -345,6 +345,10 @@ spec:
   type: ClusterIP
   selector:
     app: redis
+    # Primary only. REDIS_HOST is the standalone path's read-AND-write endpoint, and `app: redis`
+    # alone also matches the two replicas — writes would round-robin onto a read-only replica and
+    # fail intermittently, which is a worse failure than the DNS error this Service replaced.
+    role: primary
   ports:
     - name: redis
       port: 6379

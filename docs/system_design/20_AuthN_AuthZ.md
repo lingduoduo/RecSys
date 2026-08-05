@@ -298,3 +298,9 @@ Design: [NetworkPolicy egress conformance](../superpowers/specs/2026-08-05-netwo
    claim about cluster configuration, not about anything in this repo. If it is not enforced, §8's
    rules are documentation and the backends — which authenticate nobody — are reachable by any pod
    in the cluster.
+9. **Nothing permits egress on 443.** The conformance test covers what the ConfigMap names, and
+   the ConfigMap names no HTTPS endpoint. The Cognito JWKS fetch (once `GATEWAY_COGNITO_ISSUER` is
+   set), IRSA/STS, Cloud Map, and SQS all leave the cluster on 443 against no rule. On an
+   enforcing CNI, turning on Cognito JWT auth would fail every verification — and §8's test would
+   still be green, because a destination absent from the ConfigMap is a destination it cannot know
+   about.

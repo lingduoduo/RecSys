@@ -28,9 +28,9 @@ record Upstream(String host, int port) {
         }
         if (value.startsWith("jdbc:")) {
             // jdbc:mysql://host:port/db — strip the jdbc: prefix so URI sees a normal scheme.
-            return List.of(fromUri(URI.create(value.substring("jdbc:".length()))));
+            return List.of(fromUri(key, URI.create(value.substring("jdbc:".length()))));
         }
-        return List.of(fromUri(URI.create(value.strip())));
+        return List.of(fromUri(key, URI.create(value.strip())));
     }
 
     private static Upstream fromHostPort(String hostPort) {
@@ -39,7 +39,11 @@ record Upstream(String host, int port) {
         return new Upstream(hostPort.substring(0, colon), Integer.parseInt(hostPort.substring(colon + 1)));
     }
 
-    private static Upstream fromUri(URI uri) {
+    private static Upstream fromUri(String key, URI uri) {
+        if (uri.getHost() == null) {
+            throw new IllegalArgumentException("cannot derive a host from " + key + "=" + uri
+                    + " — a *_SERVICE_URL needs a scheme, e.g. http://host:port");
+        }
         int port = uri.getPort();
         if (port < 0) port = "https".equals(uri.getScheme()) ? 443 : 80;
         return new Upstream(uri.getHost(), port);

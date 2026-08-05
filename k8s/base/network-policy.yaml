@@ -289,6 +289,16 @@ spec:
         - podSelector:
             matchLabels:
               app: recsys-api-gateway
+        # Replicas dial the primary for `--replicaof`, and both carry app: redis — this policy
+        # selects them, so without a rule admitting itself the replication stream is dropped.
+        - podSelector:
+            matchLabels:
+              app: redis
+        # Sentinels monitor the primary and discover replicas on 6379. Without this they never
+        # reach quorum, and REDIS_MODE: sentinel is the base default.
+        - podSelector:
+            matchLabels:
+              app: redis-sentinel
       ports:
         - port: 6379
 ---

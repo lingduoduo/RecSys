@@ -176,6 +176,14 @@ the `20_AuthN_AuthZ.md` edit lands in a document that is already indexed.
 
 Deliberately not in this change, and each already recorded in the ACL investigation:
 
+- **Egress on 443 to AWS and identity endpoints.** No policy in this repo permits 443 to anything.
+  Four consumers exist: the Cognito JWKS fetch once `GATEWAY_COGNITO_ISSUER` is set per region,
+  IRSA/STS `AssumeRoleWithWebIdentity`, Cloud Map service discovery, and the `SAGA_EVENTS_SQS_*`
+  path. None is caught by the drift catcher — `_ISSUER` is not an upstream key suffix, and the
+  rest never appear in the ConfigMap at all. They are deferred because their destinations are AWS
+  service endpoints reached by IP rather than pod label, so they need the same `ipBlock` treatment
+  as ElastiCache and the same per-region operator input. Recording it here matters because a green
+  conformance run would otherwise read as proof of completeness.
 - **Redis ACL users.** `LettuceClientFactory` supports only `AUTH <password>` against the `default`
   user; per-service ACL users with key-pattern and command restrictions are a separate project
   touching runtime code, manifests, and ElastiCache RBAC.

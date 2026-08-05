@@ -6,6 +6,7 @@ import java.util.List;
 import java.util.Map;
 
 import static org.assertj.core.api.Assertions.assertThat;
+import static org.assertj.core.api.Assertions.assertThatThrownBy;
 
 /**
  * The conformance test is only as good as its address derivation: a key whose value it
@@ -36,9 +37,25 @@ class UpstreamTest {
 
     @Test
     void pairsRedisHostWithRedisPort() {
-        Map<String, String> cfg = Map.of("REDIS_HOST", "redis", "REDIS_PORT", "6379");
+        // REDIS_PORT deliberately differs from Upstream.parse's own 6379 fallback default, so
+        // this fails against an implementation that ignores REDIS_PORT and hardcodes 6379 —
+        // proving the port is actually read rather than coincidentally matching a default.
+        Map<String, String> cfg = Map.of("REDIS_HOST", "redis", "REDIS_PORT", "6380");
         assertThat(Upstream.parse("REDIS_HOST", cfg))
-                .containsExactly(new Upstream("redis", 6379));
+                .containsExactly(new Upstream("redis", 6380));
+    }
+
+    /**
+     * A *_SERVICE_URL value written without a scheme (e.g. a bare "host:port") parses to a URI
+     * whose getHost() is null. Without a guard, downstream label resolution NPEs on host.split()
+     * with a message naming neither the offending key nor its value.
+     */
+    @Test
+    void schemeLessServiceUrlThrowsWithKeyInMessage() {
+        Map<String, String> cfg = Map.of("CATALOG_SERVICE_URL", "recsys-catalog-serving:6010");
+        assertThatThrownBy(() -> Upstream.parse("CATALOG_SERVICE_URL", cfg))
+                .isInstanceOf(IllegalArgumentException.class)
+                .hasMessageContaining("CATALOG_SERVICE_URL");
     }
 
     @Test

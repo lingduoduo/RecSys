@@ -61,6 +61,9 @@ class NetworkPolicyEgressManifestTest {
             "recsys-model-serving", Set.of("REDIS_HOST", "REDIS_SENTINEL_NODES"),
             // Online serving writes the outbox rows when MYSQL_ENABLED=true.
             "recsys-online-serving", Set.of("REDIS_HOST", "REDIS_SENTINEL_NODES", "MYSQL_URL"),
+            // NOTE: the relay declares policyTypes: [Ingress], so both egress assertions skip it
+            // and anything claimed here requires no rule. That makes it the cheapest place to
+            // silence a failure — claim a key here only when the relay genuinely dials it.
             "recsys-outbox-relay", Set.of(
                     "MYSQL_URL", "OUTBOX_KAFKA_BOOTSTRAP_SERVERS", "SAGA_EVENTS_SQS_QUEUE_URL"));
 
@@ -313,6 +316,16 @@ class NetworkPolicyEgressManifestTest {
                         + "delete it from the ConfigMap rather than leaving dead configuration "
                         + "that reads like a live dependency")
                 .isEmpty();
+
+        // The reverse direction. Upstream.parse returns an empty list for a key the ConfigMap
+        // does not define, so a misspelled claim silently requires no egress rule at all — and
+        // when the correctly-spelled key is claimed by another workload, the check above stays
+        // green too. Renaming one claim to "REDIS_HOSTT" was enough to un-enforce an entire gap
+        // this test exists to close.
+        assertThat(cfg.keySet())
+                .as("OWNED_KEYS claims a key that recsys-config does not define — a typo here "
+                        + "drops that workload's egress requirement without failing anything")
+                .containsAll(claimed);
     }
 
     /**
@@ -376,10 +389,17 @@ class NetworkPolicyEgressManifestTest {
                 .containsExactlyInAnyOrder("recsys-api-gateway", "recsys-catalog-serving",
                         "recsys-model-serving", "recsys-online-serving");
 
-        List<Map<String, Object>> ops;
+        Object loaded;
         try (InputStream in = Files.newInputStream(EKS_SHARED.resolve(ELASTICACHE_PATCH))) {
-            ops = (List<Map<String, Object>>) new Yaml().load(in);
+            loaded = new Yaml().load(in);
         }
+        assertThat(loaded)
+                .as("%s must be a JSON-patch list (`op`/`path`/`value` entries). A document "
+                        + "shaped like `kind: NetworkPolicy` here means the patch REPLACES "
+                        + "spec.egress via strategic merge instead of appending to it, which "
+                        + "silently strips every rule k8s/base declared", ELASTICACHE_PATCH)
+                .isInstanceOf(List.class);
+        List<Map<String, Object>> ops = (List<Map<String, Object>>) loaded;
 
         Set<Integer> ports = new TreeSet<>();
         boolean appendsIpBlock = false;
