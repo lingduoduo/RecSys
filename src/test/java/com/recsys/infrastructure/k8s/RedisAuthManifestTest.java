@@ -93,4 +93,65 @@ class RedisAuthManifestTest {
                         + "commit that adds the code")
                 .doesNotContain("REDIS_PASSWORD");
     }
+
+    /**
+     * Client-side credentials are worthless if the server accepts anonymous connections. Each of
+     * these three has a different failure mode when missing: no requirepass and Redis is open;
+     * no masterauth and replication stops, so replicas serve indefinitely stale reads rather than
+     * failing; no sentinel auth-pass and the sentinels never reach quorum, which presents as a
+     * Redis outage rather than as an auth error.
+     */
+    @Test
+    void theRedisServersRequireAuthentication() throws IOException {
+        List<Map<String, Object>> docs = baseDocuments();
+
+        Map<String, List<String>> argsByName = new java.util.LinkedHashMap<>();
+        for (Map<String, Object> sts : ofKind(docs, "StatefulSet")) {
+            List<String> args = listOf(mapAt(sts, "spec", "template", "spec"), "containers").stream()
+                    .flatMap(c -> ManifestDocuments.stringListOf(c, "args").stream())
+                    .toList();
+            argsByName.put(nameOf(sts), args);
+        }
+
+        assertThat(argsByName.get("redis-primary"))
+                .as("the primary must set --requirepass, or it accepts anonymous connections "
+                        + "regardless of what every client is configured to send")
+                .contains("--requirepass");
+        assertThat(argsByName.get("redis-replica"))
+                .as("the replica must set --requirepass (it serves reads) and --masterauth "
+                        + "(it authenticates to the primary). Without masterauth replication stops "
+                        + "and the replica serves indefinitely stale data instead of failing")
+                .contains("--requirepass", "--masterauth");
+
+        String sentinelConf = ofKind(docs, "ConfigMap").stream()
+                .filter(c -> "redis-sentinel-config".equals(nameOf(c)))
+                .findFirst()
+                .map(c -> String.valueOf(mapAt(c, "data").get("sentinel-template.conf")))
+                .orElseThrow(() -> new AssertionError("no ConfigMap named redis-sentinel-config"));
+
+        assertThat(sentinelConf)
+                .as("the sentinel template must carry auth-pass, or the sentinels cannot "
+                        + "authenticate to the primary, never reach quorum, and never fail over — "
+                        + "which looks exactly like a Redis outage")
+                .contains("sentinel auth-pass mymaster");
+    }
+
+    @Test
+    void redisProbesDoNotPutThePasswordOnTheCommandLine() throws IOException {
+        Set<String> offenders = new TreeSet<>();
+        for (Map<String, Object> sts : ofKind(baseDocuments(), "StatefulSet")) {
+            for (Map<String, Object> container : listOf(mapAt(sts, "spec", "template", "spec"), "containers")) {
+                for (String probe : List.of("readinessProbe", "livenessProbe")) {
+                    List<String> cmd = ManifestDocuments.stringListOf(
+                            mapAt(container, probe, "exec"), "command");
+                    if (cmd.contains("-a")) offenders.add(nameOf(sts) + "." + probe);
+                }
+            }
+        }
+
+        assertThat(offenders)
+                .as("a redis-cli -a flag puts the password in the process table and echoes it in "
+                        + "probe failure output. Set REDISCLI_AUTH in the container env instead")
+                .isEmpty();
+    }
 }
