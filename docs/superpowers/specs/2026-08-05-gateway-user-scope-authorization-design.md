@@ -99,7 +99,7 @@ receives both halves of the key as `route` and `targetPath`.
 | `recsys-online-serving` (7010) | `/online/recommendation`, `/online/features` | query |
 | | `/v2/recommend` | body |
 | `recsys-model-serving` (8080) | `/api/v1/recommend` | body |
-| | `/v2/recommend` | body |
+| | `/v2/recommend`, `/v2/sequential/recommend` | body |
 
 Matching is exact, never prefix. Prefix-with-boundary matching is precisely what created the
 `/api/catalog` trap that `20_AuthN_AuthZ` §3 documents and that `PROTECTED_PREFIXES` exists to
