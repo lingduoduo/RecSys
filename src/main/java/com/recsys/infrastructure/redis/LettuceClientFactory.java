@@ -30,6 +30,28 @@ public final class LettuceClientFactory {
 
     private LettuceClientFactory() {}
 
+    /**
+     * Refuses to open a connection to an unauthenticated Redis unless something says so out loud.
+     * Mirrors GatewayAuthenticator.fromEnvironment: REDIS_PASSWORD was supported by this class and
+     * set by no manifest, which is exactly how every service ended up connecting as the
+     * unauthenticated default user. A warning would not have changed that.
+     *
+     * <p>Guards the public entry points only. The package-private URI builders and the map-taking
+     * router overload stay unguarded so unit tests can construct and inspect URIs without a
+     * credential.
+     */
+    static void requireAuthentication(String password, Map<String, String> env) {
+        if (password != null && !password.isBlank()) return;
+        if (Boolean.parseBoolean(env.getOrDefault("REDIS_ALLOW_NO_AUTH", "false"))) return;
+        throw new IllegalStateException(
+                "REDIS_PASSWORD is not set, so this service would connect to Redis as the "
+                        + "unauthenticated default user. Redis holds the item and user embeddings, "
+                        + "device history, the service registry, and the login-token to API-key "
+                        + "mapping. Set REDIS_PASSWORD — in Kubernetes, the redis-password key of "
+                        + "the recsys-secrets Secret — or set REDIS_ALLOW_NO_AUTH=true to accept an "
+                        + "unauthenticated connection in local development.");
+    }
+
     // ── Single executors ──────────────────────────────────────────────────────
 
     public static RedisExecutor fromEnv() {
@@ -42,10 +64,12 @@ public final class LettuceClientFactory {
      */
     public static RedisExecutor fromEnv(int maxTimeoutMs) {
         Map<String, String> env = System.getenv();
+        requireAuthentication(env.getOrDefault("REDIS_PASSWORD", ""), env);
         return executor(uriFromEnv(env, maxTimeoutMs), poolConfig(defaultPoolKnobs(env)));
     }
 
     public static RedisExecutor from(RedisProperties props) {
+        requireAuthentication(props.getPassword(), System.getenv());
         return executor(uriFrom(props), poolConfig(props.getPool()));
     }
 
@@ -54,19 +78,24 @@ public final class LettuceClientFactory {
     /** A read/write-splitting executor: reads use a replica (reader endpoint) when
      *  {@code REDIS_REPLICA_NODES} is set, writes use the primary. */
     public static RedisExecutor routingFromEnv() {
-        return new RoutingRedisExecutor(routerFromEnv(System.getenv()));
+        Map<String, String> env = System.getenv();
+        requireAuthentication(env.getOrDefault("REDIS_PASSWORD", ""), env);
+        return new RoutingRedisExecutor(routerFromEnv(env));
     }
 
     /** Latency-capped routing variant (recall pool): caps primary and replica
      *  command timeouts to {@code maxTimeoutMs}. */
     public static RedisExecutor routingFromEnv(int maxTimeoutMs) {
-        return new RoutingRedisExecutor(routerFromEnv(System.getenv(), maxTimeoutMs));
+        Map<String, String> env = System.getenv();
+        requireAuthentication(env.getOrDefault("REDIS_PASSWORD", ""), env);
+        return new RoutingRedisExecutor(routerFromEnv(env, maxTimeoutMs));
     }
 
     // ── Routers ───────────────────────────────────────────────────────────────
 
     public static RedisReadReplicaRouter routerFromEnv() {
         Map<String, String> env = System.getenv();
+        requireAuthentication(env.getOrDefault("REDIS_PASSWORD", ""), env);
         return routerFromEnv(env);
     }
 
@@ -98,6 +127,7 @@ public final class LettuceClientFactory {
     }
 
     public static RedisReadReplicaRouter routerFrom(RedisProperties props) {
+        requireAuthentication(props.getPassword(), System.getenv());
         GenericObjectPoolConfig<StatefulRedisConnection<String, String>> poolCfg = poolConfig(props.getPool());
         RedisExecutor primary = from(props);
         String localAz = System.getenv().getOrDefault("AWS_AZ",

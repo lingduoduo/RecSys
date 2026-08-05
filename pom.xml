@@ -92,6 +92,10 @@
           <environmentVariables>
             <TESTCONTAINERS_RYUK_DISABLED>true</TESTCONTAINERS_RYUK_DISABLED>
             <TESTCONTAINERS_DOCKER_SOCKET_OVERRIDE>/var/run/docker.sock</TESTCONTAINERS_DOCKER_SOCKET_OVERRIDE>
+            <!-- Tests reach a local, passwordless Redis. The guard in LettuceClientFactory is a
+                 production control; opting out here keeps it from turning every Redis-touching
+                 test into a credential-management exercise. -->
+            <REDIS_ALLOW_NO_AUTH>true</REDIS_ALLOW_NO_AUTH>
           </environmentVariables>
         </configuration>
       </plugin>

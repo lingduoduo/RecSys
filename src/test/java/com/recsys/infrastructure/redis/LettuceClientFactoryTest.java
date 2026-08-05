@@ -170,4 +170,25 @@ class LettuceClientFactoryTest {
         assertEquals("catalog", uri.getUsername());
         assertTrue(uri.isSsl());
     }
+
+    @Test
+    void blankPasswordWithoutTheOptOutIsRefused() {
+        IllegalStateException e = assertThrows(IllegalStateException.class,
+                () -> LettuceClientFactory.requireAuthentication("", Map.of()));
+        assertTrue(e.getMessage().contains("REDIS_PASSWORD"),
+                "the message must name the variable to set");
+        assertTrue(e.getMessage().contains("REDIS_ALLOW_NO_AUTH"),
+                "the message must name the deliberate escape, or the reader has no way out");
+    }
+
+    @Test
+    void blankPasswordIsAllowedWhenExplicitlyOptedOut() {
+        assertDoesNotThrow(() ->
+                LettuceClientFactory.requireAuthentication("", Map.of("REDIS_ALLOW_NO_AUTH", "true")));
+    }
+
+    @Test
+    void aPasswordNeedsNoOptOut() {
+        assertDoesNotThrow(() -> LettuceClientFactory.requireAuthentication("s3cret", Map.of()));
+    }
 }
