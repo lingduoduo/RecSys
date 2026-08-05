@@ -367,6 +367,7 @@
                      (20_AuthN_AuthZ), and its failure mode is silence: a dropped egress rule
                      looks like a dependency outage, not a policy bug. Pure file parsing. -->
                 <include>**/k8s/NetworkPolicyEgressManifestTest.java</include>
+                <include>**/k8s/RedisAuthManifestTest.java</include>
                 <include>**/k8s/UpstreamTest.java</include>
                 <!-- These two are the producer half of the data-freshness alerts.
                      ScrapeTargetManifestTest above proves the series get collected;

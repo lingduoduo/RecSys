@@ -70,6 +70,15 @@ spec:
                   name: recsys-splunk
                   key: hec-token
                   optional: true
+            # Redis AUTH. optional: true keeps the pod schedulable before the Secret exists —
+            # LettuceClientFactory then refuses to start with a message naming this key, which is
+            # a readable failure rather than a pod stuck Pending with an empty log.
+            - name: REDIS_PASSWORD
+              valueFrom:
+                secretKeyRef:
+                  name: recsys-secrets
+                  key: redis-password
+                  optional: true
           ports:
             - name: http
               containerPort: 8010

@@ -48,6 +48,15 @@ spec:
                   value: com.recsys.application.reconciliation.ReconciliationCommand
                 - name: JAVA_OPTS
                   value: "-Xms256m -Xmx512m"
+                # Redis AUTH. optional: true keeps the pod schedulable before the Secret exists —
+                # LettuceClientFactory then refuses to start with a message naming this key, which
+                # is a readable failure rather than a pod stuck Pending with an empty log.
+                - name: REDIS_PASSWORD
+                  valueFrom:
+                    secretKeyRef:
+                      name: recsys-secrets
+                      key: redis-password
+                      optional: true
               volumeMounts:
                 - name: tmp
                   mountPath: /tmp
