@@ -41,6 +41,33 @@ spec:
               app: recsys-online-serving
       ports:
         - port: 7010
+    # REDIS_MODE is "sentinel" in the base ConfigMap, so every Redis client discovers the
+    # primary through the sentinels before it ever connects on 6379. Sentinel pods carry
+    # app: redis-sentinel, a different label from the redis primary/replica pods, so the
+    # 6379 rule above does not cover them.
+    - to:
+        - podSelector:
+            matchLabels:
+              app: redis-sentinel
+      ports:
+        - port: 26379
+    # The LLM explanation proxy. LLM_SERVICE_URL / LLM_EXPLANATION_SERVICE_URL both point here.
+    - to:
+        - podSelector:
+            matchLabels:
+              app: ollama
+      ports:
+        - port: 11434
+    # SERVICE_REGISTRY_ENABLED=true makes the gateway resolve upstreams from Redis. Added
+    # unconditionally even though the flag defaults off: the registry falls back to the static
+    # route address when Redis is unreachable, so a blocked connection degrades silently
+    # rather than failing, and nobody would find this from the symptom.
+    - to:
+        - podSelector:
+            matchLabels:
+              app: redis
+      ports:
+        - port: 6379
     - ports:
         - port: 53
           protocol: UDP
@@ -81,6 +108,16 @@ spec:
               app: redis
       ports:
         - port: 6379
+    # REDIS_MODE is "sentinel" in the base ConfigMap, so every Redis client discovers the
+    # primary through the sentinels before it ever connects on 6379. Sentinel pods carry
+    # app: redis-sentinel, a different label from the redis primary/replica pods, so the
+    # 6379 rule above does not cover them.
+    - to:
+        - podSelector:
+            matchLabels:
+              app: redis-sentinel
+      ports:
+        - port: 26379
     - ports:
         - port: 53
           protocol: UDP
@@ -121,6 +158,16 @@ spec:
               app: redis
       ports:
         - port: 6379
+    # REDIS_MODE is "sentinel" in the base ConfigMap, so every Redis client discovers the
+    # primary through the sentinels before it ever connects on 6379. Sentinel pods carry
+    # app: redis-sentinel, a different label from the redis primary/replica pods, so the
+    # 6379 rule above does not cover them.
+    - to:
+        - podSelector:
+            matchLabels:
+              app: redis-sentinel
+      ports:
+        - port: 26379
     - ports:
         - port: 53
           protocol: UDP
@@ -161,6 +208,25 @@ spec:
               app: redis
       ports:
         - port: 6379
+    # REDIS_MODE is "sentinel" in the base ConfigMap, so every Redis client discovers the
+    # primary through the sentinels before it ever connects on 6379. Sentinel pods carry
+    # app: redis-sentinel, a different label from the redis primary/replica pods, so the
+    # 6379 rule above does not cover them.
+    - to:
+        - podSelector:
+            matchLabels:
+              app: redis-sentinel
+      ports:
+        - port: 26379
+    # Outbox rows when MYSQL_ENABLED=true. Added unconditionally for the same reason as the
+    # gateway's Redis rule — a policy that has to be edited in the same change as the flag is
+    # a policy that will not be.
+    - to:
+        - podSelector:
+            matchLabels:
+              app: mysql
+      ports:
+        - port: 3306
     - ports:
         - port: 53
           protocol: UDP

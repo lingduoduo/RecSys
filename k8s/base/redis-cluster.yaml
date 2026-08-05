@@ -329,3 +329,23 @@ spec:
     - name: sentinel
       port: 26379
       targetPort: 26379
+---
+# REDIS_HOST is "redis" in the ConfigMap, but until this Service existed that name resolved to
+# nothing in-cluster. It was inert only because REDIS_MODE is "sentinel", so
+# LettuceClientFactory takes the sentinel path and ignores the standalone host. The EKS
+# overlays set REDIS_SENTINEL_MASTER: "" and rely on REDIS_HOST, so the standalone path IS
+# live in production — and any base-shaped deployment that flips REDIS_MODE would fail on DNS
+# resolution before NetworkPolicy ever entered the picture.
+apiVersion: v1
+kind: Service
+metadata:
+  name: redis
+  namespace: recsys
+spec:
+  type: ClusterIP
+  selector:
+    app: redis
+  ports:
+    - name: redis
+      port: 6379
+      targetPort: 6379
