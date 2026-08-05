@@ -224,4 +224,56 @@ class NetworkPolicyEgressManifestTest {
                         + "matching egress rule to k8s/base/network-policy.yaml")
                 .isEmpty();
     }
+
+    /**
+     * Both ends enforce independently, so a granted egress rule is worthless if the destination's
+     * own policy does not admit the source. This is the half that is easy to forget, because the
+     * egress side is the one you edit when you notice the connection failing.
+     */
+    @Test
+    void everyPermittedEgressIsAdmittedByItsDestination() throws IOException {
+        List<Map<String, Object>> docs = baseDocuments();
+        Map<String, String> cfg = configMap(docs);
+        List<Map<String, Object>> policies = ofKind(docs, "NetworkPolicy");
+
+        Set<String> blocked = new TreeSet<>();
+        for (Map.Entry<String, Set<String>> entry : OWNED_KEYS.entrySet()) {
+            String workload = entry.getKey();
+            Map<String, Object> sourcePolicy = policyFor(workload, docs);
+            if (sourcePolicy == null || !restrictsEgress(sourcePolicy)) continue;
+            Map<String, Object> sourceLabels = mapAt(sourcePolicy, "spec", "podSelector", "matchLabels");
+
+            for (String key : entry.getValue()) {
+                for (Upstream upstream : Upstream.parse(key, cfg)) {
+                    Map<String, Object> destLabels = destinationLabels(upstream.host(), docs);
+
+                    // Only destinations governed by a policy restrict ingress; ollama and mysql
+                    // are deployed outside k8s/base and have none.
+                    Map<String, Object> destPolicy = policies.stream()
+                            .filter(p -> {
+                                Map<String, Object> sel = mapAt(p, "spec", "podSelector", "matchLabels");
+                                return sel != null && !sel.isEmpty()
+                                        && destLabels.entrySet().containsAll(sel.entrySet())
+                                        && stringListOf(mapAt(p, "spec"), "policyTypes").contains("Ingress");
+                            })
+                            .findFirst()
+                            .orElse(null);
+                    if (destPolicy == null) continue;
+
+                    if (!admitsIngress(destPolicy, sourceLabels, upstream.port())) {
+                        blocked.add(workload + " -> " + upstream.host() + ":" + upstream.port()
+                                + " (egress granted, but NetworkPolicy " + nameOf(destPolicy)
+                                + " does not admit " + sourceLabels + ")");
+                    }
+                }
+            }
+        }
+
+        assertThat(blocked)
+                .as("these connections are permitted on the way out and dropped on the way in. "
+                        + "NetworkPolicy is enforced at both ends, so granting egress alone changes "
+                        + "nothing observable — the connection still fails, and it fails identically "
+                        + "to having no egress rule at all. Add the matching ingress rule")
+                .isEmpty();
+    }
 }

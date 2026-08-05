@@ -284,6 +284,11 @@ spec:
         - podSelector:
             matchLabels:
               app: recsys-online-serving
+        # The gateway reads svc:registry:* when SERVICE_REGISTRY_ENABLED=true. Its egress rule
+        # alone would not be enough: both ends of a NetworkPolicy are enforced independently.
+        - podSelector:
+            matchLabels:
+              app: recsys-api-gateway
       ports:
         - port: 6379
 ---
