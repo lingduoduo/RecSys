@@ -1,4 +1,4 @@
-package com.recsys.api.online;
+package com.recsys.application.auth;
 
 import com.linecorp.armeria.common.AggregatedHttpResponse;
 import com.linecorp.armeria.common.HttpResponse;

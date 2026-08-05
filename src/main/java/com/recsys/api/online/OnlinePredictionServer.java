@@ -9,6 +9,7 @@ import com.recsys.application.consistency.ConsistencyTokenCodec;
 import com.recsys.application.consistency.ConsistencyWaiter;
 import com.recsys.application.consistency.RedisLineageReader;
 import com.recsys.application.outbox.DurableEventPublisher;
+import com.recsys.application.auth.AdminTokenGuard;
 import com.recsys.metrics.OnlineServingMetricsService;
 import com.recsys.metrics.ConsistencyMetrics;
 import com.recsys.metrics.RedisCacheMetrics;

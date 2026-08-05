@@ -166,7 +166,7 @@ scan or a botched rotation would otherwise flood the log with a per-request warn
 
 Once edge auth is on, the `/api/online` passthrough lets **any authenticated client**
 reach online serving's introspection surfaces. Those are operator tools, not client
-API, so [`AdminTokenGuard`](../../src/main/java/com/recsys/api/online/AdminTokenGuard.java)
+API, so [`AdminTokenGuard`](../../src/main/java/com/recsys/application/auth/AdminTokenGuard.java)
 adds a second factor: a constant-time `X-Admin-Token` match against
 `SHARD_ADMIN_TOKEN`, wired from the `recsys-online-admin` Secret (`optional: true`).
 
