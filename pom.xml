@@ -354,6 +354,13 @@
                 <include>**/sharding/ShardCursorKindTest.java</include>
                 <include>**/store/ShardedRecordServiceCursorTest.java</include>
                 <include>**/redis/LettuceRedisExecutorPipelineTest.java</include>
+                <!-- The client half of Redis authentication. RedisAuthManifestTest below proves
+                     the credential is wired in the manifests; this proves the client actually
+                     puts it on the wire — including the replica URIs, which are built outside
+                     uriFromEnv and carry most of the read traffic — and that a blank password
+                     fails closed. Without it in the gate, a change that drops auth from the
+                     client merges green and the manifest test still passes. -->
+                <include>**/redis/LettuceClientFactoryTest.java</include>
                 <include>**/redis/RedisEmbeddingStoreTest.java</include>
                 <include>**/redis/RedisEvictionPolicyManifestTest.java</include>
                 <include>**/redis/RedisCacheStatsProbeTest.java</include>
