@@ -219,7 +219,29 @@ Neither token authenticates a caller — both bind data to a subject that the ga
 already authenticated. They are the two places in the repo where a signed wire format
 is done properly, and worth copying from.
 
-## 8. Testing
+## 8. The L3/L4 access-control list
+
+Everything above is L7. The control that makes it *sufficient* is
+[`network-policy.yaml`](../../k8s/base/network-policy.yaml): the backends authenticate nobody
+because the policy is what proves the gateway is their only reachable caller.
+
+Each of the four services declares `policyTypes: [Ingress, Egress]` and permits an explicit
+destination set. The relay is the deliberate exception — `policyTypes: [Ingress]`, leaving egress
+unrestricted, because its destinations (MySQL, Kafka, and in EKS ElastiCache) are partly external
+and partly per-overlay, so an allow-list there would black-hole delivery the moment it drifted.
+
+The egress half is the half that rots. Ingress rules are stated once and stay true; egress rules
+encode the *addresses of dependencies*, and those move — a new upstream in the ConfigMap, a flag
+that opens a connection, an overlay that relocates Redis outside the cluster. Six such gaps had
+accumulated by 2026-08. `NetworkPolicyEgressManifestTest` is the response: it derives every
+upstream address from `recsys-config` and requires a matching rule, so the two sets can no longer
+diverge without failing a PR. Ownership is declared rather than derived — `recsys-config` is one
+ConfigMap `envFrom`'d into all five workloads, so possession of an env var proves nothing about
+who dials it.
+
+Design: [NetworkPolicy egress conformance](../superpowers/specs/2026-08-05-networkpolicy-egress-conformance-design.md).
+
+## 9. Testing
 
 - **Edge auth** — `GatewayAuthenticatorTest` (key match, bearer-as-key, public paths,
   never-public guard, fail-closed startup), `CognitoJwtVerifierTest` (alg, kid, iss,
@@ -266,3 +288,13 @@ is done properly, and worth copying from.
    and 8080 authenticate nobody. Reaching a backend pod directly — a misapplied
    policy, a debug port-forward, a service exposed by a new manifest — bypasses every
    control in §1–§4 at once.
+7. **The NetworkPolicy is base-only.** No overlay patched it until the ElastiCache egress patch
+   in `k8s/eks-shared`, yet both EKS overlays relocate Redis outside the cluster. An overlay that
+   changes *where* a dependency lives changes it out from under the ACL, and nothing in `k8s/base`
+   can notice — the conformance test reads base, so overlay coverage stops at asserting the patch
+   exists.
+8. **Enforcement is CNI-dependent.** EKS's default VPC CNI does not enforce NetworkPolicy unless
+   policy support is explicitly enabled. "The NetworkPolicy protects the backends" is therefore a
+   claim about cluster configuration, not about anything in this repo. If it is not enforced, §8's
+   rules are documentation and the backends — which authenticate nobody — are reachable by any pod
+   in the cluster.
