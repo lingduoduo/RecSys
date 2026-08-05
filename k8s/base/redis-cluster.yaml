@@ -10,6 +10,7 @@ data:
     sentinel down-after-milliseconds mymaster 5000
     sentinel failover-timeout mymaster 30000
     sentinel parallel-syncs mymaster 1
+    sentinel auth-pass mymaster __REDIS_PASSWORD__
 ---
 apiVersion: v1
 kind: Service
@@ -81,6 +82,23 @@ spec:
             - "volatile-lru"
             - "--dir"
             - "/data"
+            - "--requirepass"
+            - "$(REDIS_PASSWORD)"
+          env:
+            - name: REDIS_PASSWORD
+              valueFrom:
+                secretKeyRef:
+                  name: recsys-secrets
+                  key: redis-password
+                  optional: true
+            # redis-cli reads REDISCLI_AUTH from the environment. A -a flag on the probe command
+            # would put the password in the process table and in probe failure output.
+            - name: REDISCLI_AUTH
+              valueFrom:
+                secretKeyRef:
+                  name: recsys-secrets
+                  key: redis-password
+                  optional: true
           ports:
             - containerPort: 6379
           volumeMounts:
@@ -191,6 +209,28 @@ spec:
             # not corrupt state.
             - "--maxmemory-policy"
             - "volatile-lru"
+            - "--requirepass"
+            - "$(REDIS_PASSWORD)"
+            # The replica authenticates TO the primary with this. Without it the replication
+            # stream is rejected and the replica serves indefinitely stale reads rather than
+            # failing — the most expensive way for this change to go wrong.
+            - "--masterauth"
+            - "$(REDIS_PASSWORD)"
+          env:
+            - name: REDIS_PASSWORD
+              valueFrom:
+                secretKeyRef:
+                  name: recsys-secrets
+                  key: redis-password
+                  optional: true
+            # redis-cli reads REDISCLI_AUTH from the environment. A -a flag on the probe command
+            # would put the password in the process table and in probe failure output.
+            - name: REDISCLI_AUTH
+              valueFrom:
+                secretKeyRef:
+                  name: recsys-secrets
+                  key: redis-password
+                  optional: true
           ports:
             - containerPort: 6379
           readinessProbe:
@@ -274,10 +314,19 @@ spec:
       initContainers:
         - name: copy-sentinel-config
           image: redis:7-alpine
+          # sed rather than cp: the template lives in a ConfigMap, which cannot hold the password,
+          # so the placeholder is substituted from the environment at startup.
           command:
             - sh
             - -c
-            - cp /etc/redis/sentinel-template.conf /data/sentinel.conf
+            - sed "s|__REDIS_PASSWORD__|$REDIS_PASSWORD|" /etc/redis/sentinel-template.conf > /data/sentinel.conf
+          env:
+            - name: REDIS_PASSWORD
+              valueFrom:
+                secretKeyRef:
+                  name: recsys-secrets
+                  key: redis-password
+                  optional: true
           volumeMounts:
             - name: sentinel-config-template
               mountPath: /etc/redis
@@ -287,6 +336,15 @@ spec:
         - name: sentinel
           image: redis:7-alpine
           command: ["redis-sentinel", "/data/sentinel.conf"]
+          env:
+            # redis-cli reads REDISCLI_AUTH from the environment. A -a flag on the probe command
+            # would put the password in the process table and in probe failure output.
+            - name: REDISCLI_AUTH
+              valueFrom:
+                secretKeyRef:
+                  name: recsys-secrets
+                  key: redis-password
+                  optional: true
           ports:
             - containerPort: 26379
           volumeMounts:

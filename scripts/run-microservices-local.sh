@@ -17,6 +17,10 @@ SPLUNK_HEC_TOKEN="${SPLUNK_HEC_TOKEN:-}"
 SPLUNK_HEC_URL="${SPLUNK_HEC_URL:-http://localhost:8088/services/collector/event}"
 export SPLUNK_HEC_TOKEN SPLUNK_HEC_URL
 
+# Local Redis runs without a password. LettuceClientFactory refuses an unauthenticated
+# connection unless this says so explicitly — see docs/runbooks/redis-auth.md.
+export REDIS_ALLOW_NO_AUTH=true
+
 pids=""
 
 cleanup() {

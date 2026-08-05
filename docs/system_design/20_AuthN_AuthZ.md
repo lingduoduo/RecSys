@@ -8,8 +8,9 @@ guards operator surfaces on online serving.
 
 ## The big picture
 
-Six distinct credentials exist. Only the first two authenticate an external caller;
-the rest are narrower gates or receipts.
+Seven distinct credentials exist. Only the first two authenticate an external caller;
+the rest are narrower gates, receipts, or — in the last row — how this system proves
+its own identity to its data tier.
 
 | Credential | Header | Checked by | Failure | Default |
 |---|---|---|---|---|
@@ -19,6 +20,7 @@ the rest are narrower gates or receipts.
 | Operator token | `X-Admin-Token` | `AdminTokenGuard` | `403` | unset → fail closed |
 | Submit token (one-time CSRF) | `X-Submit-Token` | `SubmitTokenService` | `403` | disabled |
 | Login session token | `Authorization: Bearer` | `LoginInterceptor` | envelope error | disabled |
+| Redis password (`REDIS_PASSWORD`) | — (AUTH on connect) | Redis `requirepass` | startup refusal | unset → fail closed |
 
 Three structural facts shape everything below:
 
@@ -257,6 +259,42 @@ Design: [NetworkPolicy egress conformance](../superpowers/specs/2026-08-05-netwo
   decorator `403`).
 - **Service-local** — `SubmitTokenServiceTest` (single-use consume),
   `SubmitTokenCacheHeaderTest` (`no-store`), `ConsistencyTokenCodecTest`.
+- **Data tier** — `LettuceClientFactoryTest` (TLS on/off, ACL username vs default-user
+  AUTH, replica URIs inheriting both, the Spring-properties path, and the three guard
+  cases: blank password refused, opt-out accepted, password needs no opt-out),
+  `RedisAuthManifestTest` (every Redis client wired from the Secret, the relay
+  deliberately not, `requirepass`/`masterauth`/`auth-pass` on the servers, no probe
+  passing `-a`, and no manifest in any overlay setting `REDIS_ALLOW_NO_AUTH`).
+
+## Data-tier authentication
+
+Until 2026-08 every service connected to Redis as the unauthenticated `default` user over a
+plaintext socket. `LettuceClientFactory` read `REDIS_PASSWORD` and no manifest set it — a
+supported control that nothing switched on.
+
+Redis now requires a password: `--requirepass` on the primary and replica, `--masterauth` so the
+replica can authenticate to the primary, and `sentinel auth-pass` in the Sentinel template,
+substituted from the environment by the init container because a ConfigMap cannot hold a secret.
+Clients read `REDIS_PASSWORD` from the `redis-password` key of `recsys-secrets`.
+
+`LettuceClientFactory` refuses to open a connection without a credential unless
+`REDIS_ALLOW_NO_AUTH=true` — the same fail-closed shape as `GatewayAuthenticator.fromEnvironment`
+in §1. Local development and the test suite set it; no overlay does.
+
+The client also supports `REDIS_USERNAME` (Redis 6 ACL login) and `REDIS_TLS`. Both are unused
+today: the in-cluster Redis has no certificates, and per-service ACL users are a separate project.
+They exist so that project is configuration rather than a client change.
+
+Three things this does not do. Traffic between the pods and Redis is still unencrypted, so the
+NetworkPolicy remains the only control on who can read it in transit. All five clients share
+one credential over the whole keyspace, despite cleanly disjoint key ownership — that is the ACL
+work, not this. And Sentinel's own port 26379 has no `requirepass` of its own: `sentinel auth-pass`
+is how a sentinel authenticates *to* the primary, not how it authenticates callers. Anyone with
+network reach to 26379 can still issue `SENTINEL FAILOVER mymaster` and move the write leader —
+exactly the "NetworkPolicy is the only control" gap this closes for 6379, left open on the port
+that decides which node 6379 *is*.
+
+Design: [Redis transport authentication](../superpowers/specs/2026-08-05-redis-transport-auth-design.md).
 
 ## Sharp edges — notes
 

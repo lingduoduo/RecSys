@@ -92,6 +92,10 @@
           <environmentVariables>
             <TESTCONTAINERS_RYUK_DISABLED>true</TESTCONTAINERS_RYUK_DISABLED>
             <TESTCONTAINERS_DOCKER_SOCKET_OVERRIDE>/var/run/docker.sock</TESTCONTAINERS_DOCKER_SOCKET_OVERRIDE>
+            <!-- Tests reach a local, passwordless Redis. The guard in LettuceClientFactory is a
+                 production control; opting out here keeps it from turning every Redis-touching
+                 test into a credential-management exercise. -->
+            <REDIS_ALLOW_NO_AUTH>true</REDIS_ALLOW_NO_AUTH>
           </environmentVariables>
         </configuration>
       </plugin>
@@ -350,6 +354,13 @@
                 <include>**/sharding/ShardCursorKindTest.java</include>
                 <include>**/store/ShardedRecordServiceCursorTest.java</include>
                 <include>**/redis/LettuceRedisExecutorPipelineTest.java</include>
+                <!-- The client half of Redis authentication. RedisAuthManifestTest below proves
+                     the credential is wired in the manifests; this proves the client actually
+                     puts it on the wire — including the replica URIs, which are built outside
+                     uriFromEnv and carry most of the read traffic — and that a blank password
+                     fails closed. Without it in the gate, a change that drops auth from the
+                     client merges green and the manifest test still passes. -->
+                <include>**/redis/LettuceClientFactoryTest.java</include>
                 <include>**/redis/RedisEmbeddingStoreTest.java</include>
                 <include>**/redis/RedisEvictionPolicyManifestTest.java</include>
                 <include>**/redis/RedisCacheStatsProbeTest.java</include>
@@ -363,6 +374,7 @@
                      (20_AuthN_AuthZ), and its failure mode is silence: a dropped egress rule
                      looks like a dependency outage, not a policy bug. Pure file parsing. -->
                 <include>**/k8s/NetworkPolicyEgressManifestTest.java</include>
+                <include>**/k8s/RedisAuthManifestTest.java</include>
                 <include>**/k8s/UpstreamTest.java</include>
                 <!-- These two are the producer half of the data-freshness alerts.
                      ScrapeTargetManifestTest above proves the series get collected;

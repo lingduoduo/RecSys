@@ -111,4 +111,151 @@ class LettuceClientFactoryTest {
         assertEquals("localhost", uri.getHost());
         assertNotNull(uri.getCredentialsProvider(), "password should configure a credentials provider");
     }
+
+    @Test
+    void tlsIsOffByDefault() {
+        RedisURI uri = LettuceClientFactory.uriFromEnv(
+                Map.of("REDIS_HOST", "cache"), Integer.MAX_VALUE);
+        assertFalse(uri.isSsl(), "REDIS_TLS must default to false");
+    }
+
+    @Test
+    void tlsFlagEnablesSslOnTheUri() {
+        RedisURI uri = LettuceClientFactory.uriFromEnv(
+                Map.of("REDIS_HOST", "cache", "REDIS_TLS", "true"), Integer.MAX_VALUE);
+        assertTrue(uri.isSsl(), "REDIS_TLS=true must produce an SSL RedisURI");
+    }
+
+    @Test
+    void usernameProducesAnAclLogin() {
+        RedisURI uri = LettuceClientFactory.uriFromEnv(
+                Map.of("REDIS_HOST", "cache", "REDIS_USERNAME", "catalog",
+                        "REDIS_PASSWORD", "s3cret"),
+                Integer.MAX_VALUE);
+        assertEquals("catalog", uri.getUsername());
+    }
+
+    @Test
+    void passwordWithoutUsernameStaysOnTheDefaultUser() {
+        RedisURI uri = LettuceClientFactory.uriFromEnv(
+                Map.of("REDIS_HOST", "cache", "REDIS_PASSWORD", "s3cret"), Integer.MAX_VALUE);
+        String username = uri.getUsername();
+        assertTrue(username == null || username.isBlank(),
+                "no REDIS_USERNAME means legacy default-user AUTH");
+    }
+
+    @Test
+    void sentinelUriCarriesAuthAndTls() {
+        RedisURI uri = LettuceClientFactory.uriFromEnv(
+                Map.of("REDIS_MODE", "sentinel", "REDIS_SENTINEL_NODES", "s1:26379",
+                        "REDIS_USERNAME", "catalog", "REDIS_PASSWORD", "s3cret",
+                        "REDIS_TLS", "true"),
+                Integer.MAX_VALUE);
+        assertTrue(uri.isSsl());
+        assertEquals("catalog", uri.getUsername());
+    }
+
+    /**
+     * The replica URIs are built outside uriFromEnv, so a change that updates only the primary
+     * path leaves every replica connection unauthenticated and in the clear while the primary
+     * looks correct — and reads route to replicas, so that is most of the traffic. Nothing in the
+     * diff makes the omission visible, which is why this assertion exists.
+     */
+    @Test
+    void replicaUriInheritsAuthAndTls() {
+        RedisURI uri = LettuceClientFactory.replicaUri(
+                ReplicaConfig.parse("replica-a:6379@us-east-1b"),
+                "catalog", "s3cret", true, 2000);
+        assertEquals("replica-a", uri.getHost());
+        assertEquals("catalog", uri.getUsername());
+        assertTrue(uri.isSsl());
+    }
+
+    /**
+     * The Spring-properties path is the model-serving production path, and it is a second,
+     * independent copy of the same wiring: {@code uriFrom(props)} can lose the username or the
+     * TLS flag while every env-var assertion above stays green.
+     */
+    @Test
+    void springPropertiesUriCarriesAuthAndTls() {
+        RedisProperties props = new RedisProperties();
+        props.setHost("cache");
+        props.setUsername("model");
+        props.setPassword("s3cret");
+        props.setTls(true);
+
+        RedisURI uri = LettuceClientFactory.uriFrom(props);
+        assertEquals("cache", uri.getHost());
+        assertEquals("model", uri.getUsername());
+        assertTrue(uri.isSsl(), "recsys.redis.tls must produce an SSL RedisURI");
+    }
+
+    @Test
+    void springPropertiesSentinelUriCarriesAuthAndTls() {
+        RedisProperties props = new RedisProperties();
+        props.setMode("sentinel");
+        props.setSentinelNodes("s1:26379");
+        props.setUsername("model");
+        props.setPassword("s3cret");
+        props.setTls(true);
+
+        RedisURI uri = LettuceClientFactory.uriFrom(props);
+        assertEquals("mymaster", uri.getSentinelMasterId());
+        assertEquals("model", uri.getUsername());
+        assertTrue(uri.isSsl());
+    }
+
+    /** The props-path twin of {@link #replicaUriInheritsAuthAndTls}, and just as easy to omit. */
+    @Test
+    void springPropertiesReplicaUriInheritsAuthAndTls() {
+        RedisProperties props = new RedisProperties();
+        props.setUsername("model");
+        props.setPassword("s3cret");
+        props.setTls(true);
+
+        RedisURI uri = LettuceClientFactory.replicaUriFrom(
+                ReplicaConfig.parse("replica-a:6379@us-east-1b"), props);
+        assertEquals("replica-a", uri.getHost());
+        assertEquals("model", uri.getUsername());
+        assertTrue(uri.isSsl());
+    }
+
+    /**
+     * Proves {@code routerFrom} actually builds the replica executors rather than silently
+     * falling back to the primary: a router with no replicas reads from the primary, so an
+     * unparsed or dropped {@code replicaNodes} spec presents as working reads on the wrong node.
+     */
+    @Test
+    void routerFromPropsBuildsReplicaExecutors() {
+        RedisProperties props = new RedisProperties();
+        props.setHost("primary");
+        props.setPassword("s3cret");
+        props.setReplicaNodes("replica-a:6379@us-east-1b");
+
+        try (RedisReadReplicaRouter router = LettuceClientFactory.routerFrom(props)) {
+            assertNotSame(router.writable(), router.readable(),
+                    "reads must route to the configured replica, not back to the primary");
+        }
+    }
+
+    @Test
+    void blankPasswordWithoutTheOptOutIsRefused() {
+        IllegalStateException e = assertThrows(IllegalStateException.class,
+                () -> LettuceClientFactory.requireAuthentication("", Map.of()));
+        assertTrue(e.getMessage().contains("REDIS_PASSWORD"),
+                "the message must name the variable to set");
+        assertTrue(e.getMessage().contains("REDIS_ALLOW_NO_AUTH"),
+                "the message must name the deliberate escape, or the reader has no way out");
+    }
+
+    @Test
+    void blankPasswordIsAllowedWhenExplicitlyOptedOut() {
+        assertDoesNotThrow(() ->
+                LettuceClientFactory.requireAuthentication("", Map.of("REDIS_ALLOW_NO_AUTH", "true")));
+    }
+
+    @Test
+    void aPasswordNeedsNoOptOut() {
+        assertDoesNotThrow(() -> LettuceClientFactory.requireAuthentication("s3cret", Map.of()));
+    }
 }
