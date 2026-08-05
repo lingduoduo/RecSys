@@ -81,7 +81,8 @@ final class CognitoJwtVerifier {
         String subject = text(payload, "sub");
         String clientId = firstText(payload, "client_id", "aud");
         String tokenUse = text(payload, "token_use");
-        return new VerifiedClaims(subject, clientId, tokenUse);
+        String appUserId = scalarText(payload, config.userIdClaim());
+        return new VerifiedClaims(subject, clientId, tokenUse, appUserId);
     }
 
     private void validateClaims(JsonNode payload) {
@@ -162,12 +163,30 @@ final class CognitoJwtVerifier {
         return value.isBlank() ? text(node, second) : value;
     }
 
+    /**
+     * A claim value usable as an identity: textual or numeric only. An object or array is
+     * rejected rather than stringified — {@code asText()} on a container yields something that
+     * looks like an id and is not one.
+     */
+    private static String scalarText(JsonNode node, String field) {
+        JsonNode value = node.get(field);
+        if (value == null || value.isNull() || value.isContainerNode()) {
+            return "";
+        }
+        return value.asText("").trim();
+    }
+
     private static long longClaim(JsonNode node, String field, long defaultValue) {
         JsonNode value = node.get(field);
         return value == null || !value.canConvertToLong() ? defaultValue : value.asLong();
     }
 
-    record VerifiedClaims(String subject, String clientId, String tokenUse) {
+    record VerifiedClaims(String subject, String clientId, String tokenUse, String appUserId) {
+
+        /** The default claim is `sub`, so a caller that supplies no appUserId means exactly the subject. */
+        VerifiedClaims(String subject, String clientId, String tokenUse) {
+            this(subject, clientId, tokenUse, subject);
+        }
     }
 
     interface JwkProvider {

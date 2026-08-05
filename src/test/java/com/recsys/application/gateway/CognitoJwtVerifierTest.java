@@ -89,6 +89,49 @@ class CognitoJwtVerifierTest {
         assertThrows(CognitoJwtVerifier.JwtAuthException.class, () -> verifier.verify(tampered));
     }
 
+    @Test
+    void verify_readsAppUserIdFromConfiguredClaim() throws Exception {
+        KeyPair keyPair = rsaKeyPair();
+        CognitoJwtVerifier verifier = verifierWithClaim(keyPair, "custom:recsys_user_id");
+        String token = token(keyPair, claims() + ",\"custom:recsys_user_id\":\"42\"");
+
+        assertEquals("42", verifier.verify(token).appUserId());
+    }
+
+    @Test
+    void verify_coercesNumericClaimToString() throws Exception {
+        KeyPair keyPair = rsaKeyPair();
+        CognitoJwtVerifier verifier = verifierWithClaim(keyPair, "custom:recsys_user_id");
+        String token = token(keyPair, claims() + ",\"custom:recsys_user_id\":42");
+
+        assertEquals("42", verifier.verify(token).appUserId());
+    }
+
+    @Test
+    void verify_blankAppUserIdWhenClaimIsAbsentOrNotScalar() throws Exception {
+        KeyPair keyPair = rsaKeyPair();
+        CognitoJwtVerifier verifier = verifierWithClaim(keyPair, "custom:recsys_user_id");
+
+        // Absent entirely.
+        assertEquals("", verifier.verify(token(keyPair, claims())).appUserId());
+        // Present but an object — a claim shape we must never coerce into an identity.
+        assertEquals("", verifier.verify(
+                token(keyPair, claims() + ",\"custom:recsys_user_id\":{\"id\":\"42\"}")).appUserId());
+        // Present but an array.
+        assertEquals("", verifier.verify(
+                token(keyPair, claims() + ",\"custom:recsys_user_id\":[\"42\"]")).appUserId());
+    }
+
+    @Test
+    void verify_defaultsAppUserIdToSubject() throws Exception {
+        KeyPair keyPair = rsaKeyPair();
+        CognitoJwtVerifier verifier = verifier(keyPair);   // default claim name is "sub"
+        String token = token(keyPair, claims());
+
+        CognitoJwtVerifier.VerifiedClaims verified = verifier.verify(token);
+        assertEquals(verified.subject(), verified.appUserId());
+    }
+
     private CognitoJwtVerifier verifier(KeyPair keyPair) {
         CognitoConfig config = new CognitoConfig(
                 "https://cognito-idp.us-east-1.amazonaws.com/us-east-1_demo",
@@ -98,6 +141,27 @@ class CognitoJwtVerifierTest {
                 config,
                 new CognitoJwtVerifier.StaticJwkProvider(Map.of("kid-1", keyPair.getPublic())),
                 clock);
+    }
+
+    private CognitoJwtVerifier verifierWithClaim(KeyPair keyPair, String claimName) {
+        CognitoConfig config = new CognitoConfig(
+                "https://cognito-idp.us-east-1.amazonaws.com/us-east-1_demo",
+                "app-client",
+                Set.of("access", "id"),
+                claimName);
+        return new CognitoJwtVerifier(
+                config,
+                new CognitoJwtVerifier.StaticJwkProvider(Map.of("kid-1", keyPair.getPublic())),
+                clock);
+    }
+
+    /** Issuer, audience, subject, token_use, and an exp far enough ahead of `clock` to be valid. */
+    private String claims() {
+        return "\"iss\":\"https://cognito-idp.us-east-1.amazonaws.com/us-east-1_demo\""
+                + ",\"aud\":\"app-client\""
+                + ",\"sub\":\"11111111-2222-3333-4444-555555555555\""
+                + ",\"token_use\":\"access\""
+                + ",\"exp\":" + (clock.instant().getEpochSecond() + 3600);
     }
 
     private static String token(KeyPair keyPair, String payloadFields) throws Exception {
