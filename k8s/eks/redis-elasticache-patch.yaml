@@ -32,11 +32,20 @@ data:
   REDIS_MODE: "standalone"
   REDIS_HOST: "<elasticache-primary-endpoint>.cache.amazonaws.com"
   REDIS_PORT: "6379"
-  # Explicitly false rather than absent: an absent key reads as "not applicable", and this is a
-  # prerequisite an operator has to act on. Flip to "true" only once the ElastiCache cluster has
-  # encryption-in-transit enabled and an AUTH token provisioned into the redis-password key of
-  # recsys-secrets. The client verifies the certificate against the JVM truststore, which already
-  # trusts the Amazon Root CA that ElastiCache certificates chain to.
+  # DO NOT APPLY THIS OVERLAY until the ElastiCache cluster exists WITH encryption-in-transit
+  # enabled AND an AUTH token. In EKS the in-cluster Redis is scaled to 0, so every client dials
+  # ElastiCache, and LettuceClientFactory now refuses to start without a password. As written
+  # below there is no working combination:
+  #   - no redis-password  → every pod CrashLoopBackOff on the startup guard;
+  #   - a password against a cluster with no AUTH token
+  #                        → "ERR Client sent AUTH, but no password is set";
+  #   - a password against a cluster that has one
+  #                        → that cluster necessarily has transit encryption on, and
+  #                          REDIS_TLS: "false" fails the handshake.
+  # REDIS_TLS: "true", the redis-password key of recsys-secrets, and the AUTH-token-enabled
+  # cluster are only valid as a set — land all three in the same change, never one at a time.
+  # The client verifies the certificate against the JVM truststore, which already trusts the
+  # Amazon Root CA that ElastiCache certificates chain to. See docs/runbooks/redis-auth.md.
   REDIS_TLS: "false"
   # AZ-aware reads: the single ElastiCache READER endpoint (host:port). Reads
   # (executeRead) route here via RoutingRedisExecutor and survive a primary-AZ

@@ -29,7 +29,14 @@ Out, each for its own reason:
 
 - **In-cluster TLS.** Certificate issuance and rotation, `--tls-port`, sentinel TLS, and probe
   changes are a larger project, and the NetworkPolicy already limits which pods can reach those
-  ports. The client capability lands here so that project is config, not code.
+  ports. The client capability lands here so that project is config on this side rather than a
+  client change — but "config, not code" is not the same as "optional". On EKS the fail-closed
+  guard makes the ElastiCache half of it a *prerequisite*: the in-cluster Redis is scaled to 0
+  there, so every client needs a password, ElastiCache cannot hold an AUTH token without
+  encryption-in-transit, and both overlays pin `REDIS_TLS: "false"`. Neither EKS overlay is
+  applyable until that cluster is created with transit encryption and a token — the endpoint,
+  `REDIS_TLS: "true"`, and the `redis-password` key are one atomic change. See
+  [redis-auth.md](../../runbooks/redis-auth.md).
 - **Per-service Redis ACL users.** Already on the backlog. `REDIS_USERNAME` support here is
   precisely what unblocks it — the remaining work becomes server config plus manifests.
 - **MySQL credential handling.** Separate data tier, separate change.
