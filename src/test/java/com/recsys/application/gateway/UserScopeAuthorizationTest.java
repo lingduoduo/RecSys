@@ -6,7 +6,9 @@ import com.linecorp.armeria.common.HttpMethod;
 import com.linecorp.armeria.common.HttpResponse;
 import com.linecorp.armeria.common.HttpStatus;
 import com.linecorp.armeria.common.RequestHeaders;
+import com.linecorp.armeria.server.ServiceRequestContext;
 import com.recsys.ratelimit.GatewayRateLimiter;
+import com.recsys.resilience.RouteCircuitBreaker;
 import io.micrometer.core.instrument.simple.SimpleMeterRegistry;
 import org.junit.jupiter.api.Test;
 
@@ -99,6 +101,37 @@ class UserScopeAuthorizationTest {
         assertEquals(2.0, registry.get("gateway_user_scope_rejected_total").counter().count());
     }
 
+    /**
+     * Pins the check's <em>position</em> inside {@code forward}: it must run before the
+     * circuit-breaker permit is acquired.
+     *
+     * <p>A HALF_OPEN permit is not merely a token — {@code CircuitBreaker.tryAcquirePermit} claims
+     * the single probe slot by setting {@code probeGeneration = generation}, and only
+     * recordSuccess/recordFailure release it by bumping the generation. {@code forward} settles the
+     * permit exclusively on the upstream-response callbacks, so a 403 returned while holding a probe
+     * permit would wedge the route: every later acquisition returns null and the route 503s until
+     * the process restarts. Asserting the probe slot is still free after a denial is what makes a
+     * refactor that moves the check below the acquisition fail here.
+     */
+    @Test
+    void aDenialNeverConsumesTheCircuitBreakerProbeSlot() {
+        // threshold 1, cooldown 0: one failure opens the breaker, and elapsed >= 0 makes it
+        // immediately HALF_OPEN — deterministic, no clock injection needed.
+        RouteCircuitBreaker cb = new RouteCircuitBreaker(1, 0L);
+        cb.recordFailure(cb.tryAcquirePermit());
+        assertEquals(RouteCircuitBreaker.State.HALF_OPEN, cb.state());
+
+        GatewayRequestForwarder forwarder = forwarder(null, Map.of(CATALOG.name(), cb));
+        AggregatedHttpRequest request = get();
+        AggregatedHttpResponseAssert.assertForbidden(forwarder.forward(
+                ServiceRequestContext.of(request.toHttpRequest()),
+                request, CATALOG, "/getuser?userId=43", user("42")));
+
+        assertNotNull(cb.tryAcquirePermit(),
+                "the 403 must be returned before the probe permit is acquired — otherwise the "
+                        + "unsettled permit wedges the route open forever");
+    }
+
     private static GatewayPrincipal user(String appUserId) {
         return GatewayPrincipal.ofJwt(
                 new CognitoJwtVerifier.VerifiedClaims("sub-1", "app-client", "access", appUserId));
@@ -119,9 +152,21 @@ class UserScopeAuthorizationTest {
     }
 
     private static GatewayRequestForwarder forwarder(io.micrometer.core.instrument.MeterRegistry registry) {
+        return forwarder(registry, Map.of());
+    }
+
+    /**
+     * Health checking is off: this test never intends a network call, and probing the two dead
+     * localhost upstreams costs ~12 s of connection-refused retries per run. Reaching the
+     * package-private constructor that accepts a {@link UpstreamEndpointGroups.HealthCheckConfig}
+     * is possible only because this test lives in {@code com.recsys.application.gateway}.
+     */
+    private static GatewayRequestForwarder forwarder(io.micrometer.core.instrument.MeterRegistry registry,
+                                                     Map<String, RouteCircuitBreaker> circuitBreakers) {
         return new GatewayRequestForwarder(
-                List.of(CATALOG, LLM), Duration.ofSeconds(1), Map.of(),
-                GatewayRateLimiter.disabled(), registry);
+                List.of(CATALOG, LLM), Duration.ofSeconds(1), circuitBreakers,
+                GatewayRateLimiter.disabled(),
+                new UpstreamEndpointGroups.HealthCheckConfig(false, 0L), registry);
     }
 
     /** Keeps the status assertion in one place; the body must never echo the requested id. */

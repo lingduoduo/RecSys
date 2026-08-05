@@ -238,7 +238,10 @@ public final class GatewayRequestForwarder implements java.io.Closeable {
 
         // After rate limiting, so a probing caller still spends their own tokens on each denial.
         // Before the circuit-breaker permit, because success/failure is recorded only on the
-        // upstream-response path below — returning 403 holding a permit would leak it.
+        // upstream-response path below — returning 403 holding a permit would leak it. Worse than a
+        // leak on a HALF_OPEN route: the permit claims the single probe slot, so an unsettled one
+        // wedges the route into permanent 503s. Pinned by
+        // UserScopeAuthorizationTest#aDenialNeverConsumesTheCircuitBreakerProbeSlot.
         HttpResponse denied = authorizeUserScope(route, targetPath, request, principal);
         if (denied != null) {
             return denied;
