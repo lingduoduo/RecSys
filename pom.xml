@@ -375,6 +375,11 @@
                      looks like a dependency outage, not a policy bug. Pure file parsing. -->
                 <include>**/k8s/NetworkPolicyEgressManifestTest.java</include>
                 <include>**/k8s/RedisAuthManifestTest.java</include>
+                <!-- The operator tier's credential and the code that reads it live in different
+                     files with nothing else tying them together; a service that enforces the tier
+                     without the Secret rejects every operator request and says so only in a
+                     startup warning. Pure file parsing. -->
+                <include>**/k8s/OperatorTokenManifestTest.java</include>
                 <include>**/k8s/UpstreamTest.java</include>
                 <!-- These two are the producer half of the data-freshness alerts.
                      ScrapeTargetManifestTest above proves the series get collected;
