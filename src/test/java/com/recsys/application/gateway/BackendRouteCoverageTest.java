@@ -88,16 +88,26 @@ class BackendRouteCoverageTest {
     }
 
     /**
-     * Prefix matching runs only after an exact miss, so a prefix that covers a declared exact path
-     * can never take effect — and reading the table would suggest otherwise.
+     * Exact matching is tried first, so a declared exact path that sits <em>under</em> a prefix is
+     * not shadowed by it — the exact entry wins, and the prefix still governs every sibling path
+     * the exact table does not name. {@code "/shards/topology" -> OPERATOR} declared alongside the
+     * {@code /shards -> AUTHENTICATED} prefix is exactly this: legal, and exercised by
+     * {@code lookup}'s exact-first order, not dead code.
+     *
+     * <p>The one genuinely dead case is a prefix entry whose own path is <em>also</em> declared
+     * exactly: {@code exact.equals(prefix)}. There, the exact entry always wins the lookup and the
+     * prefix's own branch — matching {@code prefix} itself — can never fire, even though the prefix
+     * still legitimately governs its siblings.
      */
     @Test
     void noPrefixEntryShadowsADeclaredExactPath() {
         for (String service : MINIMUM_ROUTES.keySet()) {
             for (String prefix : BackendRoutePolicy.prefixPaths(service)) {
                 for (String exact : BackendRoutePolicy.exactPaths(service)) {
-                    assertFalse(exact.equals(prefix) || exact.startsWith(prefix + "/"),
-                            "Prefix " + service + prefix + " shadows declared exact path " + exact);
+                    assertFalse(exact.equals(prefix),
+                            "Prefix " + service + prefix + " is also declared as an exact path, so "
+                                    + "its own prefix branch (matching " + prefix + " itself) is dead "
+                                    + "code — the exact entry always wins the lookup.");
                 }
             }
         }

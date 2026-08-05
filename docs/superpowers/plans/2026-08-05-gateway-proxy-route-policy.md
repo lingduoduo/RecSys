@@ -544,16 +544,22 @@ Add two new test methods:
     }
 
     /**
-     * Prefix matching runs only after an exact miss, so a prefix that covers a declared exact path
-     * can never take effect — and reading the table would suggest otherwise.
+     * A prefix whose own path is also declared exactly can never take its prefix branch: exact is
+     * tried first, so the exact entry answers for that one path and the prefix branch is dead.
+     *
+     * <p>Only the self-match is dead. An exact entry *under* a prefix is not shadowed — it wins,
+     * and the prefix still governs its siblings. That is a legitimate refinement (declaring
+     * {@code /shards/topology} OPERATOR beside the {@code /shards} AUTHENTICATED prefix), so it
+     * must not be asserted against.
      */
     @Test
     void noPrefixEntryShadowsADeclaredExactPath() {
         for (String service : MINIMUM_ROUTES.keySet()) {
             for (String prefix : BackendRoutePolicy.prefixPaths(service)) {
                 for (String exact : BackendRoutePolicy.exactPaths(service)) {
-                    assertFalse(exact.equals(prefix) || exact.startsWith(prefix + "/"),
-                            "Prefix " + service + prefix + " shadows declared exact path " + exact);
+                    assertFalse(exact.equals(prefix),
+                            "Prefix " + service + prefix + " is also declared as an exact path, so "
+                                    + "its prefix branch can never run for that path");
                 }
             }
         }

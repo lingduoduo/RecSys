@@ -79,11 +79,12 @@ public final class GatewayProxyService implements HttpService {
      *
      * <p>Armeria and Tomcat disagree about {@code .}: Armeria preserves the segment (it rejects
      * only {@code ..}), Tomcat collapses it. Every gateway control that keys on the path — route
-     * matching, {@code GATEWAY_PUBLIC_PATHS}/{@code PROTECTED_PREFIXES}, the {@link UserScopedRoutes}
+     * matching, {@code GATEWAY_PUBLIC_PATHS}/{@code PROTECTED_PREFIXES}, the {@link BackendRoutePolicy}
      * lookup, rate-limit keying, and the CloudFront cache key — therefore sees a different path
-     * than the 8080 handler does. Concretely, {@code /api/model/api/v1/./recommend} misses the
-     * user-scope table (matching there is exact, deliberately) and still reaches the Spring handler
-     * for {@code /api/v1/recommend}, so a user-tier caller could name any userId.
+     * than the 8080 handler does. Concretely, {@code /api/model/api/v1/./recommend} misses its
+     * user-scoped {@code BackendRoutePolicy} entry (matching there is exact, deliberately) and
+     * still reaches the Spring handler for {@code /api/v1/recommend}, so a user-tier caller could
+     * name any userId.
      *
      * <p>Rejecting rather than normalizing is the point. Canonicalizing the path here would fix the
      * lookup while leaving route matching, rate-limit keying, and the edge cache key on whatever
@@ -113,7 +114,7 @@ public final class GatewayProxyService implements HttpService {
      * <p>The second spelling of the same gateway/backend disagreement the dot guard exists for.
      * Armeria decodes unreserved characters but deliberately leaves {@code %2F} encoded in
      * {@code ctx.path()}, so {@code /api/model/api/v1/.%2Frecommend} is <em>one</em> segment to
-     * every control here — route matching, the public-path check, the {@link UserScopedRoutes}
+     * every control here — route matching, the public-path check, the {@link BackendRoutePolicy}
      * lookup — and two to any backend that decodes it. That is exactly the bypass shape: the
      * gateway authorizes one path and the backend serves another.
      *
