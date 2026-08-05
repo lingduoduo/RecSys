@@ -472,9 +472,10 @@ classifies every backend route the gateway can reach into one of four access cla
 | `USER_SCOPED` | Requires a user-tier caller to name its own `userId` — §10 |
 | `AUTHENTICATED` | Proxied to any authenticated caller — ordinary data paths |
 
-Classification is an allow-list: an exact-path match is tried first, then a two-entry prefix table
-(`/actuator` → `NO_PROXY`, `/shards` → `AUTHENTICATED`). A path matching neither is denied exactly
-like one explicitly marked `NO_PROXY`:
+Classification is an allow-list: an exact-path match is tried first, then a three-entry prefix
+table (`/actuator` → `NO_PROXY`, `/shards` → `AUTHENTICATED`, `/api/v1/knowledge-bases` →
+`AUTHENTICATED`). A path matching neither is denied exactly like one explicitly marked
+`NO_PROXY`:
 [`GatewayRequestForwarder.enforceRoutePolicy`](../../src/main/java/com/recsys/application/gateway/GatewayRequestForwarder.java)
 returns `404 {"error":"no route found"}` for both, byte-identical to a path that was never routed
 at all — a caller cannot distinguish "this route exists but is withheld" from "this route was
@@ -483,10 +484,30 @@ scans all three backend mains, and fails if any route it finds has no entry in
 `BackendRoutePolicy`, so an unclassified route added tomorrow is unreachable through the gateway
 rather than silently exposed by it.
 
+**Prefix entries exist for paths that cannot be written as exact strings** — three of them, for
+three different reasons. `/actuator`'s membership is configuration, not source (below).
+`/shards` is a single Armeria `pathPrefix` whose sub-paths are dispatched inside the handler.
+`/api/v1/knowledge-bases` is there because two of `KnowledgeBaseController`'s four handlers are
+declared with a Spring path *template* — `/knowledge-bases/{knowledgeBaseId}` — and a template is
+not a path: declared as an exact entry it matches only the literal brace-bearing string that the
+coverage scanner emits and no client ever sends, so every concrete id would 404 while both
+coverage tests stayed green. A prefix covers the collection path and every id in one entry. The
+corollary is that a prefix's own path must not *also* be declared exactly — exact wins the lookup,
+which would make the prefix's own branch dead code — and
+`BackendRouteCoverageTest#noPrefixEntryShadowsADeclaredExactPath` fails the build on it.
+
 **Telemetry is no longer proxied, and nothing legitimate depended on it going through the
-gateway.** `/metrics` (Armeria, 6010/7010/8010), `/actuator/*` (Spring, 8080), and 8080's
-diagnostic `/health/*` surfaces (`/health/jvm`, `/health/gc`, `/health/metrics`, `/health/cache`,
-`/health/ab-tests`, `/health/load`) are all `NO_PROXY`. The `ServiceMonitor`s in
+gateway.** `/metrics` (Armeria, 6010 and 7010), `/actuator/*` (Spring, 8080), 8080's diagnostic
+`/health/*` surfaces (`/health/jvm`, `/health/gc`, `/health/metrics`, `/health/cache`,
+`/health/ab-tests`, `/health/load`, `/health/live`, `/health/ready`), and each backend's plain
+liveness/readiness paths (6010's `/health`, `/health/ready`, `/health/load`; 7010's `/health`,
+`/health/live`, `/health/ready`) are all `NO_PROXY` — the complete `NO_PROXY` set, not a sample.
+The gateway's own `/metrics` on 8010 is a **different surface** and is not in this table at all:
+it is served directly by `MicroserviceGatewayServer` (`sb.service("/metrics", …)`), never routed
+through `GatewayRequestForwarder`, so no access class applies to it and it stays reachable — by
+design, since §4 deliberately exempts it from `GATEWAY_ORIGIN_SECRET` so the Prometheus scrape
+works. Nothing in this table withholds it, and a claim that it is `NO_PROXY` would be asserting a
+control that does not exist. The `ServiceMonitor`s in
 [`k8s/base/servicemonitor.yaml`](../../k8s/base/servicemonitor.yaml) scrape each backend's own
 Service directly, not through the gateway; the k8s startup/liveness/readiness probes hit the pod
 directly; and `UpstreamEndpointGroups`' upstream health checking dials `baseUri + healthPath` on

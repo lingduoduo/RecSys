@@ -77,6 +77,12 @@ curl -H "X-API-Key: $GATEWAY_API_KEY" \
      -d '{"version":"..."}'
 ```
 
+**Listing model versions is `OPERATOR` too.** `GET /api/model/api/v1/model/versions` (equally
+`/api/v1/model/versions` on 8080) is in the same class as `activate`/`rollback`/`preload`, so an
+operator who used to list versions with only an API key now needs `X-Admin-Token` as well — a read
+that worked yesterday returns `403 {"error":"operator token required"}` today, and that is the
+change, not a broken credential.
+
 A `403 {"error":"operator token required"}` here means one of two things: the header was missing
 or wrong, or `SHARD_ADMIN_TOKEN` is unset on the gateway pod — in which case the guard authorizes
 nobody and **every** `OPERATOR` route rejects **every** caller, token or no token. Check the
