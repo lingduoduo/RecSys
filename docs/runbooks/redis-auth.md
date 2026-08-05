@@ -13,13 +13,14 @@ kubectl -n recsys create secret generic recsys-secrets \
 ```
 
 The secret reference is `optional: true`, so pods stay schedulable before it exists — but the
-missing-Secret state is worse than "nothing runs". `optional: true` only makes Kubernetes omit an
-env var it cannot resolve; it does not touch a literal `$(REDIS_PASSWORD)` reference embedded in a
-container's `args`. So without the Secret, Redis, its replica, and Sentinel start with
-`--requirepass`/`--masterauth`/`sentinel auth-pass` all set to the *literal string*
-`$(REDIS_PASSWORD)` — a real, unrotatable password that is publicly known from reading the
-manifest — while all five client workloads have no `REDIS_PASSWORD` at all and crash-loop on the
-startup guard. Provision the Secret before applying `k8s/base`, not after.
+missing-Secret state is worse than "nothing runs", and it fails two different ways. The primary and
+replica set `--requirepass`/`--masterauth` via Kubernetes' `args`-level `$(REDIS_PASSWORD)`
+substitution, which `optional: true` does not touch: an unresolvable reference is left as the
+*literal string* `$(REDIS_PASSWORD)`, so both run reachable with a real, manifest-visible password.
+Sentinel instead gets its password from an init container's `sed` substitution inside `sh -c` —
+ordinary shell parameter expansion, not Kubernetes substitution — so an absent env var renders the
+malformed line `sentinel auth-pass mymaster ` with no argument. All five client workloads,
+meanwhile, have no `REDIS_PASSWORD` at all and crash-loop on the startup guard.
 
 ## Local development
 
