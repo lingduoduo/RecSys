@@ -3,8 +3,9 @@
 An investigation of who proves their identity, where that proof is checked, and what
 the proof entitles them to. The short answer: **authentication happens once, at the
 gateway**, and everything behind it trusts the gateway. Authorization is deliberately
-coarse — there is exactly one privilege tier above "authenticated caller", and it
-guards operator surfaces on online serving.
+coarse — two narrow privilege tiers sit above "authenticated caller": one guards
+operator surfaces on online serving (§5), the other scopes a JWT caller to their own
+`userId` (§10).
 
 ## The big picture
 
@@ -30,8 +31,8 @@ Three structural facts shape everything below:
   their `/metrics` scrape, and online serving admits nothing else. The backends'
   lack of their own authentication is a deliberate consequence, not an oversight.
 - **There is no authorization *model*.** No roles, no scopes, no per-resource
-  ownership checks. A caller is authenticated or not; the single exception is the
-  operator token in §5.
+  ownership checks. A caller is authenticated or not; the two exceptions are the
+  operator token in §5 and the user-scope check in §10.
 - **No security framework is used.** There is no `spring-boot-starter-security`, no
   `jjwt`, no `nimbus-jose-jwt` in [`pom.xml`](../../pom.xml). JWT verification is
   hand-rolled on the JDK plus Jackson (§1), which is a deliberate dependency
@@ -154,7 +155,7 @@ Two design details matter operationally:
 Rejections increment `gateway_origin_secret_rejected_total` and log **once** — a
 scan or a botched rotation would otherwise flood the log with a per-request warning.
 
-## 5. Operator authorization — the one privilege tier
+## 5. Operator authorization — a privilege tier
 
 Once edge auth is on, the `/api/online` passthrough lets **any authenticated client**
 reach online serving's introspection surfaces. Those are operator tools, not client
@@ -333,7 +334,7 @@ the first test scans, so the coverage claim cannot be undermined by a route regi
 the scanner never looks.
 
 Enforcement lives in `GatewayRequestForwarder.forward`, beside the credential stripping and
-identity injection of §2 — one function is the whole identity story, in both directions. It runs
+identity injection of §2 — the whole identity story sits in one class, end to end. It runs
 after rate limiting (so a probing caller spends their own tokens) and before the circuit-breaker
 permit is acquired (so a denial cannot leak one). Denials return `403` with a fixed body
 (`forbidden: request is not scoped to the authenticated user`), increment
@@ -349,14 +350,18 @@ Design: [user-scope authorization](../superpowers/specs/2026-08-05-gateway-user-
 
 ## Sharp edges — notes
 
-1. **Authorization is one comparison and one privilege tier.** §10 scopes user-tier callers to
-   their own `userId`, but that is the only authorization rule in the system. Beyond it — and for
-   every service-tier caller — any authenticated caller can reach every routed data-plane path,
-   including control-plane writes such as `/api/catalog/setembedding` (overwrite item embeddings
-   on 6010) and `/api/model/api/v1/model/versions/activate` and `/rollback` (swap the serving
-   model). Those sit in the same privilege tier as a catalog read. The trust model is "callers are
-   trusted backends", so this is consistent — but it means an API-key leak is still a
-   control-plane compromise, and, because API keys are service-tier, still a read of every user.
+1. **Authorization is two narrow checks, not a model.** §5's operator token predates this work
+   and still gates only online serving's introspection surfaces — `GET /online/ops`,
+   `GET /shards/shard`, and `POST /shards/topology` — behind its own independent fail-closed
+   default. §10 adds a second, unrelated check: a JWT (user-tier) caller may act only on its own
+   `userId`, and only on the routes `UserScopedRoutes` declares. Outside those two checks — and for
+   every service-tier caller, including on a user-scoped route — any authenticated caller can reach
+   every other routed data-plane path, including control-plane writes such as
+   `/api/catalog/setembedding` (overwrite item embeddings on 6010) and
+   `/api/model/api/v1/model/versions/activate` and `/rollback` (swap the serving model). Those sit
+   in the same privilege tier as a catalog read. The trust model is "callers are trusted backends",
+   so this is consistent — but it means an API-key leak is still a control-plane compromise, and,
+   because API keys are service-tier, still a read of every user.
 2. **`k8s/base` runs wide open.** `GATEWAY_ALLOW_ANONYMOUS: "true"` lives in the base
    configmap; only the `eks-shared` component flips it to `false`. A new overlay that
    composes `../base` without `../eks-shared` inherits anonymous access silently —
