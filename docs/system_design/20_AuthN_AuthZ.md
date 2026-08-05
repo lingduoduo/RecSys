@@ -3,8 +3,10 @@
 An investigation of who proves their identity, where that proof is checked, and what
 the proof entitles them to. The short answer: **authentication happens once, at the
 gateway**, and everything behind it trusts the gateway. Authorization is deliberately
-coarse — two narrow privilege tiers sit above "authenticated caller": one guards
-operator surfaces on online serving (§5), the other scopes a JWT caller to their own
+coarse — two narrow privilege tiers sit above "authenticated caller": one is the
+operator token, checked directly by online serving's own introspection surfaces (§5)
+and, since §11, also enforced by the gateway itself for every route it classifies
+`OPERATOR` across all three backends; the other scopes a JWT caller to their own
 `userId` (§10).
 
 ## The big picture
@@ -32,7 +34,7 @@ Three structural facts shape everything below:
   lack of their own authentication is a deliberate consequence, not an oversight.
 - **There is no authorization *model*.** No roles, no scopes, no per-resource
   ownership checks. A caller is authenticated or not; the two exceptions are the
-  operator token in §5 and the user-scope check in §10.
+  operator token (§5, and, at the gateway, §11) and the user-scope check in §10.
 - **No security framework is used.** There is no `spring-boot-starter-security`, no
   `jjwt`, no `nimbus-jose-jwt` in [`pom.xml`](../../pom.xml). JWT verification is
   hand-rolled on the JDK plus Jackson (§1), which is a deliberate dependency
@@ -119,13 +121,13 @@ That boundary rule is also the trap: a bare `/api/catalog` entry *would* match
 
 - **`PROTECTED_PREFIXES`** is consulted **first** in `isPublic`, so those paths are never
   anonymous regardless of configuration. It is two hand-listed prefixes (`/api/catalog/user`,
-  `/api/users`) **plus every user-scoped route derived from `UserScopedRoutes`** —
+  `/api/users`) **plus every user-scoped route derived from `BackendRoutePolicy`** —
   `route.prefix() + backendPath` for each gateway prefix that reaches a declared handler, so
   `/api/catalog/getrecommendation`, `/api/movies/getuser` and `/api/online/online/features` are
   all covered. Deriving matters because making a user-scoped route public does more than skip
   authentication: an anonymous caller is SERVICE tier, and service tier is exempt from §10, so a
   public entry would silently switch that route's user-scope check off. A second hand-maintained
-  list beside `UserScopedRoutes` would drift; this one cannot.
+  list beside `BackendRoutePolicy` would drift; this one cannot.
 - **`warnOnProtectedOverlap`** logs at startup when a configured public path would
   have exposed a protected prefix — the guard silently saving you is itself a
   misconfiguration worth fixing.
@@ -324,21 +326,25 @@ The rule is one comparison, applied at the gateway:
   JWT whose claim did not resolve stays user-tier and is denied, instead of falling through to
   service-tier freedom.
 
-`UserScopedRoutes` declares which backend routes take a `userId` and how it arrives, keyed on
+`BackendRoutePolicy` declares which backend routes take a `userId` and how it arrives, keyed on
 `(backend service, backend path)` — not on the gateway path, because `/api/users`, `/api/movies`,
 and `/api/catalog` all resolve to 6010 and `MicroserviceRoute.rewrite` forwards the suffix
-verbatim, so one handler is reachable under three prefixes. Three source kinds cover every route:
-`QUERY` (a query-string parameter), `BODY` (a top-level `userId` field), and `BODY_INSTANCES`
-(every element of a TF-Serving-shaped `instances[]` array must name the same user). The third kind
-exists because `POST /v1/models/recmodel:predict` turned out to be user-scoped: `PredictInstance`
-carries a caller-supplied `userId`, and `PairPredictionService` loads `u2vEmb:<userId>` and returns
-scores derived from it — a fact the route had first been excused past, and only the conformance
-test below caught. `UserScopedRouteCoverageTest` requires every gateway-reachable backend route to
-be declared in `UserScopedRoutes` or explicitly listed as not user-scoped, so the enforcement
-cannot silently develop holes as routes are added; a second test in the same class sweeps the
-whole `src/main/java` tree for route registrations and Spring controllers outside the locations
-the first test scans, so the coverage claim cannot be undermined by a route registered somewhere
-the scanner never looks.
+verbatim, so one handler is reachable under three prefixes. (This is one access class among four —
+`NO_PROXY`, `OPERATOR`, `USER_SCOPED`, `AUTHENTICATED` — that `BackendRoutePolicy` assigns to every
+backend route; §11 covers the table as a whole. This section covers only the `USER_SCOPED` class,
+which absorbed the entire remit of the former, single-purpose `UserScopedRoutes` class.) Three
+source kinds cover every user-scoped route: `QUERY` (a query-string parameter), `BODY` (a
+top-level `userId` field), and `BODY_INSTANCES` (every element of a TF-Serving-shaped
+`instances[]` array must name the same user). The third kind exists because
+`POST /v1/models/recmodel:predict` turned out to be user-scoped: `PredictInstance` carries a
+caller-supplied `userId`, and `PairPredictionService` loads `u2vEmb:<userId>` and returns scores
+derived from it — a fact the route had first been excused past, and only the conformance test
+below caught. `BackendRouteCoverageTest` requires every gateway-reachable backend route to be
+classified in `BackendRoutePolicy` as one of the four access classes — not merely user-scoped or
+not — so the enforcement cannot silently develop holes as routes are added; a second test in the
+same class sweeps the whole `src/main/java` tree for route registrations and Spring controllers
+outside the locations the first test scans, so the coverage claim cannot be undermined by a route
+registered somewhere the scanner never looks.
 
 Enforcement lives in `GatewayRequestForwarder.forward`, beside the credential stripping and
 identity injection of §2. It runs after rate limiting (so a probing caller spends their own
@@ -347,26 +353,30 @@ return `403` with a fixed body (`forbidden: request is not scoped to the authent
 increment `gateway_user_scope_rejected_total`, and log once.
 
 `forward` is the choke point for every *proxied* route — `GatewayProxyService` and
-`RecommendationGatewayService` both reach it — but it is **not** the gateway's only forwarding
-path. `LlmProxyService` forwards to the LLM upstream itself, duplicating §2's stripping and
-injection, and does not run the user-scope check. That is sound only because no LLM route can be
-user-scoped, and that premise is enforced rather than asserted: `LlmProxyService`'s constructor
-refuses a route that reaches a backend declaring any user-scoped route, naming this section in the
-failure. Adding a user-scoped LLM route therefore fails at startup instead of forwarding
-unchecked. Two forwarding paths is the real shape here; treating it as one was the mistake.
+`RecommendationGatewayService` both reach it, and since §11 it also enforces the `NO_PROXY` and
+`OPERATOR` classes there — but it is **not** the gateway's only forwarding path. `LlmProxyService`
+forwards to the LLM upstream itself, duplicating §2's stripping and injection, and does not
+consult `BackendRoutePolicy` for the request path at all — no user-scope check, no operator-token
+check, nothing. That is sound only because no LLM route can reach a backend `BackendRoutePolicy`
+classifies, and that premise is enforced rather than asserted: `LlmProxyService`'s constructor
+refuses a route that resolves to *any* known backend, naming this section in the failure —
+regardless of which access class that backend happens to declare, so a future `NO_PROXY` or
+`OPERATOR` backend closes the same gap a `USER_SCOPED` one would. Adding an LLM route that reaches
+a classified backend therefore fails at startup instead of forwarding unchecked. Two forwarding
+paths is the real shape here; treating it as one was the mistake.
 
 The guard resolves the route's **target**, not its label, and so does `forward`'s own lookup —
-both go through `UserScopedRoutes.effectiveServiceName`, which falls back to the `serviceName` of
-whichever known route shares the same authority. A guard on the declared name alone could never
+both go through `BackendRoutePolicy.effectiveServiceName`, which falls back to the `serviceName`
+of whichever known route shares the same authority. A guard on the declared name alone could never
 have fired: `MicroserviceRoute.fromEnvOptional`, the only thing that builds an LLM route in
 production, always passes `serviceName = null`, and the 5-arg constructor defaults it to null too.
 So the realistic misconfiguration — `LLM_SERVICE_URL` pointed at 8080 — produced a route both the
 guard and the lookup waved through, and `/api/llm/api/v1/recommend` forwarded with no check at all.
-A route cannot opt out of user-scope enforcement by declining to name itself.
+A route cannot opt out of this enforcement by declining to name itself.
 
 **The path the check sees must be the path the backend sees.** Armeria preserves a `.` segment
 (it rejects only `..`); Tomcat, which serves 8080, collapses it. So
-`/api/model/api/v1/./recommend` missed the `UserScopedRoutes` table — matching there is exact, by
+`/api/model/api/v1/./recommend` missed the `BackendRoutePolicy` table — matching there is exact, by
 design — while still reaching the Spring handler registered for `/api/v1/recommend`, which made
 every 8080 user-scoped route bypassable by respelling the path. `GatewayProxyService.serve`
 rejects any path carrying a `.` or `..` segment with `400`, immediately after `ApiVersion.parse`
@@ -397,18 +407,22 @@ Design: [user-scope authorization](../superpowers/specs/2026-08-05-gateway-user-
 
 ## Sharp edges — notes
 
-1. **Authorization is two narrow checks, not a model.** §5's operator token predates this work
-   and still gates only online serving's introspection surfaces — `GET /online/ops`,
-   `GET /shards/shard`, and `POST /shards/topology` — behind its own independent fail-closed
-   default. §10 adds a second, unrelated check: a JWT (user-tier) caller may act only on its own
-   `userId`, and only on the routes `UserScopedRoutes` declares. Outside those two checks — and for
-   every service-tier caller, including on a user-scoped route — any authenticated caller can reach
-   every other routed data-plane path, including control-plane writes such as
-   `/api/catalog/setembedding` (overwrite item embeddings on 6010) and
-   `/api/model/api/v1/model/versions/activate` and `/rollback` (swap the serving model). Those sit
-   in the same privilege tier as a catalog read. The trust model is "callers are trusted backends",
-   so this is consistent — but it means an API-key leak is still a control-plane compromise, and,
-   because API keys are service-tier, still a read of every user.
+1. **The operator gate on control-plane writes is a gateway property, not a system property.**
+   §11's `BackendRoutePolicy` now requires `X-Admin-Token` at the gateway for every `OPERATOR`
+   route across all three backends — `/api/catalog/setembedding` (overwrite item embeddings on
+   6010), `/api/model/api/v1/model/versions/activate`/`/rollback`/`/preload` (swap the serving
+   model on 8080), and `/api/online/online/ops`. §10 remains the other check: a JWT (user-tier)
+   caller may act only on its own `userId`, on the routes `BackendRoutePolicy` marks `USER_SCOPED`.
+   Neither check does anything for a caller that reaches a backend directly instead of through the
+   gateway — sharp edge 6 is unchanged: 6010, 7010, and 8080 authenticate nobody. For
+   `/api/catalog/setembedding` and the model version endpoints, the gateway's `X-Admin-Token` check
+   is the *only* control-plane authorization that exists anywhere in the system; a direct pod
+   connection reaches them with no credential at all, operator or otherwise.
+   `/shards/topology`, `GET /shards/shard`, and `GET /online/ops` are the exception — 7010 already
+   guards those three with its own `AdminTokenGuard` (§5), so the gateway's check there is
+   redundant defense-in-depth, not the only line. So: control-plane writes require the operator
+   token when reached **through the gateway**. Whether they are also reachable without one depends
+   on which backend they live on, and for two of the three routes above, they are.
 2. **`k8s/base` runs wide open.** `GATEWAY_ALLOW_ANONYMOUS: "true"` lives in the base
    configmap; only the `eks-shared` component flips it to `false`. A new overlay that
    composes `../base` without `../eks-shared` inherits anonymous access silently —
@@ -445,3 +459,69 @@ Design: [user-scope authorization](../superpowers/specs/2026-08-05-gateway-user-
    enforcing CNI, turning on Cognito JWT auth would fail every verification — and §8's test would
    still be green, because a destination absent from the ConfigMap is a destination it cannot know
    about.
+
+## 11. The gateway proxy policy — what the gateway is willing to forward
+
+[`BackendRoutePolicy`](../../src/main/java/com/recsys/application/gateway/BackendRoutePolicy.java)
+classifies every backend route the gateway can reach into one of four access classes:
+
+| Class | Meaning |
+|---|---|
+| `NO_PROXY` | Never proxied — telemetry and diagnostics, reachable only on the pod |
+| `OPERATOR` | Requires `X-Admin-Token`, for every caller including service-tier ones |
+| `USER_SCOPED` | Requires a user-tier caller to name its own `userId` — §10 |
+| `AUTHENTICATED` | Proxied to any authenticated caller — ordinary data paths |
+
+Classification is an allow-list: an exact-path match is tried first, then a two-entry prefix table
+(`/actuator` → `NO_PROXY`, `/shards` → `AUTHENTICATED`). A path matching neither is denied exactly
+like one explicitly marked `NO_PROXY`:
+[`GatewayRequestForwarder.enforceRoutePolicy`](../../src/main/java/com/recsys/application/gateway/GatewayRequestForwarder.java)
+returns `404 {"error":"no route found"}` for both, byte-identical to a path that was never routed
+at all — a caller cannot distinguish "this route exists but is withheld" from "this route was
+never registered." `BackendRouteCoverageTest` enforces the allow-list property at build time: it
+scans all three backend mains, and fails if any route it finds has no entry in
+`BackendRoutePolicy`, so an unclassified route added tomorrow is unreachable through the gateway
+rather than silently exposed by it.
+
+**Telemetry is no longer proxied, and nothing legitimate depended on it going through the
+gateway.** `/metrics` (Armeria, 6010/7010/8010), `/actuator/*` (Spring, 8080), and 8080's
+diagnostic `/health/*` surfaces (`/health/jvm`, `/health/gc`, `/health/metrics`, `/health/cache`,
+`/health/ab-tests`, `/health/load`) are all `NO_PROXY`. The `ServiceMonitor`s in
+[`k8s/base/servicemonitor.yaml`](../../k8s/base/servicemonitor.yaml) scrape each backend's own
+Service directly, not through the gateway; the k8s startup/liveness/readiness probes hit the pod
+directly; and `UpstreamEndpointGroups`' upstream health checking dials `baseUri + healthPath` on
+the backend directly rather than through the proxy path. `/actuator`'s membership in `NO_PROXY` is
+declared, not scanned — Spring's endpoint exposure is a configuration property
+(`management.endpoints.web.exposure.include`, `application.yml`), invisible from a source scan, so
+`BackendRouteCoverageTest` cannot cross-check that declaration the way it does the enumerable
+routes. Whether `/actuator/*` is reachable on 8080 at all is therefore a fact about
+`MANAGEMENT_ENDPOINTS_EXPOSURE`, not about this table.
+
+**`OPERATOR` requires `X-Admin-Token` from `SHARD_ADMIN_TOKEN`, and binds every caller including
+service-tier ones.** `GatewayRequestForwarder` demands a valid token — matched via
+[`AdminTokenGuard`](../../src/main/java/com/recsys/application/auth/AdminTokenGuard.java) — for
+`/api/catalog/setembedding`, the model version `activate`/`rollback`/`preload` endpoints, and
+`/api/online/online/ops`. An API key is what every real caller already holds, so if it were
+sufficient here the class would mean nothing: a denial returns
+`403 {"error":"operator token required"}`, deliberately distinguishable from the 404 above — the
+caller is being told to present a credential, not that the path is absent. The gateway now reads
+`SHARD_ADMIN_TOKEN` from the `recsys-online-admin` Secret (`k8s/base/api-gateway.yaml`, mirroring
+`k8s/base/online-serving.yaml`'s existing wiring for 7010) and warns at startup when it is unset;
+unset means the guard authorizes nobody, so every `OPERATOR` route fails closed rather than open.
+
+**`/shards` stays `AUTHENTICATED`, not `OPERATOR`, because the prefix mixes tiers.**
+[`ShardedRecordService`](../../src/main/java/com/recsys/infrastructure/store/ShardedRecordService.java)
+already calls `adminGuard.isAuthorized` itself on `POST /shards/topology` and `GET /shards/shard` —
+the two operator sub-paths — but not on `GET /shards/device` or `POST /shards/records`, which are
+ordinary per-entity data paths. Classifying the whole prefix `OPERATOR` at the gateway would break
+those two reads and writes; classifying it `AUTHENTICATED` leaves the backend's own two-way split
+as the actual enforcement, and the gateway's contribution is the same as for any other data-plane
+route — requiring an authenticated caller, nothing more.
+
+`LlmProxyService` remains the second forwarding path noted in §10: it never consults
+`BackendRoutePolicy` for the request path, for any of the four classes. Its construction guard
+refuses any LLM route that resolves to a known backend at all — `NO_PROXY` and `OPERATOR`
+backends included, not merely ones declaring a `USER_SCOPED` route — so a misrouted
+`LLM_SERVICE_URL` fails at startup rather than forwarding an operator or telemetry path unchecked.
+
+Design: [gateway proxy route policy](../superpowers/specs/2026-08-05-gateway-proxy-route-policy-design.md).

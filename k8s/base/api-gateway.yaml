@@ -56,6 +56,16 @@ spec:
                   name: recsys-gateway-origin-secret
                   key: secret
                   optional: true
+            # Operator token for the control-plane routes the gateway now gates: POST
+            # /api/catalog/setembedding and the model version activate/rollback/preload endpoints,
+            # plus /api/online/online/ops. When unset these fail closed (403) — see
+            # docs/system_design/20_AuthN_AuthZ.md and docs/runbooks/gateway-auth.md.
+            - name: SHARD_ADMIN_TOKEN
+              valueFrom:
+                secretKeyRef:
+                  name: recsys-online-admin
+                  key: admin-token
+                  optional: true
             # Splunk HEC log shipping. Inert until the recsys-splunk Secret exists, so
             # optional: true keeps pods schedulable before it is provisioned — same pattern
             # as recsys-online-admin / SHARD_ADMIN_TOKEN. See
