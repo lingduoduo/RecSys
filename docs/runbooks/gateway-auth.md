@@ -60,3 +60,45 @@ API keys and Cognito can be enabled together; either valid credential is accepte
 - Public paths (`GATEWAY_PUBLIC_PATHS`, default `/health,/api/catalog/item,/api/catalog/similar`)
   remain reachable anonymously — keep this list to exact paths only (see the DANGER note in
   `k8s/base/configmap.yaml`).
+
+## Calling an operator-class route through the gateway
+
+`BackendRoutePolicy` marks a handful of control-plane routes `OPERATOR` —
+`/api/catalog/setembedding`, the model `activate`/`rollback`/`preload` endpoints, and
+`/api/online/online/ops` — on top of the two the online-serving Deployment already gates
+directly (`docs/system_design/20_AuthN_AuthZ.md` §5, §11). Reaching any of them through the
+gateway requires **both** an ordinary gateway credential (API key or JWT) **and** the operator
+token in `X-Admin-Token`:
+
+```bash
+curl -H "X-API-Key: $GATEWAY_API_KEY" \
+     -H "X-Admin-Token: $SHARD_ADMIN_TOKEN" \
+     -X POST https://<gateway>/api/model/api/v1/model/versions/activate \
+     -d '{"version":"..."}'
+```
+
+**Listing model versions is `OPERATOR` too.** `GET /api/model/api/v1/model/versions` (equally
+`/api/v1/model/versions` on 8080) is in the same class as `activate`/`rollback`/`preload`, so an
+operator who used to list versions with only an API key now needs `X-Admin-Token` as well — a read
+that worked yesterday returns `403 {"error":"operator token required"}` today, and that is the
+change, not a broken credential.
+
+A `403 {"error":"operator token required"}` here means one of two things: the header was missing
+or wrong, or `SHARD_ADMIN_TOKEN` is unset on the gateway pod — in which case the guard authorizes
+nobody and **every** `OPERATOR` route rejects **every** caller, token or no token. Check the
+gateway's startup log for the unset-token warning, and confirm the `recsys-online-admin` Secret
+exists and is mounted (`kubectl -n recsys get secret recsys-online-admin`,
+`kubectl -n recsys exec deploy/recsys-api-gateway -- env | grep SHARD_ADMIN_TOKEN`).
+
+**Break-glass:** if `SHARD_ADMIN_TOKEN` is genuinely unset (Secret not yet provisioned, or
+deliberately withheld), operator paths are unreachable through the gateway by design — there is no
+token that unlocks them. The only way to reach them at all in that state is a direct connection to
+the backend pod (port-forward past the gateway), which also bypasses gateway authentication
+entirely. That is a deliberate consequence of the backends authenticating nobody
+(`docs/system_design/20_AuthN_AuthZ.md` sharp edge 6), not a supported operational path — use it
+only to unblock an emergency, and prefer creating the Secret and rolling the gateway instead:
+
+```bash
+kubectl -n recsys create secret generic recsys-online-admin \
+  --from-literal=admin-token="$(openssl rand -hex 32)"
+```

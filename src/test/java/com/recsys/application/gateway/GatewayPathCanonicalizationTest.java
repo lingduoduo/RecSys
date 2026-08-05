@@ -27,9 +27,9 @@ import static org.junit.jupiter.api.Assertions.assertTrue;
  * <p>Armeria decodes percent-escapes, strips matrix params, collapses {@code //} and rejects
  * {@code ..} — but it preserves a single {@code .} segment. Tomcat, which serves 8080, collapses
  * it. So {@code /api/model/api/v1/./recommend} reaches the gateway as a path that
- * {@link UserScopedRoutes} does not recognise (its matching is exact, by design) and reaches the
- * Spring handler as {@code /api/v1/recommend}. That is a bypass of the user-scope check on every
- * 8080 user-scoped route.
+ * {@link BackendRoutePolicy} does not recognise as its declared {@code /api/v1/recommend} entry
+ * (its exact matching is by design) and reaches the Spring handler as {@code /api/v1/recommend}.
+ * That is a bypass of the user-scope check on every 8080 user-scoped route.
  *
  * <p>The fix rejects the family at the entry point rather than canonicalizing it: route matching,
  * rate-limit keying, and the CloudFront cache key all derive from the same string, so

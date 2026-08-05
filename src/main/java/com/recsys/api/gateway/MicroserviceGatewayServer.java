@@ -1,5 +1,6 @@
 package com.recsys.api.gateway;
 import ch.qos.logback.classic.LoggerContext;
+import com.recsys.application.auth.AdminTokenGuard;
 import com.recsys.application.gateway.ApiDeprecationDecorator;
 import com.recsys.application.gateway.ApiVersion;
 import com.recsys.application.gateway.GatewayProxyService;
@@ -83,6 +84,14 @@ public final class MicroserviceGatewayServer {
         // PrometheusMeterRegistries.defaultRegistry() is a JVM-wide singleton; order is free.
         PrometheusMeterRegistry meterRegistry = PrometheusMeterRegistries.defaultRegistry();
 
+        // Same operator credential as 7010's AdminTokenGuard: one operator tier system-wide.
+        AdminTokenGuard operatorGuard = new AdminTokenGuard(System.getenv("SHARD_ADMIN_TOKEN"));
+        if (!operatorGuard.isConfigured()) {
+            log.warn("SHARD_ADMIN_TOKEN is not set: operator-class routes (setembedding, model "
+                    + "version activate/rollback/preload, /online/ops) will reject every request "
+                    + "with 403. See docs/runbooks/gateway-auth.md.");
+        }
+
         // Upstream addressing: static route/env addresses by default. When the service registry is
         // enabled, the gateway resolves upstreams from Redis (falling back to the static address per
         // route) and rebuilds its endpoint groups when a resolved address changes. Redis is only
@@ -105,14 +114,15 @@ public final class MicroserviceGatewayServer {
             registryProvider = new ServiceRegistryProvider(registryStore, serviceNames, refreshMs,
                     () -> { if (holder[0] != null) holder[0].rebuildUpstreamsIfChanged(); });
             forwarder = GatewayRequestForwarder.registryBacked(
-                    proxyRoutes, timeout, circuitBreakers, rateLimiter, registryProvider, meterRegistry);
+                    proxyRoutes, timeout, circuitBreakers, rateLimiter, registryProvider, meterRegistry,
+                    operatorGuard);
             holder[0] = forwarder;
             registryProvider.start();
             log.info("Service registry consumer enabled ({} services, refresh {} ms)",
                     serviceNames.size(), refreshMs);
         } else {
             forwarder = new GatewayRequestForwarder(
-                    proxyRoutes, timeout, circuitBreakers, rateLimiter, meterRegistry);
+                    proxyRoutes, timeout, circuitBreakers, rateLimiter, meterRegistry, operatorGuard);
         }
 
         RecommendationGatewayService recommendationService =

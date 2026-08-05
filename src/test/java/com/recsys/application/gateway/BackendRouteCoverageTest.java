@@ -17,61 +17,18 @@ import java.util.regex.Matcher;
 import java.util.regex.Pattern;
 import java.util.stream.Stream;
 
+import static org.junit.jupiter.api.Assertions.assertFalse;
 import static org.junit.jupiter.api.Assertions.assertTrue;
 
 /**
- * Every route a gateway caller can reach on a backend must be classified: either declared in
- * {@link UserScopedRoutes}, or listed below as not user-scoped with a reason.
+ * Every route a gateway caller can reach on a backend must be classified in
+ * {@link BackendRoutePolicy}.
  *
- * <p>Adding a backend route therefore fails this test until someone decides which it is. That is
- * the point — the gap this closes was never one missing check, it was that nothing forced the
- * question to be asked.
+ * <p>Adding a backend route therefore fails this test until someone decides which of NO_PROXY,
+ * OPERATOR, USER_SCOPED or AUTHENTICATED it is. That is the point — the gap this closes was never
+ * one missing check, it was that nothing forced the question to be asked.
  */
-class UserScopedRouteCoverageTest {
-
-    /**
-     * Routes that take no caller-named userId. The value is why, so the next reader does not have
-     * to re-derive it.
-     */
-    private static final Map<String, String> NOT_USER_SCOPED = Map.ofEntries(
-            Map.entry("recsys-catalog-serving/item", "movie by id; no user"),
-            Map.entry("recsys-catalog-serving/movie", "alias of /item"),
-            Map.entry("recsys-catalog-serving/similar", "item-to-item; no user"),
-            Map.entry("recsys-catalog-serving/setembedding", "item embedding; control-plane, not user-scoped"),
-            Map.entry("recsys-catalog-serving/health", "liveness"),
-            Map.entry("recsys-catalog-serving/health/ready", "readiness"),
-            Map.entry("recsys-catalog-serving/health/load", "admission-control snapshot"),
-            Map.entry("recsys-catalog-serving/metrics", "Prometheus exposition"),
-            // NOTE: /v1/models/recmodel:predict is deliberately NOT here. It was excused as
-            // "pairwise predict; items, not a user profile" — wrong. PredictInstance carries a
-            // caller-supplied userId and PairPredictionService loads u2vEmb:<userId>, so it is
-            // declared in UserScopedRoutes with BODY_INSTANCES instead. Do not re-excuse it.
-            Map.entry("recsys-catalog-serving/v1/catalog/movies", "catalog listing; no user"),
-            Map.entry("recsys-online-serving/health", "liveness"),
-            Map.entry("recsys-online-serving/health/live", "liveness"),
-            Map.entry("recsys-online-serving/health/ready", "readiness"),
-            Map.entry("recsys-online-serving/metrics", "Prometheus exposition"),
-            Map.entry("recsys-online-serving/online/ops", "operator surface; guarded by AdminTokenGuard"),
-            Map.entry("recsys-online-serving/shards/", "device-keyed, not user-keyed; no device-to-owner mapping exists"),
-            Map.entry("recsys-model-serving/api/v1/token", "issues a submit token; no user named"),
-            Map.entry("recsys-model-serving/api/v1/knowledge-bases", "knowledge bases; no user"),
-            Map.entry("recsys-model-serving/api/v1/knowledge-bases/{knowledgeBaseId}", "knowledge base by id; no user"),
-            Map.entry("recsys-model-serving/api/v1/auth/login", "issues a session token"),
-            Map.entry("recsys-model-serving/api/v1/auth/logout", "ends a session"),
-            Map.entry("recsys-model-serving/api/v1/model/versions", "control-plane; see 20_AuthN_AuthZ sharp edge 1"),
-            Map.entry("recsys-model-serving/api/v1/model/versions/preload",
-                    "control-plane; body is {variant} only, warms a model runtime"),
-            Map.entry("recsys-model-serving/api/v1/model/versions/activate", "control-plane"),
-            Map.entry("recsys-model-serving/api/v1/model/versions/rollback", "control-plane"),
-            Map.entry("recsys-model-serving/health", "liveness"),
-            Map.entry("recsys-model-serving/health/jvm", "diagnostics"),
-            Map.entry("recsys-model-serving/health/gc", "diagnostics"),
-            Map.entry("recsys-model-serving/health/live", "liveness"),
-            Map.entry("recsys-model-serving/health/metrics", "diagnostics"),
-            Map.entry("recsys-model-serving/health/load", "diagnostics"),
-            Map.entry("recsys-model-serving/health/cache", "diagnostics"),
-            Map.entry("recsys-model-serving/health/ab-tests", "A/B config; no user named"),
-            Map.entry("recsys-model-serving/health/ready", "readiness"));
+class BackendRouteCoverageTest {
 
     /**
      * Floors, not exact counts: a regex that silently stops matching would otherwise make this
@@ -84,13 +41,7 @@ class UserScopedRouteCoverageTest {
 
     @Test
     void everyBackendRouteIsClassified() throws IOException {
-        Map<String, Set<String>> routes = new LinkedHashMap<>();
-        routes.put("recsys-catalog-serving",
-                armeriaRoutes(Path.of("src/main/java/com/recsys/api/serving/RecSysServer.java")));
-        routes.put("recsys-online-serving",
-                armeriaRoutes(Path.of("src/main/java/com/recsys/api/online/OnlinePredictionServer.java")));
-        routes.put("recsys-model-serving",
-                springRoutes(Path.of("src/main/java/com/recsys/api/rest")));
+        Map<String, Set<String>> routes = scanAllServices();
 
         List<String> unclassified = new ArrayList<>();
         routes.forEach((service, paths) -> {
@@ -101,9 +52,7 @@ class UserScopedRouteCoverageTest {
                             + "rather than lowering the floor, or this test silently passes forever. "
                             + "Found: " + paths);
             for (String path : paths) {
-                boolean declared = UserScopedRoutes.lookup(service, path) != null;
-                boolean excused = NOT_USER_SCOPED.containsKey(service + path);
-                if (!declared && !excused) {
+                if (BackendRoutePolicy.lookup(service, path) == null) {
                     unclassified.add(service + path);
                 }
             }
@@ -111,9 +60,71 @@ class UserScopedRouteCoverageTest {
 
         assertTrue(unclassified.isEmpty(),
                 "Unclassified backend routes: " + unclassified + ". Every gateway-reachable route must "
-                        + "either declare where its userId lives in UserScopedRoutes, or be listed in "
-                        + "NOT_USER_SCOPED with a reason. See "
-                        + "docs/superpowers/specs/2026-08-05-gateway-user-scope-authorization-design.md.");
+                        + "be classified in BackendRoutePolicy as NO_PROXY, OPERATOR, USER_SCOPED or "
+                        + "AUTHENTICATED. An unclassified route is denied at the gateway, so shipping "
+                        + "one silently breaks it. See "
+                        + "docs/superpowers/specs/2026-08-05-gateway-proxy-route-policy-design.md.");
+    }
+
+    /**
+     * The reverse direction: a declared exact path that no scan finds is dead weight that would
+     * pre-classify a future route of the same name. Prefixes are exempt — /actuator is
+     * config-driven and cannot be scanned at all.
+     */
+    @Test
+    void noDeclaredExactPathIsAnOrphan() throws IOException {
+        Map<String, Set<String>> scanned = scanAllServices();
+        List<String> orphans = new ArrayList<>();
+        for (Map.Entry<String, Set<String>> entry : scanned.entrySet()) {
+            for (String declared : BackendRoutePolicy.exactPaths(entry.getKey())) {
+                if (!entry.getValue().contains(declared)) {
+                    orphans.add(entry.getKey() + declared);
+                }
+            }
+        }
+        assertTrue(orphans.isEmpty(),
+                "BackendRoutePolicy declares exact paths that no backend registers: " + orphans
+                        + ". Remove them — a stale entry silently pre-classifies a future route.");
+    }
+
+    /**
+     * Exact matching is tried first, so a declared exact path that sits <em>under</em> a prefix is
+     * not shadowed by it — the exact entry wins, and the prefix still governs every sibling path
+     * the exact table does not name. {@code "/shards/topology" -> OPERATOR} declared alongside the
+     * {@code /shards -> AUTHENTICATED} prefix is exactly this: legal, and exercised by
+     * {@code lookup}'s exact-first order, not dead code.
+     *
+     * <p>The one genuinely dead case is a prefix entry whose own path is <em>also</em> declared
+     * exactly: {@code exact.equals(prefix)}. There, the exact entry always wins the lookup and the
+     * prefix's own branch — matching {@code prefix} itself — can never fire, even though the prefix
+     * still legitimately governs its siblings.
+     */
+    @Test
+    void noPrefixEntryShadowsADeclaredExactPath() {
+        // Every service the table declares, not just the ones MINIMUM_ROUTES names: a prefix
+        // declared for a service absent from the floors map would otherwise go unchecked.
+        for (String service : BackendRoutePolicy.declaredServices()) {
+            for (String prefix : BackendRoutePolicy.prefixPaths(service)) {
+                for (String exact : BackendRoutePolicy.exactPaths(service)) {
+                    assertFalse(exact.equals(prefix),
+                            "Prefix " + service + prefix + " is also declared as an exact path, so "
+                                    + "its own prefix branch (matching " + prefix + " itself) is dead "
+                                    + "code — the exact entry always wins the lookup.");
+                }
+            }
+        }
+    }
+
+    /** Scans all three backend mains, keyed by their registry service name. */
+    private static Map<String, Set<String>> scanAllServices() throws IOException {
+        Map<String, Set<String>> routes = new LinkedHashMap<>();
+        routes.put("recsys-catalog-serving",
+                armeriaRoutes(Path.of("src/main/java/com/recsys/api/serving/RecSysServer.java")));
+        routes.put("recsys-online-serving",
+                armeriaRoutes(Path.of("src/main/java/com/recsys/api/online/OnlinePredictionServer.java")));
+        routes.put("recsys-model-serving",
+                springRoutes(Path.of("src/main/java/com/recsys/api/rest")));
+        return routes;
     }
 
     // ---- the gateway route table is the other half of the coverage claim -------------------
@@ -125,7 +136,7 @@ class UserScopedRouteCoverageTest {
     private static final Set<String> LLM_ROUTE_NAMES = Set.of("llm", "llm-explanation");
 
     /**
-     * {@code UserScopedRoutes.lookup} keys on {@code MicroserviceRoute.serviceName}, and returns
+     * {@code BackendRoutePolicy.lookup} keys on {@code MicroserviceRoute.serviceName}, and returns
      * null for a null service. So a route added with the 5-arg convenience constructor — which
      * defaults {@code serviceName} to null — is permanently exempt from the user-scope check even
      * when it points straight at 6010, 7010 or 8080.
@@ -150,7 +161,7 @@ class UserScopedRouteCoverageTest {
         }
         assertTrue(unnamed.isEmpty(),
                 "Gateway routes reaching a backend with no serviceName: " + unnamed + ". "
-                        + "UserScopedRoutes.lookup returns null for a null service, so such a route "
+                        + "BackendRoutePolicy.lookup returns null for a null service, so such a route "
                         + "is silently exempt from the user-scope check forever. Use the 6-arg "
                         + "MicroserviceRoute constructor and give it its registry service name.");
     }
@@ -160,13 +171,14 @@ class UserScopedRouteCoverageTest {
      * becomes an off switch for §10: a public path yields an anonymous principal, anonymous is
      * SERVICE tier, and service tier is exempt from the check.
      *
-     * <p>{@code PROTECTED_PREFIXES} is derived from {@code UserScopedRoutes} rather than restated,
-     * so this test pins that the derivation is actually wired into {@code isPublic} — it configures
-     * every user-scoped path as public and asserts the gateway still demands a credential.
+     * <p>{@code PROTECTED_PREFIXES} is derived from {@code BackendRoutePolicy} rather than
+     * restated, so this test pins that the derivation is actually wired into {@code isPublic} — it
+     * configures every user-scoped path as public and asserts the gateway still demands a
+     * credential.
      */
     @Test
     void noUserScopedRouteCanBeMadePublic() {
-        Set<String> userScoped = UserScopedRoutes.gatewayPaths(MicroserviceRoute.defaults());
+        Set<String> userScoped = BackendRoutePolicy.userScopedGatewayPaths(MicroserviceRoute.defaults());
         assertTrue(userScoped.size() >= 20,
                 "expected the derivation to produce a path per (prefix, handler) pair, got: " + userScoped);
         // The three the finding named explicitly; none was covered by the old hand-written list.

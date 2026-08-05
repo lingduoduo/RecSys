@@ -1,7 +1,7 @@
 package com.recsys.infrastructure.store;
 
 import com.fasterxml.jackson.databind.JsonNode;
-import com.recsys.api.online.AdminTokenGuard;
+import com.recsys.application.auth.AdminTokenGuard;
 import com.recsys.api.serving.BaseApiService;
 import com.recsys.infrastructure.redis.sharding.Page;
 import com.recsys.infrastructure.redis.sharding.RecordType;

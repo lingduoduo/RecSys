@@ -91,6 +91,13 @@ With none of those set the gateway authenticates nobody, so `GatewayAuthenticato
 userId. A JWT caller is user-tier and may only name its own `userId` on user-scoped routes;
 API-key and anonymous callers are service-tier and unrestricted. Denials are 403 and counted in
 `gateway_user_scope_rejected_total`. See `docs/system_design/20_AuthN_AuthZ.md` §10.
+`SHARD_ADMIN_TOKEN` is now read by the gateway itself, not only by 7010: `BackendRoutePolicy`
+classifies `/api/catalog/setembedding`, the model `activate`/`rollback`/`preload` endpoints, and
+`/api/online/online/ops` as `OPERATOR`, and `GatewayRequestForwarder` requires a matching
+`X-Admin-Token` for all of them, binding every caller including API-key and anonymous ones. Unset
+means the guard authorizes nobody, so **every** `OPERATOR`-class route rejects **every** caller
+with 403 — the gateway logs a startup warning when this happens. See
+`docs/system_design/20_AuthN_AuthZ.md` §11 and `docs/runbooks/gateway-auth.md`.
 `SPLUNK_HEC_TOKEN` (default unset = Splunk log shipping is off; setting it makes all four
 services ship structured JSON log events to `SPLUNK_HEC_URL`, default
 `http://splunk:8088/services/collector/event`, via a bounded drop-on-full Logback appender —

@@ -45,11 +45,13 @@ class LlmProxyServiceTest {
 
     /**
      * This class is a second forwarding path — it duplicates the credential stripping and identity
-     * injection of {@code GatewayRequestForwarder} but never runs {@code authorizeUserScope}. That
-     * is safe only while no LLM route is user-scoped, which today rests on LLM routes carrying a
-     * null {@code serviceName}: the same latent exemption that makes an unnamed backend route
-     * permanently unchecked. The premise is enforced rather than assumed, so
-     * {@code 20_AuthN_AuthZ} §10 can state it as a fact.
+     * injection of {@code GatewayRequestForwarder} but never consults {@code BackendRoutePolicy}
+     * for the request path at all: no user-scope check, no operator-token check, nothing. That is
+     * safe only while no LLM route targets a service {@code BackendRoutePolicy} knows about at
+     * all, regardless of which access class that service happens to declare — a narrower guard
+     * that only checked for user-scoped routes would still miss a service whose routes are all
+     * OPERATOR or NO_PROXY. The premise is enforced rather than assumed, so {@code 20_AuthN_AuthZ}
+     * §10 can state it as a fact.
      */
     @Test
     void aRouteTargetingAUserScopedServiceIsRefusedAtConstruction() {
@@ -61,7 +63,7 @@ class LlmProxyServiceTest {
                 misrouted, Duration.ofSeconds(1), new RouteCircuitBreaker(),
                 LlmTokenRateLimiter.disabled(), LlmResponseCache.disabled(), 1_000, 1_000L))
                 .isInstanceOf(IllegalArgumentException.class)
-                .hasMessageContaining("does not enforce user-scope authorization");
+                .hasMessageContaining("does not consult BackendRoutePolicy");
     }
 
     /**
@@ -69,7 +71,7 @@ class LlmProxyServiceTest {
      * {@code MicroserviceRoute.fromEnvOptional} — the only thing that builds an LLM route in
      * production — always passes {@code serviceName = null}. So pointing {@code LLM_SERVICE_URL} at
      * a backend produced a route the guard waved through, which then forwarded
-     * {@code /api/llm/api/v1/recommend} to 8080 with no user-scope check at all.
+     * {@code /api/llm/api/v1/recommend} to 8080 with no check at all.
      *
      * <p>The guard therefore resolves the route's <em>target</em>, not its label: a route with no
      * serviceName that points at the same authority as a declared backend is treated as that
@@ -85,7 +87,7 @@ class LlmProxyServiceTest {
                 misrouted, Duration.ofSeconds(1), new RouteCircuitBreaker(),
                 LlmTokenRateLimiter.disabled(), LlmResponseCache.disabled(), 1_000, 1_000L))
                 .isInstanceOf(IllegalArgumentException.class)
-                .hasMessageContaining("does not enforce user-scope authorization");
+                .hasMessageContaining("does not consult BackendRoutePolicy");
     }
 
     /** A genuine LLM upstream shares no authority with any backend, so it still constructs. */

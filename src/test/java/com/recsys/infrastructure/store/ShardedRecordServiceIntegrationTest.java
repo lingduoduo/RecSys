@@ -10,7 +10,7 @@ import com.recsys.infrastructure.redis.RedisExecutor;
 import com.recsys.infrastructure.redis.sharding.ConsistentHashRing;
 import com.recsys.infrastructure.redis.sharding.SequenceGenerator;
 import com.recsys.infrastructure.redis.sharding.ShardedRecordStore;
-import com.recsys.api.online.AdminTokenGuard;
+import com.recsys.application.auth.AdminTokenGuard;
 import io.lettuce.core.RedisClient;
 import io.lettuce.core.RedisURI;
 import org.apache.commons.pool2.impl.GenericObjectPoolConfig;

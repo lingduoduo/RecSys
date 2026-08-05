@@ -163,7 +163,7 @@ class UserScopeAuthorizationTest {
      * A route with no registry {@code serviceName} is not an exemption when it points at a backend
      * that declares user-scoped routes. {@code MicroserviceRoute}'s 5-arg constructor defaults
      * {@code serviceName} to null, so without this the check is skipped entirely for any route
-     * added that way — silently, and invisibly to {@code UserScopedRouteCoverageTest}, which scans
+     * added that way — silently, and invisibly to {@code BackendRouteCoverageTest}, which scans
      * the backend mains and never the gateway route table.
      */
     @Test
