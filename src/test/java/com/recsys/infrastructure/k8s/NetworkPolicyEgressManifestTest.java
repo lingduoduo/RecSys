@@ -39,6 +39,8 @@ class NetworkPolicyEgressManifestTest {
 
     private static final Path BASE = Path.of("k8s", "base");
 
+    private static final Path EKS_SHARED = Path.of("k8s", "eks-shared");
+
     /** Which ConfigMap keys each workload actually dials. See the class comment for why. */
     static final Map<String, Set<String>> OWNED_KEYS = Map.of(
             // The gateway proxies to all three backends and the LLM, and opens its own Redis
@@ -328,5 +330,54 @@ class NetworkPolicyEgressManifestTest {
                         + "Egress deliberately, extend OWNED_KEYS to cover every destination it "
                         + "dials and delete this assertion in the same commit")
                 .isFalse();
+    }
+
+    /**
+     * Both EKS overlays scale in-cluster Redis to zero and point REDIS_HOST at an ElastiCache
+     * endpoint outside the cluster. A podSelector cannot match an external address, and nothing
+     * patched the policy, so every Redis call in EKS was unpermitted.
+     *
+     * <p>Deliberately a shape check, not a correctness check: the CIDR is an operator-supplied
+     * REPLACE_ME value like the wafv2-acl-arn placeholder, so this asserts the rule exists on
+     * both Redis ports and stops there. Whether the CIDR is the right one is a deployment-time
+     * question no unit test can answer.
+     */
+    @Test
+    void theEksOverlayPatchesEgressForExternalRedis() throws IOException {
+        List<Map<String, Object>> docs = ManifestDocuments.allIn(EKS_SHARED);
+
+        List<Map<String, Object>> patches = ofKind(docs, "NetworkPolicy");
+        assertThat(patches)
+                .as("k8s/eks-shared has no NetworkPolicy patch. Both region overlays replace "
+                        + "in-cluster Redis with ElastiCache, which no podSelector in k8s/base can "
+                        + "match, so the serving pods have no permitted route to Redis at all")
+                .isNotEmpty();
+
+        Set<String> missing = new TreeSet<>();
+        for (String workload : List.of("recsys-api-gateway", "recsys-catalog-serving",
+                "recsys-model-serving", "recsys-online-serving")) {
+            Map<String, Object> patch = patches.stream()
+                    .filter(p -> workload.equals(nameOf(p)))
+                    .findFirst()
+                    .orElse(null);
+            if (patch == null) {
+                missing.add(workload + " (no patch)");
+                continue;
+            }
+            for (int port : new int[] {6379, 26379}) {
+                boolean hasCidrRule = listOf(mapAt(patch, "spec"), "egress").stream()
+                        .anyMatch(rule -> listOf(rule, "to").stream()
+                                .anyMatch(to -> mapAt(to, "ipBlock") != null)
+                                && listOf(rule, "ports").stream()
+                                        .anyMatch(p -> Integer.valueOf(port).equals(p.get("port"))));
+                if (!hasCidrRule) missing.add(workload + " (no ipBlock rule on " + port + ")");
+            }
+        }
+
+        assertThat(missing)
+                .as("each of these needs an ipBlock egress rule on both 6379 and 26379 in "
+                        + "k8s/eks-shared/network-policy-elasticache-patch.yaml. ElastiCache is "
+                        + "reached by IP, not by pod label")
+                .isEmpty();
     }
 }

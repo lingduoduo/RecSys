@@ -25,6 +25,7 @@ patches:
   - path: gateway-auth-patch.yaml            # GATEWAY_API_KEYS from Secret (fail-closed auth)
   - path: gateway-irsa.yaml                  # gateway Deployment -> IRSA ServiceAccount
   - path: topology-aware-routing-patch.yaml  # PreferClose same-AZ routing
+  - path: network-policy-elasticache-patch.yaml  # ipBlock egress to ElastiCache (REPLACE_ME CIDR)
   # Drop the NLB: the WAF ALB Ingress is the sole public entry, so the gateway
   # Service becomes ClusterIP and its NLB-only annotations are removed.
   - target:
