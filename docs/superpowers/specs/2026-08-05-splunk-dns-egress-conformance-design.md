@@ -66,10 +66,13 @@ In `k8s/base/network-policy.yaml`, applied to all four Egress-restricted policie
    The destination is operator-supplied: `docs/runbooks/splunk-hec-logging.md` documents that no
    Splunk is deployed by these manifests and that the operator either creates a Service literally
    named `splunk` or repoints `SPLUNK_HEC_URL`. The rule matches the first case, which is the
-   default the manifests already carry. The second case is handled by the test rather than by a
-   speculative rule: with the widened derivation, repointing `SPLUNK_HEC_URL` fails the build until
-   a matching rule exists. No `ipBlock` patch ships for an off-cluster HEC endpoint, because none
-   exists in any region — a `REPLACE_ME` rule nobody fills in reads as coverage without being any.
+   default the manifests already carry. The second case is partly handled by the test rather than
+   by a speculative rule: with the widened derivation, repointing `SPLUNK_HEC_URL` **in `k8s/base`**
+   fails the build until a matching rule exists. Repointing it through an *overlay* patch is not
+   caught — the test reads `k8s/base` only, the same limitation that defers overlay rendering below,
+   and the runbook's third repointing option is exactly that case. No `ipBlock` patch ships for an
+   off-cluster HEC endpoint, because none exists in any region — a `REPLACE_ME` rule nobody fills in
+   reads as coverage without being any.
 
 2. **Scope the DNS rule** — the same ports under
    `to: namespaceSelector: kubernetes.io/metadata.name=kube-system`.
