@@ -10,9 +10,20 @@ import java.util.Map;
  * The authenticated caller identity carried through the gateway: used to key
  * per-principal rate limiting and to forward identity headers to backends.
  */
-public record GatewayPrincipal(String subject, String clientId, String tokenUse, String rateLimitKey) {
+public record GatewayPrincipal(String subject, String clientId, String tokenUse,
+                               String rateLimitKey, Tier tier, String appUserId) {
 
-    private static final GatewayPrincipal ANONYMOUS = new GatewayPrincipal("", "", "", "anonymous");
+    /**
+     * Which authorization rules apply to this caller.
+     *
+     * <p>Decided by credential type, never by claim presence. A JWT caller is a {@code USER}
+     * even when its userId claim did not resolve, so a claim-name misconfiguration fails closed
+     * on user-scoped routes instead of promoting every end user to unrestricted access.
+     */
+    public enum Tier { SERVICE, USER }
+
+    private static final GatewayPrincipal ANONYMOUS =
+            new GatewayPrincipal("", "", "", "anonymous", Tier.SERVICE, "");
 
     public static GatewayPrincipal anonymous() {
         return ANONYMOUS;
@@ -22,14 +33,16 @@ public record GatewayPrincipal(String subject, String clientId, String tokenUse,
         String subject = claims.subject() == null ? "" : claims.subject();
         String clientId = claims.clientId() == null ? "" : claims.clientId();
         String tokenUse = claims.tokenUse() == null ? "" : claims.tokenUse();
+        String appUserId = claims.appUserId() == null ? "" : claims.appUserId();
         String key = !subject.isBlank() ? "user:" + subject
                 : !clientId.isBlank() ? "client:" + clientId
                 : "anonymous";
-        return new GatewayPrincipal(subject, clientId, tokenUse, key);
+        return new GatewayPrincipal(subject, clientId, tokenUse, key, Tier.USER, appUserId);
     }
 
     public static GatewayPrincipal ofApiKey(String matchedKey) {
-        return new GatewayPrincipal("", "service", "", "apikey:" + sha256Prefix(matchedKey));
+        return new GatewayPrincipal("", "service", "", "apikey:" + sha256Prefix(matchedKey),
+                Tier.SERVICE, "");
     }
 
     /** Identity headers to forward upstream (lowercase names; never the raw credential). */

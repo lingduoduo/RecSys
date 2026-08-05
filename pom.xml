@@ -396,6 +396,7 @@
                      GATEWAY_COGNITO_ISSUER is set; a claim silently read as blank fails
                      closed, but a claim silently coerced from a container would not. -->
                 <include>**/gateway/CognitoJwtVerifierTest.java</include>
+                <include>**/gateway/GatewayPrincipalTest.java</include>
                 <include>**/serving/EmbeddingSeedRepairTest.java</include>
                 <include>**/serving/CacheKeyParamTest.java</include>
                 <include>**/serving/CatalogCacheHeadersTest.java</include>
