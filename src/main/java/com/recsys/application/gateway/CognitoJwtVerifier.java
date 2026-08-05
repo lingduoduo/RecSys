@@ -165,8 +165,17 @@ final class CognitoJwtVerifier {
 
     /**
      * A claim value usable as an identity: textual or numeric only. An object or array is
-     * rejected rather than stringified — {@code asText()} on a container yields something that
-     * looks like an id and is not one.
+     * rejected explicitly via {@link JsonNode#isContainerNode()} rather than relying on
+     * {@code asText()} to fall through to blank on its own.
+     *
+     * <p>On this project's pinned Jackson (2.17.2), that fallback already happens —
+     * {@code ObjectNode}/{@code ArrayNode#asText(String)} return the default because
+     * {@code textValue()} is null for a container, so today this guard does not change
+     * {@code verify()}'s observable behavior versus calling {@link #text(JsonNode, String)}
+     * here instead. It is kept as defense against a Jackson upgrade changing that fallback,
+     * or a future edit to this method that reads the value some other way (e.g.
+     * {@code textValue()} directly, which is null for a container rather than empty) and
+     * would otherwise silently let a container claim through as an identity.
      */
     private static String scalarText(JsonNode node, String field) {
         JsonNode value = node.get(field);
