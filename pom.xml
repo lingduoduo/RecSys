@@ -399,6 +399,10 @@
                 <include>**/gateway/GatewayPrincipalTest.java</include>
                 <include>**/gateway/BackendRoutePolicyTest.java</include>
                 <include>**/gateway/UserScopeAuthorizationTest.java</include>
+                <!-- Enforcement half of BackendRoutePolicy: a route with no policy, or one
+                     explicitly NO_PROXY, must be denied — indistinguishably from a path that was
+                     never routed, or the allow-list becomes an enumeration oracle. -->
+                <include>**/gateway/ProxyRoutePolicyEnforcementTest.java</include>
                 <!-- The conformance half: user-scope enforcement covers a route only if the route
                      is declared, so an undeclared new route is the failure mode that matters. -->
                 <include>**/gateway/BackendRouteCoverageTest.java</include>

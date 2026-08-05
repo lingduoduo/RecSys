@@ -173,6 +173,35 @@ public final class GatewayRequestForwarder implements java.io.Closeable {
     }
 
     /**
+     * Denies a request the gateway is not willing to proxy.
+     *
+     * <p>An allow-list: a path with no policy is denied, so a backend route added without a
+     * classification is unreachable through the gateway rather than exposed by it. Routes that
+     * resolve to no known backend — a genuine LLM upstream — are outside the table's remit and
+     * pass through.
+     *
+     * <p>Both denials return the unrouted-path response verbatim. A path that exists but is
+     * withheld must not be distinguishable from one that was never routed.
+     *
+     * @return the denial to return, or null when the request may proceed
+     */
+    HttpResponse enforceRoutePolicy(MicroserviceRoute route,
+                                    String targetPath,
+                                    AggregatedHttpRequest request,
+                                    GatewayPrincipal principal) {
+        String service = BackendRoutePolicy.effectiveServiceName(route, MicroserviceRoute.defaults());
+        if (service == null) {
+            return null;
+        }
+        BackendRoutePolicy.Policy policy = BackendRoutePolicy.lookup(
+                service, BackendRoutePolicy.pathWithoutQuery(targetPath));
+        if (policy == null || policy.access() == BackendRoutePolicy.Access.NO_PROXY) {
+            return GatewayProxyService.gatewayError(HttpStatus.NOT_FOUND, "no route found");
+        }
+        return authorizeUserScope(route, targetPath, request, principal);
+    }
+
+    /**
      * Denies a user-tier caller that names a userId other than its own.
      *
      * <p>Service-tier callers — API keys and, in dev, anonymous — are exempt: the trust model is
@@ -246,7 +275,7 @@ public final class GatewayRequestForwarder implements java.io.Closeable {
         // leak on a HALF_OPEN route: the permit claims the single probe slot, so an unsettled one
         // wedges the route into permanent 503s. Pinned by
         // UserScopeAuthorizationTest#aDenialNeverConsumesTheCircuitBreakerProbeSlot.
-        HttpResponse denied = authorizeUserScope(route, targetPath, request, principal);
+        HttpResponse denied = enforceRoutePolicy(route, targetPath, request, principal);
         if (denied != null) {
             return denied;
         }
