@@ -874,11 +874,16 @@ Apply the identical entry to `k8s/eks-us-west-2/redis-elasticache-patch.yaml`.
 - [ ] **Step 2: Document the data tier in 20_AuthN_AuthZ**
 
 `docs/system_design/20_AuthN_AuthZ.md` describes four ACL layers and states the data tier has
-none. Add a new numbered section after §8 (the L3/L4 ACL), renumbering nothing — append it as §9
-and shift the existing "Testing" and "Sharp edges" headings down:
+none. Add the section below **between the existing `## 9. Testing` and `## Sharp edges — notes`
+headings**.
+
+**Do not renumber any existing `##` heading.** This project's convention is that numbered
+system-design sections keep their numbers permanently — cross-references elsewhere depend on them.
+The heading is therefore unnumbered, matching `## Sharp edges — notes`, which is already unnumbered
+in the same document.
 
 ```markdown
-## 9. Data-tier authentication
+## Data-tier authentication
 
 Until 2026-08 every service connected to Redis as the unauthenticated `default` user over a
 plaintext socket. `LettuceClientFactory` read `REDIS_PASSWORD` and no manifest set it — a
