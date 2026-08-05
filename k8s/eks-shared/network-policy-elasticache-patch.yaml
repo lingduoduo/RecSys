@@ -1,10 +1,19 @@
-# ElastiCache egress for every EKS region.
+# ElastiCache egress for every EKS region — APPENDED to each serving policy's egress list.
 #
 # k8s/base's Redis egress rules select `podSelector: app: redis` and `app: redis-sentinel`. In
 # EKS the in-cluster Redis StatefulSets are scaled to zero (see this component's `replicas:`
 # block) and REDIS_HOST points at an ElastiCache endpoint OUTSIDE the cluster. A podSelector
 # cannot match an external address, so without this patch the serving pods have no permitted
 # route to Redis at all — every call is dropped by the CNI, if the CNI enforces policy.
+#
+# JSON6902 rather than a strategic-merge patch, deliberately. NetworkPolicy's spec.egress carries
+# no patchMergeKey, so kustomize treats the list as atomic and a strategic-merge patch REPLACES
+# it. The first version of this file did exactly that: the rendered overlay kept only the ipBlock
+# rule and silently dropped gateway→backends, sentinel, ollama and DNS in both regions — a far
+# worse outage than the gap it was fixing. `op: add` on `/spec/egress/-` appends, so rules added
+# to k8s/base are inherited here automatically.
+#
+# Referenced once per workload in kustomization.yaml; the op list is identical for all four.
 #
 # OPERATOR PREREQUISITE — the CIDR below is a placeholder, exactly like the REPLACE_ME in
 # wafv2-acl-arn. Before deploying, replace 10.0.0.0/16 with the CIDR of the subnets your
@@ -21,74 +30,12 @@
 #
 # 26379 is included because REDIS_MODE may be "sentinel" in a region overlay. It is a no-op for
 # a standalone ElastiCache endpoint and costs nothing to leave in.
-apiVersion: networking.k8s.io/v1
-kind: NetworkPolicy
-metadata:
-  name: recsys-api-gateway
-  namespace: recsys
-spec:
-  podSelector:
-    matchLabels:
-      app: recsys-api-gateway
-  policyTypes: [Ingress, Egress]
-  egress:
-    - to:
-        - ipBlock:
-            cidr: 10.0.0.0/16   # REPLACE_ME: ElastiCache subnet CIDR
-      ports:
-        - port: 6379
-        - port: 26379
----
-apiVersion: networking.k8s.io/v1
-kind: NetworkPolicy
-metadata:
-  name: recsys-catalog-serving
-  namespace: recsys
-spec:
-  podSelector:
-    matchLabels:
-      app: recsys-catalog-serving
-  policyTypes: [Ingress, Egress]
-  egress:
-    - to:
-        - ipBlock:
-            cidr: 10.0.0.0/16   # REPLACE_ME: ElastiCache subnet CIDR
-      ports:
-        - port: 6379
-        - port: 26379
----
-apiVersion: networking.k8s.io/v1
-kind: NetworkPolicy
-metadata:
-  name: recsys-model-serving
-  namespace: recsys
-spec:
-  podSelector:
-    matchLabels:
-      app: recsys-model-serving
-  policyTypes: [Ingress, Egress]
-  egress:
-    - to:
-        - ipBlock:
-            cidr: 10.0.0.0/16   # REPLACE_ME: ElastiCache subnet CIDR
-      ports:
-        - port: 6379
-        - port: 26379
----
-apiVersion: networking.k8s.io/v1
-kind: NetworkPolicy
-metadata:
-  name: recsys-online-serving
-  namespace: recsys
-spec:
-  podSelector:
-    matchLabels:
-      app: recsys-online-serving
-  policyTypes: [Ingress, Egress]
-  egress:
-    - to:
-        - ipBlock:
-            cidr: 10.0.0.0/16   # REPLACE_ME: ElastiCache subnet CIDR
-      ports:
-        - port: 6379
-        - port: 26379
+- op: add
+  path: /spec/egress/-
+  value:
+    to:
+      - ipBlock:
+          cidr: 10.0.0.0/16   # REPLACE_ME: ElastiCache subnet CIDR
+    ports:
+      - port: 6379
+      - port: 26379

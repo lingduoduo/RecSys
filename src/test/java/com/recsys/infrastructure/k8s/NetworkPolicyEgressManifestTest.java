@@ -1,8 +1,11 @@
 package com.recsys.infrastructure.k8s;
 
 import org.junit.jupiter.api.Test;
+import org.yaml.snakeyaml.Yaml;
 
 import java.io.IOException;
+import java.io.InputStream;
+import java.nio.file.Files;
 import java.nio.file.Path;
 import java.util.LinkedHashMap;
 import java.util.List;
@@ -40,6 +43,7 @@ class NetworkPolicyEgressManifestTest {
     private static final Path BASE = Path.of("k8s", "base");
 
     private static final Path EKS_SHARED = Path.of("k8s", "eks-shared");
+    private static final String ELASTICACHE_PATCH = "network-policy-elasticache-patch.yaml";
 
     /** Which ConfigMap keys each workload actually dials. See the class comment for why. */
     static final Map<String, Set<String>> OWNED_KEYS = Map.of(
@@ -337,47 +341,64 @@ class NetworkPolicyEgressManifestTest {
      * endpoint outside the cluster. A podSelector cannot match an external address, and nothing
      * patched the policy, so every Redis call in EKS was unpermitted.
      *
-     * <p>Deliberately a shape check, not a correctness check: the CIDR is an operator-supplied
-     * REPLACE_ME value like the wafv2-acl-arn placeholder, so this asserts the rule exists on
-     * both Redis ports and stops there. Whether the CIDR is the right one is a deployment-time
-     * question no unit test can answer.
+     * <p>Asserts the patch APPENDS. NetworkPolicy's spec.egress has no patchMergeKey, so a
+     * strategic-merge patch replaces the whole list — the first version of this patch did, and
+     * the rendered overlay silently lost gateway→backends, sentinel, ollama and DNS. That failure
+     * is invisible in the patch file itself and only shows up in a render, so the shape of the op
+     * is what this test pins.
+     *
+     * <p>The CIDR is an operator-supplied REPLACE_ME value, so its correctness is deliberately
+     * out of scope: this checks that the rule exists on both Redis ports and appends rather than
+     * replaces, and stops there.
      */
     @Test
+    @SuppressWarnings("unchecked")
     void theEksOverlayPatchesEgressForExternalRedis() throws IOException {
-        List<Map<String, Object>> docs = ManifestDocuments.allIn(EKS_SHARED);
+        Map<String, Object> kustomization;
+        try (InputStream in = Files.newInputStream(EKS_SHARED.resolve("kustomization.yaml"))) {
+            kustomization = (Map<String, Object>) new Yaml().load(in);
+        }
 
-        List<Map<String, Object>> patches = ofKind(docs, "NetworkPolicy");
-        assertThat(patches)
-                .as("k8s/eks-shared has no NetworkPolicy patch. Both region overlays replace "
-                        + "in-cluster Redis with ElastiCache, which no podSelector in k8s/base can "
-                        + "match, so the serving pods have no permitted route to Redis at all")
-                .isNotEmpty();
-
-        Set<String> missing = new TreeSet<>();
-        for (String workload : List.of("recsys-api-gateway", "recsys-catalog-serving",
-                "recsys-model-serving", "recsys-online-serving")) {
-            Map<String, Object> patch = patches.stream()
-                    .filter(p -> workload.equals(nameOf(p)))
-                    .findFirst()
-                    .orElse(null);
-            if (patch == null) {
-                missing.add(workload + " (no patch)");
-                continue;
-            }
-            for (int port : new int[] {6379, 26379}) {
-                boolean hasCidrRule = listOf(mapAt(patch, "spec"), "egress").stream()
-                        .anyMatch(rule -> listOf(rule, "to").stream()
-                                .anyMatch(to -> mapAt(to, "ipBlock") != null)
-                                && listOf(rule, "ports").stream()
-                                        .anyMatch(p -> Integer.valueOf(port).equals(p.get("port"))));
-                if (!hasCidrRule) missing.add(workload + " (no ipBlock rule on " + port + ")");
+        Set<String> patched = new TreeSet<>();
+        for (Map<String, Object> entry : listOf(kustomization, "patches")) {
+            if (!ELASTICACHE_PATCH.equals(entry.get("path"))) continue;
+            Map<String, Object> target = mapAt(entry, "target");
+            if (target != null && "NetworkPolicy".equals(target.get("kind"))) {
+                patched.add(String.valueOf(target.get("name")));
             }
         }
 
-        assertThat(missing)
-                .as("each of these needs an ipBlock egress rule on both 6379 and 26379 in "
-                        + "k8s/eks-shared/network-policy-elasticache-patch.yaml. ElastiCache is "
-                        + "reached by IP, not by pod label")
-                .isEmpty();
+        assertThat(patched)
+                .as("k8s/eks-shared/kustomization.yaml must apply %s to each serving NetworkPolicy. "
+                        + "Both region overlays replace in-cluster Redis with ElastiCache, which no "
+                        + "podSelector in k8s/base can match, so a workload missing from this list "
+                        + "has no permitted route to Redis at all in EKS", ELASTICACHE_PATCH)
+                .containsExactlyInAnyOrder("recsys-api-gateway", "recsys-catalog-serving",
+                        "recsys-model-serving", "recsys-online-serving");
+
+        List<Map<String, Object>> ops;
+        try (InputStream in = Files.newInputStream(EKS_SHARED.resolve(ELASTICACHE_PATCH))) {
+            ops = (List<Map<String, Object>>) new Yaml().load(in);
+        }
+
+        Set<Integer> ports = new TreeSet<>();
+        boolean appendsIpBlock = false;
+        for (Map<String, Object> op : ops) {
+            if (!"add".equals(op.get("op")) || !"/spec/egress/-".equals(op.get("path"))) continue;
+            Map<String, Object> value = mapAt(op, "value");
+            if (listOf(value, "to").stream().noneMatch(to -> mapAt(to, "ipBlock") != null)) continue;
+            appendsIpBlock = true;
+            for (Map<String, Object> p : listOf(value, "ports")) ports.add((Integer) p.get("port"));
+        }
+
+        assertThat(appendsIpBlock)
+                .as("%s must APPEND via `op: add` on `/spec/egress/-`. An op targeting "
+                        + "`/spec/egress` itself, or a strategic-merge NetworkPolicy document, "
+                        + "replaces the list and silently strips every rule k8s/base declared",
+                        ELASTICACHE_PATCH)
+                .isTrue();
+        assertThat(ports)
+                .as("the ElastiCache rule must cover 6379 and the sentinel port 26379")
+                .contains(6379, 26379);
     }
 }
