@@ -111,6 +111,22 @@ public final class LlmProxyService implements HttpService {
                     long maxRetryWaitMs,
                     GatewayAuthenticator authenticator,
                     ClientFactory clientFactory) {
+        // This class is a second forwarding path: it duplicates the credential stripping and
+        // identity injection of GatewayRequestForwarder, but it does NOT run
+        // authorizeUserScope. That is sound only while no LLM route can be user-scoped, which is
+        // true today because LLM routes carry no registry serviceName and the upstream is a
+        // third-party inference endpoint with no user-keyed resources. "Latent exemption" is not a
+        // property worth trusting to a comment, so the premise is enforced: pointing an LLM route
+        // at a service that declares user-scoped routes fails at construction rather than
+        // forwarding unchecked. Whoever hits this should add the check here, not delete the guard.
+        if (route != null && UserScopedRoutes.declaresAnyFor(route.serviceName())) {
+            throw new IllegalArgumentException(
+                    "LlmProxyService does not enforce user-scope authorization, but route \""
+                            + route.name() + "\" targets \"" + route.serviceName()
+                            + "\", which declares user-scoped routes in UserScopedRoutes. Route it "
+                            + "through GatewayProxyService/GatewayRequestForwarder, or implement the "
+                            + "check here first (see 20_AuthN_AuthZ §10).");
+        }
         this.route = route;
         this.circuitBreaker = circuitBreaker;
         this.tokenRateLimiter = tokenRateLimiter;

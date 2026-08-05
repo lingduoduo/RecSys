@@ -43,6 +43,27 @@ class LlmProxyServiceTest {
         }
     };
 
+    /**
+     * This class is a second forwarding path — it duplicates the credential stripping and identity
+     * injection of {@code GatewayRequestForwarder} but never runs {@code authorizeUserScope}. That
+     * is safe only while no LLM route is user-scoped, which today rests on LLM routes carrying a
+     * null {@code serviceName}: the same latent exemption that makes an unnamed backend route
+     * permanently unchecked. The premise is enforced rather than assumed, so
+     * {@code 20_AuthN_AuthZ} §10 can state it as a fact.
+     */
+    @Test
+    void aRouteTargetingAUserScopedServiceIsRefusedAtConstruction() {
+        MicroserviceRoute misrouted = new MicroserviceRoute(
+                "llm", "/api/llm", "LLM_SERVICE_URL",
+                URI.create("http://127.0.0.1:1"), "/health", "recsys-catalog-serving");
+
+        assertThatThrownBy(() -> new LlmProxyService(
+                misrouted, Duration.ofSeconds(1), new RouteCircuitBreaker(),
+                LlmTokenRateLimiter.disabled(), LlmResponseCache.disabled(), 1_000, 1_000L))
+                .isInstanceOf(IllegalArgumentException.class)
+                .hasMessageContaining("does not enforce user-scope authorization");
+    }
+
     @Test
     void streamingHalfOpenProbeWithSuccessfulHeadersAndBodyErrorDoesNotCloseCircuit()
             throws Exception {
