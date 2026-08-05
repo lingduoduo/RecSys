@@ -7,6 +7,7 @@ import com.linecorp.armeria.common.HttpMethod;
 import com.linecorp.armeria.common.HttpResponse;
 import com.linecorp.armeria.common.HttpStatus;
 import com.linecorp.armeria.common.RequestHeaders;
+import com.recsys.application.auth.AdminTokenGuard;
 import com.recsys.ratelimit.GatewayRateLimiter;
 import org.junit.jupiter.api.Test;
 
@@ -86,6 +87,69 @@ class ProxyRoutePolicyEnforcementTest {
         assertNull(forwarder().enforceRoutePolicy(CATALOG, "/getuser?userId=99", get(), apiKey()));
         assertNotNull(forwarder().enforceRoutePolicy(CATALOG, "/getuser?userId=99", get(), user("42")));
         assertNull(forwarder().enforceRoutePolicy(CATALOG, "/getuser?userId=42", get(), user("42")));
+    }
+
+    @Test
+    void operatorPathsRequireTheOperatorToken() {
+        GatewayRequestForwarder forwarder = forwarder(new AdminTokenGuard("s3cret"));
+
+        assertDenied403(forwarder.enforceRoutePolicy(CATALOG, "/setembedding", get(), apiKey()));
+        assertDenied403(forwarder.enforceRoutePolicy(
+                MODEL, "/api/v1/model/versions/activate", get(), apiKey()));
+        assertDenied403(forwarder.enforceRoutePolicy(
+                CATALOG, "/setembedding", withToken("wrong"), apiKey()));
+    }
+
+    @Test
+    void operatorPathsProxyWithTheCorrectToken() {
+        GatewayRequestForwarder forwarder = forwarder(new AdminTokenGuard("s3cret"));
+        assertNull(forwarder.enforceRoutePolicy(CATALOG, "/setembedding", withToken("s3cret"), apiKey()));
+        assertNull(forwarder.enforceRoutePolicy(
+                MODEL, "/api/v1/model/versions/rollback", withToken("s3cret"), apiKey()));
+    }
+
+    /**
+     * Unlike the user-scope check, this one binds service-tier callers too. An API key is the
+     * credential every real caller holds today; if it were sufficient here, the class would mean
+     * nothing — swapping the serving model would sit in the same tier as reading a movie.
+     */
+    @Test
+    void theOperatorCheckBindsServiceTierCallersToo() {
+        GatewayRequestForwarder forwarder = forwarder(new AdminTokenGuard("s3cret"));
+        assertDenied403(forwarder.enforceRoutePolicy(CATALOG, "/setembedding", get(), apiKey()));
+        assertDenied403(forwarder.enforceRoutePolicy(CATALOG, "/setembedding", get(),
+                GatewayPrincipal.anonymous()));
+    }
+
+    /** No token configured authorizes nobody — the rule AdminTokenGuard already applies on 7010. */
+    @Test
+    void operatorPathsFailClosedWhenNoTokenIsConfigured() {
+        assertDenied403(forwarder(new AdminTokenGuard("")).enforceRoutePolicy(
+                CATALOG, "/setembedding", withToken("anything"), apiKey()));
+        assertDenied403(forwarder(null).enforceRoutePolicy(
+                CATALOG, "/setembedding", withToken("anything"), apiKey()));
+    }
+
+    private static void assertDenied403(HttpResponse response) {
+        assertNotNull(response, "expected a denial");
+        AggregatedHttpResponse aggregated = response.aggregate().join();
+        assertEquals(HttpStatus.FORBIDDEN, aggregated.status());
+        assertEquals("{\"error\":\"operator token required\"}", aggregated.contentUtf8());
+    }
+
+    private static AggregatedHttpRequest withToken(String token) {
+        return AggregatedHttpRequest.of(
+                RequestHeaders.builder(HttpMethod.POST, "/api/catalog/setembedding")
+                        .add(AdminTokenGuard.HEADER, token)
+                        .build(),
+                HttpData.empty());
+    }
+
+    private static GatewayRequestForwarder forwarder(AdminTokenGuard guard) {
+        return new GatewayRequestForwarder(
+                List.of(CATALOG, MODEL, LLM), Duration.ofSeconds(1), Map.of(),
+                GatewayRateLimiter.disabled(),
+                new UpstreamEndpointGroups.HealthCheckConfig(false, 0L), null, guard);
     }
 
     private static void assertDenied404(HttpResponse response) {

@@ -1,5 +1,6 @@
 package com.recsys.application.gateway;
 
+import com.recsys.application.auth.AdminTokenGuard;
 import com.recsys.ratelimit.GatewayRateLimiter;
 import com.recsys.ratelimit.TokenBucket;
 import com.recsys.resilience.RouteCircuitBreaker;
@@ -54,6 +55,7 @@ public final class GatewayRequestForwarder implements java.io.Closeable {
     private final GatewayRateLimiter rateLimiter;
     private final Counter userScopeRejected;   // null when no registry was supplied
     private final AtomicBoolean userScopeWarned = new AtomicBoolean();
+    private final AdminTokenGuard operatorGuard;   // null means not configured, so nobody passes
 
     public GatewayRequestForwarder(List<MicroserviceRoute> routes,
                                    Duration timeout,
@@ -72,6 +74,21 @@ public final class GatewayRequestForwarder implements java.io.Closeable {
                 UpstreamEndpointGroups.HealthCheckConfig.fromEnvironment(), registry);
     }
 
+    /**
+     * @param registry may be null, in which case denials are not counted.
+     * @param operatorGuard gates OPERATOR-class routes; null means "not configured" and therefore
+     *                      denies every such request.
+     */
+    public GatewayRequestForwarder(List<MicroserviceRoute> routes,
+                                   Duration timeout,
+                                   Map<String, RouteCircuitBreaker> circuitBreakers,
+                                   GatewayRateLimiter rateLimiter,
+                                   MeterRegistry registry,
+                                   AdminTokenGuard operatorGuard) {
+        this(routes, timeout, circuitBreakers, rateLimiter,
+                UpstreamEndpointGroups.HealthCheckConfig.fromEnvironment(), registry, operatorGuard);
+    }
+
     // Package-private: lets tests inject an explicit health-check config (e.g. a short probe interval).
     GatewayRequestForwarder(List<MicroserviceRoute> routes,
                             Duration timeout,
@@ -87,23 +104,38 @@ public final class GatewayRequestForwarder implements java.io.Closeable {
                             GatewayRateLimiter rateLimiter,
                             UpstreamEndpointGroups.HealthCheckConfig healthConfig,
                             MeterRegistry registry) {
+        this(routes, timeout, circuitBreakers, rateLimiter, healthConfig, registry, null);
+    }
+
+    // Canonical constructor for the static-upstream path: every other overload delegates here.
+    GatewayRequestForwarder(List<MicroserviceRoute> routes,
+                            Duration timeout,
+                            Map<String, RouteCircuitBreaker> circuitBreakers,
+                            GatewayRateLimiter rateLimiter,
+                            UpstreamEndpointGroups.HealthCheckConfig healthConfig,
+                            MeterRegistry registry,
+                            AdminTokenGuard operatorGuard) {
         this.circuitBreakers = Map.copyOf(circuitBreakers);
         this.rateLimiter = rateLimiter == null ? GatewayRateLimiter.disabled() : rateLimiter;
         this.staticUpstreams = UpstreamEndpointGroups.create(routes, timeout, retryDecorator(), healthConfig);
         this.registryUpstreams = null;
         this.userScopeRejected = counter(registry);
+        this.operatorGuard = operatorGuard;
     }
 
-    // Package-private: upstreams are registry-overlaid; built via registryBacked(...).
+    // Package-private: upstreams are registry-overlaid; built via registryBacked(...). Canonical
+    // constructor for the registry-backed path.
     private GatewayRequestForwarder(Map<String, RouteCircuitBreaker> circuitBreakers,
                                     GatewayRateLimiter rateLimiter,
                                     RegistryBackedUpstreams registryUpstreams,
-                                    MeterRegistry registry) {
+                                    MeterRegistry registry,
+                                    AdminTokenGuard operatorGuard) {
         this.circuitBreakers = Map.copyOf(circuitBreakers);
         this.rateLimiter = rateLimiter == null ? GatewayRateLimiter.disabled() : rateLimiter;
         this.staticUpstreams = null;
         this.registryUpstreams = registryUpstreams;
         this.userScopeRejected = counter(registry);
+        this.operatorGuard = operatorGuard;
     }
 
     /** Builds a forwarder whose upstreams are overlaid with registry-resolved addresses. */
@@ -120,10 +152,24 @@ public final class GatewayRequestForwarder implements java.io.Closeable {
             Map<String, RouteCircuitBreaker> circuitBreakers, GatewayRateLimiter rateLimiter,
             com.recsys.infrastructure.registry.ServiceRegistryProvider provider,
             MeterRegistry registry) {
+        return registryBacked(routes, timeout, circuitBreakers, rateLimiter, provider, registry, null);
+    }
+
+    /**
+     * @param registry may be null, in which case denials are not counted.
+     * @param operatorGuard gates OPERATOR-class routes; null means "not configured" and therefore
+     *                      denies every such request.
+     */
+    public static GatewayRequestForwarder registryBacked(
+            List<MicroserviceRoute> routes, Duration timeout,
+            Map<String, RouteCircuitBreaker> circuitBreakers, GatewayRateLimiter rateLimiter,
+            com.recsys.infrastructure.registry.ServiceRegistryProvider provider,
+            MeterRegistry registry,
+            AdminTokenGuard operatorGuard) {
         RegistryBackedUpstreams upstreams = new RegistryBackedUpstreams(
                 routes, timeout, retryDecorator(),
                 UpstreamEndpointGroups.HealthCheckConfig.fromEnvironment(), provider);
-        return new GatewayRequestForwarder(circuitBreakers, rateLimiter, upstreams, registry);
+        return new GatewayRequestForwarder(circuitBreakers, rateLimiter, upstreams, registry, operatorGuard);
     }
 
     private static Counter counter(MeterRegistry registry) {
@@ -197,6 +243,16 @@ public final class GatewayRequestForwarder implements java.io.Closeable {
                 service, BackendRoutePolicy.pathWithoutQuery(targetPath));
         if (policy == null || policy.access() == BackendRoutePolicy.Access.NO_PROXY) {
             return GatewayProxyService.gatewayError(HttpStatus.NOT_FOUND, "no route found");
+        }
+        if (policy.access() == BackendRoutePolicy.Access.OPERATOR) {
+            // Tier-independent on purpose: an API key is what every real caller holds, so if it
+            // were sufficient here the class would mean nothing. Unset token authorizes nobody.
+            String presented = request.headers().get(AdminTokenGuard.HEADER);
+            if (operatorGuard == null || !operatorGuard.isAuthorized(presented)) {
+                return GatewayProxyService.gatewayError(
+                        HttpStatus.FORBIDDEN, "operator token required");
+            }
+            return null;
         }
         return authorizeUserScope(route, targetPath, request, principal);
     }
