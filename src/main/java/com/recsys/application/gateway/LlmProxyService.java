@@ -122,12 +122,12 @@ public final class LlmProxyService implements HttpService {
         // that builds an LLM route in production — always passes serviceName = null, so a guard on
         // the name alone could never fire, and LLM_SERVICE_URL pointed at 8080 would forward
         // /api/llm/api/v1/recommend with no user-scope check at all.
-        String targetService = UserScopedRoutes.effectiveServiceName(route, MicroserviceRoute.defaults());
-        if (UserScopedRoutes.declaresAnyFor(targetService)) {
+        String targetService = BackendRoutePolicy.effectiveServiceName(route, MicroserviceRoute.defaults());
+        if (BackendRoutePolicy.declaresAnyUserScopedFor(targetService)) {
             throw new IllegalArgumentException(
                     "LlmProxyService does not enforce user-scope authorization, but route \""
                             + route.name() + "\" targets \"" + targetService
-                            + "\", which declares user-scoped routes in UserScopedRoutes. Route it "
+                            + "\", which declares user-scoped routes in BackendRoutePolicy. Route it "
                             + "through GatewayProxyService/GatewayRequestForwarder, or implement the "
                             + "check here first (see 20_AuthN_AuthZ §10).");
         }

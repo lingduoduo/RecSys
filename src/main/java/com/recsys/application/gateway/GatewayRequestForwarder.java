@@ -177,7 +177,7 @@ public final class GatewayRequestForwarder implements java.io.Closeable {
      *
      * <p>Service-tier callers — API keys and, in dev, anonymous — are exempt: the trust model is
      * that they are backends legitimately acting for many users. Routes absent from
-     * {@link UserScopedRoutes} are not user-scoped and are never checked.
+     * {@link BackendRoutePolicy} are not user-scoped and are never checked.
      *
      * @return the 403 to return, or null when the request may proceed
      */
@@ -190,12 +190,13 @@ public final class GatewayRequestForwarder implements java.io.Closeable {
         }
         // effectiveServiceName, not route.serviceName(): a route that declares no registry name
         // still reaches a backend, and declining to name itself must not be a way out of the check.
-        UserIdSource source = UserScopedRoutes.lookup(
-                UserScopedRoutes.effectiveServiceName(route, MicroserviceRoute.defaults()),
-                UserScopedRoutes.pathWithoutQuery(targetPath));
-        if (source == null) {
+        BackendRoutePolicy.Policy policy = BackendRoutePolicy.lookup(
+                BackendRoutePolicy.effectiveServiceName(route, MicroserviceRoute.defaults()),
+                BackendRoutePolicy.pathWithoutQuery(targetPath));
+        if (policy == null || policy.access() != BackendRoutePolicy.Access.USER_SCOPED) {
             return null;
         }
+        UserIdSource source = policy.userIdSource();
         String requested = source.extract(targetPath, request);
         // Blank on either side is a denial, not an exemption: a subject we cannot determine is a
         // request we cannot authorize, so we authorize before the backend gets to validate.

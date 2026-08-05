@@ -36,7 +36,7 @@ public final class GatewayAuthenticator {
             Set.of("/api/catalog/user", "/api/users");
 
     /**
-     * The hand-listed prefixes above, plus every user-scoped route {@link UserScopedRoutes}
+     * The hand-listed prefixes above, plus every user-scoped route {@link BackendRoutePolicy}
      * declares, derived rather than restated.
      *
      * <p>Making a user-scoped route public is not merely "unauthenticated" — an anonymous caller is
@@ -44,7 +44,7 @@ public final class GatewayAuthenticator {
      * {@code /api/catalog/getrecommendation} in {@code GATEWAY_PUBLIC_PATHS} would turn off §10's
      * enforcement for that route without any warning firing. Deriving the guard from the same
      * declaration the check reads is what keeps the two from drifting; a second hand-maintained
-     * list beside {@code UserScopedRoutes} is precisely the failure mode being closed.
+     * list beside {@code BackendRoutePolicy} is precisely the failure mode being closed.
      *
      * <p>The hand-listed entries are kept: {@code /api/users} guards a whole prefix, which is
      * broader than the specific handlers the derivation produces.
@@ -53,7 +53,7 @@ public final class GatewayAuthenticator {
 
     private static Set<String> protectedPrefixes() {
         Set<String> prefixes = new LinkedHashSet<>(HAND_LISTED_PROTECTED_PREFIXES);
-        prefixes.addAll(UserScopedRoutes.gatewayPaths(MicroserviceRoute.defaults()));
+        prefixes.addAll(BackendRoutePolicy.userScopedGatewayPaths(MicroserviceRoute.defaults()));
         return Set.copyOf(prefixes);
     }
 

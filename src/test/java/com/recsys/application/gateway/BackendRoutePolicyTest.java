@@ -8,40 +8,41 @@ import org.junit.jupiter.api.Test;
 
 import static org.junit.jupiter.api.Assertions.assertEquals;
 import static org.junit.jupiter.api.Assertions.assertNull;
+import static org.junit.jupiter.api.Assertions.assertThrows;
 
-class UserScopedRoutesTest {
+class BackendRoutePolicyTest {
 
     @Test
     void lookup_findsQueryAndBodyRoutes() {
-        assertEquals(UserIdSource.QUERY,
-                UserScopedRoutes.lookup("recsys-catalog-serving", "/getuser"));
-        assertEquals(UserIdSource.QUERY,
-                UserScopedRoutes.lookup("recsys-online-serving", "/online/features"));
-        assertEquals(UserIdSource.BODY,
-                UserScopedRoutes.lookup("recsys-model-serving", "/v2/sequential/recommend"));
-        assertEquals(UserIdSource.BODY_INSTANCES,
-                UserScopedRoutes.lookup("recsys-catalog-serving", "/v1/models/recmodel:predict"));
+        assertEquals(new BackendRoutePolicy.Policy(BackendRoutePolicy.Access.USER_SCOPED, UserIdSource.QUERY),
+                BackendRoutePolicy.lookup("recsys-catalog-serving", "/getuser"));
+        assertEquals(new BackendRoutePolicy.Policy(BackendRoutePolicy.Access.USER_SCOPED, UserIdSource.QUERY),
+                BackendRoutePolicy.lookup("recsys-online-serving", "/online/features"));
+        assertEquals(new BackendRoutePolicy.Policy(BackendRoutePolicy.Access.USER_SCOPED, UserIdSource.BODY),
+                BackendRoutePolicy.lookup("recsys-model-serving", "/v2/sequential/recommend"));
+        assertEquals(new BackendRoutePolicy.Policy(BackendRoutePolicy.Access.USER_SCOPED, UserIdSource.BODY_INSTANCES),
+                BackendRoutePolicy.lookup("recsys-catalog-serving", "/v1/models/recmodel:predict"));
     }
 
     @Test
     void lookup_isExactNeverPrefix() {
         // Prefix-with-boundary matching is what created the /api/catalog trap that
         // PROTECTED_PREFIXES exists to survive (20_AuthN_AuthZ §3). Not repeated here.
-        assertNull(UserScopedRoutes.lookup("recsys-catalog-serving", "/getuserprofile"));
-        assertNull(UserScopedRoutes.lookup("recsys-catalog-serving", "/getuser/extra"));
+        assertNull(BackendRoutePolicy.lookup("recsys-catalog-serving", "/getuserprofile"));
+        assertNull(BackendRoutePolicy.lookup("recsys-catalog-serving", "/getuser/extra"));
     }
 
     @Test
     void lookup_returnsNullForUnknownOrNullService() {
-        assertNull(UserScopedRoutes.lookup("recsys-llm", "/getuser"));
-        assertNull(UserScopedRoutes.lookup(null, "/getuser"));
+        assertNull(BackendRoutePolicy.lookup("recsys-llm", "/getuser"));
+        assertNull(BackendRoutePolicy.lookup(null, "/getuser"));
     }
 
     @Test
     void pathWithoutQuery_splitsOnTheFirstQuestionMark() {
-        assertEquals("/getuser", UserScopedRoutes.pathWithoutQuery("/getuser?userId=42"));
-        assertEquals("/getuser", UserScopedRoutes.pathWithoutQuery("/getuser"));
-        assertEquals("/getuser", UserScopedRoutes.pathWithoutQuery("/getuser?a=1?b=2"));
+        assertEquals("/getuser", BackendRoutePolicy.pathWithoutQuery("/getuser?userId=42"));
+        assertEquals("/getuser", BackendRoutePolicy.pathWithoutQuery("/getuser"));
+        assertEquals("/getuser", BackendRoutePolicy.pathWithoutQuery("/getuser?a=1?b=2"));
     }
 
     @Test
@@ -147,5 +148,75 @@ class UserScopedRoutesTest {
     private static AggregatedHttpRequest body(String json) {
         return AggregatedHttpRequest.of(
                 RequestHeaders.of(HttpMethod.POST, "/api/recommend"), HttpData.ofUtf8(json));
+    }
+
+    // ---- BackendRoutePolicy classification ------------------------------------------------
+
+    @Test
+    void telemetryIsClassifiedNoProxy() {
+        assertEquals(BackendRoutePolicy.Access.NO_PROXY,
+                BackendRoutePolicy.lookup("recsys-catalog-serving", "/metrics").access());
+        assertEquals(BackendRoutePolicy.Access.NO_PROXY,
+                BackendRoutePolicy.lookup("recsys-online-serving", "/metrics").access());
+        assertEquals(BackendRoutePolicy.Access.NO_PROXY,
+                BackendRoutePolicy.lookup("recsys-model-serving", "/health/ab-tests").access());
+    }
+
+    @Test
+    void controlPlaneWritesAreClassifiedOperator() {
+        assertEquals(BackendRoutePolicy.Access.OPERATOR,
+                BackendRoutePolicy.lookup("recsys-catalog-serving", "/setembedding").access());
+        assertEquals(BackendRoutePolicy.Access.OPERATOR,
+                BackendRoutePolicy.lookup("recsys-model-serving", "/api/v1/model/versions/activate").access());
+        assertEquals(BackendRoutePolicy.Access.OPERATOR,
+                BackendRoutePolicy.lookup("recsys-model-serving", "/api/v1/model/versions/rollback").access());
+        assertEquals(BackendRoutePolicy.Access.OPERATOR,
+                BackendRoutePolicy.lookup("recsys-online-serving", "/online/ops").access());
+    }
+
+    @Test
+    void ordinaryDataPathsAreClassifiedAuthenticated() {
+        assertEquals(BackendRoutePolicy.Access.AUTHENTICATED,
+                BackendRoutePolicy.lookup("recsys-catalog-serving", "/item").access());
+        assertEquals(BackendRoutePolicy.Access.AUTHENTICATED,
+                BackendRoutePolicy.lookup("recsys-model-serving", "/api/v1/token").access());
+    }
+
+    @Test
+    void anUndeclaredPathHasNoPolicy() {
+        assertNull(BackendRoutePolicy.lookup("recsys-catalog-serving", "/nope"));
+        assertNull(BackendRoutePolicy.lookup("recsys-catalog-serving", "/getuser/extra"));
+        assertNull(BackendRoutePolicy.lookup("no-such-service", "/item"));
+        assertNull(BackendRoutePolicy.lookup(null, "/item"));
+    }
+
+    @Test
+    void prefixEntriesMatchWithABoundaryAndOnlyAfterAnExactMiss() {
+        // /actuator is config-driven and /shards is one Armeria pathPrefix — neither is enumerable.
+        assertEquals(BackendRoutePolicy.Access.NO_PROXY,
+                BackendRoutePolicy.lookup("recsys-model-serving", "/actuator").access());
+        assertEquals(BackendRoutePolicy.Access.NO_PROXY,
+                BackendRoutePolicy.lookup("recsys-model-serving", "/actuator/prometheus").access());
+        assertEquals(BackendRoutePolicy.Access.AUTHENTICATED,
+                BackendRoutePolicy.lookup("recsys-online-serving", "/shards/device").access());
+        // Boundary: a longer name that merely starts with the prefix is not a match.
+        assertNull(BackendRoutePolicy.lookup("recsys-model-serving", "/actuatorx"));
+        assertNull(BackendRoutePolicy.lookup("recsys-online-serving", "/shardsx"));
+    }
+
+    @Test
+    void userScopedPolicyCarriesItsSourceAndOthersDoNot() {
+        assertEquals(UserIdSource.BODY_INSTANCES,
+                BackendRoutePolicy.lookup("recsys-catalog-serving", "/v1/models/recmodel:predict").userIdSource());
+        assertNull(BackendRoutePolicy.lookup("recsys-catalog-serving", "/item").userIdSource());
+    }
+
+    @Test
+    void aPolicyCannotClaimUserScopeWithoutASource() {
+        // The invariant is enforced in the record, not left to the table author's discipline.
+        assertThrows(IllegalArgumentException.class,
+                () -> new BackendRoutePolicy.Policy(BackendRoutePolicy.Access.USER_SCOPED, null));
+        assertThrows(IllegalArgumentException.class,
+                () -> new BackendRoutePolicy.Policy(BackendRoutePolicy.Access.AUTHENTICATED, UserIdSource.QUERY));
     }
 }

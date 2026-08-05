@@ -397,17 +397,17 @@
                      closed, but a claim silently coerced from a container would not. -->
                 <include>**/gateway/CognitoJwtVerifierTest.java</include>
                 <include>**/gateway/GatewayPrincipalTest.java</include>
-                <include>**/gateway/UserScopedRoutesTest.java</include>
+                <include>**/gateway/BackendRoutePolicyTest.java</include>
                 <include>**/gateway/UserScopeAuthorizationTest.java</include>
                 <!-- The conformance half: user-scope enforcement covers a route only if the route
                      is declared, so an undeclared new route is the failure mode that matters. -->
-                <include>**/gateway/UserScopedRouteCoverageTest.java</include>
+                <include>**/gateway/BackendRouteCoverageTest.java</include>
                 <!-- A '.' path segment parses differently in Armeria (preserved) and Tomcat
                      (collapsed), which made every 8080 user-scoped route bypassable by respelling
                      the path. The edge rejection is the only thing standing between that spelling
                      and the check, so it gates PRs. -->
                 <include>**/gateway/GatewayPathCanonicalizationTest.java</include>
-                <!-- The never-public guard is derived from UserScopedRoutes here; this is also the
+                <!-- The never-public guard is derived from BackendRoutePolicy here; this is also the
                      LLM proxy's construction-time guard against becoming a second unchecked
                      forwarding path. -->
                 <include>**/gateway/GatewayAuthenticatorTest.java</include>
