@@ -1,7 +1,9 @@
 package com.recsys.application.gateway;
 
+import java.net.URI;
 import java.util.LinkedHashSet;
 import java.util.List;
+import java.util.Locale;
 import java.util.Map;
 import java.util.Set;
 
@@ -65,6 +67,51 @@ final class UserScopedRoutes {
     /** @return true when this backend service has any user-scoped route at all. */
     static boolean declaresAnyFor(String serviceName) {
         return serviceName != null && TABLE.containsKey(serviceName);
+    }
+
+    /**
+     * The backend a route actually reaches: its declared {@code serviceName}, or — when it declares
+     * none — the {@code serviceName} of whichever known route points at the same authority.
+     *
+     * <p>Resolving the <em>target</em> rather than the label is what stops a null
+     * {@code serviceName} from being a silent exemption. {@link MicroserviceRoute}'s 5-arg
+     * constructor defaults it to null and {@code fromEnvOptional} always passes null, so a route
+     * added either way — or an {@code LLM_SERVICE_URL} pointed at a backend — would otherwise miss
+     * {@link #lookup} entirely and forward unchecked. A route cannot opt out of the check by
+     * declining to name itself.
+     *
+     * @return the effective service name, or null when the route reaches no known backend
+     */
+    static String effectiveServiceName(MicroserviceRoute route, List<MicroserviceRoute> known) {
+        if (route == null) {
+            return null;
+        }
+        if (route.serviceName() != null) {
+            return route.serviceName();
+        }
+        String authority = authorityOf(route.baseUri());
+        if (authority == null || known == null) {
+            return null;
+        }
+        for (MicroserviceRoute candidate : known) {
+            if (candidate.serviceName() != null
+                    && authority.equals(authorityOf(candidate.baseUri()))) {
+                return candidate.serviceName();
+            }
+        }
+        return null;
+    }
+
+    /** {@code host:port}, lowercased, with the scheme's default port supplied when absent. */
+    private static String authorityOf(URI uri) {
+        if (uri == null || uri.getHost() == null) {
+            return null;
+        }
+        int port = uri.getPort();
+        if (port < 0) {
+            port = "https".equalsIgnoreCase(uri.getScheme()) ? 443 : 80;
+        }
+        return uri.getHost().toLowerCase(Locale.ROOT) + ":" + port;
     }
 
     /**

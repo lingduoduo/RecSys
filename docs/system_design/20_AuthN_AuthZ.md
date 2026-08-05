@@ -351,9 +351,18 @@ increment `gateway_user_scope_rejected_total`, and log once.
 path. `LlmProxyService` forwards to the LLM upstream itself, duplicating §2's stripping and
 injection, and does not run the user-scope check. That is sound only because no LLM route can be
 user-scoped, and that premise is enforced rather than asserted: `LlmProxyService`'s constructor
-refuses a route whose `serviceName` declares any user-scoped route, naming this section in the
+refuses a route that reaches a backend declaring any user-scoped route, naming this section in the
 failure. Adding a user-scoped LLM route therefore fails at startup instead of forwarding
 unchecked. Two forwarding paths is the real shape here; treating it as one was the mistake.
+
+The guard resolves the route's **target**, not its label, and so does `forward`'s own lookup —
+both go through `UserScopedRoutes.effectiveServiceName`, which falls back to the `serviceName` of
+whichever known route shares the same authority. A guard on the declared name alone could never
+have fired: `MicroserviceRoute.fromEnvOptional`, the only thing that builds an LLM route in
+production, always passes `serviceName = null`, and the 5-arg constructor defaults it to null too.
+So the realistic misconfiguration — `LLM_SERVICE_URL` pointed at 8080 — produced a route both the
+guard and the lookup waved through, and `/api/llm/api/v1/recommend` forwarded with no check at all.
+A route cannot opt out of user-scope enforcement by declining to name itself.
 
 **The path the check sees must be the path the backend sees.** Armeria preserves a `.` segment
 (it rejects only `..`); Tomcat, which serves 8080, collapses it. So
@@ -369,6 +378,14 @@ a malformed-request rejection, not an authorization decision, and no published r
 dot segment. `RecommendationGatewayService` needs no equivalent guard: it is registered at two
 exact paths and builds a constant `targetPath` of `/v2/recommend`, so no client-supplied path
 segment reaches an upstream through it.
+
+A percent-encoded separator is the same disagreement reached by a different spelling, and is
+rejected alongside it. Armeria decodes unreserved characters but deliberately leaves `%2F`
+encoded, so `/api/model/api/v1/.%2Frecommend` is *one* segment to every control here and two to
+any backend that decodes it. Tomcat rejects an encoded solidus by default, which made this inert —
+but that is a setting (`encodedSolidusHandling`), not a guarantee, and no route the gateway
+publishes takes a path segment containing a literal `/`. Depending on a downstream default to hold
+a security boundary is how the `.` case got missed in the first place.
 
 **What this does not yet prove.** No environment sets `GATEWAY_COGNITO_ISSUER`, so every caller
 today is service-tier and this section describes a path that is never taken in production. Tests

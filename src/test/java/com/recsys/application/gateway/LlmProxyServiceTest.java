@@ -64,6 +64,41 @@ class LlmProxyServiceTest {
                 .hasMessageContaining("does not enforce user-scope authorization");
     }
 
+    /**
+     * The realistic misconfiguration, and the one the serviceName guard alone could never catch:
+     * {@code MicroserviceRoute.fromEnvOptional} — the only thing that builds an LLM route in
+     * production — always passes {@code serviceName = null}. So pointing {@code LLM_SERVICE_URL} at
+     * a backend produced a route the guard waved through, which then forwarded
+     * {@code /api/llm/api/v1/recommend} to 8080 with no user-scope check at all.
+     *
+     * <p>The guard therefore resolves the route's <em>target</em>, not its label: a route with no
+     * serviceName that points at the same authority as a declared backend is treated as that
+     * backend.
+     */
+    @Test
+    void anUnnamedRouteTargetingABackendAuthorityIsRefusedAtConstruction() {
+        MicroserviceRoute misrouted = new MicroserviceRoute(
+                "llm", "/api/llm", "LLM_SERVICE_URL",
+                URI.create("http://localhost:8080"), "/health");   // 5-arg: serviceName is null
+
+        assertThatThrownBy(() -> new LlmProxyService(
+                misrouted, Duration.ofSeconds(1), new RouteCircuitBreaker(),
+                LlmTokenRateLimiter.disabled(), LlmResponseCache.disabled(), 1_000, 1_000L))
+                .isInstanceOf(IllegalArgumentException.class)
+                .hasMessageContaining("does not enforce user-scope authorization");
+    }
+
+    /** A genuine LLM upstream shares no authority with any backend, so it still constructs. */
+    @Test
+    void aRouteTargetingARealLlmUpstreamStillConstructs() {
+        MicroserviceRoute llm = new MicroserviceRoute(
+                "llm", "/api/llm", "LLM_SERVICE_URL",
+                URI.create("http://localhost:11434"), "/api/tags");
+
+        new LlmProxyService(llm, Duration.ofSeconds(1), new RouteCircuitBreaker(),
+                LlmTokenRateLimiter.disabled(), LlmResponseCache.disabled(), 1_000, 1_000L);
+    }
+
     @Test
     void streamingHalfOpenProbeWithSuccessfulHeadersAndBodyErrorDoesNotCloseCircuit()
             throws Exception {

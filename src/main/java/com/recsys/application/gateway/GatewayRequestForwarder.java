@@ -188,8 +188,11 @@ public final class GatewayRequestForwarder implements java.io.Closeable {
         if (principal == null || principal.tier() != GatewayPrincipal.Tier.USER) {
             return null;
         }
+        // effectiveServiceName, not route.serviceName(): a route that declares no registry name
+        // still reaches a backend, and declining to name itself must not be a way out of the check.
         UserIdSource source = UserScopedRoutes.lookup(
-                route.serviceName(), UserScopedRoutes.pathWithoutQuery(targetPath));
+                UserScopedRoutes.effectiveServiceName(route, MicroserviceRoute.defaults()),
+                UserScopedRoutes.pathWithoutQuery(targetPath));
         if (source == null) {
             return null;
         }

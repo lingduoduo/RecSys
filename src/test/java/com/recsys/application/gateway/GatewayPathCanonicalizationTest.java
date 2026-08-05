@@ -53,6 +53,20 @@ class GatewayPathCanonicalizationTest {
         assertRejected("/api/model/api/v1/%2e/recommend");
     }
 
+    /**
+     * Armeria leaves {@code %2F} percent-encoded in {@code ctx.path()}, so {@code .%2Frecommend} is
+     * <em>one</em> segment to every gateway control and two to any backend that decodes it — the
+     * same gateway/backend disagreement as a dot segment, reached by a different spelling. It is
+     * inert only while Tomcat keeps rejecting an encoded solidus by default, which is a setting,
+     * not a guarantee. The separator is not negotiable, so an encoded one is refused outright.
+     */
+    @Test
+    void anEncodedPathSeparatorIsRejectedAtTheEdge() {
+        assertRejected("/api/model/api/v1/.%2Frecommend");
+        assertRejected("/api/model/api/v1/.%2frecommend");
+        assertRejected("/api/model/foo%2Fbar");
+    }
+
     /** Not only the last segment: a dot anywhere in the path is non-canonical. */
     @Test
     void aDotSegmentAnywhereInThePathIsRejected() {

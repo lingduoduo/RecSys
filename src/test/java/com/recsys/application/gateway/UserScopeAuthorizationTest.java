@@ -159,6 +159,25 @@ class UserScopeAuthorizationTest {
                         + "unsettled permit wedges the route open forever");
     }
 
+    /**
+     * A route with no registry {@code serviceName} is not an exemption when it points at a backend
+     * that declares user-scoped routes. {@code MicroserviceRoute}'s 5-arg constructor defaults
+     * {@code serviceName} to null, so without this the check is skipped entirely for any route
+     * added that way — silently, and invisibly to {@code UserScopedRouteCoverageTest}, which scans
+     * the backend mains and never the gateway route table.
+     */
+    @Test
+    void anUnnamedRouteTargetingABackendAuthorityIsStillChecked() {
+        MicroserviceRoute unnamed = new MicroserviceRoute(
+                "shadow", "/api/shadow", "SHADOW_SERVICE_URL",
+                URI.create("http://localhost:6010"), "/health");   // serviceName is null
+
+        assertNotNull(forwarder().authorizeUserScope(
+                unnamed, "/getuser?userId=43", get(), user("42")));
+        assertNull(forwarder().authorizeUserScope(
+                unnamed, "/getuser?userId=42", get(), user("42")));
+    }
+
     private static GatewayPrincipal user(String appUserId) {
         return GatewayPrincipal.ofJwt(
                 new CognitoJwtVerifier.VerifiedClaims("sub-1", "app-client", "access", appUserId));

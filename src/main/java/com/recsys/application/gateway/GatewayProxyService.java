@@ -96,11 +96,44 @@ public final class GatewayProxyService implements HttpService {
      * @return the 400 to return, or null when the path is canonical
      */
     static HttpResponse rejectNonCanonicalPath(String path) {
+        if (hasEncodedSeparator(path)) {
+            return gatewayError(HttpStatus.BAD_REQUEST,
+                    "bad request: percent-encoded \"/\" is not allowed in the path");
+        }
         if (!hasNonCanonicalSegment(path)) {
             return null;
         }
         return gatewayError(HttpStatus.BAD_REQUEST,
                 "bad request: path segment \".\" or \"..\" is not allowed");
+    }
+
+    /**
+     * True when the path carries a percent-encoded separator ({@code %2F}).
+     *
+     * <p>The second spelling of the same gateway/backend disagreement the dot guard exists for.
+     * Armeria decodes unreserved characters but deliberately leaves {@code %2F} encoded in
+     * {@code ctx.path()}, so {@code /api/model/api/v1/.%2Frecommend} is <em>one</em> segment to
+     * every control here — route matching, the public-path check, the {@link UserScopedRoutes}
+     * lookup — and two to any backend that decodes it. That is exactly the bypass shape: the
+     * gateway authorizes one path and the backend serves another.
+     *
+     * <p>It is inert today only because Tomcat rejects an encoded solidus by default. That is a
+     * setting (<code>encodedSolidusHandling</code>), not a guarantee, and this control should not
+     * depend on a downstream default staying put. No route the gateway publishes takes a path
+     * segment containing a literal {@code /}, so the encoding has no legitimate use here.
+     */
+    static boolean hasEncodedSeparator(String path) {
+        if (path == null || path.indexOf('%') < 0) {
+            return false;
+        }
+        for (int i = 0; i + 2 < path.length(); i++) {
+            if (path.charAt(i) == '%'
+                    && path.charAt(i + 1) == '2'
+                    && (path.charAt(i + 2) == 'F' || path.charAt(i + 2) == 'f')) {
+                return true;
+            }
+        }
+        return false;
     }
 
     /**
