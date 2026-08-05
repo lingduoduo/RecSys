@@ -138,24 +138,9 @@ public final class GatewayRequestForwarder implements java.io.Closeable {
         this.operatorGuard = operatorGuard;
     }
 
-    /** Builds a forwarder whose upstreams are overlaid with registry-resolved addresses. */
-    public static GatewayRequestForwarder registryBacked(
-            List<MicroserviceRoute> routes, Duration timeout,
-            Map<String, RouteCircuitBreaker> circuitBreakers, GatewayRateLimiter rateLimiter,
-            com.recsys.infrastructure.registry.ServiceRegistryProvider provider) {
-        return registryBacked(routes, timeout, circuitBreakers, rateLimiter, provider, null);
-    }
-
-    /** @param registry may be null, in which case denials are not counted. */
-    public static GatewayRequestForwarder registryBacked(
-            List<MicroserviceRoute> routes, Duration timeout,
-            Map<String, RouteCircuitBreaker> circuitBreakers, GatewayRateLimiter rateLimiter,
-            com.recsys.infrastructure.registry.ServiceRegistryProvider provider,
-            MeterRegistry registry) {
-        return registryBacked(routes, timeout, circuitBreakers, rateLimiter, provider, registry, null);
-    }
-
     /**
+     * Builds a forwarder whose upstreams are overlaid with registry-resolved addresses.
+     *
      * @param registry may be null, in which case denials are not counted.
      * @param operatorGuard gates OPERATOR-class routes; null means "not configured" and therefore
      *                      denies every such request.
@@ -226,8 +211,12 @@ public final class GatewayRequestForwarder implements java.io.Closeable {
      * resolve to no known backend — a genuine LLM upstream — are outside the table's remit and
      * pass through.
      *
-     * <p>Both denials return the unrouted-path response verbatim. A path that exists but is
-     * withheld must not be distinguishable from one that was never routed.
+     * <p>Two of the three denials — the unclassified path and the {@code NO_PROXY} one — return
+     * the unrouted-path 404 verbatim. A path that exists but is withheld must not be
+     * distinguishable from one that was never routed. The {@code OPERATOR} denial is deliberately
+     * distinct (403, {@code operator token required}): that caller is being told to present a
+     * credential, not that the path is absent, and the route it names is already published in the
+     * runbooks, so there is no existence to conceal.
      *
      * @return the denial to return, or null when the request may proceed
      */

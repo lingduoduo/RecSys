@@ -101,7 +101,9 @@ class BackendRouteCoverageTest {
      */
     @Test
     void noPrefixEntryShadowsADeclaredExactPath() {
-        for (String service : MINIMUM_ROUTES.keySet()) {
+        // Every service the table declares, not just the ones MINIMUM_ROUTES names: a prefix
+        // declared for a service absent from the floors map would otherwise go unchecked.
+        for (String service : BackendRoutePolicy.declaredServices()) {
             for (String prefix : BackendRoutePolicy.prefixPaths(service)) {
                 for (String exact : BackendRoutePolicy.exactPaths(service)) {
                     assertFalse(exact.equals(prefix),

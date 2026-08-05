@@ -75,6 +75,24 @@ class ProxyRoutePolicyEnforcementTest {
         assertNull(forwarder().enforceRoutePolicy(CATALOG, "/similar?id=7", get(), apiKey()));
     }
 
+    /**
+     * A concrete id, not the template. Two of the four knowledge-base handlers are declared with a
+     * Spring path template, and the policy table first spelled them out as the literal string
+     * {@code /api/v1/knowledge-bases/{knowledgeBaseId}} — which only the route scanner ever emits.
+     * Every real request 404'd, and both coverage tests were blind to it because the scanner and
+     * the table agreed on the same unreachable literal. Asserting a real id is what catches that.
+     */
+    @Test
+    void templatedBackendRoutesProxyForAConcreteId() {
+        assertNull(forwarder().enforceRoutePolicy(MODEL, "/api/v1/knowledge-bases", get(), apiKey()));
+        assertNull(forwarder().enforceRoutePolicy(
+                MODEL, "/api/v1/knowledge-bases/kb-123", get(), apiKey()));
+        // The boundary rule still holds: a sibling that merely starts with the same characters is
+        // not under the prefix.
+        assertDenied404(forwarder().enforceRoutePolicy(
+                MODEL, "/api/v1/knowledge-bases-admin", get(), apiKey()));
+    }
+
     /** The allow-list governs our backends. An LLM upstream is not ours to classify. */
     @Test
     void aRouteReachingNoKnownBackendIsUnaffected() {

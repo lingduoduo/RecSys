@@ -101,8 +101,6 @@ final class BackendRoutePolicy {
                     Map.entry("/api/v1/token", of(Access.AUTHENTICATED)),
                     Map.entry("/api/v1/auth/login", of(Access.AUTHENTICATED)),
                     Map.entry("/api/v1/auth/logout", of(Access.AUTHENTICATED)),
-                    Map.entry("/api/v1/knowledge-bases", of(Access.AUTHENTICATED)),
-                    Map.entry("/api/v1/knowledge-bases/{knowledgeBaseId}", of(Access.AUTHENTICATED)),
                     Map.entry("/health/jvm", of(Access.NO_PROXY)),
                     Map.entry("/health/gc", of(Access.NO_PROXY)),
                     Map.entry("/health/live", of(Access.NO_PROXY)),
@@ -113,11 +111,21 @@ final class BackendRoutePolicy {
                     Map.entry("/health/ready", of(Access.NO_PROXY))));
 
     /**
-     * The only two paths that cannot be enumerated, so the only two matched by prefix.
+     * The paths that cannot be enumerated as exact strings, so the only ones matched by prefix.
      *
      * <p>{@code /actuator}'s membership comes from {@code MANAGEMENT_ENDPOINTS_EXPOSURE}, not from
      * source, so no scanner can list it. {@code /shards} is registered as a single Armeria
      * {@code pathPrefix} whose sub-paths are dispatched inside {@code ShardedRecordService}.
+     *
+     * <p>{@code /api/v1/knowledge-bases} is here for a third reason: two of its four handlers are
+     * declared with a Spring path template ({@code /knowledge-bases/{knowledgeBaseId}}), and a
+     * template is not a path. Declared exactly it would have matched only the literal string
+     * {@code "/api/v1/knowledge-bases/{knowledgeBaseId}"} — which the route scanner emits and no
+     * client ever sends — so every real id 404'd while both coverage tests stayed green. The
+     * prefix covers the collection path and every concrete id with one entry. Note the exact table
+     * must therefore <em>not</em> also declare {@code /api/v1/knowledge-bases}: exact wins the
+     * lookup, which would kill the prefix's own branch, and
+     * {@code BackendRouteCoverageTest#noPrefixEntryShadowsADeclaredExactPath} fails on it.
      *
      * <p>Stored without a trailing slash and matched with the boundary rule, so {@code /actuatorx}
      * is not {@code /actuator}. Consulted only after an exact miss — prefix-first matching is what
@@ -129,7 +137,9 @@ final class BackendRoutePolicy {
      * {@code /shards/records} are ordinary data paths that OPERATOR here would break.
      */
     private static final Map<String, Map<String, Policy>> PREFIX = Map.of(
-            "recsys-model-serving", Map.of("/actuator", of(Access.NO_PROXY)),
+            "recsys-model-serving", Map.of(
+                    "/actuator", of(Access.NO_PROXY),
+                    "/api/v1/knowledge-bases", of(Access.AUTHENTICATED)),
             "recsys-online-serving", Map.of("/shards", of(Access.AUTHENTICATED)));
 
     private BackendRoutePolicy() {}
@@ -159,10 +169,16 @@ final class BackendRoutePolicy {
         return null;
     }
 
-    /** @return true when this backend service has any user-scoped route at all. */
-    static boolean declaresAnyUserScopedFor(String serviceName) {
-        Map<String, Policy> paths = serviceName == null ? null : EXACT.get(serviceName);
-        return paths != null && paths.values().stream().anyMatch(p -> p.access() == Access.USER_SCOPED);
+    /**
+     * Every service this table says anything about, exact or prefix.
+     *
+     * <p>The coverage test's shadowing check iterates this rather than its own floors map, so a
+     * prefix declared for a service the floors map does not name is still checked.
+     */
+    static Set<String> declaredServices() {
+        Set<String> services = new LinkedHashSet<>(EXACT.keySet());
+        services.addAll(PREFIX.keySet());
+        return Set.copyOf(services);
     }
 
     /** Declared exact backend paths for a service, for the coverage test's orphan check. */
