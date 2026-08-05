@@ -108,6 +108,12 @@ Matching is exact, never prefix. Prefix-with-boundary matching is precisely what
 `/api/catalog` trap that `20_AuthN_AuthZ` §3 documents and that `PROTECTED_PREFIXES` exists to
 survive.
 
+The table is also the *source* of that guard. `GatewayAuthenticator.PROTECTED_PREFIXES` is derived
+from it — `route.prefix() + backendPath` over `MicroserviceRoute.defaults()` — rather than
+restated. Otherwise listing a user-scoped route in `GATEWAY_PUBLIC_PATHS` would make its callers
+anonymous, hence SERVICE tier, hence exempt from the very check declared here, with no warning
+fired. Two lists that must agree and are edited independently do not stay in agreement.
+
 `/v1/models/recmodel:predict` is worth its own note, because this design's first draft classified
 it as item-scoped and wrong. It looks like pairwise item scoring, and its path says nothing about
 users — but `PredictInstance` carries a caller-supplied `userId`, and `PairPredictionService`
@@ -145,12 +151,32 @@ After rate limiting, so a probing caller still spends tokens from their own buck
 denial. Before the permit, because `forward` records success or failure on the permit only on
 the upstream-response path — returning 403 with a permit in hand would leak it.
 
-`forward` is the single choke point: proxied routes reach it through `GatewayProxyService` and
-the canonical `POST /api/recommend` reaches it through `RecommendationGatewayService`, and both
-have already aggregated the request, so body inspection costs no extra buffering. It is also
-where the trust boundary is enforced in the other direction — stripping client-supplied identity
-headers and injecting the derived ones. Putting the check beside them makes one function the
-whole identity story, rather than two call sites today and N whenever a handler is added.
+`forward` is the choke point for proxied routes: they reach it through `GatewayProxyService`, and
+the canonical `POST /api/recommend` reaches it through `RecommendationGatewayService`; both have
+already aggregated the request, so body inspection costs no extra buffering. It is also where the
+trust boundary is enforced in the other direction — stripping client-supplied identity headers and
+injecting the derived ones. Putting the check beside them keeps the proxied path's identity story
+in one function, rather than two call sites today and N whenever a handler is added.
+
+It is not the gateway's *only* forwarding path. `LlmProxyService` forwards to the LLM upstream
+itself and duplicates the stripping and injection; it does not run this check. That is sound only
+while no LLM route is user-scoped — LLM routes carry a null `serviceName`, and the upstream is a
+third-party inference endpoint with no user-keyed resources — but "sound because of a null field"
+is the same latent exemption as an unnamed backend route, so the premise is enforced instead of
+documented: `LlmProxyService`'s constructor rejects a route whose `serviceName` declares any
+user-scoped route. A future user-scoped LLM route fails at startup, pointing at this section.
+
+**Path canonicalization is part of the check, not adjacent to it.** Armeria preserves a `.`
+segment and rejects only `..`; Tomcat, on 8080, collapses `.`. The two parses diverge, so
+`/api/model/api/v1/./recommend` misses the exact-matching table while still reaching the
+`/api/v1/recommend` handler — a bypass of every 8080 user-scoped route. `GatewayProxyService.serve`
+rejects a `.` or `..` segment with `400` right after `ApiVersion.parse`, before routing. Rejecting
+at the edge rather than canonicalizing at the lookup is deliberate: route matching,
+`GATEWAY_PUBLIC_PATHS`, rate-limit keying, and the CloudFront cache key all read the same string,
+and a lookup-local fix would leave four consumers on a spelling no legitimate client sends. The
+rejection applies to service-tier callers too — a malformed-request rejection, not an
+authorization decision. `RecommendationGatewayService` is structurally immune: exact-path
+registration plus a constant `/v2/recommend` target.
 
 Three deliberate choices:
 
@@ -196,7 +222,16 @@ walks the controller tree recursively and is itself policed: a repo-wide sweep a
 `@RestController` lives under `api/rest` and every backend route registration lives in one of the
 two scanned mains, failing with the offending path otherwise. Per-service minimum route counts
 catch a regex that stops matching outright — without them a silently broken scanner would make the
-whole test vacuous while still reporting green.
+whole test vacuous while still reporting green. The floors are set to the actual counts, not
+below them: a floor with slack under it is a floor that a scanner can lose routes through.
+
+The scanners read the *backend* mains, so they say nothing about the gateway's own route table —
+where the same exemption exists from the other end. `MicroserviceRoute`'s 5-arg convenience
+constructor defaults `serviceName` to null, and `UserScopedRoutes.lookup` returns null for a null
+service, so a route added that way pointing at 6010/7010/8080 would be permanently unchecked and
+invisible to the scan. A third test asserts every default route reaching a backend carries a
+`serviceName`, and a fourth configures every derived user-scoped path as public and asserts the
+never-public guard still demands a credential.
 
 Inferring user-scopedness from source — looking for `requiredIntParam(ctx, "userId")` and
 friends — was considered and rejected as brittle. Forbidding omission is a property a scanner can

@@ -117,8 +117,15 @@ entirely. Matching is **prefix-with-boundary** — `path.equals(prefix)` or
 That boundary rule is also the trap: a bare `/api/catalog` entry *would* match
 `/api/catalog/user`. Two mechanisms make the mistake survivable:
 
-- **`PROTECTED_PREFIXES`** (`/api/catalog/user`, `/api/users`) is consulted **first**
-  in `isPublic`, so those paths are never anonymous regardless of configuration.
+- **`PROTECTED_PREFIXES`** is consulted **first** in `isPublic`, so those paths are never
+  anonymous regardless of configuration. It is two hand-listed prefixes (`/api/catalog/user`,
+  `/api/users`) **plus every user-scoped route derived from `UserScopedRoutes`** —
+  `route.prefix() + backendPath` for each gateway prefix that reaches a declared handler, so
+  `/api/catalog/getrecommendation`, `/api/movies/getuser` and `/api/online/online/features` are
+  all covered. Deriving matters because making a user-scoped route public does more than skip
+  authentication: an anonymous caller is SERVICE tier, and service tier is exempt from §10, so a
+  public entry would silently switch that route's user-scope check off. A second hand-maintained
+  list beside `UserScopedRoutes` would drift; this one cannot.
 - **`warnOnProtectedOverlap`** logs at startup when a configured public path would
   have exposed a protected prefix — the guard silently saving you is itself a
   misconfiguration worth fixing.
@@ -334,11 +341,34 @@ the first test scans, so the coverage claim cannot be undermined by a route regi
 the scanner never looks.
 
 Enforcement lives in `GatewayRequestForwarder.forward`, beside the credential stripping and
-identity injection of §2 — the whole identity story sits in one class, end to end. It runs
-after rate limiting (so a probing caller spends their own tokens) and before the circuit-breaker
-permit is acquired (so a denial cannot leak one). Denials return `403` with a fixed body
-(`forbidden: request is not scoped to the authenticated user`), increment
-`gateway_user_scope_rejected_total`, and log once.
+identity injection of §2. It runs after rate limiting (so a probing caller spends their own
+tokens) and before the circuit-breaker permit is acquired (so a denial cannot leak one). Denials
+return `403` with a fixed body (`forbidden: request is not scoped to the authenticated user`),
+increment `gateway_user_scope_rejected_total`, and log once.
+
+`forward` is the choke point for every *proxied* route — `GatewayProxyService` and
+`RecommendationGatewayService` both reach it — but it is **not** the gateway's only forwarding
+path. `LlmProxyService` forwards to the LLM upstream itself, duplicating §2's stripping and
+injection, and does not run the user-scope check. That is sound only because no LLM route can be
+user-scoped, and that premise is enforced rather than asserted: `LlmProxyService`'s constructor
+refuses a route whose `serviceName` declares any user-scoped route, naming this section in the
+failure. Adding a user-scoped LLM route therefore fails at startup instead of forwarding
+unchecked. Two forwarding paths is the real shape here; treating it as one was the mistake.
+
+**The path the check sees must be the path the backend sees.** Armeria preserves a `.` segment
+(it rejects only `..`); Tomcat, which serves 8080, collapses it. So
+`/api/model/api/v1/./recommend` missed the `UserScopedRoutes` table — matching there is exact, by
+design — while still reaching the Spring handler registered for `/api/v1/recommend`, which made
+every 8080 user-scoped route bypassable by respelling the path. `GatewayProxyService.serve`
+rejects any path carrying a `.` or `..` segment with `400`, immediately after `ApiVersion.parse`
+and before routing. Rejecting at the edge rather than canonicalizing at the lookup is the point:
+route matching, `GATEWAY_PUBLIC_PATHS`, rate-limit keying, and the CloudFront cache key all key on
+the same string, and a fix inside the lookup would have left the other four on whatever spelling
+the client chose. This is the one control in §10 that also applies to service-tier callers — it is
+a malformed-request rejection, not an authorization decision, and no published route contains a
+dot segment. `RecommendationGatewayService` needs no equivalent guard: it is registered at two
+exact paths and builds a constant `targetPath` of `/v2/recommend`, so no client-supplied path
+segment reaches an upstream through it.
 
 **What this does not yet prove.** No environment sets `GATEWAY_COGNITO_ISSUER`, so every caller
 today is service-tier and this section describes a path that is never taken in production. Tests
