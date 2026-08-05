@@ -171,6 +171,73 @@ class LettuceClientFactoryTest {
         assertTrue(uri.isSsl());
     }
 
+    /**
+     * The Spring-properties path is the model-serving production path, and it is a second,
+     * independent copy of the same wiring: {@code uriFrom(props)} can lose the username or the
+     * TLS flag while every env-var assertion above stays green.
+     */
+    @Test
+    void springPropertiesUriCarriesAuthAndTls() {
+        RedisProperties props = new RedisProperties();
+        props.setHost("cache");
+        props.setUsername("model");
+        props.setPassword("s3cret");
+        props.setTls(true);
+
+        RedisURI uri = LettuceClientFactory.uriFrom(props);
+        assertEquals("cache", uri.getHost());
+        assertEquals("model", uri.getUsername());
+        assertTrue(uri.isSsl(), "recsys.redis.tls must produce an SSL RedisURI");
+    }
+
+    @Test
+    void springPropertiesSentinelUriCarriesAuthAndTls() {
+        RedisProperties props = new RedisProperties();
+        props.setMode("sentinel");
+        props.setSentinelNodes("s1:26379");
+        props.setUsername("model");
+        props.setPassword("s3cret");
+        props.setTls(true);
+
+        RedisURI uri = LettuceClientFactory.uriFrom(props);
+        assertEquals("mymaster", uri.getSentinelMasterId());
+        assertEquals("model", uri.getUsername());
+        assertTrue(uri.isSsl());
+    }
+
+    /** The props-path twin of {@link #replicaUriInheritsAuthAndTls}, and just as easy to omit. */
+    @Test
+    void springPropertiesReplicaUriInheritsAuthAndTls() {
+        RedisProperties props = new RedisProperties();
+        props.setUsername("model");
+        props.setPassword("s3cret");
+        props.setTls(true);
+
+        RedisURI uri = LettuceClientFactory.replicaUriFrom(
+                ReplicaConfig.parse("replica-a:6379@us-east-1b"), props);
+        assertEquals("replica-a", uri.getHost());
+        assertEquals("model", uri.getUsername());
+        assertTrue(uri.isSsl());
+    }
+
+    /**
+     * Proves {@code routerFrom} actually builds the replica executors rather than silently
+     * falling back to the primary: a router with no replicas reads from the primary, so an
+     * unparsed or dropped {@code replicaNodes} spec presents as working reads on the wrong node.
+     */
+    @Test
+    void routerFromPropsBuildsReplicaExecutors() {
+        RedisProperties props = new RedisProperties();
+        props.setHost("primary");
+        props.setPassword("s3cret");
+        props.setReplicaNodes("replica-a:6379@us-east-1b");
+
+        try (RedisReadReplicaRouter router = LettuceClientFactory.routerFrom(props)) {
+            assertNotSame(router.writable(), router.readable(),
+                    "reads must route to the configured replica, not back to the primary");
+        }
+    }
+
     @Test
     void blankPasswordWithoutTheOptOutIsRefused() {
         IllegalStateException e = assertThrows(IllegalStateException.class,
