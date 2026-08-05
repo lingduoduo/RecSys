@@ -114,14 +114,21 @@ class RedisAuthManifestTest {
         }
 
         assertThat(argsByName.get("redis-primary"))
-                .as("the primary must set --requirepass, or it accepts anonymous connections "
-                        + "regardless of what every client is configured to send")
-                .contains("--requirepass");
+                .as("the primary must set --requirepass immediately followed by $(REDIS_PASSWORD), "
+                        + "or it accepts anonymous connections regardless of what every client is "
+                        + "configured to send — mere presence of the flag isn't enough, since a "
+                        + "hardcoded string, an empty value, or a typo'd substitution would also "
+                        + "satisfy a containment check")
+                .containsSequence("--requirepass", "$(REDIS_PASSWORD)");
         assertThat(argsByName.get("redis-replica"))
                 .as("the replica must set --requirepass (it serves reads) and --masterauth "
-                        + "(it authenticates to the primary). Without masterauth replication stops "
-                        + "and the replica serves indefinitely stale data instead of failing")
-                .contains("--requirepass", "--masterauth");
+                        + "(it authenticates to the primary), each immediately followed by "
+                        + "$(REDIS_PASSWORD). Without masterauth replication stops and the replica "
+                        + "serves indefinitely stale data instead of failing; a flag paired with the "
+                        + "wrong or a hardcoded value fails just as silently as a missing flag, so "
+                        + "checking adjacency catches what mere containment would not")
+                .containsSequence("--requirepass", "$(REDIS_PASSWORD)")
+                .containsSequence("--masterauth", "$(REDIS_PASSWORD)");
 
         String sentinelConf = ofKind(docs, "ConfigMap").stream()
                 .filter(c -> "redis-sentinel-config".equals(nameOf(c)))
@@ -130,10 +137,12 @@ class RedisAuthManifestTest {
                 .orElseThrow(() -> new AssertionError("no ConfigMap named redis-sentinel-config"));
 
         assertThat(sentinelConf)
-                .as("the sentinel template must carry auth-pass, or the sentinels cannot "
-                        + "authenticate to the primary, never reach quorum, and never fail over — "
-                        + "which looks exactly like a Redis outage")
-                .contains("sentinel auth-pass mymaster");
+                .as("the sentinel template must carry the full auth-pass line with its placeholder "
+                        + "intact, or the sentinels cannot authenticate to the primary, never reach "
+                        + "quorum, and never fail over — which looks exactly like a Redis outage. "
+                        + "Checking only the 'sentinel auth-pass mymaster' prefix would still pass if "
+                        + "the __REDIS_PASSWORD__ placeholder were accidentally dropped")
+                .contains("sentinel auth-pass mymaster __REDIS_PASSWORD__");
     }
 
     @Test
