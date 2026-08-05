@@ -135,6 +135,62 @@ class NetworkPolicyEgressManifestTest {
         });
     }
 
+    /** Mirror of {@link #permitsEgress}: selector and port must sit in the same ingress rule. */
+    static boolean admitsIngress(Map<String, Object> policy, Map<String, Object> sourceLabels, int port) {
+        return listOf(mapAt(policy, "spec"), "ingress").stream().anyMatch(rule -> {
+            boolean fromSource = listOf(rule, "from").stream()
+                    .anyMatch(from -> selects(mapAt(from, "podSelector", "matchLabels"), sourceLabels));
+            boolean onPort = listOf(rule, "ports").stream()
+                    .anyMatch(p -> Integer.valueOf(port).equals(p.get("port")));
+            return fromSource && onPort;
+        });
+    }
+
+    /**
+     * The sentinel pods matched no NetworkPolicy at all, which in Kubernetes means every source
+     * is admitted by default — the one failure mode indistinguishable from working correctly.
+     * Every other data-tier pod in this namespace is ingress-restricted; these were missed
+     * because the redis policy selects app: redis and sentinels carry app: redis-sentinel.
+     */
+    @Test
+    void sentinelPodsAreIngressRestricted() throws IOException {
+        List<Map<String, Object>> docs = baseDocuments();
+
+        Map<String, Object> policy = ofKind(docs, "NetworkPolicy").stream()
+                .filter(p -> Map.of("app", "redis-sentinel").equals(mapAt(p, "spec", "podSelector", "matchLabels")))
+                .findFirst()
+                .orElse(null);
+
+        assertThat(policy)
+                .as("no NetworkPolicy selects app: redis-sentinel, so Kubernetes admits ingress "
+                        + "from every pod in the cluster to port 26379 — sentinels can rewrite a "
+                        + "client's view of which node is primary")
+                .isNotNull();
+
+        Set<String> notAdmitted = new TreeSet<>();
+        List<String> expectedSources = List.of(
+                "recsys-api-gateway", "recsys-catalog-serving",
+                "recsys-model-serving", "recsys-online-serving");
+        for (String source : expectedSources) {
+            // Map.<String, Object>of — the inferred Map<String,String> does not match the
+            // Map<String,Object> parameter.
+            if (!admitsIngress(policy, Map.<String, Object>of("app", source), 26379)) {
+                notAdmitted.add(source);
+            }
+        }
+        // Sentinels gossip among themselves to agree on a primary; without this they cannot
+        // reach quorum and never fail over.
+        if (!admitsIngress(policy, Map.<String, Object>of("app", "redis-sentinel"), 26379)) {
+            notAdmitted.add("redis-sentinel (sentinel-to-sentinel quorum)");
+        }
+
+        assertThat(notAdmitted)
+                .as("the sentinel policy must admit 26379 from every workload granted egress to it "
+                        + "and from the sentinels themselves; a policy that blocks one of these is "
+                        + "worse than no policy, because it fails at startup instead of at review")
+                .isEmpty();
+    }
+
     @Test
     void everyDeclaredUpstreamIsPermittedByEgress() throws IOException {
         List<Map<String, Object>> docs = baseDocuments();
