@@ -258,6 +258,32 @@ Design: [NetworkPolicy egress conformance](../superpowers/specs/2026-08-05-netwo
 - **Service-local** — `SubmitTokenServiceTest` (single-use consume),
   `SubmitTokenCacheHeaderTest` (`no-store`), `ConsistencyTokenCodecTest`.
 
+## Data-tier authentication
+
+Until 2026-08 every service connected to Redis as the unauthenticated `default` user over a
+plaintext socket. `LettuceClientFactory` read `REDIS_PASSWORD` and no manifest set it — a
+supported control that nothing switched on.
+
+Redis now requires a password: `--requirepass` on the primary and replica, `--masterauth` so the
+replica can authenticate to the primary, and `sentinel auth-pass` in the Sentinel template,
+substituted from the environment by the init container because a ConfigMap cannot hold a secret.
+Clients read `REDIS_PASSWORD` from the `redis-password` key of `recsys-secrets`.
+
+`LettuceClientFactory` refuses to open a connection without a credential unless
+`REDIS_ALLOW_NO_AUTH=true` — the same fail-closed shape as `GatewayAuthenticator.fromEnvironment`
+in §1. Local development and the test suite set it; no overlay does.
+
+The client also supports `REDIS_USERNAME` (Redis 6 ACL login) and `REDIS_TLS`. Both are unused
+today: the in-cluster Redis has no certificates, and per-service ACL users are a separate project.
+They exist so that project is configuration rather than a client change.
+
+Two things this does not do. Traffic between the pods and Redis is still unencrypted, so the
+NetworkPolicy remains the only control on who can read it in transit. And all five clients share
+one credential over the whole keyspace, despite cleanly disjoint key ownership — that is the ACL
+work, not this.
+
+Design: [Redis transport authentication](../superpowers/specs/2026-08-05-redis-transport-auth-design.md).
+
 ## Sharp edges — notes
 
 1. **Authentication is binary; there is no authorization model.** Outside the 7010

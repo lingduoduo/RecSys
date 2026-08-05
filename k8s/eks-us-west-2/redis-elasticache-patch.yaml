@@ -18,5 +18,11 @@ data:
   REDIS_MODE: "standalone"
   REDIS_HOST: "<us-west-2-elasticache-endpoint>.cache.amazonaws.com"
   REDIS_PORT: "6379"
+  # Explicitly false rather than absent: an absent key reads as "not applicable", and this is a
+  # prerequisite an operator has to act on. Flip to "true" only once the ElastiCache cluster has
+  # encryption-in-transit enabled and an AUTH token provisioned into the redis-password key of
+  # recsys-secrets. The client verifies the certificate against the JVM truststore, which already
+  # trusts the Amazon Root CA that ElastiCache certificates chain to.
+  REDIS_TLS: "false"
   REDIS_SENTINEL_MASTER: ""
   REDIS_SENTINEL_NODES: ""
