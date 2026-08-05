@@ -26,7 +26,10 @@ final class UserScopedRoutes {
                     "/getrecommendation", UserIdSource.QUERY,
                     "/recommendation", UserIdSource.QUERY,
                     "/setuserembedding", UserIdSource.QUERY,
-                    "/v2/recommend", UserIdSource.BODY),
+                    "/v2/recommend", UserIdSource.BODY,
+                    // Scores against u2vEmb:<userId>, so naming another user reads their
+                    // embedding — and the "user embedding not found" error is an existence oracle.
+                    "/v1/models/recmodel:predict", UserIdSource.BODY_INSTANCES),
             "recsys-online-serving", Map.of(
                     "/online/recommendation", UserIdSource.QUERY,
                     "/online/features", UserIdSource.QUERY,

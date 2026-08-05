@@ -19,6 +19,8 @@ class UserScopedRoutesTest {
                 UserScopedRoutes.lookup("recsys-online-serving", "/online/features"));
         assertEquals(UserIdSource.BODY,
                 UserScopedRoutes.lookup("recsys-model-serving", "/v2/sequential/recommend"));
+        assertEquals(UserIdSource.BODY_INSTANCES,
+                UserScopedRoutes.lookup("recsys-catalog-serving", "/v1/models/recmodel:predict"));
     }
 
     @Test
@@ -74,6 +76,72 @@ class UserScopedRoutesTest {
         assertEquals("", UserIdSource.BODY.extract("/v2/recommend", body("[1,2]")));
         assertEquals("", UserIdSource.BODY.extract("/v2/recommend", body("{\"userId\":{\"id\":1}}")));
         assertEquals("", UserIdSource.BODY.extract("/v2/recommend", body("")));
+    }
+
+    // ---- BODY_INSTANCES: the TF-Serving predict batch ------------------------------
+
+    private static final String PREDICT = "/v1/models/recmodel:predict";
+
+    @Test
+    void instances_extractsWhenEveryElementNamesTheSameUser() {
+        assertEquals("42", UserIdSource.BODY_INSTANCES.extract(PREDICT,
+                body("{\"instances\":[{\"userId\":42,\"movieId\":1},{\"userId\":42,\"movieId\":2}]}")));
+    }
+
+    @Test
+    void instances_extractsFromASingleElement() {
+        assertEquals("42", UserIdSource.BODY_INSTANCES.extract(PREDICT,
+                body("{\"instances\":[{\"userId\":42,\"movieId\":1}]}")));
+        // The backend binds userId as an int, but a client may still send it as a string.
+        assertEquals("42", UserIdSource.BODY_INSTANCES.extract(PREDICT,
+                body("{\"instances\":[{\"userId\":\"42\"}]}")));
+    }
+
+    @Test
+    void instances_deniesAMixedUserBatch() {
+        // The gateway forwards the whole request or none of it — it cannot allow a subset, so a
+        // batch naming a second user must be denied outright rather than partially allowed.
+        assertEquals("", UserIdSource.BODY_INSTANCES.extract(PREDICT,
+                body("{\"instances\":[{\"userId\":42},{\"userId\":43}]}")));
+        // Including when the caller's own id is present but not alone.
+        assertEquals("", UserIdSource.BODY_INSTANCES.extract(PREDICT,
+                body("{\"instances\":[{\"userId\":42},{\"userId\":42},{\"userId\":99}]}")));
+    }
+
+    @Test
+    void instances_blankWhenTheBatchNamesNoUsableId() {
+        // Empty array: nothing to authorize.
+        assertEquals("", UserIdSource.BODY_INSTANCES.extract(PREDICT,
+                body("{\"instances\":[]}")));
+        // Absent instances.
+        assertEquals("", UserIdSource.BODY_INSTANCES.extract(PREDICT,
+                body("{\"userId\":42}")));
+        // instances present but not an array.
+        assertEquals("", UserIdSource.BODY_INSTANCES.extract(PREDICT,
+                body("{\"instances\":{\"userId\":42}}")));
+        // An element missing its userId, or carrying a container instead of a scalar.
+        assertEquals("", UserIdSource.BODY_INSTANCES.extract(PREDICT,
+                body("{\"instances\":[{\"movieId\":1}]}")));
+        assertEquals("", UserIdSource.BODY_INSTANCES.extract(PREDICT,
+                body("{\"instances\":[{\"userId\":{\"id\":42}}]}")));
+        assertEquals("", UserIdSource.BODY_INSTANCES.extract(PREDICT,
+                body("{\"instances\":[{\"userId\":42},{\"movieId\":2}]}")));
+        // An element that is not an object at all.
+        assertEquals("", UserIdSource.BODY_INSTANCES.extract(PREDICT,
+                body("{\"instances\":[42]}")));
+        // Malformed, empty, and non-object bodies stay total.
+        assertEquals("", UserIdSource.BODY_INSTANCES.extract(PREDICT, body("not json")));
+        assertEquals("", UserIdSource.BODY_INSTANCES.extract(PREDICT, body("")));
+        assertEquals("", UserIdSource.BODY_INSTANCES.extract(PREDICT, body("[1,2]")));
+    }
+
+    @Test
+    void instances_isNotReadableByPlainBody() {
+        // Why the new kind exists: BODY reads a top-level scalar, so on this shape it would
+        // extract nothing and deny every legitimate call while looking like a working control.
+        String batch = "{\"instances\":[{\"userId\":42,\"movieId\":1}]}";
+        assertEquals("", UserIdSource.BODY.extract(PREDICT, body(batch)));
+        assertEquals("42", UserIdSource.BODY_INSTANCES.extract(PREDICT, body(batch)));
     }
 
     private static AggregatedHttpRequest body(String json) {
