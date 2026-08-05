@@ -1,5 +1,7 @@
 package com.recsys.application.gateway;
 
+import com.linecorp.armeria.common.HttpMethod;
+import com.linecorp.armeria.common.RequestHeaders;
 import org.junit.jupiter.api.Test;
 
 import java.io.IOException;
@@ -76,9 +78,9 @@ class UserScopedRouteCoverageTest {
      * whole test vacuous. Raise them when a service genuinely grows.
      */
     private static final Map<String, Integer> MINIMUM_ROUTES = Map.of(
-            "recsys-catalog-serving", 14,
-            "recsys-online-serving", 8,
-            "recsys-model-serving", 14);
+            "recsys-catalog-serving", 16,
+            "recsys-online-serving", 9,
+            "recsys-model-serving", 20);
 
     @Test
     void everyBackendRouteIsClassified() throws IOException {
@@ -112,6 +114,79 @@ class UserScopedRouteCoverageTest {
                         + "either declare where its userId lives in UserScopedRoutes, or be listed in "
                         + "NOT_USER_SCOPED with a reason. See "
                         + "docs/superpowers/specs/2026-08-05-gateway-user-scope-authorization-design.md.");
+    }
+
+    // ---- the gateway route table is the other half of the coverage claim -------------------
+
+    /** The three backends every user-scoped route lives behind. */
+    private static final Set<Integer> BACKEND_PORTS = Set.of(6010, 7010, 8080);
+
+    /** Route names served by {@link LlmProxyService}, which is not one of the three backends. */
+    private static final Set<String> LLM_ROUTE_NAMES = Set.of("llm", "llm-explanation");
+
+    /**
+     * {@code UserScopedRoutes.lookup} keys on {@code MicroserviceRoute.serviceName}, and returns
+     * null for a null service. So a route added with the 5-arg convenience constructor — which
+     * defaults {@code serviceName} to null — is permanently exempt from the user-scope check even
+     * when it points straight at 6010, 7010 or 8080.
+     *
+     * <p>{@link #everyBackendRouteIsClassified} cannot see that: it scans the backend mains, never
+     * the gateway's own route table. This is the missing half — the gateway side of the same claim.
+     */
+    @Test
+    void everyRouteReachingABackendDeclaresItsRegistryServiceName() {
+        List<String> unnamed = new ArrayList<>();
+        for (MicroserviceRoute route : MicroserviceRoute.defaults()) {
+            if (route.serviceName() != null) {
+                continue;
+            }
+            boolean llm = LLM_ROUTE_NAMES.contains(route.name());
+            // Both conditions, because baseUri is env-overridable: a route pointing at a backend
+            // port is caught even if it is named oddly, and a non-LLM route is caught even if an
+            // env var moved it off the default port.
+            if (BACKEND_PORTS.contains(route.baseUri().getPort()) || !llm) {
+                unnamed.add(route.name() + " (" + route.prefix() + " -> " + route.baseUri() + ")");
+            }
+        }
+        assertTrue(unnamed.isEmpty(),
+                "Gateway routes reaching a backend with no serviceName: " + unnamed + ". "
+                        + "UserScopedRoutes.lookup returns null for a null service, so such a route "
+                        + "is silently exempt from the user-scope check forever. Use the 6-arg "
+                        + "MicroserviceRoute constructor and give it its registry service name.");
+    }
+
+    /**
+     * The never-public guard must cover every user-scoped route, or {@code GATEWAY_PUBLIC_PATHS}
+     * becomes an off switch for §10: a public path yields an anonymous principal, anonymous is
+     * SERVICE tier, and service tier is exempt from the check.
+     *
+     * <p>{@code PROTECTED_PREFIXES} is derived from {@code UserScopedRoutes} rather than restated,
+     * so this test pins that the derivation is actually wired into {@code isPublic} — it configures
+     * every user-scoped path as public and asserts the gateway still demands a credential.
+     */
+    @Test
+    void noUserScopedRouteCanBeMadePublic() {
+        Set<String> userScoped = UserScopedRoutes.gatewayPaths(MicroserviceRoute.defaults());
+        assertTrue(userScoped.size() >= 20,
+                "expected the derivation to produce a path per (prefix, handler) pair, got: " + userScoped);
+        // The three the finding named explicitly; none was covered by the old hand-written list.
+        assertTrue(userScoped.containsAll(Set.of(
+                        "/api/catalog/getrecommendation", "/api/movies/getuser", "/api/online/online/features")),
+                "derived set is missing a known user-scoped gateway path: " + userScoped);
+
+        // Misconfigure the gateway as badly as possible: every user-scoped path listed as public.
+        GatewayAuthenticator auth =
+                GatewayAuthenticator.forTesting(Set.of("key-1"), userScoped, null);
+        List<String> reachable = new ArrayList<>();
+        for (String path : userScoped) {
+            if (!auth.check(RequestHeaders.of(HttpMethod.GET, path), path).rejected()) {
+                reachable.add(path);
+            }
+        }
+        assertTrue(reachable.isEmpty(),
+                "GATEWAY_PUBLIC_PATHS made these user-scoped routes anonymously reachable: "
+                        + reachable + ". Anonymous is SERVICE tier, which is exempt from the "
+                        + "user-scope check, so this is an off switch for 20_AuthN_AuthZ §10.");
     }
 
     // ---- the scanners only guarantee anything if nothing registers routes elsewhere ---------

@@ -1,6 +1,9 @@
 package com.recsys.application.gateway;
 
+import java.util.LinkedHashSet;
+import java.util.List;
 import java.util.Map;
+import java.util.Set;
 
 /**
  * The backend routes that act on a caller-named {@code userId}, and where that id arrives.
@@ -59,8 +62,37 @@ final class UserScopedRoutes {
         return mark < 0 ? targetPath : targetPath.substring(0, mark);
     }
 
-    /** The declaration itself, for the conformance test. */
-    static Map<String, Map<String, UserIdSource>> table() {
-        return TABLE;
+    /** @return true when this backend service has any user-scoped route at all. */
+    static boolean declaresAnyFor(String serviceName) {
+        return serviceName != null && TABLE.containsKey(serviceName);
+    }
+
+    /**
+     * The gateway-facing spellings of every declared user-scoped route, derived from the route
+     * table: {@code route.prefix() + backendPath} for each route whose {@code serviceName} appears
+     * above. {@code MicroserviceRoute.rewrite} forwards the suffix verbatim, so that concatenation
+     * <em>is</em> the gateway path, and every prefix that reaches a handler contributes its own
+     * spelling — {@code /api/catalog/getuser} and {@code /api/users/getuser} both appear.
+     *
+     * <p>Version-free by construction, which is what {@link GatewayAuthenticator} needs: the
+     * gateway strips {@code /api/v1} before any path-matching control runs.
+     *
+     * <p>Exists so the never-public guard can be <em>derived</em> from this declaration rather than
+     * hand-maintained beside it. Two lists that must agree and are edited independently is exactly
+     * how a user-scoped route ends up listable in {@code GATEWAY_PUBLIC_PATHS} — which would make
+     * its caller anonymous, hence service-tier, hence exempt from the check declared right here.
+     */
+    static Set<String> gatewayPaths(List<MicroserviceRoute> routes) {
+        Set<String> paths = new LinkedHashSet<>();
+        for (MicroserviceRoute route : routes) {
+            Map<String, UserIdSource> declared = TABLE.get(route.serviceName());
+            if (declared == null) {
+                continue;
+            }
+            for (String backendPath : declared.keySet()) {
+                paths.add(route.prefix() + backendPath);
+            }
+        }
+        return Set.copyOf(paths);
     }
 }
