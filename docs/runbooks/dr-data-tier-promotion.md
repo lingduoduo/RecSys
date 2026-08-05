@@ -23,6 +23,13 @@ resilience model see the [Fault Tolerance investigation](../system_design/18_Fau
   (writable).
 - Verify `k8s/eks-us-west-2/redis-elasticache-patch.yaml` `REDIS_HOST` points at
   the now-primary us-west-2 endpoint; re-apply if it changed.
+- The Redis credential is per-region state, not replicated: this region has its own
+  `redis-password` key and its own AUTH token, and a rotation that ran only in
+  us-east-1 leaves them mismatched. Every client here then crash-loops on the
+  startup guard the moment it restarts — during a failover, which is the worst time
+  to discover it. Rotate in both contexts per
+  [redis-auth.md](redis-auth.md); if you are already mid-failover with a mismatch,
+  re-patch the us-west-2 Secret with the current token before restarting anything.
 
 ## 3. Repoint streaming producers
 
