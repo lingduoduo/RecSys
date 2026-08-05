@@ -399,6 +399,9 @@
                 <include>**/gateway/GatewayPrincipalTest.java</include>
                 <include>**/gateway/UserScopedRoutesTest.java</include>
                 <include>**/gateway/UserScopeAuthorizationTest.java</include>
+                <!-- The conformance half: user-scope enforcement covers a route only if the route
+                     is declared, so an undeclared new route is the failure mode that matters. -->
+                <include>**/gateway/UserScopedRouteCoverageTest.java</include>
                 <include>**/serving/EmbeddingSeedRepairTest.java</include>
                 <include>**/serving/CacheKeyParamTest.java</include>
                 <include>**/serving/CatalogCacheHeadersTest.java</include>
