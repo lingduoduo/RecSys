@@ -52,6 +52,10 @@ public final class GatewayProxyService implements HttpService {
             return gatewayError(HttpStatus.BAD_REQUEST, apiVersion.unsupportedMessage());
         }
         String path = apiVersion.path();
+        HttpResponse nonCanonical = rejectNonCanonicalPath(path);
+        if (nonCanonical != null) {
+            return nonCanonical;
+        }
 
         GatewayAuthResult auth = authenticator.check(req.headers(), path);
         if (auth.rejected()) return auth.rejection();
@@ -68,6 +72,67 @@ public final class GatewayProxyService implements HttpService {
 
         return HttpResponse.of(req.aggregate().thenApply(aggregated ->
                 forwarder.forward(ctx, aggregated, route, targetPath, principal)));
+    }
+
+    /**
+     * Rejects a request path carrying a {@code .} or {@code ..} segment, with {@code 400}.
+     *
+     * <p>Armeria and Tomcat disagree about {@code .}: Armeria preserves the segment (it rejects
+     * only {@code ..}), Tomcat collapses it. Every gateway control that keys on the path — route
+     * matching, {@code GATEWAY_PUBLIC_PATHS}/{@code PROTECTED_PREFIXES}, the {@link UserScopedRoutes}
+     * lookup, rate-limit keying, and the CloudFront cache key — therefore sees a different path
+     * than the 8080 handler does. Concretely, {@code /api/model/api/v1/./recommend} misses the
+     * user-scope table (matching there is exact, deliberately) and still reaches the Spring handler
+     * for {@code /api/v1/recommend}, so a user-tier caller could name any userId.
+     *
+     * <p>Rejecting rather than normalizing is the point. Canonicalizing the path here would fix the
+     * lookup while leaving route matching, rate-limit keying, and the edge cache key on whatever
+     * spelling the client chose; and canonicalizing inside the lookup alone would fix none of the
+     * others. No legitimate client emits a dot segment — every route the gateway publishes is a
+     * literal path — so the family is simply not accepted. This is the one control that rejects
+     * for service-tier callers too: it is a malformed-request rejection, not an authorization
+     * decision.
+     *
+     * @return the 400 to return, or null when the path is canonical
+     */
+    static HttpResponse rejectNonCanonicalPath(String path) {
+        if (!hasNonCanonicalSegment(path)) {
+            return null;
+        }
+        return gatewayError(HttpStatus.BAD_REQUEST,
+                "bad request: path segment \".\" or \"..\" is not allowed");
+    }
+
+    /**
+     * True when any {@code /}-delimited segment of {@code path} is {@code .} or {@code ..}.
+     *
+     * <p>{@code %2E} is decoded first: Armeria percent-decodes unreserved characters before
+     * {@code ctx.path()} is read, but decoding again here costs nothing and removes the dependency
+     * on that behaviour. A dot <em>inside</em> a segment ({@code movie.json}, {@code 1.2.3},
+     * {@code ..foo}) is an ordinary character and is left alone.
+     */
+    static boolean hasNonCanonicalSegment(String path) {
+        if (path == null || path.isEmpty()) {
+            return false;
+        }
+        String decoded = path.indexOf('%') < 0
+                ? path
+                : path.replace("%2E", ".").replace("%2e", ".");
+        int cursor = 0;
+        int length = decoded.length();
+        while (cursor <= length) {
+            int end = decoded.indexOf('/', cursor);
+            if (end < 0) {
+                end = length;
+            }
+            int size = end - cursor;
+            if ((size == 1 && decoded.charAt(cursor) == '.')
+                    || (size == 2 && decoded.charAt(cursor) == '.' && decoded.charAt(cursor + 1) == '.')) {
+                return true;
+            }
+            cursor = end + 1;
+        }
+        return false;
     }
 
     public static HttpResponse gatewayError(HttpStatus status, String message) {

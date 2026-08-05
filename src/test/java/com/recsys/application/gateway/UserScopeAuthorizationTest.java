@@ -27,6 +27,10 @@ class UserScopeAuthorizationTest {
             "catalog", "/api/catalog", "CATALOG_SERVICE_URL",
             URI.create("http://localhost:6010"), "/health", "recsys-catalog-serving");
 
+    private static final MicroserviceRoute MODEL = new MicroserviceRoute(
+            "model", "/api/model", "MODEL_SERVICE_URL",
+            URI.create("http://localhost:8080"), "/health/ready", "recsys-model-serving");
+
     private static final MicroserviceRoute LLM = new MicroserviceRoute(
             "llm", "/api/llm", "LLM_SERVICE_URL", URI.create("http://localhost:11434"), "/api/tags");
 
@@ -88,6 +92,29 @@ class UserScopeAuthorizationTest {
                 CATALOG, "/item?id=7", get(), user("42")));
         // A route with no registry service name can never match the table.
         assertNull(forwarder().authorizeUserScope(LLM, "/api/tags", get(), user("42")));
+    }
+
+    /**
+     * The lookup is exact and never canonicalizes, so a {@code /./} segment misses the table and
+     * the check does not fire. Armeria preserves single-dot segments (it rejects only {@code ..});
+     * Tomcat, on 8080, collapses them — the two parses diverge, and the divergence is a bypass of
+     * every 8080 user-scoped route.
+     *
+     * <p>This test pins that the <em>lookup</em> is not where the fix lives: it is deliberately
+     * still permissive here. What closes the hole is
+     * {@link GatewayProxyService#rejectNonCanonicalPath}, which 400s the request at the edge
+     * before routing, authorization, rate-limit keying, or the CDN cache key ever sees the
+     * non-canonical spelling — see {@link GatewayPathCanonicalizationTest}. Canonicalizing inside
+     * the lookup instead would leave all four of those on the uncanonicalized string.
+     */
+    @Test
+    void aDotSegmentDefeatsTheLookup_whichIsWhyTheEdgeRejectsItInstead() {
+        // Canonical spelling: denied.
+        assertNotNull(forwarder().authorizeUserScope(
+                MODEL, "/api/v1/recommend", post("{\"userId\":\"999\"}"), user("42")));
+        // Dot-segment spelling: the table misses, so nothing here denies it.
+        assertNull(forwarder().authorizeUserScope(
+                MODEL, "/api/v1/./recommend", post("{\"userId\":\"999\"}"), user("42")));
     }
 
     @Test
@@ -164,7 +191,7 @@ class UserScopeAuthorizationTest {
     private static GatewayRequestForwarder forwarder(io.micrometer.core.instrument.MeterRegistry registry,
                                                      Map<String, RouteCircuitBreaker> circuitBreakers) {
         return new GatewayRequestForwarder(
-                List.of(CATALOG, LLM), Duration.ofSeconds(1), circuitBreakers,
+                List.of(CATALOG, MODEL, LLM), Duration.ofSeconds(1), circuitBreakers,
                 GatewayRateLimiter.disabled(),
                 new UpstreamEndpointGroups.HealthCheckConfig(false, 0L), registry);
     }
