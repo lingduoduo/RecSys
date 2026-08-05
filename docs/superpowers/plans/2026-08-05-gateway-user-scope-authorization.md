@@ -1391,14 +1391,15 @@ Design: [user-scope authorization](../superpowers/specs/2026-08-05-gateway-user-
 Replace sharp edge 1 in the same file with:
 
 ```markdown
-1. **Authorization is one comparison and one privilege tier.** §10 scopes user-tier callers to
-   their own `userId`, but that is the only authorization rule in the system. Beyond it — and for
-   every service-tier caller — any authenticated caller can reach every routed data-plane path,
-   including control-plane writes such as `/api/catalog/setembedding` (overwrite item embeddings
-   on 6010) and `/api/model/api/v1/model/versions/activate` and `/rollback` (swap the serving
-   model). Those sit in the same privilege tier as a catalog read. The trust model is "callers are
-   trusted backends", so this is consistent — but it means an API-key leak is still a
-   control-plane compromise, and, because API keys are service-tier, still a read of every user.
+1. **There are exactly two authorization rules, and most paths are under neither.** The operator
+   token of §5 gates the 7010 operator surfaces; §10 scopes user-tier callers to their own
+   `userId`. Outside those two — and for every service-tier caller, which today means every real
+   caller — any authenticated caller reaches every routed data-plane path, including control-plane
+   writes such as `/api/catalog/setembedding` (overwrite item embeddings on 6010) and
+   `/api/model/api/v1/model/versions/activate` and `/rollback` (swap the serving model). Those sit
+   in the same privilege tier as a catalog read. The trust model is "callers are trusted
+   backends", so this is consistent — but it means an API-key leak is still a control-plane
+   compromise, and, because API keys are service-tier, still a read of every user.
 ```
 
 - [ ] **Step 3: Document the env var**
