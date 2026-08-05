@@ -379,7 +379,7 @@ git commit -m "feat: tier the gateway principal as SERVICE or USER"
 ### Task 3: Declare which backend routes are user-scoped
 
 **Files:**
-- Create: `src/main/java/com/recsys/application/gateway/UserIdSource.java`
+- Create: `src/main/java/com/recsys/application/gateway/UserIdSource.java` — `QUERY`, `BODY`, and `BODY_INSTANCES` (added during execution; see Task 5)
 - Create: `src/main/java/com/recsys/application/gateway/UserScopedRoutes.java`
 - Test: `src/test/java/com/recsys/application/gateway/UserScopedRoutesTest.java`
 - Modify: `pom.xml`
@@ -592,7 +592,9 @@ final class UserScopedRoutes {
                     "/getrecommendation", UserIdSource.QUERY,
                     "/recommendation", UserIdSource.QUERY,
                     "/setuserembedding", UserIdSource.QUERY,
-                    "/v2/recommend", UserIdSource.BODY),
+                    "/v2/recommend", UserIdSource.BODY,
+                    // The id lives at instances[].userId, not the top level — see Task 5.
+                    "/v1/models/recmodel:predict", UserIdSource.BODY_INSTANCES),
             "recsys-online-serving", Map.of(
                     "/online/recommendation", UserIdSource.QUERY,
                     "/online/features", UserIdSource.QUERY,
@@ -1117,7 +1119,10 @@ class UserScopedRouteCoverageTest {
             Map.entry("recsys-catalog-serving/health/ready", "readiness"),
             Map.entry("recsys-catalog-serving/health/load", "admission-control snapshot"),
             Map.entry("recsys-catalog-serving/metrics", "Prometheus exposition"),
-            Map.entry("recsys-catalog-serving/v1/models/recmodel:predict", "pairwise predict; items, not a user profile"),
+            // NOTE: /v1/models/recmodel:predict is NOT here. The plan's first draft excused it as
+            // "items, not a user profile" — wrong. PredictInstance carries a caller-supplied
+            // userId and PairPredictionService loads u2vEmb:<userId>, so it is declared in
+            // UserScopedRoutes with the instances[] source kind instead.
             Map.entry("recsys-catalog-serving/v1/catalog/movies", "catalog listing; no user"),
             Map.entry("recsys-online-serving/health", "liveness"),
             Map.entry("recsys-online-serving/health/live", "liveness"),
@@ -1230,10 +1235,16 @@ class UserScopedRouteCoverageTest {
     private static final Pattern METHOD_MAPPING = Pattern.compile(
             "@(?:Get|Post|Put|Delete|Patch)Mapping\\(\\s*(?:value\\s*=\\s*)?(?:\"([^\"]*)\")?");
 
-    /** Spring: class-level @RequestMapping joined with each method mapping's path (possibly empty). */
+    /**
+     * Spring: class-level @RequestMapping joined with each method mapping's path (possibly empty).
+     *
+     * <p>Recursive. A non-recursive listing would leave a controller in a sub-package invisible —
+     * and an invisible route ships unclassified while this test still reports green, which is a
+     * hole in the exact guarantee the test exists to provide. The sweep below is the other half.
+     */
     private static Set<String> springRoutes(Path directory) throws IOException {
         Set<String> paths = new LinkedHashSet<>();
-        try (Stream<Path> files = Files.list(directory)) {
+        try (Stream<Path> files = Files.walk(directory)) {
             for (Path file : files.filter(p -> p.toString().endsWith(".java")).toList()) {
                 String source = Files.readString(file);
                 Matcher classMatcher = CLASS_MAPPING.matcher(source);
@@ -1270,6 +1281,15 @@ different fix:
   one-line reason. Do not mass-excuse a list to make the test green.
 
 Iterate until it passes on merit.
+
+- [ ] **Step 2b: Police the scanners themselves**
+
+Add a second test method: a repo-wide sweep asserting that every file containing `@RestController`
+lives under `api/rest`, and every file registering backend routes (`ServerBuilder` / `.service(`)
+is one of the two scanned mains — failing with the offending path otherwise. Without it, a route
+added in a new location is invisible to the scan and ships unclassified while this test stays
+green. Watch the `@RestControllerAdvice` substring case (`GlobalExceptionHandler`) so it does not
+produce a false failure.
 
 - [ ] **Step 3: Verify the test actually bites**
 

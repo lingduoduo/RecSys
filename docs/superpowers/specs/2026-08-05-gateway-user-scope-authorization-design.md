@@ -79,8 +79,10 @@ comparison happens at the gateway, and the gateway is the only component that ne
 
 ## The declaration table
 
-`UserScopedRoutes` maps `(serviceName, backendPath)` to a `UserIdSource`, either
-`QUERY("userId")` or `BODY("userId")`.
+`UserScopedRoutes` maps `(serviceName, backendPath)` to a `UserIdSource`: `QUERY("userId")`,
+`BODY("userId")`, or — for the one route whose id is not at the top level — a batch form that
+reads `instances[].userId` and yields an id only when the array is non-empty and every element
+names the same user.
 
 The key is the **backend** service and path, not the gateway path. Three route prefixes —
 `/api/users`, `/api/movies`, `/api/catalog` — all resolve to 6010, and `MicroserviceRoute.rewrite`
@@ -96,6 +98,7 @@ receives both halves of the key as `route` and `targetPath`.
 | | `/getrecommendation`, `/recommendation` | query |
 | | `/setuserembedding` (write) | query |
 | | `/v2/recommend` | body |
+| | `/v1/models/recmodel:predict` | body, `instances[].userId` |
 | `recsys-online-serving` (7010) | `/online/recommendation`, `/online/features` | query |
 | | `/v2/recommend` | body |
 | `recsys-model-serving` (8080) | `/api/v1/recommend` | body |
@@ -103,7 +106,16 @@ receives both halves of the key as `route` and `targetPath`.
 
 Matching is exact, never prefix. Prefix-with-boundary matching is precisely what created the
 `/api/catalog` trap that `20_AuthN_AuthZ` §3 documents and that `PROTECTED_PREFIXES` exists to
-survive. Routes with a null `serviceName` — the two optional LLM routes — have no entries and are
+survive.
+
+`/v1/models/recmodel:predict` is worth its own note, because this design's first draft classified
+it as item-scoped and wrong. It looks like pairwise item scoring, and its path says nothing about
+users — but `PredictInstance` carries a caller-supplied `userId`, and `PairPredictionService`
+loads `u2vEmb:<userId>` and returns scores derived from it, plus a user-existence oracle in its
+error text. It is the same disclosure class as `/getrecommendation`. The conformance test below is
+what caught it, before any of this shipped. Two lessons hold generally: a route's *name* is not
+evidence about what it reads, and the id is not always a top-level field — which is why the source
+kinds are a small enumeration rather than a single field lookup. Routes with a null `serviceName` — the two optional LLM routes — have no entries and are
 never checked.
 
 ## Enforcement
@@ -178,6 +190,13 @@ requires every reachable `(service, backendPath)` to be classified: declared in
 `UserScopedRoutes`, or present in an explicit `NOT_USER_SCOPED` set carrying a one-line reason.
 A new backend route fails the build until someone classifies it. Prefix registrations —
 7010's `Route.builder().pathPrefix("/shards/")` — are classified as a unit under their prefix.
+
+A scanner that looks in the wrong places is a guarantee that quietly does not hold, so the scan
+walks the controller tree recursively and is itself policed: a repo-wide sweep asserts that every
+`@RestController` lives under `api/rest` and every backend route registration lives in one of the
+two scanned mains, failing with the offending path otherwise. Per-service minimum route counts
+catch a regex that stops matching outright — without them a silently broken scanner would make the
+whole test vacuous while still reporting green.
 
 Inferring user-scopedness from source — looking for `requiredIntParam(ctx, "userId")` and
 friends — was considered and rejected as brittle. Forbidding omission is a property a scanner can
