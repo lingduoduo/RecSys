@@ -26,8 +26,11 @@ supply it.
 Out of scope:
 
 - Overlay rendering. Tests cannot run `kubectl kustomize`, so this reads `k8s/base` only. An overlay
-  that patched the env var away would not be caught. The NetworkPolicy conformance test has the same
-  boundary and `CLAUDE.md` records it as sharp edge 7; this design does not close it.
+  that patched the env var away would not be caught. Unlike this design, the NetworkPolicy
+  conformance test (`NetworkPolicyEgressManifestTest`) is not base-only — it also reads
+  `k8s/eks-shared` to assert the ElastiCache egress patch exists. The base-only gap this design
+  leaves open is the one `docs/system_design/20_AuthN_AuthZ.md` records as sharp edge 7; this
+  design does not close it.
 - Whether the Secret exists in any cluster. That is provisioning, verifiable only against a live
   cluster.
 - Any other credential. `GATEWAY_API_KEYS`, `GATEWAY_ORIGIN_SECRET` and the Redis credentials have

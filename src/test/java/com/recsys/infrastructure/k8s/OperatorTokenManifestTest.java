@@ -10,6 +10,8 @@ import java.util.LinkedHashSet;
 import java.util.List;
 import java.util.Map;
 import java.util.Set;
+import java.util.TreeSet;
+import java.util.stream.Collectors;
 import java.util.stream.Stream;
 
 import static com.recsys.infrastructure.k8s.ManifestDocuments.allIn;
@@ -33,14 +35,47 @@ import static org.assertj.core.api.Assertions.assertThat;
  * than restated as a list of workloads — the same principle {@link NetworkPolicyEgressManifestTest}
  * applies to egress destinations. A test asserting "the gateway and online-serving inject the
  * token" would pin today's two instances and stay silent on the third, which is the case that
- * matters.
+ * matters. That derivation only holds while the scan actually finds every reader, which is why
+ * {@link #everyReaderOfTheOperatorTokenIsClassified} checks both directions: an unmapped reader
+ * fails it, and so does a mapped file the scan no longer finds — the latter means the map has gone
+ * stale (renamed, refactored, or the read removed) and must be re-derived from source rather than
+ * trusted as-is.
  *
- * <p>Only one direction is enforced: reader ⇒ manifest. A Deployment injecting a token nobody reads
- * is a stale line, not a broken control.
+ * <p><strong>How a reader is found, and why the marker is broad.</strong> The scan matches the bare
+ * name {@code SHARD_ADMIN_TOKEN} anywhere in a source file's text — not the {@code getenv} call
+ * syntax, not a quoted-literal shape. A marker tied to one call shape misses real reads: an injected
+ * {@code System::getenv} method reference ({@code MicroserviceGatewayServer} already threads one
+ * through {@code GatewayAuthenticator.fromEnvironment()}), the {@code System.getenv()} map form
+ * ({@code OnlinePredictionServer} already uses it for another variable), helper indirection via
+ * {@code EnvConfig}/{@code EnvVars} (both already used in these files), or Spring
+ * {@code @Value("${SHARD_ADMIN_TOKEN:}")} in a future Spring-based reader — plausible given the model
+ * version endpoints live in {@code VersionController} on 8080, where {@code k8s/base/model-serving.yaml}
+ * has no token block today. The trade this makes is deliberate and asymmetric: a false positive here
+ * is a loud build failure a human resolves in one line — add the file to {@link #MENTIONS_ONLY} with
+ * a reason, or to {@link #READER_WORKLOADS} with a Deployment. A false negative is a workload
+ * enforcing a tier it has no credential for, discovered in production instead of in review. That
+ * asymmetry is why the broad marker is correct even though it costs {@link #MENTIONS_ONLY} carrying
+ * files that mention the variable without reading it — and why
+ * {@link #everyMentionsOnlyExemptionIsStillMentioned} exists: a stale exemption that no longer
+ * matches anything is how a real reader would get silently excused later.
  *
- * <p><strong>Scope:</strong> this reads {@code k8s/base}. Tests cannot run {@code kubectl
- * kustomize}, so an overlay that patched the env block away would not be caught here — the same
- * boundary {@code CLAUDE.md} records for the NetworkPolicy conformance test.
+ * <p>Only one direction is enforced between readers and manifests: reader ⇒ manifest. A Deployment
+ * injecting a token nobody reads is a stale line, not a broken control.
+ *
+ * <p><strong>Scope:</strong> this reads {@code k8s/base} only. Tests cannot run {@code kubectl
+ * kustomize}, so an overlay that patched the env block away would not be caught here. Unlike
+ * {@link NetworkPolicyEgressManifestTest}, which also reads {@code k8s/eks-shared} to check the
+ * ElastiCache egress patch, this test has no overlay-side assertion at all. The base-only boundary
+ * this leaves open is discussed in {@code docs/system_design/20_AuthN_AuthZ.md}, sharp edge 7.
+ *
+ * <p><strong>What is not cross-checked.</strong> {@link #READER_WORKLOADS} is a hand-made
+ * attribution from file to Deployment; nothing verifies the attribution itself, so a wrong entry
+ * would hide a genuinely missing env block behind a passing test. The manifest check
+ * ({@link #describeTokenProblems}) accepts the token on any container in the Deployment's pod spec,
+ * so a sidecar carrying it would satisfy a check the application container fails — every Deployment
+ * here is single-container today, but nothing enforces that it stays that way. And only
+ * {@code kind: Deployment} is searched, so a reader packaged as a Job or CronJob fails with "no
+ * Deployment of that name in k8s/base" — a correct refusal, but a misleading message for that case.
  */
 class OperatorTokenManifestTest {
 
@@ -52,31 +87,80 @@ class OperatorTokenManifestTest {
     private static final String SECRET_KEY = "admin-token";
 
     /**
-     * The {@code getenv} call, not the bare variable name. {@code AdminTokenGuard} documents the
-     * variable in its javadoc while receiving the token as a constructor argument; matching the
-     * name alone would demand a manifest for a file that reads nothing.
+     * The bare variable name, matched anywhere in a file's text — deliberately not restricted to
+     * the {@code getenv(...)} call shape. See the class javadoc for why the broader marker is
+     * correct here despite the false positives it invites.
      */
-    private static final String READ_MARKER = "getenv(\"" + ENV_VAR + "\")";
+    private static final String MENTION_MARKER = ENV_VAR;
 
     /** Which Deployment supplies the token to each file that reads it. */
     private static final Map<String, String> READER_WORKLOADS = Map.of(
             "OnlinePredictionServer.java", "recsys-online-serving",
             "MicroserviceGatewayServer.java", "recsys-api-gateway");
 
+    /**
+     * Files the scan matches that do not actually read the variable, mapped to why. Each entry is
+     * asserted still-matched by {@link #everyMentionsOnlyExemptionIsStillMentioned} — an exemption
+     * for a file that has stopped mentioning the variable at all is a latent hole for the next real
+     * reader to hide behind.
+     */
+    private static final Map<String, String> MENTIONS_ONLY = Map.of(
+            "AdminTokenGuard.java", "its javadoc names the variable while the token arrives as a "
+                    + "constructor argument");
+
     @Test
     void everyReaderOfTheOperatorTokenIsClassified() throws IOException {
-        List<String> unclassified = new ArrayList<>();
-        for (Path reader : filesReadingTheToken()) {
-            if (!READER_WORKLOADS.containsKey(reader.getFileName().toString())) {
-                unclassified.add(reader.toString());
+        Set<String> found = filesReadingTheToken().stream()
+                .map(p -> p.getFileName().toString())
+                .collect(Collectors.toCollection(TreeSet::new));
+        Set<String> mapped = new TreeSet<>(READER_WORKLOADS.keySet());
+
+        Set<String> unmapped = new TreeSet<>(found);
+        unmapped.removeAll(mapped);
+        assertThat(unmapped)
+                .describedAs("These files mention %s but READER_WORKLOADS does not say which "
+                        + "Deployment supplies it. Add the mapping and the manifest env block "
+                        + "together — a service that enforces the operator tier without the "
+                        + "credential rejects every operator request and only says so in one "
+                        + "startup warning.", ENV_VAR)
+                .isEmpty();
+
+        Set<String> stale = new TreeSet<>(mapped);
+        stale.removeAll(found);
+        assertThat(stale)
+                .describedAs("READER_WORKLOADS maps these files to a Deployment, but the scan no "
+                        + "longer finds %s in them. The map has gone stale — re-derive it from "
+                        + "source: either the read moved/was removed and the mapping (and its "
+                        + "manifest env block, if now unused) should go with it, or the file was "
+                        + "renamed and the map's key needs to follow.", ENV_VAR)
+                .isEmpty();
+    }
+
+    /**
+     * Guards {@link #MENTIONS_ONLY} itself: an entry that no longer matches anything is not a
+     * documented false positive anymore, it is dead configuration masking whatever the file does
+     * now — including, potentially, a real read that would otherwise need a
+     * {@link #READER_WORKLOADS} entry.
+     */
+    @Test
+    void everyMentionsOnlyExemptionIsStillMentioned() throws IOException {
+        Set<String> mentioned = allFilesMentioningTheToken().stream()
+                .map(p -> p.getFileName().toString())
+                .collect(Collectors.toSet());
+
+        List<String> stale = new ArrayList<>();
+        for (String file : MENTIONS_ONLY.keySet()) {
+            if (!mentioned.contains(file)) {
+                stale.add(file + ": no longer mentions " + ENV_VAR + " anywhere. Remove it from "
+                        + "MENTIONS_ONLY, then check whether it now reads the variable and needs a "
+                        + "READER_WORKLOADS entry instead.");
             }
         }
 
-        assertThat(unclassified)
-                .describedAs("These files read %s but READER_WORKLOADS does not say which Deployment "
-                        + "supplies it. Add the mapping and the manifest env block together — a "
-                        + "service that enforces the operator tier without the credential rejects "
-                        + "every operator request and only says so in one startup warning.", ENV_VAR)
+        assertThat(stale)
+                .describedAs("A stale MENTIONS_ONLY entry is how a real reader would get silently "
+                        + "excused: once the file stops mentioning %s at all, there is nothing left "
+                        + "for the exemption to legitimately cover.", ENV_VAR)
                 .isEmpty();
     }
 
@@ -136,15 +220,27 @@ class OperatorTokenManifestTest {
         return List.of(workload + ": no " + ENV_VAR + " entry in any container's env");
     }
 
-    private static List<Path> filesReadingTheToken() throws IOException {
+    /** Every source file whose text contains {@link #MENTION_MARKER}, exemptions included. */
+    private static List<Path> allFilesMentioningTheToken() throws IOException {
         try (Stream<Path> files = Files.walk(SOURCE_ROOT)) {
-            List<Path> readers = new ArrayList<>();
+            List<Path> matches = new ArrayList<>();
             for (Path file : files.filter(p -> p.toString().endsWith(".java")).toList()) {
-                if (Files.readString(file).contains(READ_MARKER)) {
-                    readers.add(file);
+                if (Files.readString(file).contains(MENTION_MARKER)) {
+                    matches.add(file);
                 }
             }
-            return readers;
+            return matches;
         }
+    }
+
+    /** {@link #allFilesMentioningTheToken()} minus the files {@link #MENTIONS_ONLY} excuses. */
+    private static List<Path> filesReadingTheToken() throws IOException {
+        List<Path> readers = new ArrayList<>();
+        for (Path file : allFilesMentioningTheToken()) {
+            if (!MENTIONS_ONLY.containsKey(file.getFileName().toString())) {
+                readers.add(file);
+            }
+        }
+        return readers;
     }
 }
