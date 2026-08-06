@@ -65,8 +65,9 @@ import static org.assertj.core.api.Assertions.assertThat;
  * <p><strong>Scope:</strong> this reads {@code k8s/base} only. Tests cannot run {@code kubectl
  * kustomize}, so an overlay that patched the env block away would not be caught here. Unlike
  * {@link NetworkPolicyEgressManifestTest}, which also reads {@code k8s/eks-shared} to check the
- * ElastiCache egress patch, this test has no overlay-side assertion at all. The base-only boundary
- * this leaves open is discussed in {@code docs/system_design/20_AuthN_AuthZ.md}, sharp edge 7.
+ * ElastiCache egress patch, this test has no overlay-side assertion at all — and unlike that test's
+ * base-only gap, which {@code 20_AuthN_AuthZ.md} records as sharp edge 7, this one is documented
+ * nowhere but here.
  *
  * <p><strong>What is not cross-checked.</strong> {@link #READER_WORKLOADS} is a hand-made
  * attribution from file to Deployment; nothing verifies the attribution itself, so a wrong entry
