@@ -546,3 +546,48 @@ backends included, not merely ones declaring a `USER_SCOPED` route — so a misr
 `LLM_SERVICE_URL` fails at startup rather than forwarding an operator or telemetry path unchecked.
 
 Design: [gateway proxy route policy](../superpowers/specs/2026-08-05-gateway-proxy-route-policy-design.md).
+
+## 12. The third-party identifier boundary
+
+Everything above governs callers reaching *in*. This section covers the one place an identifier
+goes *out*: PostHog feature flags.
+
+`RecommendationService` gates cold-start recommendations on a dynamic flag, keyed per user so a
+rollout can be gradual. Resolving that flag POSTs to `https://us.i.posthog.com/decide/?v=3`, and the
+key it carries is the request's `userId`. That is the only path in the system that sends an
+application user identifier to an external service — the exception to §2's rule that identity stays
+inside the trust boundary.
+
+**What PostHog receives is a pseudonym, not the userId.**
+[`PostHogFeatureFlagProvider`](../../src/main/java/com/recsys/infrastructure/featureflags/providers/PostHogFeatureFlagProvider.java)
+sends `sha256(salt + ":" + userId)` as `distinct_id` — the full digest. Deterministic and stable
+across pods and restarts, because the salt is shared configuration, which is what lets percentage
+rollouts bucket a user consistently. One-way, so PostHog holds nothing that identifies a user here.
+
+**`POSTHOG_DISTINCT_ID_SALT` is required when PostHog is enabled**, with no default. A blank salt
+fails provider construction, the same fail-closed shape as the blank-API-key check beside it.
+Requiring it is not ceremony: userIds in this system are small integers, so an *unsalted* digest
+over that key space is a rainbow table anyone can build in seconds. An unsalted hash would look
+like a control and be none. The two alternatives are both worse — falling back to the raw id
+defeats the point, and a per-process random salt makes bucketing differ per pod and per restart, so
+gradual rollout breaks silently instead of loudly.
+
+**Rotating the salt re-buckets every user.** A rollout in flight reshuffles who is inside it. Treat
+the salt as long-lived configuration.
+
+**What it costs.** Nobody can look a specific user up in PostHog any more, because PostHog no
+longer knows about that user. That is the intended effect, and it removes a debugging path anyone
+enabling the flag might expect to have.
+
+**How dormant this is.** PostHog is disabled by default (`POSTHOG_FEATURE_FLAGS_ENABLED=false`),
+additionally requires a non-blank API key before the provider is constructed at all, is set in no
+manifest or overlay, and is permitted by no egress rule — `k8s/base/network-policy.yaml` allows no
+egress to PostHog, an instance of sharp edge 9 above. On an enforcing CNI the request would fail at
+the network layer before disclosing anything. The risk this section closes was never "we are
+leaking user ids"; it was that two environment variables could turn a recommendation path into a
+disclosure path with nothing in the code marking that as a decision.
+
+Scope note: `person_properties` is empty at the one call site. If it ever carries user attributes,
+that is a fresh disclosure decision and this section does not authorize it.
+
+Design: [PostHog pseudonymous distinct_id](../superpowers/specs/2026-08-05-posthog-pseudonymous-distinct-id-design.md).

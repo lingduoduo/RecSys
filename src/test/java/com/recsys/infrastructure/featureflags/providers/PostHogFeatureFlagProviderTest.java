@@ -25,6 +25,7 @@ import java.util.concurrent.CompletableFuture;
 import java.util.concurrent.Executor;
 
 import static org.assertj.core.api.Assertions.assertThat;
+import static org.assertj.core.api.Assertions.assertThatThrownBy;
 
 class PostHogFeatureFlagProviderTest {
 
@@ -38,6 +39,7 @@ class PostHogFeatureFlagProviderTest {
         objectMapper = new ObjectMapper();
         provider = new PostHogFeatureFlagProvider(
                 "phc_test",
+                "test-salt",
                 URI.create("https://posthog.example"),
                 Duration.ofSeconds(1),
                 client,
@@ -64,7 +66,11 @@ class PostHogFeatureFlagProviderTest {
                 .contentLength() >= 0 ? bodyFrom(request) : "";
         JsonNode json = objectMapper.readTree(body);
         assertThat(json.path("api_key").asText()).isEqualTo("phc_test");
-        assertThat(json.path("distinct_id").asText()).isEqualTo("user-1");
+        assertThat(json.path("distinct_id").asText())
+                .as("distinct_id must be a full SHA-256 hex digest, not the application userId")
+                .hasSize(64)
+                .matches("[0-9a-f]{64}")
+                .isNotEqualTo("user-1");
         assertThat(json.path("person_properties").path("plan").asText()).isEqualTo("pro");
     }
 
@@ -96,6 +102,69 @@ class PostHogFeatureFlagProviderTest {
                 "user-1",
                 Map.of()))
                 .isEmpty();
+    }
+
+    @Test
+    void theRawUserIdNeverAppearsAnywhereInTheRequestBody() throws Exception {
+        client.nextResponse = new StubResponse(200, """
+                {"featureFlags":{"new-ranking":true}}
+                """);
+
+        provider.resolve(FeatureFlag.enabledByDefault("new-ranking"), "user-1", Map.of());
+
+        // Asserted against the whole serialized body, not one field: a future change that added the
+        // userId under some other key would still be a disclosure, and this test should catch it.
+        assertThat(bodyFrom(client.lastRequest)).doesNotContain("user-1");
+    }
+
+    @Test
+    void theSameUserAndSaltAlwaysProduceTheSameDistinctId() throws Exception {
+        // Stability across instances is what makes PostHog's percentage rollouts bucket a user
+        // consistently — a per-process value would reshuffle every pod and every restart.
+        assertThat(distinctIdFor("user-1", "test-salt"))
+                .isEqualTo(distinctIdFor("user-1", "test-salt"));
+    }
+
+    @Test
+    void differentSaltsProduceDifferentDistinctIdsForTheSameUser() throws Exception {
+        // This is what makes the salt load-bearing rather than decorative: without it the digest
+        // of a small integer id space is a seconds-long rainbow table.
+        assertThat(distinctIdFor("user-1", "salt-a"))
+                .isNotEqualTo(distinctIdFor("user-1", "salt-b"));
+    }
+
+    @Test
+    void differentUsersProduceDifferentDistinctIds() throws Exception {
+        assertThat(distinctIdFor("user-1", "test-salt"))
+                .isNotEqualTo(distinctIdFor("user-2", "test-salt"));
+    }
+
+    @Test
+    void aBlankSaltIsRefusedAtConstruction() {
+        assertThatThrownBy(() -> new PostHogFeatureFlagProvider(
+                "phc_test", "  ", URI.create("https://posthog.example"), Duration.ofSeconds(1)))
+                .isInstanceOf(IllegalArgumentException.class)
+                .hasMessageContaining("POSTHOG_DISTINCT_ID_SALT");
+
+        assertThatThrownBy(() -> new PostHogFeatureFlagProvider(
+                "phc_test", null, URI.create("https://posthog.example"), Duration.ofSeconds(1)))
+                .isInstanceOf(IllegalArgumentException.class)
+                .hasMessageContaining("POSTHOG_DISTINCT_ID_SALT");
+    }
+
+    /** Resolves once through a fresh provider and returns the distinct_id it sent. */
+    private String distinctIdFor(String userId, String salt) throws Exception {
+        CapturingHttpClient localClient = new CapturingHttpClient();
+        localClient.nextResponse = new StubResponse(200, """
+                {"featureFlags":{"new-ranking":true}}
+                """);
+        PostHogFeatureFlagProvider localProvider = new PostHogFeatureFlagProvider(
+                "phc_test", salt, URI.create("https://posthog.example"),
+                Duration.ofSeconds(1), localClient, objectMapper);
+
+        localProvider.resolve(FeatureFlag.enabledByDefault("new-ranking"), userId, Map.of());
+
+        return objectMapper.readTree(bodyFrom(localClient.lastRequest)).path("distinct_id").asText();
     }
 
     private String bodyFrom(HttpRequest request) throws Exception {

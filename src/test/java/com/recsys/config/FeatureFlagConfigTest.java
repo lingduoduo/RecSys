@@ -47,7 +47,8 @@ class FeatureFlagConfigTest {
         contextRunner
                 .withPropertyValues(
                         "recsys.feature-flags.post-hog.enabled=true",
-                        "recsys.feature-flags.post-hog.api-key=phc_test")
+                        "recsys.feature-flags.post-hog.api-key=phc_test",
+                        "recsys.feature-flags.post-hog.distinct-id-salt=test-salt")
                 .run(context -> {
                     FeatureFlagProvider provider = context.getBean(FeatureFlagProvider.class);
                     assertThat(provider).isInstanceOf(com.recsys.infrastructure.featureflags.providers.CompositeFeatureFlagProvider.class);
@@ -60,6 +61,7 @@ class FeatureFlagConfigTest {
                 .withPropertyValues(
                         "recsys.feature-flags.post-hog.enabled=true",
                         "recsys.feature-flags.post-hog.api-key=phc_test",
+                        "recsys.feature-flags.post-hog.distinct-id-salt=test-salt",
                         "recsys.feature-flags.post-hog.cache-ttl=30s")
                 .run(context -> {
                     FeatureFlagConfig.Properties config = context.getBean(FeatureFlagConfig.Properties.class);

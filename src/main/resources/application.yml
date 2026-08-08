@@ -25,6 +25,9 @@ recsys:
     post-hog:
       enabled: ${POSTHOG_FEATURE_FLAGS_ENABLED:false}
       api-key: ${POSTHOG_PROJECT_API_KEY:}
+      # Required when enabled: distinct_id is a salted hash of the application userId, never the
+      # userId itself. Rotating this re-buckets every user — see 20_AuthN_AuthZ.md.
+      distinct-id-salt: ${POSTHOG_DISTINCT_ID_SALT:}
       host: ${POSTHOG_HOST:https://us.i.posthog.com}
       timeout: ${POSTHOG_FEATURE_FLAGS_TIMEOUT:2s}
       cache-ttl: ${POSTHOG_FEATURE_FLAGS_CACHE_TTL:60s}

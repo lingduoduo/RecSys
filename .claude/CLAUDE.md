@@ -98,6 +98,13 @@ classifies `/api/catalog/setembedding`, the model `activate`/`rollback`/`preload
 means the guard authorizes nobody, so **every** `OPERATOR`-class route rejects **every** caller
 with 403 — the gateway logs a startup warning when this happens. See
 `docs/system_design/20_AuthN_AuthZ.md` §11 and `docs/runbooks/gateway-auth.md`.
+`POSTHOG_DISTINCT_ID_SALT` (no default) is **required** whenever `POSTHOG_FEATURE_FLAGS_ENABLED=true`:
+PostHog receives `sha256(salt + ":" + userId)` as `distinct_id`, never the application userId, and a
+blank salt fails provider construction rather than falling back to the raw value — userIds here are
+small integers, so an unsalted digest over that key space is trivially reversible. Rotating the salt
+re-buckets every user, so treat it as long-lived. PostHog feature flags are off by default, need a
+non-blank `POSTHOG_PROJECT_API_KEY` as well, are set in no manifest, and are permitted by no egress
+rule. See `docs/system_design/20_AuthN_AuthZ.md` §12.
 `SPLUNK_HEC_TOKEN` (default unset = Splunk log shipping is off; setting it makes all four
 services ship structured JSON log events to `SPLUNK_HEC_URL`, default
 `http://splunk:8088/services/collector/event`, via a bounded drop-on-full Logback appender —
