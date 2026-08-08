@@ -380,6 +380,12 @@
                      without the Secret rejects every operator request and says so only in a
                      startup warning. Pure file parsing. -->
                 <include>**/k8s/OperatorTokenManifestTest.java</include>
+                <!-- The MySQL analogue of RedisAuthManifestTest: MySqlConnectionSettings refuses
+                     to construct without sslMode=VERIFY_IDENTITY when MySQL is enabled, which
+                     protects a running service; this protects the deploy, so a manifest URL that
+                     regresses to no sslMode fails the PR gate rather than pod start. Pure file
+                     parsing. -->
+                <include>**/k8s/MySqlTlsManifestTest.java</include>
                 <include>**/k8s/UpstreamTest.java</include>
                 <!-- These two are the producer half of the data-freshness alerts.
                      ScrapeTargetManifestTest above proves the series get collected;
