@@ -317,7 +317,12 @@ guard is live the moment `MYSQL_ENABLED=true` is set — a URL without a verifie
 at pod start. `OnlinePredictionServer` (7010) builds it only when durable online event acceptance
 is on (`ONLINE_DURABLE_EVENTS_ENABLED=true`), which itself requires `MYSQL_ENABLED=true` and throws
 if it is unset — so the same guard applies to 7010 whenever that feature is enabled, not merely
-whenever MySQL is.
+whenever MySQL is. A third construction site is ungated in the same way 6010 is:
+`ReconciliationCommand.main` builds `MySqlConnectionSettings` unconditionally, unlike
+`OutboxRelayCommand.main`, which returns early when `ONLINE_DURABLE_EVENTS_ENABLED` is false. Its
+CronJob `envFrom`s `recsys-config`, so a `MYSQL_URL` without a verified `sslMode` fails the
+reconciliation job at every scheduled run — as a `CrashLoopBackOff` on a periodic pod rather than
+at a rollout, which is the quieter of the two failures to notice.
 
 `VERIFY_IDENTITY` rather than `REQUIRED`: `REQUIRED` encrypts the connection but verifies no
 certificate, so it stops silent plaintext but not an active man-in-the-middle presenting any

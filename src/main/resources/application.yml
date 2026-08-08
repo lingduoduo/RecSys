@@ -54,6 +54,14 @@ recsys:
     artifacts-dir: ${RECSYS_SPARK_ARTIFACTS_DIR:}
   mysql:
     # Optional. The service does not connect to MySQL unless explicitly enabled by callers.
+    #
+    # NOTE: this whole block is UNBOUND. No @ConfigurationProperties(prefix = "recsys.mysql")
+    # exists and the Spring model service never constructs MySqlConnectionSettings, so nothing
+    # reads these keys — they are documentation of the env-var names, not live configuration.
+    # That is why the useSSL=false below is not a transport hole: the MYSQL_URL that actually
+    # reaches a connection is read from the environment by MySqlConnectionSettings.fromEnv(),
+    # which requires sslMode=VERIFY_IDENTITY for any non-loopback host. If this block is ever
+    # bound to a real properties class, the default URL must change with it.
     enabled: ${MYSQL_ENABLED:false}
     url: ${MYSQL_URL:jdbc:mysql://localhost:3306/recsys?useSSL=false&serverTimezone=UTC&connectTimeout=1000&socketTimeout=2000}
     username: ${MYSQL_USER:recsys}

@@ -1,5 +1,8 @@
 package com.recsys.infrastructure.persistence;
 
+import org.slf4j.Logger;
+import org.slf4j.LoggerFactory;
+
 import java.nio.charset.StandardCharsets;
 import java.util.Map;
 import java.util.Objects;
@@ -22,6 +25,7 @@ public record MySqlConnectionSettings(
         long retryBackoffMillis,
         String cursorSigningKey
 ) {
+    private static final Logger log = LoggerFactory.getLogger(MySqlConnectionSettings.class);
     private static final String DEFAULT_URL =
             "jdbc:mysql://localhost:3306/recsys?useSSL=false&serverTimezone=UTC"
                     + "&connectTimeout=1000&socketTimeout=2000";
@@ -29,7 +33,35 @@ public record MySqlConnectionSettings(
             "(?i)([?&;](?:user|password)=)[^&;]*");
     private static final Pattern URL_USER_INFO = Pattern.compile(
             "(?i)(jdbc:mysql://)[^/?;]*@(?=[^/?;]+)");
-    private static final Pattern URL_SSL_MODE = Pattern.compile("(?i)[?&;]sslMode=([^&;]*)");
+    /**
+     * Tokenized exactly the way Connector/J 8.4 tokenizes a JDBC URL's property block, because a
+     * guard that reads the URL more loosely than the driver does accepts URLs the driver runs at
+     * {@code PREFERRED}. Both divergences were measured against
+     * {@code ConnectionUrl.getConnectionUrlInstance}:
+     *
+     * <ul>
+     *   <li><b>The property name is case-sensitive.</b> {@code ?sslmode=verify_identity} and
+     *       {@code ?SSLMODE=VERIFY_IDENTITY} resolve to {@code PREFERRED} — Connector/J drops an
+     *       unknown property without an exception, so a wrong-case key is silent. Matching it
+     *       case-insensitively made the guard accept exactly those spellings. No {@code (?i)}
+     *       here, therefore; the <i>value</i> stays case-insensitive below because
+     *       {@code sslMode=verify_identity} does resolve to {@code VERIFY_IDENTITY}.</li>
+     *   <li><b>{@code ;} does not separate properties.</b>
+     *       {@code ?connectionAttributes=x;sslMode=VERIFY_IDENTITY} is one property named
+     *       {@code connectionAttributes} whose value happens to contain the text
+     *       {@code sslMode=VERIFY_IDENTITY}; the effective mode is {@code PREFERRED}. So the
+     *       separator class is {@code [?&]} and the value class runs to the next {@code &}.</li>
+     * </ul>
+     *
+     * <p>{@link #URL_USE_SSL} deliberately keeps both {@code (?i)} and {@code ;}: that pattern
+     * only ever causes a rejection, so over-matching it fails closed.
+     *
+     * <p><b>Kept in sync by hand with {@code MySqlTlsManifestTest}</b>, which applies the same
+     * rules to {@code k8s/base}'s {@code MYSQL_URL}. Change one and change the other: a
+     * conformance test cannot catch a flaw it shares with the thing it checks, which is how both
+     * divergences above survived review in both places at once.
+     */
+    private static final Pattern URL_SSL_MODE = Pattern.compile("[?&]sslMode=([^&]*)");
     private static final Pattern URL_USE_SSL = Pattern.compile("(?i)[?&;]useSSL=");
     private static final Pattern URL_HOST = Pattern.compile("(?i)jdbc:mysql://([^/?;]+)");
 
@@ -108,11 +140,15 @@ public record MySqlConnectionSettings(
      *
      * <p>Loopback hosts are exempt in full, including the {@code useSSL} rejection — a loopback
      * connection has no network segment to intercept, and {@code application.yml}'s local default
-     * carries {@code useSSL=false}. This is deliberately a host test rather than an opt-out flag:
+     * carries {@code useSSL=false}. Taking the exemption logs one INFO line, so an unverified
+     * connection is never silent. This is deliberately a host test rather than an opt-out flag:
      * the host in Kubernetes is {@code mysql} or an RDS endpoint, so no manifest can reach it.
      */
     private static void requireVerifiedTransport(String url) {
         if (isLoopback(url)) {
+            log.info("MYSQL_URL points at a loopback host; skipping the sslMode=VERIFY_IDENTITY "
+                    + "requirement for this connection. A loopback connection has no network "
+                    + "segment to intercept. This exemption cannot be reached in Kubernetes.");
             return;
         }
         if (URL_USE_SSL.matcher(url).find()) {
@@ -143,12 +179,31 @@ public record MySqlConnectionSettings(
                         + "protected one.");
     }
 
+    /**
+     * True only when <em>every</em> host in the authority is loopback.
+     *
+     * <p>Connector/J accepts a comma-separated host list and fails over across it, so
+     * {@code jdbc:mysql://localhost:3306,db.prod.internal/recsys} is a connection that can land on
+     * {@code db.prod.internal} — measured: the driver parses two hosts from it. Testing only the
+     * last host, or only the first, would exempt that URL from the TLS requirement and let the
+     * failover leg run in plaintext.
+     */
     private static boolean isLoopback(String url) {
         Matcher host = URL_HOST.matcher(url);
         if (!host.find()) {
             return false;
         }
-        String authority = host.group(1);
+        String[] hosts = host.group(1).split(",", -1);
+        for (String each : hosts) {
+            if (!isLoopbackHost(each)) {
+                return false;
+            }
+        }
+        return true;
+    }
+
+    private static boolean isLoopbackHost(String hostAndPort) {
+        String authority = hostAndPort.trim();
         int colon = authority.lastIndexOf(':');
         String hostOnly = colon > 0 && authority.indexOf(']') < colon
                 ? authority.substring(0, colon)

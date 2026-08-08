@@ -222,6 +222,50 @@ class MySqlConnectionSettingsTest {
                     .isInstanceOf(IllegalArgumentException.class)
                     .hasMessageContaining("sslMode=VERIFY_IDENTITY");
         }
+
+        // Connector/J property names are case-sensitive and an unknown property is dropped without
+        // an exception, so both of these resolve to PREFERRED. Measured against 8.4.0. "sslmode="
+        // is the spelling libpq and the MySQL CLI use, so it is the likely operator typo, and it
+        // produces no second signal anywhere — the URL reads correct and the pod starts.
+        for (String key : new String[]{"sslmode", "SSLMODE", "SslMode", "sslModE"}) {
+            assertThatThrownBy(() -> enabledWithUrl(
+                    "jdbc:mysql://db.internal:3306/recsys?" + key + "=VERIFY_IDENTITY"))
+                    .as("%s= is not the property Connector/J reads; it must be rejected", key)
+                    .isInstanceOf(IllegalArgumentException.class)
+                    .hasMessageContaining("sslMode=VERIFY_IDENTITY");
+        }
+        assertThatThrownBy(() -> enabledWithUrl(
+                "jdbc:mysql://db.internal:3306/recsys?sslmode=verify_identity"))
+                .isInstanceOf(IllegalArgumentException.class)
+                .hasMessageContaining("sslMode=VERIFY_IDENTITY");
+    }
+
+    @Test
+    void theSslModeValueMayBeAnyCaseBecauseTheDriverResolvesItThatWay() {
+        // Only the *name* is case-sensitive to Connector/J. sslMode=verify_identity resolves to the
+        // VERIFY_IDENTITY enum constant (measured), so rejecting it would be a false alarm.
+        assertThat(enabledWithUrl("jdbc:mysql://db.internal:3306/recsys?sslMode=verify_identity")
+                .enabled()).isTrue();
+    }
+
+    @Test
+    void rejectsASslModeHiddenInsideAnotherPropertysValue() {
+        // Connector/J splits the property block on '&' alone; ';' separates nothing. This URL is
+        // one property named connectionAttributes whose value is the text
+        // "x;sslMode=VERIFY_IDENTITY", so the effective sslMode is PREFERRED. Measured against
+        // 8.4.0, which raises no error.
+        assertThatThrownBy(() -> enabledWithUrl(
+                "jdbc:mysql://db.prod/recsys?connectionAttributes=x;sslMode=VERIFY_IDENTITY"))
+                .isInstanceOf(IllegalArgumentException.class)
+                .hasMessageContaining("sslMode=VERIFY_IDENTITY");
+
+        // Same reason with the operands swapped: the driver reads the value as
+        // "VERIFY_IDENTITY;connectionAttributes=x" and rejects it as not a legal sslMode. Failing
+        // here rather than at first connection keeps the guard and the driver in agreement.
+        assertThatThrownBy(() -> enabledWithUrl(
+                "jdbc:mysql://db.prod/recsys?sslMode=VERIFY_IDENTITY;connectionAttributes=x"))
+                .isInstanceOf(IllegalArgumentException.class)
+                .hasMessageContaining("sslMode=VERIFY_IDENTITY");
     }
 
     @Test
@@ -275,6 +319,25 @@ class MySqlConnectionSettingsTest {
         // exemption has to cover the useSSL rejection too, not only the sslMode rule.
         assertThat(enabledWithUrl("jdbc:mysql://localhost:3306/recsys?useSSL=false"
                 + "&serverTimezone=UTC&connectTimeout=1000&socketTimeout=2000").enabled()).isTrue();
+    }
+
+    @Test
+    void aMultiHostUrlIsExemptOnlyIfEveryHostIsLoopback() {
+        // Connector/J accepts a comma-separated host list and fails over across it — measured: it
+        // parses two hosts from this URL. An exemption that inspected only one of them would let
+        // the db.prod.internal leg run in plaintext.
+        assertThatThrownBy(() -> enabledWithUrl(
+                "jdbc:mysql://localhost:3306,db.prod.internal/recsys"))
+                .isInstanceOf(IllegalArgumentException.class)
+                .hasMessageContaining("sslMode=VERIFY_IDENTITY");
+        assertThatThrownBy(() -> enabledWithUrl(
+                "jdbc:mysql://db.prod.internal,localhost:3306/recsys"))
+                .isInstanceOf(IllegalArgumentException.class)
+                .hasMessageContaining("sslMode=VERIFY_IDENTITY");
+
+        // All-loopback stays exempt: this is the local dev shape, not a production one.
+        assertThat(enabledWithUrl("jdbc:mysql://localhost:3306,127.0.0.1:3307/recsys").enabled())
+                .isTrue();
     }
 
     @Test

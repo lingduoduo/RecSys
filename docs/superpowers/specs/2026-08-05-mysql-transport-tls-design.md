@@ -116,6 +116,15 @@ The test earns its place separately from the code guard: the guard protects a ru
 only a manifest test catches a URL that would otherwise fail at deploy time rather than review time.
 It goes in the `resilience` profile, which is what the PR gate runs.
 
+**What it is not.** The test applies the same matching rules the guard does, from a duplicated copy
+of the same two patterns, so it cannot catch a flaw in those rules — it only catches a manifest that
+breaks them. Two such flaws shipped and survived independent reviews of each file: matching the
+property name case-insensitively, when Connector/J's names are case-sensitive and it drops an
+unknown one silently, and treating `;` as a property separator, when Connector/J splits the property
+block on `&` alone. Both made the pair accept a URL that runs at `PREFERRED`. Both files now carry a
+comment naming the other, and the rules are pinned by fixtures measured against the real driver
+rather than by reading the documentation.
+
 ## Consequences
 
 **This makes the base manifest un-applyable against a plaintext MySQL, once MySQL is enabled.** If
@@ -148,6 +157,16 @@ stated here so a green suite is not mistaken for a working connection.
   working.
 - A non-loopback host with no `sslMode` is rejected, so the exemption is scoped rather than
   effectively universal.
+- `sslmode=`, `SSLMODE=`, `SslMode=` and `sslModE=` are each rejected — Connector/J reads none of
+  them and runs at `PREFERRED` — while the *value* stays case-insensitive, because
+  `sslMode=verify_identity` does resolve to `VERIFY_IDENTITY` in the driver.
+- `?connectionAttributes=x;sslMode=VERIFY_IDENTITY` is rejected: to the driver that is a single
+  `connectionAttributes` property and the effective mode is `PREFERRED`.
+- A multi-host URL is exempt only when every host is loopback, so
+  `jdbc:mysql://localhost:3306,db.prod.internal/recsys` — which Connector/J parses as two hosts and
+  fails over across — is rejected.
+- `MySqlTlsManifestTest` carries the same fixtures against its own copy of the patterns, since every
+  URL in `k8s/base` is correct and nothing there exercises the rejection side.
 
 ## Documentation
 
