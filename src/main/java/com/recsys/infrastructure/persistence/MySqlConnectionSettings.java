@@ -3,6 +3,7 @@ package com.recsys.infrastructure.persistence;
 import java.nio.charset.StandardCharsets;
 import java.util.Map;
 import java.util.Objects;
+import java.util.regex.Matcher;
 import java.util.regex.Pattern;
 
 /**
@@ -28,6 +29,9 @@ public record MySqlConnectionSettings(
             "(?i)([?&;](?:user|password)=)[^&;]*");
     private static final Pattern URL_USER_INFO = Pattern.compile(
             "(?i)(jdbc:mysql://)[^/?;]*@(?=[^/?;]+)");
+    private static final Pattern URL_SSL_MODE = Pattern.compile("(?i)[?&;]sslMode=([^&;]*)");
+    private static final Pattern URL_USE_SSL = Pattern.compile("(?i)[?&;]useSSL=");
+    private static final Pattern URL_HOST = Pattern.compile("(?i)jdbc:mysql://([^/?;]+)");
 
     public MySqlConnectionSettings {
         url = normalizeUrl(url);
@@ -43,6 +47,9 @@ public record MySqlConnectionSettings(
         if (enabled && cursorSigningKey.getBytes(StandardCharsets.UTF_8).length < 32) {
             throw new IllegalArgumentException(
                     "MYSQL_CURSOR_SIGNING_KEY must contain at least 32 UTF-8 bytes when MySQL is enabled");
+        }
+        if (enabled) {
+            requireVerifiedTransport(url);
         }
     }
 
@@ -85,6 +92,70 @@ public record MySqlConnectionSettings(
     @Override
     public String toString() {
         return safeDescription();
+    }
+
+    /**
+     * Refuses a connection that would not verify the server it talks to.
+     *
+     * <p>Connector/J 8 defaults to {@code sslMode=PREFERRED}: it negotiates TLS when the server
+     * offers it, verifies no certificate, and falls back to plaintext in silence. From here a
+     * plaintext connection is indistinguishable from an encrypted one, which is why this refuses
+     * rather than warns — the same reasoning as {@code LettuceClientFactory.requireAuthentication}.
+     *
+     * <p>{@code VERIFY_IDENTITY} rather than {@code REQUIRED} because REQUIRED encrypts without
+     * verifying, which stops silent plaintext but not an active man-in-the-middle. Against RDS it
+     * costs no extra provisioning: Amazon's CAs are already in the JVM truststore.
+     *
+     * <p>Loopback hosts are exempt in full, including the {@code useSSL} rejection — a loopback
+     * connection has no network segment to intercept, and {@code application.yml}'s local default
+     * carries {@code useSSL=false}. This is deliberately a host test rather than an opt-out flag:
+     * the host in Kubernetes is {@code mysql} or an RDS endpoint, so no manifest can reach it.
+     */
+    private static void requireVerifiedTransport(String url) {
+        if (isLoopback(url)) {
+            return;
+        }
+        if (URL_USE_SSL.matcher(url).find()) {
+            throw new IllegalArgumentException(
+                    "MYSQL_URL uses the deprecated useSSL property; MySQL Connector/J 8 lets "
+                            + "sslMode override it silently. Remove useSSL and set "
+                            + "sslMode=VERIFY_IDENTITY.");
+        }
+        Matcher modes = URL_SSL_MODE.matcher(url);
+        boolean sawMode = false;
+        while (modes.find()) {
+            sawMode = true;
+            if (!"VERIFY_IDENTITY".equalsIgnoreCase(modes.group(1).trim())) {
+                throw verifyIdentityRequired();
+            }
+        }
+        if (!sawMode) {
+            throw verifyIdentityRequired();
+        }
+    }
+
+    private static IllegalArgumentException verifyIdentityRequired() {
+        return new IllegalArgumentException(
+                "MYSQL_URL must set sslMode=VERIFY_IDENTITY when MySQL is enabled. Connector/J "
+                        + "defaults to PREFERRED, which falls back to plaintext without error and "
+                        + "verifies no certificate, so the connection carrying catalog rows, outbox "
+                        + "events and saga state would be unprotected and look identical to a "
+                        + "protected one.");
+    }
+
+    private static boolean isLoopback(String url) {
+        Matcher host = URL_HOST.matcher(url);
+        if (!host.find()) {
+            return false;
+        }
+        String authority = host.group(1);
+        int colon = authority.lastIndexOf(':');
+        String hostOnly = colon > 0 && authority.indexOf(']') < colon
+                ? authority.substring(0, colon)
+                : authority;
+        return hostOnly.equalsIgnoreCase("localhost")
+                || hostOnly.equals("127.0.0.1")
+                || hostOnly.equals("[::1]");
     }
 
     private static String redactUrlCredentials(String url) {

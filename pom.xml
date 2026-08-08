@@ -442,6 +442,10 @@
                      does not actually provide. -->
                 <include>**/docs/DocumentationIndexTest.java</include>
                 <include>**/docs/DocumentedMechanismTest.java</include>
+                <!-- The MySQL connection carries catalog rows, outbox events and saga state.
+                     Connector/J defaults to a mode that falls back to plaintext without error,
+                     so the transport requirement is only real if something pins it. -->
+                <include>**/persistence/MySqlConnectionSettingsTest.java</include>
               </includes>
               <excludedGroups>load,docker</excludedGroups>
             </configuration>

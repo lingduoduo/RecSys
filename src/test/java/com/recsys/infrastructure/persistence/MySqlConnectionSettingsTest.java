@@ -27,7 +27,7 @@ class MySqlConnectionSettingsTest {
     void fromEnv_readsExplicitMysqlSettings() {
         MySqlConnectionSettings settings = MySqlConnectionSettings.fromEnv(Map.of(
                 "MYSQL_ENABLED", "true",
-                "MYSQL_URL", "jdbc:mysql://db.internal:3306/recsys",
+                "MYSQL_URL", "jdbc:mysql://db.internal:3306/recsys?sslMode=VERIFY_IDENTITY",
                 "MYSQL_USER", "app",
                 "MYSQL_PASSWORD", "secret",
                 "MYSQL_QUERY_TIMEOUT_SECONDS", "10",
@@ -37,7 +37,7 @@ class MySqlConnectionSettingsTest {
         ));
 
         assertThat(settings.enabled()).isTrue();
-        assertThat(settings.url()).isEqualTo("jdbc:mysql://db.internal:3306/recsys");
+        assertThat(settings.url()).isEqualTo("jdbc:mysql://db.internal:3306/recsys?sslMode=VERIFY_IDENTITY");
         assertThat(settings.username()).isEqualTo("app");
         assertThat(settings.password()).isEqualTo("secret");
         assertThat(settings.queryTimeoutSeconds()).isEqualTo(10);
@@ -53,7 +53,7 @@ class MySqlConnectionSettingsTest {
     void descriptions_doNotExposePasswordOrCursorSigningKey() {
         MySqlConnectionSettings settings = new MySqlConnectionSettings(
                 true,
-                "jdbc:mysql://db.internal:3306/catalog",
+                "jdbc:mysql://db.internal:3306/catalog?sslMode=VERIFY_IDENTITY",
                 "app",
                 "record-password",
                 2,
@@ -73,7 +73,8 @@ class MySqlConnectionSettingsTest {
     void safeDescription_redactsJdbcUrlCredentialsButPreservesLocation() {
         MySqlConnectionSettings settings = new MySqlConnectionSettings(
                 false,
-                "jdbc:mysql://db.internal:3306/catalog?user=url-user&password=url-password&useSSL=true",
+                "jdbc:mysql://db.internal:3306/catalog?user=url-user&password=url-password"
+                        + "&sslMode=VERIFY_IDENTITY",
                 "app",
                 "record-password",
                 2,
@@ -83,7 +84,7 @@ class MySqlConnectionSettingsTest {
 
         assertThat(settings.safeDescription())
                 .contains("jdbc:mysql://db.internal:3306/catalog")
-                .contains("useSSL=true")
+                .contains("sslMode=VERIFY_IDENTITY")
                 .doesNotContain("url-user")
                 .doesNotContain("url-password")
                 .doesNotContain("record-password");
@@ -142,7 +143,7 @@ class MySqlConnectionSettingsTest {
     void fromEnv_preservesWhitespacePasswordWhenEnabled() {
         MySqlConnectionSettings settings = MySqlConnectionSettings.fromEnv(Map.of(
                 "MYSQL_ENABLED", "true",
-                "MYSQL_URL", "jdbc:mysql://db/catalog", "MYSQL_USER", "app",
+                "MYSQL_URL", "jdbc:mysql://db/catalog?sslMode=VERIFY_IDENTITY", "MYSQL_USER", "app",
                 "MYSQL_PASSWORD", "   ",
                 "MYSQL_CURSOR_SIGNING_KEY", "0123456789abcdef0123456789abcdef"));
 
@@ -201,5 +202,91 @@ class MySqlConnectionSettingsTest {
 
     private static MySqlConnectionSettings settingsWith(String name, String value) {
         return MySqlConnectionSettings.fromEnv(Map.of(name, value));
+    }
+
+    @Test
+    void rejectsAnEnabledConnectionThatDoesNotVerifyTls() {
+        assertThatThrownBy(() -> enabledWithUrl("jdbc:mysql://db.internal:3306/recsys"))
+                .isInstanceOf(IllegalArgumentException.class)
+                .hasMessageContaining("sslMode=VERIFY_IDENTITY");
+    }
+
+    @Test
+    void rejectsEverySslModeWeakerThanVerifyIdentity() {
+        // PREFERRED is Connector/J 8's default and the reason this guard exists: it negotiates TLS
+        // if offered, verifies no certificate, and falls back to plaintext in silence.
+        for (String mode : new String[]{"DISABLED", "PREFERRED", "REQUIRED", "VERIFY_CA"}) {
+            assertThatThrownBy(() -> enabledWithUrl(
+                    "jdbc:mysql://db.internal:3306/recsys?sslMode=" + mode))
+                    .as("sslMode=%s must be rejected", mode)
+                    .isInstanceOf(IllegalArgumentException.class)
+                    .hasMessageContaining("sslMode=VERIFY_IDENTITY");
+        }
+    }
+
+    @Test
+    void acceptsVerifyIdentity() {
+        MySqlConnectionSettings settings =
+                enabledWithUrl("jdbc:mysql://db.internal:3306/recsys?sslMode=VERIFY_IDENTITY");
+        assertThat(settings.url()).contains("sslMode=VERIFY_IDENTITY");
+    }
+
+    @Test
+    void rejectsTheDeprecatedUseSslPropertyEvenAlongsideVerifyIdentity() {
+        // Where both appear, Connector/J lets sslMode win — so a URL carrying both reads as one
+        // thing and behaves as another. Refusing the ambiguity is cheaper than resolving it.
+        assertThatThrownBy(() -> enabledWithUrl(
+                "jdbc:mysql://db.internal:3306/recsys?useSSL=true&sslMode=VERIFY_IDENTITY"))
+                .isInstanceOf(IllegalArgumentException.class)
+                .hasMessageContaining("useSSL");
+    }
+
+    @Test
+    void rejectsDisagreeingDuplicateSslModes() {
+        assertThatThrownBy(() -> enabledWithUrl(
+                "jdbc:mysql://db.internal:3306/recsys?sslMode=VERIFY_IDENTITY&sslMode=DISABLED"))
+                .isInstanceOf(IllegalArgumentException.class)
+                .hasMessageContaining("sslMode=VERIFY_IDENTITY");
+    }
+
+    @Test
+    void aDisabledConnectionIsNotSubjectToTheTransportRule() {
+        // The disabled case must stay inert: MYSQL_ENABLED=false is the default in k8s/base, and a
+        // guard that fired here would stop every service from starting.
+        MySqlConnectionSettings settings = new MySqlConnectionSettings(
+                false, "jdbc:mysql://db.internal:3306/recsys", "app", "", 2, 2, 50, "");
+        assertThat(settings.enabled()).isFalse();
+    }
+
+    @Test
+    void loopbackHostsAreExemptFromTheTransportRule() {
+        // Not an opt-out: a loopback connection has no network segment to intercept, and the host
+        // in Kubernetes is "mysql" or an RDS endpoint, so this cannot be reached from a manifest.
+        for (String host : new String[]{"localhost", "127.0.0.1", "[::1]"}) {
+            assertThat(enabledWithUrl("jdbc:mysql://" + host + ":3306/recsys").enabled())
+                    .as("%s must be exempt", host)
+                    .isTrue();
+        }
+    }
+
+    @Test
+    void theLocalDevelopmentDefaultStillConstructs() {
+        // The exact URL application.yml ships. It is loopback AND carries useSSL=false, so the
+        // exemption has to cover the useSSL rejection too, not only the sslMode rule.
+        assertThat(enabledWithUrl("jdbc:mysql://localhost:3306/recsys?useSSL=false"
+                + "&serverTimezone=UTC&connectTimeout=1000&socketTimeout=2000").enabled()).isTrue();
+    }
+
+    @Test
+    void aNonLoopbackHostIsNotExempt() {
+        // Guards against an exemption written loosely enough to match everything.
+        assertThatThrownBy(() -> enabledWithUrl("jdbc:mysql://localhost.evil.example:3306/recsys"))
+                .isInstanceOf(IllegalArgumentException.class);
+    }
+
+    /** An enabled settings object with the given URL and otherwise-valid required values. */
+    private static MySqlConnectionSettings enabledWithUrl(String url) {
+        return new MySqlConnectionSettings(true, url, "app", "secret", 2, 2, 50,
+                "0123456789abcdef0123456789abcdef");
     }
 }
