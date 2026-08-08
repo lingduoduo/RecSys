@@ -7,7 +7,6 @@ import java.nio.file.Path;
 import java.util.ArrayList;
 import java.util.List;
 import java.util.Map;
-import java.util.regex.Matcher;
 import java.util.regex.Pattern;
 
 import static com.recsys.infrastructure.k8s.ManifestDocuments.allIn;
@@ -34,19 +33,21 @@ class MySqlTlsManifestTest {
     private static final Path BASE = Path.of("k8s", "base");
     private static final String KEY = "MYSQL_URL";
     private static final String REQUIRED_MODE = "VERIFY_IDENTITY";
+    private static final String SSL_MODE_PROPERTY = "sslMode";
     /**
-     * Deliberately identical to {@code MySqlConnectionSettings.URL_SSL_MODE} /
-     * {@code URL_USE_SSL}, <b>and kept in sync with them by hand</b> — see that class for why the
-     * property name is matched case-sensitively (Connector/J drops {@code sslmode=} /
-     * {@code SSLMODE=} silently and runs at {@code PREFERRED}) and why {@code ;} separates
-     * nothing (Connector/J splits the property block on {@code &} alone).
+     * Deliberately identical to {@code MySqlConnectionSettings.URL_USE_SSL}, and this file's
+     * {@link #sslModeValues} is deliberately identical to that class's method of the same name —
+     * <b>all kept in sync by hand</b>. See that class for why the property name is compared
+     * case-sensitively (Connector/J drops {@code sslmode=} / {@code SSLMODE=} silently and runs at
+     * {@code PREFERRED}), why neither {@code ;} nor a second {@code ?} separates anything
+     * (Connector/J opens the property block at the first {@code ?} and splits it on {@code &}
+     * alone), and which one step of the driver's parse is deliberately not reproduced.
      *
      * <p>That shared logic is the reason this test is not a safety net for the guard: it checks
      * the manifest against the same rules the guard applies, so a flaw in the rules is invisible
-     * to both. Two divergences from the real driver survived independent reviews of each file
-     * precisely this way. When either pattern changes, change the other in the same commit.
+     * to both. Three divergences from the real driver survived independent reviews of each file
+     * precisely this way. When either copy changes, change the other in the same commit.
      */
-    private static final Pattern SSL_MODE = Pattern.compile("[?&]sslMode=([^&]*)");
     private static final Pattern USE_SSL = Pattern.compile("(?i)[?&;]useSSL=");
 
     @Test
@@ -98,6 +99,13 @@ class MySqlTlsManifestTest {
                 // Same reason, other order: the driver reads the value as
                 // "VERIFY_IDENTITY;connectionAttributes=x" and rejects it outright.
                 "jdbc:mysql://db.prod/recsys?sslMode=VERIFY_IDENTITY;connectionAttributes=x",
+                // A second '?' separates nothing either: only the first one opens the property
+                // block. This is k8s/base's own URL with one '&' mistyped as '?' — one property
+                // named serverTimezone, effective PREFERRED. Measured against 8.4.0.
+                "jdbc:mysql://mysql:3306/recsys?serverTimezone=UTC?sslMode=VERIFY_IDENTITY",
+                "jdbc:mysql://mysql:3306/recsys?connectionAttributes=a?sslMode=VERIFY_IDENTITY",
+                // '#' opens a fragment the driver discards before it reads any property.
+                "jdbc:mysql://db.prod/recsys?a=b#&sslMode=VERIFY_IDENTITY",
                 // Deprecated useSSL, which sslMode silently overrides.
                 "jdbc:mysql://db.prod/recsys?useSSL=true&sslMode=VERIFY_IDENTITY",
                 // Disagreeing duplicates.
@@ -114,6 +122,11 @@ class MySqlTlsManifestTest {
                 // The value is safe to compare case-insensitively: the driver resolves this to
                 // the VERIFY_IDENTITY enum constant.
                 "jdbc:mysql://db.prod/recsys?sslMode=verify_identity",
+                // Both orders around a second property, and the correctly-typed twin of the
+                // '?'-separated fixtures above: the driver resolves all three to VERIFY_IDENTITY.
+                "jdbc:mysql://db.prod/recsys?a=b&sslMode=VERIFY_IDENTITY",
+                "jdbc:mysql://db.prod/recsys?sslMode=VERIFY_IDENTITY&a=b",
+                "jdbc:mysql://mysql:3306/recsys?serverTimezone=UTC&sslMode=VERIFY_IDENTITY",
                 "jdbc:mysql://mysql:3306/recsys?sslMode=VERIFY_IDENTITY&serverTimezone=UTC"
                         + "&connectTimeout=1000&socketTimeout=2000");
 
@@ -130,19 +143,37 @@ class MySqlTlsManifestTest {
             problems.add(where + " uses the deprecated useSSL property; sslMode overrides it "
                     + "silently, so the URL reads as one thing and behaves as another");
         }
-        Matcher modes = SSL_MODE.matcher(url);
-        boolean sawMode = false;
-        while (modes.find()) {
-            sawMode = true;
-            if (!REQUIRED_MODE.equalsIgnoreCase(modes.group(1).trim())) {
-                problems.add(where + " sets sslMode=" + modes.group(1)
-                        + ", which does not verify the server");
+        List<String> modes = sslModeValues(url);
+        for (String mode : modes) {
+            if (!REQUIRED_MODE.equalsIgnoreCase(mode)) {
+                problems.add(where + " sets sslMode=" + mode + ", which does not verify the server");
             }
         }
-        if (!sawMode) {
+        if (modes.isEmpty()) {
             problems.add(where + " sets no sslMode; Connector/J then defaults to PREFERRED, "
                     + "which falls back to plaintext without error");
         }
         return problems;
+    }
+
+    /** The hand-kept copy of {@code MySqlConnectionSettings.sslModeValues} — see {@link #USE_SSL}. */
+    private static List<String> sslModeValues(String url) {
+        int fragment = url.indexOf('#');
+        String beforeFragment = fragment < 0 ? url : url.substring(0, fragment);
+        int propertyBlock = beforeFragment.indexOf('?');
+        if (propertyBlock < 0) {
+            return List.of();
+        }
+        List<String> values = new ArrayList<>();
+        for (String pair : beforeFragment.substring(propertyBlock + 1).split("&", -1)) {
+            int equals = pair.indexOf('=');
+            if (equals < 0) {
+                continue;
+            }
+            if (SSL_MODE_PROPERTY.equals(pair.substring(0, equals).trim())) {
+                values.add(pair.substring(equals + 1).trim());
+            }
+        }
+        return values;
     }
 }

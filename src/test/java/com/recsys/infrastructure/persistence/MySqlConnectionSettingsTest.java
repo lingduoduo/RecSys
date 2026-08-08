@@ -269,6 +269,49 @@ class MySqlConnectionSettingsTest {
     }
 
     @Test
+    void rejectsASslModeAfterASecondQuestionMark() {
+        // Only the *first* '?' opens the property block; a later one is an ordinary character in
+        // the value that precedes it. Measured against 8.4.0: this is one property named
+        // serverTimezone whose value is "UTC?sslMode=VERIFY_IDENTITY", and the effective mode is
+        // PREFERRED, with no driver error. It is k8s/base's own MYSQL_URL with a single '&'
+        // mistyped as '?' — a likelier slip than the ';' shape above, and just as silent.
+        assertThatThrownBy(() -> enabledWithUrl(
+                "jdbc:mysql://mysql:3306/recsys?serverTimezone=UTC?sslMode=VERIFY_IDENTITY"))
+                .isInstanceOf(IllegalArgumentException.class)
+                .hasMessageContaining("sslMode=VERIFY_IDENTITY");
+        assertThatThrownBy(() -> enabledWithUrl(
+                "jdbc:mysql://mysql:3306/recsys?connectionAttributes=a?sslMode=VERIFY_IDENTITY"))
+                .isInstanceOf(IllegalArgumentException.class)
+                .hasMessageContaining("sslMode=VERIFY_IDENTITY");
+
+        // The correctly-typed twin must still be accepted, so the fix is not just a blanket
+        // rejection of any URL containing two '?'.
+        assertThat(enabledWithUrl(
+                "jdbc:mysql://mysql:3306/recsys?serverTimezone=UTC&sslMode=VERIFY_IDENTITY")
+                .enabled()).isTrue();
+    }
+
+    @Test
+    void rejectsASslModeInsideTheUrlFragment() {
+        // '#' opens a fragment that Connector/J discards before reading any property, so this
+        // resolves to PREFERRED (measured). Same class of bug as the second '?': a character the
+        // driver treats as a delimiter and a naive tokenizer does not.
+        assertThatThrownBy(() -> enabledWithUrl("jdbc:mysql://db.prod/recsys?a=b"
+                + "#&sslMode=VERIFY_IDENTITY"))
+                .isInstanceOf(IllegalArgumentException.class)
+                .hasMessageContaining("sslMode=VERIFY_IDENTITY");
+    }
+
+    @Test
+    void acceptsSslModeInEitherPositionOfThePropertyBlock() {
+        // The driver resolves both to VERIFY_IDENTITY; neither position may be a false alarm.
+        assertThat(enabledWithUrl("jdbc:mysql://db.prod/recsys?a=b&sslMode=VERIFY_IDENTITY")
+                .enabled()).isTrue();
+        assertThat(enabledWithUrl("jdbc:mysql://db.prod/recsys?sslMode=VERIFY_IDENTITY&a=b")
+                .enabled()).isTrue();
+    }
+
+    @Test
     void acceptsVerifyIdentity() {
         MySqlConnectionSettings settings =
                 enabledWithUrl("jdbc:mysql://db.internal:3306/recsys?sslMode=VERIFY_IDENTITY");
@@ -310,7 +353,15 @@ class MySqlConnectionSettingsTest {
             assertThat(enabledWithUrl("jdbc:mysql://" + host + ":3306/recsys").enabled())
                     .as("%s must be exempt", host)
                     .isTrue();
+            assertThat(enabledWithUrl("jdbc:mysql://" + host + "/recsys").enabled())
+                    .as("%s without a port must be exempt too", host)
+                    .isTrue();
         }
+
+        // The shape Testcontainers hands a test: loopback on a mapped port, credentials in the
+        // URL. The design leans on this exemption instead of a test-only seam, so it is pinned.
+        assertThat(enabledWithUrl("jdbc:mysql://localhost:49153/test?user=x&password=y").enabled())
+                .isTrue();
     }
 
     @Test

@@ -117,13 +117,35 @@ only a manifest test catches a URL that would otherwise fail at deploy time rath
 It goes in the `resilience` profile, which is what the PR gate runs.
 
 **What it is not.** The test applies the same matching rules the guard does, from a duplicated copy
-of the same two patterns, so it cannot catch a flaw in those rules — it only catches a manifest that
-breaks them. Two such flaws shipped and survived independent reviews of each file: matching the
-property name case-insensitively, when Connector/J's names are case-sensitive and it drops an
-unknown one silently, and treating `;` as a property separator, when Connector/J splits the property
-block on `&` alone. Both made the pair accept a URL that runs at `PREFERRED`. Both files now carry a
-comment naming the other, and the rules are pinned by fixtures measured against the real driver
-rather than by reading the documentation.
+of them, so it cannot catch a flaw in those rules — it only catches a manifest that breaks them.
+Four such flaws shipped and survived independent reviews of each file, each making the pair accept
+a URL Connector/J runs at `PREFERRED`:
+
+1. Matching the property name case-insensitively, when Connector/J's names are case-sensitive and it
+   drops an unknown one silently.
+2. Treating `;` as a property separator.
+3. Treating a *second* `?` as a property separator — `?serverTimezone=UTC?sslMode=VERIFY_IDENTITY`
+   is `k8s/base`'s own URL with one `&` mistyped as `?`, and it is one `serverTimezone` property
+   whose value happens to end in `sslMode=VERIFY_IDENTITY`.
+4. Reading properties out of the URL *fragment* — `?a=b#&sslMode=VERIFY_IDENTITY`, where the driver
+   discards everything from the `#` before it reads a property.
+
+The first two were fixed with a narrower regex, which is what left 3 and 4 alive. Both files now
+tokenize instead: cut the fragment at the first `#`, take everything after the *first* `?`, split
+that on `&` alone, split each pair at its first `=`, trim name and value, compare the name
+case-sensitively and the value case-insensitively. That is Connector/J 8.4's tokenization of the
+property block, with **one step deliberately not reproduced** — the driver percent-decodes each name
+and value afterwards. Not decoding over-rejects `?sslMode=VERIFY%5FIDENTITY` (safe) and leaves one
+measured residual fail-open, `?sslMode=VERIFY_IDENTITY&%73slMode=DISABLED`; reproducing the decode
+would import `URLDecoder`'s own quirks into a guard whose job is catching operator typos, and
+percent-encoding a property name is not a typo. It is written down rather than left silent, because
+every hole this guard has had was one nobody had written down.
+
+`useSSL` is matched by a regex that still accepts `;` and any case. That one only ever causes a
+rejection, so over-matching it fails closed, and it is left loose on purpose.
+
+Both files carry a comment naming the other, and the rules are pinned by fixtures measured against
+the real driver rather than by reading the documentation.
 
 ## Consequences
 
@@ -151,7 +173,10 @@ stated here so a green suite is not mistaken for a working connection.
 - A URL carrying `useSSL` is rejected even when it also carries `sslMode=VERIFY_IDENTITY`.
 - `enabled=false` with a plaintext URL constructs fine — the disabled case must stay inert, and this
   is the assertion that would have caught the `fromEnv()` mistake above.
-- A `localhost`, `127.0.0.1` and `[::1]` URL with no `sslMode` constructs fine while enabled.
+- A `localhost`, `127.0.0.1` and `[::1]` URL with no `sslMode` constructs fine while enabled, with
+  and without a port, as does the Testcontainers shape
+  `jdbc:mysql://localhost:49153/test?user=x&password=y` — the design leans on the exemption instead
+  of a test-only seam, so that shape is pinned rather than assumed.
 - The exact local default from `application.yml` — a `localhost` URL carrying `useSSL=false` —
   constructs fine while enabled, so the configuration this repo ships for local development keeps
   working.
@@ -162,6 +187,13 @@ stated here so a green suite is not mistaken for a working connection.
   `sslMode=verify_identity` does resolve to `VERIFY_IDENTITY` in the driver.
 - `?connectionAttributes=x;sslMode=VERIFY_IDENTITY` is rejected: to the driver that is a single
   `connectionAttributes` property and the effective mode is `PREFERRED`.
+- `?serverTimezone=UTC?sslMode=VERIFY_IDENTITY` and `?connectionAttributes=a?sslMode=VERIFY_IDENTITY`
+  are rejected for the same reason — only the first `?` opens the property block — while the
+  correctly-typed `?serverTimezone=UTC&sslMode=VERIFY_IDENTITY` is accepted, so the rule is not a
+  blanket rejection of any URL containing two `?`.
+- `?a=b#&sslMode=VERIFY_IDENTITY` is rejected: the driver discards the fragment.
+- `?a=b&sslMode=VERIFY_IDENTITY` and `?sslMode=VERIFY_IDENTITY&a=b` are both accepted, so neither
+  position in the property block is a false alarm.
 - A multi-host URL is exempt only when every host is loopback, so
   `jdbc:mysql://localhost:3306,db.prod.internal/recsys` — which Connector/J parses as two hosts and
   fails over across — is rejected.

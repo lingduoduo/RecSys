@@ -4,6 +4,8 @@ import org.slf4j.Logger;
 import org.slf4j.LoggerFactory;
 
 import java.nio.charset.StandardCharsets;
+import java.util.ArrayList;
+import java.util.List;
 import java.util.Map;
 import java.util.Objects;
 import java.util.regex.Matcher;
@@ -33,35 +35,12 @@ public record MySqlConnectionSettings(
             "(?i)([?&;](?:user|password)=)[^&;]*");
     private static final Pattern URL_USER_INFO = Pattern.compile(
             "(?i)(jdbc:mysql://)[^/?;]*@(?=[^/?;]+)");
+    private static final String SSL_MODE_PROPERTY = "sslMode";
+    private static final String REQUIRED_SSL_MODE = "VERIFY_IDENTITY";
     /**
-     * Tokenized exactly the way Connector/J 8.4 tokenizes a JDBC URL's property block, because a
-     * guard that reads the URL more loosely than the driver does accepts URLs the driver runs at
-     * {@code PREFERRED}. Both divergences were measured against
-     * {@code ConnectionUrl.getConnectionUrlInstance}:
-     *
-     * <ul>
-     *   <li><b>The property name is case-sensitive.</b> {@code ?sslmode=verify_identity} and
-     *       {@code ?SSLMODE=VERIFY_IDENTITY} resolve to {@code PREFERRED} — Connector/J drops an
-     *       unknown property without an exception, so a wrong-case key is silent. Matching it
-     *       case-insensitively made the guard accept exactly those spellings. No {@code (?i)}
-     *       here, therefore; the <i>value</i> stays case-insensitive below because
-     *       {@code sslMode=verify_identity} does resolve to {@code VERIFY_IDENTITY}.</li>
-     *   <li><b>{@code ;} does not separate properties.</b>
-     *       {@code ?connectionAttributes=x;sslMode=VERIFY_IDENTITY} is one property named
-     *       {@code connectionAttributes} whose value happens to contain the text
-     *       {@code sslMode=VERIFY_IDENTITY}; the effective mode is {@code PREFERRED}. So the
-     *       separator class is {@code [?&]} and the value class runs to the next {@code &}.</li>
-     * </ul>
-     *
-     * <p>{@link #URL_USE_SSL} deliberately keeps both {@code (?i)} and {@code ;}: that pattern
-     * only ever causes a rejection, so over-matching it fails closed.
-     *
-     * <p><b>Kept in sync by hand with {@code MySqlTlsManifestTest}</b>, which applies the same
-     * rules to {@code k8s/base}'s {@code MYSQL_URL}. Change one and change the other: a
-     * conformance test cannot catch a flaw it shares with the thing it checks, which is how both
-     * divergences above survived review in both places at once.
+     * Only ever causes a rejection, so both the {@code (?i)} and the {@code ;} over-match and fail
+     * closed. Deliberately left looser than {@link #sslModeValues} for that reason.
      */
-    private static final Pattern URL_SSL_MODE = Pattern.compile("[?&]sslMode=([^&]*)");
     private static final Pattern URL_USE_SSL = Pattern.compile("(?i)[?&;]useSSL=");
     private static final Pattern URL_HOST = Pattern.compile("(?i)jdbc:mysql://([^/?;]+)");
 
@@ -157,17 +136,80 @@ public record MySqlConnectionSettings(
                             + "sslMode override it silently. Remove useSSL and set "
                             + "sslMode=VERIFY_IDENTITY.");
         }
-        Matcher modes = URL_SSL_MODE.matcher(url);
-        boolean sawMode = false;
-        while (modes.find()) {
-            sawMode = true;
-            if (!"VERIFY_IDENTITY".equalsIgnoreCase(modes.group(1).trim())) {
+        List<String> modes = sslModeValues(url);
+        if (modes.isEmpty()) {
+            throw verifyIdentityRequired();
+        }
+        for (String mode : modes) {
+            if (!REQUIRED_SSL_MODE.equalsIgnoreCase(mode)) {
                 throw verifyIdentityRequired();
             }
         }
-        if (!sawMode) {
-            throw verifyIdentityRequired();
+    }
+
+    /**
+     * Every value the URL's property block gives {@code sslMode}, tokenized the way Connector/J 8.4
+     * tokenizes that block — because a guard that reads the URL more loosely than the driver does
+     * accepts URLs the driver runs at {@code PREFERRED}, which is the whole failure this class
+     * exists to prevent. Three such divergences shipped, each measured against
+     * {@code ConnectionUrl.getConnectionUrlInstance} and each fixed here:
+     *
+     * <ul>
+     *   <li><b>Only the first {@code ?} opens the property block; a later one is an ordinary
+     *       character.</b> {@code ?serverTimezone=UTC?sslMode=VERIFY_IDENTITY} is one property
+     *       named {@code serverTimezone} whose value is {@code UTC?sslMode=VERIFY_IDENTITY}, and
+     *       the effective mode is {@code PREFERRED}. That is {@code k8s/base}'s own URL with one
+     *       {@code &} mistyped as {@code ?}. Treating {@code ?} as a separator accepted it.</li>
+     *   <li><b>{@code ;} separates nothing.</b>
+     *       {@code ?connectionAttributes=x;sslMode=VERIFY_IDENTITY} is likewise one
+     *       {@code connectionAttributes} property; effective mode {@code PREFERRED}.</li>
+     *   <li><b>The property name is case-sensitive.</b> {@code ?sslmode=verify_identity} and
+     *       {@code ?SSLMODE=VERIFY_IDENTITY} resolve to {@code PREFERRED} — Connector/J drops an
+     *       unknown property without an exception, so a wrong-case key is silent. The <i>value</i>
+     *       is compared case-insensitively by the caller, because
+     *       {@code sslMode=verify_identity} does resolve to {@code VERIFY_IDENTITY}.</li>
+     * </ul>
+     *
+     * <p>So: cut the fragment at the first {@code #}, take everything after the first {@code ?},
+     * split that on {@code &} alone, and split each pair at its first {@code =}. Name and value are
+     * both trimmed, which the driver also does ({@code ? sslMode = VERIFY_IDENTITY } resolves to
+     * {@code VERIFY_IDENTITY}). The {@code #} cut matters for the same reason as the {@code ?}
+     * one: measured, {@code ?a=b#&sslMode=VERIFY_IDENTITY} is a URL whose fragment the driver
+     * discards, leaving {@code PREFERRED}.
+     *
+     * <p><b>One step of the driver's parse is deliberately not reproduced:</b> Connector/J
+     * percent-decodes each name and value after this tokenization ({@code URLDecoder.decode}).
+     * Not decoding over-rejects {@code ?sslMode=VERIFY%5FIDENTITY}, which is safe, and leaves one
+     * residual fail-open — {@code ?sslMode=VERIFY_IDENTITY&%73slMode=DISABLED} resolves to
+     * {@code DISABLED} and is accepted here. Reproducing the decode would import
+     * {@code URLDecoder}'s own quirks (it throws on a malformed {@code %} and turns {@code +} into
+     * a space) into a guard whose job is catching operator typos, and percent-encoding a property
+     * name is not a typo. Stated rather than silently left, because every hole this guard has had
+     * was one nobody had written down.
+     *
+     * <p><b>Kept in sync by hand with {@code MySqlTlsManifestTest}</b>, which applies the same
+     * tokenization to {@code k8s/base}'s {@code MYSQL_URL}. Change one and change the other: a
+     * conformance test cannot catch a flaw it shares with the thing it checks, which is how each
+     * divergence above survived review in both places at once.
+     */
+    private static List<String> sslModeValues(String url) {
+        int fragment = url.indexOf('#');
+        String beforeFragment = fragment < 0 ? url : url.substring(0, fragment);
+        int propertyBlock = beforeFragment.indexOf('?');
+        if (propertyBlock < 0) {
+            return List.of();
         }
+        List<String> values = new ArrayList<>();
+        for (String pair : beforeFragment.substring(propertyBlock + 1).split("&", -1)) {
+            int equals = pair.indexOf('=');
+            if (equals < 0) {
+                continue;
+            }
+            if (SSL_MODE_PROPERTY.equals(pair.substring(0, equals).trim())) {
+                values.add(pair.substring(equals + 1).trim());
+            }
+        }
+        return values;
     }
 
     private static IllegalArgumentException verifyIdentityRequired() {
