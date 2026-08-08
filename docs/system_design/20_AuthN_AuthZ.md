@@ -321,10 +321,12 @@ whenever MySQL is.
 
 `VERIFY_IDENTITY` rather than `REQUIRED`: `REQUIRED` encrypts the connection but verifies no
 certificate, so it stops silent plaintext but not an active man-in-the-middle presenting any
-certificate at all. Against RDS this costs no extra provisioning — the same reasoning
-`k8s/eks/redis-elasticache-patch.yaml` records for ElastiCache's TLS, that the client verifies the
-server certificate against the JVM truststore, which already trusts the Amazon Root CA that both
-RDS and ElastiCache certificates chain to.
+certificate at all. Against RDS this costs no extra provisioning: per `MySqlConnectionSettings`'s
+javadoc, Amazon's CAs are already in the JVM truststore, so an RDS certificate verifies with no
+extra truststore work. `k8s/eks/redis-elasticache-patch.yaml` documents the same shape for the
+other data tier's TLS — that ElastiCache's certificate verifies against the JVM truststore because
+it already trusts the Amazon Root CA that ElastiCache's certificates chain to — though that file
+only speaks to ElastiCache, not RDS.
 
 Loopback hosts (`localhost`, `127.0.0.1`, `[::1]`) are exempt from the whole requirement, including
 the `useSSL` rejection. This is a host test on the URL, not an opt-out flag: the host `k8s/base`

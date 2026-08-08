@@ -120,7 +120,7 @@ real Splunk by `SplunkHecIntegrationTest` (`@Tag("docker")`) on x86_64 CI only; 
 on arm64, where `splunkd` segfaults under emulation. See
 `docs/runbooks/splunk-hec-logging.md`.
 
-`MYSQL_ENABLED` (default `"false"`) gates the durable relational path (outbox, saga, catalog reads);
+`MYSQL_ENABLED` (default `"false"`) gates the durable relational path (outbox, catalog reads);
 when it is `true`, `MYSQL_URL` must carry `sslMode=VERIFY_IDENTITY` — `MySqlConnectionSettings`'s
 compact constructor refuses to build otherwise, since Connector/J 8 otherwise defaults to
 `PREFERRED` and falls back to plaintext without error. Loopback hosts (`localhost`, `127.0.0.1`,
