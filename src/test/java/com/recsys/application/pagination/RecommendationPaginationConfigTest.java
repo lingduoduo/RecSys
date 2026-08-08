@@ -37,7 +37,11 @@ class RecommendationPaginationConfigTest {
                 name -> name.equals("RECOMMENDATION_CURSOR_SIGNING_KEY") ? "a".repeat(32) : null);
 
         assertEquals(Duration.ofSeconds(900), config.maxAge());
-        assertTrue(config.acceptLegacy());
+        // Unsigned "v2:" cursors are refused unless an operator opts back in. decodeLegacy checks
+        // no signature, no expiry, no userId binding and no query fingerprint, so a permissive
+        // default makes the signed mechanism bypassable — which is exactly how it reached
+        // production config unnoticed. Pinning the default here is what stops it drifting back.
+        assertFalse(config.acceptLegacy());
         assertEquals(500, config.maxCandidates());
     }
 

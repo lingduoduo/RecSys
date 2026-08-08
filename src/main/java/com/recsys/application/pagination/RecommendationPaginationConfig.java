@@ -38,8 +38,12 @@ public record RecommendationPaginationConfig(
                 "RECOMMENDATION_CURSOR_MAX_AGE_SECONDS", 900);
         int maxCandidates = EnvVars.readInt(env,
                 "RECOMMENDATION_PAGINATION_MAX_CANDIDATES", 500);
+        // Default false: an unsigned legacy cursor is accepted with no signature, no expiry, no
+        // userId binding and no query-fingerprint check. Signed cursors shipped 2026-07-27 and
+        // expire in 900s, so nothing a live client holds can be legacy. The variable remains as an
+        // escape hatch — see docs/system_design/19_Pagination.md.
         boolean acceptLegacy = strictBoolean(env,
-                "RECOMMENDATION_CURSOR_ACCEPT_LEGACY", true);
+                "RECOMMENDATION_CURSOR_ACCEPT_LEGACY", false);
         return new RecommendationPaginationConfig(
                 env.get("RECOMMENDATION_CURSOR_SIGNING_KEY"),
                 env.get("RECOMMENDATION_CURSOR_PREVIOUS_KEY"),
