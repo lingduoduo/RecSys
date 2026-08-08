@@ -27,7 +27,8 @@ public class FeatureFlagConfig {
         PostHog postHog = properties.getPostHog();
         if (postHog.isEnabled() && postHog.getApiKey() != null && !postHog.getApiKey().isBlank()) {
             FeatureFlagProvider raw = new PostHogFeatureFlagProvider(
-                    postHog.getApiKey(), postHog.getHost(), postHog.getTimeout());
+                    postHog.getApiKey(), postHog.getDistinctIdSalt(),
+                    postHog.getHost(), postHog.getTimeout());
             providers.add(new CachingFeatureFlagProvider(raw, postHog.getCacheTtl()));
         }
         return new CompositeFeatureFlagProvider(providers);
@@ -51,6 +52,7 @@ public class FeatureFlagConfig {
     public static class PostHog {
         private boolean enabled;
         private String apiKey;
+        private String distinctIdSalt;
         private URI host = URI.create("https://us.i.posthog.com");
         private Duration timeout = Duration.ofSeconds(2);
         private Duration cacheTtl = Duration.ofMinutes(1);
@@ -59,6 +61,8 @@ public class FeatureFlagConfig {
         public void setEnabled(boolean enabled) { this.enabled = enabled; }
         public String getApiKey() { return apiKey; }
         public void setApiKey(String apiKey) { this.apiKey = apiKey; }
+        public String getDistinctIdSalt() { return distinctIdSalt; }
+        public void setDistinctIdSalt(String distinctIdSalt) { this.distinctIdSalt = distinctIdSalt; }
         public URI getHost() { return host; }
         public void setHost(URI host) { this.host = host; }
         public Duration getTimeout() { return timeout; }
