@@ -256,6 +256,38 @@ The implementation is covered by:
 - Existing catalog traversal, cursor-security, and real MySQL `EXPLAIN`
   index-contract regression tests.
 
+## 9. Legacy cursor retirement
+
+Unsigned `v2:` cursors are **refused by default**. The `RECOMMENDATION_CURSOR_ACCEPT_LEGACY`
+variable re-admits them and exists only as an escape hatch for operational recovery, not as a
+supported feature.
+
+The legacy decoding path validates only:
+- Format structure (`v2:` prefix and score-vs-itemId colon separator).
+- Finite scores.
+- Strict UTF-8.
+
+It skips:
+- **No HMAC signature** — any binary payload is accepted.
+- **No expiry timestamp** — cursors remain valid indefinitely.
+- **No user ID binding** — a cursor issued for one user is accepted for any user on any device.
+- **No query fingerprint** — cursors from one query (exclusions, filters) are accepted for another.
+
+Flipping the default to false was safe because:
+- Signed cursors shipped 2026-07-27.
+- Signed cursors expire after 900 seconds.
+- Nothing in the codebase issues legacy cursors — only clients do.
+- Consequently, only holders of unsigned cursors from builds released nine days before 2026-07-27
+  or earlier are affected; such a build is operationally archived.
+
+The permissive default reached production unnoticed because both the code default and the manifest
+said `true`, making the signed mechanism opt-out. Pinning the default here prevents it drifting
+backward.
+
+`decodeLegacy` remains in the codebase — removing it is a later cleanup once the flag has remained
+false through a release. The bypass is one configuration flip away, accessible to an operator via
+`kubectl set env` or a ConfigMap patch.
+
 ## Sharp edges — notes
 
 1. **Live keyset is not snapshot pagination.** Stable tuple ordering does not

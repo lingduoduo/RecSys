@@ -53,7 +53,9 @@ data:
   # All recommendation-serving workloads/regions share these non-secret cursor settings.
   # Active and previous key material comes from the same recsys-secrets keys in each workload.
   RECOMMENDATION_CURSOR_MAX_AGE_SECONDS: "900"
-  RECOMMENDATION_CURSOR_ACCEPT_LEGACY: "true"
+  # Unsigned "v2:" cursors are refused. Set to "true" only to re-admit cursors issued before
+  # 2026-07-27; the legacy path validates no signature, expiry, user binding or query fingerprint.
+  RECOMMENDATION_CURSOR_ACCEPT_LEGACY: "false"
   RECOMMENDATION_PAGINATION_MAX_CANDIDATES: "500"
   RECSYS_HEALTH_MAX_CONCURRENT_REQUESTS: "64"
   RECSYS_HEALTH_MAX_IN_FLIGHT_UTILIZATION: "0.95"

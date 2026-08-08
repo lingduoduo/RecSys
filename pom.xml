@@ -429,6 +429,10 @@
                 <!-- The only path that sends an application user identifier to a third party.
                      Pins that PostHog receives a salted digest and never the userId itself. -->
                 <include>**/featureflags/providers/PostHogFeatureFlagProviderTest.java</include>
+                <!-- Pins RECOMMENDATION_CURSOR_ACCEPT_LEGACY=false. The legacy cursor path
+                     validates no signature, expiry, user binding or query fingerprint, and a
+                     permissive default is how it reached production config unnoticed. -->
+                <include>**/pagination/RecommendationPaginationConfigTest.java</include>
                 <!-- Not resilience tests. This profile is what the PR gate runs
                      (.github/workflows/resilience-pr.yml), so it is the only place a
                      deterministic check can block a merge. Everything listed here is pure
