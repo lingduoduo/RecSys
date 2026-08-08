@@ -47,11 +47,16 @@ Out of scope:
 **When MySQL is enabled, the effective `sslMode` must be `VERIFY_IDENTITY`.**
 
 `VERIFY_IDENTITY` rather than `REQUIRED` because `REQUIRED` encrypts without verifying, which stops
-silent plaintext but not an active man-in-the-middle. It costs no extra provisioning if MySQL is
-RDS: Amazon's CAs are already in the JVM truststore, which is the same reasoning
-`k8s/eks/redis-elasticache-patch.yaml` records for verifying ElastiCache against the default
-truststore. Against a self-hosted server with a self-signed certificate it fails immediately — an
-honest failure that says the connection was never protected.
+silent plaintext but not an active man-in-the-middle.
+
+It costs no extra provisioning if MySQL is RDS, whose certificates chain to Amazon Root CAs that a
+modern JVM truststore already carries. The repo has a precedent for relying on that property, though
+for a different service: `k8s/eks/redis-elasticache-patch.yaml` records the same reasoning for
+verifying **ElastiCache** against the default truststore. It says nothing about RDS — the parallel
+is the argument, not the citation.
+
+Against a self-hosted server with a self-signed certificate it fails immediately — an honest failure
+that says the connection was never protected.
 
 Rejected: `sslMode` **absent** (the `PREFERRED` default is the whole finding), `DISABLED`,
 `PREFERRED`, `REQUIRED`, `VERIFY_CA`. If `sslMode` appears more than once, every occurrence must be
