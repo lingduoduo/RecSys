@@ -141,20 +141,17 @@ metadata:
   # selects pods. Without them the ServiceMonitor matches nothing and scrapes nothing.
   labels:
     app: recsys-api-gateway
-  annotations:
-    service.beta.kubernetes.io/aws-load-balancer-type: external
-    service.beta.kubernetes.io/aws-load-balancer-nlb-target-type: ip
-    service.beta.kubernetes.io/aws-load-balancer-scheme: internet-facing
-    service.beta.kubernetes.io/aws-load-balancer-cross-zone-load-balancing-enabled: "true"
-    service.beta.kubernetes.io/aws-load-balancer-healthcheck-protocol: HTTP
-    service.beta.kubernetes.io/aws-load-balancer-healthcheck-path: /health
-    service.beta.kubernetes.io/aws-load-balancer-healthcheck-port: "8010"
-    service.beta.kubernetes.io/aws-load-balancer-healthcheck-interval: "10"
-    service.beta.kubernetes.io/aws-load-balancer-healthcheck-healthy-threshold: "2"
-    service.beta.kubernetes.io/aws-load-balancer-healthcheck-unhealthy-threshold: "2"
-    service.beta.kubernetes.io/aws-load-balancer-target-group-attributes: deregistration_delay.timeout_seconds=30
+# ClusterIP, deliberately. k8s/base sets GATEWAY_ALLOW_ANONYMOUS=true so the gateway authenticates
+# nobody — which is fine for development and is why base keeps the opt-in, since
+# GatewayAuthenticator.fromEnvironment refuses to start without a credential source that base does
+# not have. What must not follow is exposure: this Service used to be a LoadBalancer annotated
+# internet-facing, which put an unauthenticated gateway on the internet, and because the
+# authenticator short-circuits when disabled, PROTECTED_PREFIXES was not consulted either.
+# Reach it locally with `kubectl port-forward svc/recsys-api-gateway 8010:80 -n recsys`.
+# Internet-facing exposure belongs in an overlay that also sets GATEWAY_ALLOW_ANONYMOUS=false;
+# GatewayExposureManifestTest fails the build if the two are ever paired again.
 spec:
-  type: LoadBalancer
+  type: ClusterIP
   selector:
     app: recsys-api-gateway
   ports:

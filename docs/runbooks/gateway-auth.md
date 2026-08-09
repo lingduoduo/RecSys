@@ -21,11 +21,31 @@ start** when nothing is configured, unless anonymous access is explicitly opted 
 | unset | unset / `false` | **Startup fails** with `IllegalStateException` |
 
 - **Local / base** (`k8s/base/configmap.yaml`): `GATEWAY_ALLOW_ANONYMOUS: "true"` — a deliberate
-  dev posture so the stack runs without a Cognito pool or key Secret.
+  dev posture so the stack runs without a Cognito pool or key Secret. Anonymous by design does
+  **not** mean internet-reachable: the base gateway `Service` is `ClusterIP`, so nothing outside
+  the cluster can reach it. Get to it with:
+
+  ```bash
+  kubectl port-forward svc/recsys-api-gateway 8010:80 -n recsys
+  ```
+
+  then call `http://localhost:8010` as if it were the gateway directly. `GatewayExposureManifestTest`
+  pins this pairing: an anonymous gateway in `k8s/base` must not be `LoadBalancer`/`NodePort` or
+  carry `aws-load-balancer-scheme: internet-facing`.
 - **EKS (all regions)** (`k8s/eks-shared/configmap-patch.yaml`): `GATEWAY_ALLOW_ANONYMOUS: "false"`
   and `GATEWAY_API_KEYS` injected from the `recsys-gateway-auth` Secret
   (`k8s/eks-shared/gateway-auth-patch.yaml`, `optional: false`). The pod will not schedule until
-  the Secret exists — this is intentional.
+  the Secret exists — this is intentional. Both region overlays expose the gateway to the
+  internet via a WAF Ingress annotated `alb.ingress.kubernetes.io/scheme: internet-facing`
+  (`waf-api-gateway-ingress.yaml`), which is only safe because `eks-shared` also flips
+  `GATEWAY_ALLOW_ANONYMOUS` to `"false"`. **Adding internet-facing exposure to any overlay
+  requires setting that flag to `"false"` in the same change.** `GatewayExposureManifestTest`
+  enforces this in the `-Presilience` PR gate: any overlay whose combined manifest text (region
+  overlay + `eks-shared`, since the flag lives only in the latter) contains an internet-facing
+  signal — the ALB annotation above, the older `aws-load-balancer-scheme: internet-facing`
+  Service annotation, `type: LoadBalancer`, or `type: NodePort` — without also containing
+  `GATEWAY_ALLOW_ANONYMOUS: "false"` fails the build. Note this is a text-coupling check, not a
+  rendered kustomization: it cannot see a patch that fails to apply.
 
 ## Enabling auth in a cloud region
 
