@@ -29,6 +29,26 @@ import static org.assertj.core.api.Assertions.assertThat;
  * the mapping from route to policy is the {@code CachePolicyId} line under each
  * {@code PathPattern}.
  *
+ * <p><b>Every scan here is closed, not best-effort.</b> A text scan that quietly drops what it
+ * cannot parse compares two subsets and passes by omission — which is exactly how the first version
+ * of this test shipped green while both {@code /api/*&#47;catalog/similar} behaviors were missing
+ * from the function's map. Two reproduced holes, and the invariants that now close them:
+ *
+ * <ul>
+ *   <li>Reformatting an {@code ensure_cache_policy} call across two lines made {@code POLICY_DECL}
+ *       (applied per line) miss it, so {@code $similar_policy} resolved to nothing and both
+ *       {@code similar} paths vanished from the script-side map — matching a function map they had
+ *       also been deleted from. Closed by {@link #everyCachedBehaviorResolvesToADeclaredCachePolicy}:
+ *       every {@code PathPattern} in the file must appear in the resolved map, and an unresolved
+ *       {@code CachePolicyId} reference is reported by name.
+ *   <li>A cached behavior written on one line was skipped entirely: the old loop {@code continue}d
+ *       after a {@code PathPattern} match, so a same-line {@code CachePolicyId} was never seen, and
+ *       the fixed six-line association window borrowed the <em>next</em> behavior's
+ *       {@code FunctionAssociations}. Closed by parsing the same line for both, by bounding each
+ *       association block at the next {@code PathPattern}, and by cross-checking the behavior count
+ *       against the {@code CacheBehaviors: {Quantity: N} } the script declares.
+ * </ul>
+ *
  * <p>Scope: this compares two committed files. A cache policy edited by hand in the AWS console is
  * invisible here, as it is to every other conformance test in this repo.
  */
@@ -44,14 +64,20 @@ class CdnQueryNormalizationConformanceTest {
     private static final Pattern PATH_PATTERN = Pattern.compile("PathPattern:\\s*\"([^\"]+)\"");
     /** {@code CachePolicyId: $item_policy} */
     private static final Pattern POLICY_REF = Pattern.compile("CachePolicyId:\\s*\\$(\\w+)");
+    /** {@code CacheBehaviors: {Quantity: 4, Items: [} */
+    private static final Pattern BEHAVIOR_QUANTITY = Pattern.compile(
+            "CacheBehaviors:\\s*\\{\\s*Quantity:\\s*(\\d+)");
     /** {@code '/api/catalog/similar': ['movieId', 'k']} */
     private static final Pattern ALLOWED_ENTRY = Pattern.compile(
             "'(/[^']*)'\\s*:\\s*\\[([^\\]]*)\\]");
     private static final Pattern JS_STRING = Pattern.compile("'([^']*)'");
 
+    /** First line of the {@code CacheBehaviors} array's successor — the scan's hard right edge. */
+    private static final String BEHAVIORS_END = "ViewerCertificate:";
+
     @Test
     void theFunctionsAllowListMatchesTheCachePolicies() throws IOException {
-        Map<String, List<String>> fromScript = whitelistsByPath();
+        Map<String, List<String>> fromScript = parseScript().whitelistsByPath();
         Map<String, List<String>> fromFunction = allowedInFunction();
 
         // A silently-empty scan would pass this test while proving nothing.
@@ -63,21 +89,57 @@ class CdnQueryNormalizationConformanceTest {
                 .isEqualTo(new TreeMap<>(fromScript));
     }
 
+    /**
+     * Nothing may drop out of the script-side scan. Both maps agreeing on a subset of the real
+     * behaviors is the failure this test exists to make impossible, so the resolved map is checked
+     * against two independent counts of what the script declares: every {@code PathPattern} line,
+     * and the {@code Quantity} the {@code CacheBehaviors} array states.
+     */
+    @Test
+    void everyCachedBehaviorResolvesToADeclaredCachePolicy() throws IOException {
+        CachedBehaviors behaviors = parseScript();
+
+        assertThat(behaviors.unresolvedPolicyRefs())
+                .as("a cached behavior references a cache-policy variable this scan could not "
+                        + "resolve — its whitelist would otherwise vanish from the comparison")
+                .isEmpty();
+        assertThat(behaviors.whitelistsByPath().keySet())
+                .as("every PathPattern in %s must resolve to a cache policy", SCRIPT)
+                .containsExactlyInAnyOrderElementsOf(behaviors.declaredPaths());
+        assertThat(behaviors.declaredQuantity())
+                .as("CacheBehaviors declares Quantity: %d but %d behaviors were parsed",
+                        behaviors.declaredQuantity(), behaviors.whitelistsByPath().size())
+                .isEqualTo(behaviors.whitelistsByPath().size());
+    }
+
     /** Every cached behavior must actually run the function, or its whitelist is decoration. */
     @Test
     void everyCachedBehaviorAssociatesTheViewerRequestFunction() throws IOException {
         List<String> lines = Files.readAllLines(SCRIPT);
-        List<String> unassociated = new ArrayList<>();
+        int end = indexOfLineContaining(lines, BEHAVIORS_END);
+        assertThat(end)
+                .as("'%s' not found in %s — cannot bound the CacheBehaviors scan", BEHAVIORS_END, SCRIPT)
+                .isNotNegative();
 
-        for (int i = 0; i < lines.size(); i++) {
-            Matcher m = PATH_PATTERN.matcher(lines.get(i));
-            if (!m.find()) {
-                continue;
+        List<Integer> starts = new ArrayList<>();
+        for (int i = 0; i < end; i++) {
+            if (PATH_PATTERN.matcher(lines.get(i)).find()) {
+                starts.add(i);
             }
-            String block = String.join("\n", lines.subList(i, Math.min(i + 6, lines.size())));
+        }
+        assertThat(starts).as("no cached behavior found in %s", SCRIPT).isNotEmpty();
+
+        List<String> unassociated = new ArrayList<>();
+        for (int k = 0; k < starts.size(); k++) {
+            int from = starts.get(k);
+            // Bounded by the NEXT behavior, never by a fixed line count: a fixed window either
+            // truncates a long behavior or reads the following one's association as this one's.
+            int to = k + 1 < starts.size() ? starts.get(k + 1) : end;
+            String block = String.join("\n", lines.subList(from, to));
             if (!block.contains("FunctionAssociations")
-                    || !block.contains("\"viewer-request\"")) {
-                unassociated.add(m.group(1));
+                    || !block.contains("\"viewer-request\"")
+                    || !block.contains("FunctionARN: $fn")) {
+                unassociated.add(pathOf(lines.get(from)));
             }
         }
 
@@ -87,30 +149,103 @@ class CdnQueryNormalizationConformanceTest {
     }
 
     /**
-     * The scans above pass vacuously if the patterns cannot see a real declaration, and both files
-     * are currently correct — so nothing there exercises the detection side. These are the exact
-     * spellings each file uses today.
+     * The function must NOT run on the default behavior. It fails closed on any URI outside its
+     * four-key map, so associating it there would turn every non-catalog route — including
+     * {@code POST /api/recommend} — into a hard 400 at the edge.
      */
     @Test
-    void thePatternsRecogniseTheSpellingsTheseFilesActuallyUse() {
-        Matcher policy = POLICY_DECL.matcher(
-                "similar_policy=\"$(ensure_cache_policy recsys-similar 0 300 3600 '[\"movieId\",\"k\"]')\"");
-        assertThat(policy.find()).isTrue();
-        assertThat(policy.group(1)).isEqualTo("similar_policy");
-        assertThat(policy.group(2)).isEqualTo("[\"movieId\",\"k\"]");
+    void theDefaultCacheBehaviorDoesNotAssociateTheFunction() throws IOException {
+        List<String> lines = Files.readAllLines(SCRIPT);
+        int from = indexOfLineContaining(lines, "DefaultCacheBehavior: {");
+        int to = indexOfLineContaining(lines, "CacheBehaviors: {");
 
-        assertThat(POLICY_REF.matcher("     CachePolicyId: $item_policy, Compress: true,").find())
-                .isTrue();
+        assertThat(from).as("DefaultCacheBehavior not found in %s", SCRIPT).isNotNegative();
+        assertThat(to).as("CacheBehaviors not found after DefaultCacheBehavior in %s", SCRIPT)
+                .isGreaterThan(from);
 
-        Matcher allowed = ALLOWED_ENTRY.matcher("    '/api/catalog/similar':    ['movieId', 'k']");
-        assertThat(allowed.find()).isTrue();
-        assertThat(allowed.group(1)).isEqualTo("/api/catalog/similar");
+        assertThat(String.join("\n", lines.subList(from, to)))
+                .as("the fail-closed function must not be associated with DefaultCacheBehavior — "
+                        + "it would 400 every route that is not one of the four catalog reads")
+                .doesNotContain("FunctionAssociations");
     }
 
-    /** path -> whitelisted parameter names, as the distribution script declares them. */
-    private static Map<String, List<String>> whitelistsByPath() throws IOException {
-        List<String> lines = Files.readAllLines(SCRIPT);
+    /**
+     * The scans above pass vacuously if the patterns cannot see a real declaration. This asserts
+     * against the committed files themselves, not against inline copies of what they are believed
+     * to say — an inline copy keeps matching after the file it quotes has been reformatted, which
+     * is precisely how a reformatted {@code ensure_cache_policy} call went undetected here.
+     */
+    @Test
+    void thePatternsRecogniseTheSpellingsTheseFilesActuallyUse() throws IOException {
+        Map<String, List<String>> byVariable = policyVariables(Files.readAllLines(SCRIPT));
+        assertThat(byVariable)
+                .as("POLICY_DECL must match the ensure_cache_policy calls %s actually contains", SCRIPT)
+                .containsKeys("item_policy", "similar_policy");
+        assertThat(byVariable.get("item_policy")).containsExactly("id");
+        assertThat(byVariable.get("similar_policy")).containsExactly("movieId", "k");
 
+        CachedBehaviors behaviors = parseScript();
+        assertThat(behaviors.declaredPaths())
+                .as("PATH_PATTERN must match the cached behaviors %s actually contains", SCRIPT)
+                .contains("/api/catalog/item", "/api/v1/catalog/similar");
+        assertThat(behaviors.whitelistsByPath())
+                .as("POLICY_REF must resolve the CachePolicyId lines %s actually contains", SCRIPT)
+                .containsEntry("/api/catalog/item", List.of("id"))
+                .containsEntry("/api/v1/catalog/similar", List.of("movieId", "k"));
+
+        Map<String, List<String>> allowed = allowedInFunction();
+        assertThat(allowed)
+                .as("ALLOWED_ENTRY must match the entries %s actually contains", FUNCTION)
+                .containsEntry("/api/catalog/similar", List.of("movieId", "k"));
+    }
+
+    /** What the distribution script declares about its cached behaviors. */
+    private record CachedBehaviors(
+            Map<String, List<String>> whitelistsByPath,
+            List<String> declaredPaths,
+            List<String> unresolvedPolicyRefs,
+            int declaredQuantity) {
+    }
+
+    private static CachedBehaviors parseScript() throws IOException {
+        List<String> lines = Files.readAllLines(SCRIPT);
+        Map<String, List<String>> byVariable = policyVariables(lines);
+
+        Map<String, List<String>> byPath = new LinkedHashMap<>();
+        List<String> declaredPaths = new ArrayList<>();
+        List<String> unresolved = new ArrayList<>();
+
+        String pendingPath = null;
+        for (String line : lines) {
+            Matcher p = PATH_PATTERN.matcher(line);
+            if (p.find()) {
+                pendingPath = p.group(1);
+                declaredPaths.add(pendingPath);
+                // Deliberately no `continue`: a behavior written on one line carries its
+                // CachePolicyId on this same line, and skipping it dropped the whole behavior.
+            }
+            Matcher r = POLICY_REF.matcher(line);
+            if (pendingPath != null && r.find()) {
+                List<String> names = byVariable.get(r.group(1));
+                if (names == null) {
+                    unresolved.add(pendingPath + " -> $" + r.group(1));
+                } else {
+                    byPath.put(pendingPath, names);
+                }
+                pendingPath = null;
+            }
+        }
+
+        int quantity = -1;
+        Matcher q = BEHAVIOR_QUANTITY.matcher(String.join("\n", lines));
+        if (q.find()) {
+            quantity = Integer.parseInt(q.group(1));
+        }
+        return new CachedBehaviors(byPath, declaredPaths, unresolved, quantity);
+    }
+
+    /** cache-policy shell variable -> whitelisted parameter names. */
+    private static Map<String, List<String>> policyVariables(List<String> lines) {
         Map<String, List<String>> byVariable = new LinkedHashMap<>();
         for (String line : lines) {
             Matcher m = POLICY_DECL.matcher(line);
@@ -123,25 +258,7 @@ class CdnQueryNormalizationConformanceTest {
                 byVariable.put(m.group(1), names);
             }
         }
-
-        Map<String, List<String>> byPath = new LinkedHashMap<>();
-        String pendingPath = null;
-        for (String line : lines) {
-            Matcher p = PATH_PATTERN.matcher(line);
-            if (p.find()) {
-                pendingPath = p.group(1);
-                continue;
-            }
-            Matcher r = POLICY_REF.matcher(line);
-            if (pendingPath != null && r.find()) {
-                List<String> names = byVariable.get(r.group(1));
-                if (names != null) {
-                    byPath.put(pendingPath, names);
-                }
-                pendingPath = null;
-            }
-        }
-        return byPath;
+        return byVariable;
     }
 
     /** path -> allowed parameter names, as the function's ALLOWED literal declares them. */
@@ -162,5 +279,19 @@ class CdnQueryNormalizationConformanceTest {
             allowed.put(m.group(1), names);
         }
         return allowed;
+    }
+
+    private static int indexOfLineContaining(List<String> lines, String needle) {
+        for (int i = 0; i < lines.size(); i++) {
+            if (lines.get(i).contains(needle)) {
+                return i;
+            }
+        }
+        return -1;
+    }
+
+    private static String pathOf(String line) {
+        Matcher m = PATH_PATTERN.matcher(line);
+        return m.find() ? m.group(1) : line.trim();
     }
 }
