@@ -244,10 +244,21 @@ class CdnQueryNormalizationConformanceTest {
         return new CachedBehaviors(byPath, declaredPaths, unresolved, quantity);
     }
 
-    /** cache-policy shell variable -> whitelisted parameter names. */
+    /**
+     * cache-policy shell variable -> whitelisted parameter names.
+     *
+     * <p>Two invariants close a shell-comment shaped hole: a commented-out {@code
+     * ensure_cache_policy} call below the live one used to silently redefine the baseline this
+     * test compares against (last write wins), masking real drift in the live line — see NEW-1.
+     * Comment lines are skipped outright, and a genuine duplicate definition of the same variable
+     * (two live lines, not one live + one commented) fails loudly instead of picking either.
+     */
     private static Map<String, List<String>> policyVariables(List<String> lines) {
         Map<String, List<String>> byVariable = new LinkedHashMap<>();
         for (String line : lines) {
+            if (line.stripLeading().startsWith("#")) {
+                continue;
+            }
             Matcher m = POLICY_DECL.matcher(line);
             if (m.find()) {
                 List<String> names = new ArrayList<>();
@@ -255,7 +266,12 @@ class CdnQueryNormalizationConformanceTest {
                 while (s.find()) {
                     names.add(s.group(1));
                 }
-                byVariable.put(m.group(1), names);
+                List<String> previous = byVariable.putIfAbsent(m.group(1), names);
+                if (previous != null) {
+                    throw new AssertionError(
+                            "duplicate ensure_cache_policy definition for $" + m.group(1)
+                                    + " in " + SCRIPT + " — first: " + previous + ", second: " + names);
+                }
             }
         }
         return byVariable;

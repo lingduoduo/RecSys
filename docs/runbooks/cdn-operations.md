@@ -19,9 +19,10 @@ repo has no IaC. There is no state file and no drift detection.
 > reverts it, with no error and no warning. Any console change that isn't also added to the
 > script's `jq` payload does not survive the next run.
 >
-> **This applies to the distribution config only.** The script provisions three other AWS resource
-> types with their own update semantics: two cache policies, and one CloudFront **Function** (see
-> "The viewer-request normalization function" below). The two cache policies (`recsys-item`,
+> **This applies to the distribution config only.** The script provisions three other AWS
+> resources, across two resource types with their own update semantics: two cache policies, and
+> one CloudFront **Function** (see "The viewer-request normalization function" below). The two
+> cache policies (`recsys-item`,
 > `recsys-similar`) hold the cache key and the TTL ceilings.
 > `ensure_cache_policy` diffs the fields the script manages and issues
 > `update-cache-policy --if-match` when they differ, printing the deployed-versus-desired diff
@@ -92,9 +93,10 @@ on exit — it never touches `recsys-normalize-catalog-query` or any live traffi
 only; see its header for what it cannot show.
 
 **Rollback is forward-only.** The CloudFront Functions API has exactly two stages, `DEVELOPMENT`
-and `LIVE`, and no way to list or re-publish an earlier version — `aws cloudfront` offers
-`create/update/publish/describe/get/test/delete-function` and nothing else. There is no "roll back
-to the previous function". To revert:
+and `LIVE`, and no way to re-publish an earlier version — `aws cloudfront` offers
+`create/update/publish/describe/get/list/test/delete-function` and nothing else (`list-functions`
+enumerates by stage; it cannot recover a superseded version either). There is no "roll back to the
+previous function". To revert:
 
 ```bash
 # 1. What is live right now, byte for byte. Do this BEFORE changing anything.
