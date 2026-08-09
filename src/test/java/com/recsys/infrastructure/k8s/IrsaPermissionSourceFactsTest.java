@@ -90,6 +90,14 @@ import static org.assertj.core.api.Assertions.assertThat;
  *       {@code AsyncEventPublisherFactory} really has only the one caller. A note naming the wrong
  *       Deployment is a passing test and a misleading comment. The note exists to force the question at
  *       review time, which is more than existed before, but it is not proof.
+ *   <li><strong>A workload reaching SQS through a factory this file does not know.</strong>
+ *       {@link #CONSTRUCTION_MARKERS} is a hand-maintained list of shapes. It covers both factories
+ *       that exist today, so check 3 closes the gap that let online serving through — but a third
+ *       factory added later, wrapping the client behind a name not in that list, reintroduces the same
+ *       blind spot one level up. Check 1 still catches its {@code SqsClient} construction wherever that
+ *       ultimately lives; what escapes is the attribution — which workload calls it, and therefore
+ *       which role needs the permission. Add the new factory's shape to the list in the commit that
+ *       introduces it.
  *   <li><strong>AWS SDK v1.</strong> {@link #AWS_SERVICE_PACKAGE} matches
  *       {@code software.amazon.awssdk.services.*} only. A {@code com.amazonaws.services.s3} client —
  *       v1, a different artifact, the same IAM consequence — falsifies the gateway's "SQS is the only
