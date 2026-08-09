@@ -13,6 +13,13 @@ spec:
   selector:
     matchLabels:
       app: recsys-outbox-relay
+  # AWS: this deployment has no serviceAccountName, so on EKS it runs under the namespace default
+  # ServiceAccount, which is bound to no IAM role. OutboxRelayCommand constructs
+  # SqsOutboxDeliveryAdapter — which calls sqs:SendMessage — when SAGA_EVENTS_SQS_ENABLED=true and
+  # SAGA_EVENTS_SQS_QUEUE_URL is non-blank. Both default off in k8s/base/configmap.yaml, so nothing
+  # is broken today; but enabling SQS delivery needs an IRSA ServiceAccount and a role granting
+  # sqs:SendMessage on that queue, and neither exists yet. Kafka delivery is unaffected — it uses no
+  # AWS credentials.
   template:
     metadata:
       labels:

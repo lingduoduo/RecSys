@@ -1,3 +1,18 @@
+# IRSA ServiceAccount for model serving (8080).
+#
+# The bound IAM role needs exactly one permission, and only conditionally:
+#
+#   sqs:SendMessage   on the A/B exposure queue named by RECSYS_EVENTS_SQS_QUEUE_URL
+#
+# Required only when RECSYS_EVENTS_SQS_ENABLED=true with a non-blank queue URL (application.yml).
+# Neither key is set in k8s/base/configmap.yaml, so the path is off by default and the role needs
+# nothing until it is enabled. Scope the statement to that queue's ARN — not "*".
+#
+# SendMessage is the only action: the queue URL arrives through the environment, so nothing calls
+# GetQueueUrl.
+#
+# The role ARN below is AWS's documentation placeholder; no such role exists. Replace it with your
+# account-specific value before applying.
 apiVersion: v1
 kind: ServiceAccount
 metadata:

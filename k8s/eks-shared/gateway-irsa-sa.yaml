@@ -1,16 +1,24 @@
 # IRSA ServiceAccount for the API gateway.
 #
-# The bound IAM role needs the following permissions so the gateway can call Cloud Map
-# APIs directly (e.g. for health-aware routing) and so external-dns can manage Route 53
-# records for the private recsys.internal namespace:
+# The bound IAM role needs NO permissions. The gateway makes no AWS API calls — the only AWS SDK
+# client anywhere in src/main/java is SQS, and the gateway does not use it. Cloud Map reaches the
+# gateway through DNS resolution (the 30 s TTL described in CLAUDE.md), and resolving a name needs
+# no IAM.
 #
-#   servicediscovery:GetService
-#   servicediscovery:ListInstances
-#   route53:ChangeResourceRecordSets
-#   route53:ListHostedZones
-#   route53:ListResourceRecordSets
+# This file previously asked for servicediscovery:GetService / ListInstances and
+# route53:ChangeResourceRecordSets / ListHostedZones / ListResourceRecordSets. The Route 53 entries
+# were justified as letting external-dns manage records for recsys.internal — but external-dns is a
+# separate controller with its own ServiceAccount, and permissions on this role do not reach it.
+# Granting them here would give a public-facing pod DNS write for another component's benefit.
+# Those permissions belong on external-dns's own role.
 #
-# Replace the role ARN with your account-specific value before applying.
+# If health-aware routing through the Cloud Map API is ever built, servicediscovery:GetService and
+# ListInstances come back with it — scoped to the recsys.internal namespace. Add them when the code
+# calls them, not before.
+#
+# The role ARN below is AWS's documentation placeholder; no such role exists. Replace it with your
+# account-specific value before applying. If the gateway still makes no AWS calls at that point,
+# consider dropping the annotation entirely rather than binding an empty role.
 apiVersion: v1
 kind: ServiceAccount
 metadata:
