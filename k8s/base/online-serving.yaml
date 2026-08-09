@@ -123,7 +123,7 @@ spec:
               valueFrom:
                 secretKeyRef:
                   name: recsys-secrets
-                  key: redis-password
+                  key: redis-online-password
                   optional: true
           ports:
             - name: http

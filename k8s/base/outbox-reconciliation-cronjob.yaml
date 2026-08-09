@@ -62,7 +62,7 @@ spec:
                   valueFrom:
                     secretKeyRef:
                       name: recsys-secrets
-                      key: redis-password
+                      key: redis-reconciliation-password
                       optional: true
               volumeMounts:
                 - name: tmp
