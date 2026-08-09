@@ -77,6 +77,12 @@ spec:
                   name: recsys-splunk
                   key: hec-token
                   optional: true
+            # Authenticates as the `catalog` ACL user, not `default`. See
+            # k8s/base/redis-users.acl.template for what this user may write. Unset falls back to
+            # a legacy default-user AUTH (LettuceClientFactory:220), so a cluster whose Secret
+            # predates the ACL rollout keeps working rather than failing closed at startup.
+            - name: REDIS_USERNAME
+              value: "catalog"
             # Redis AUTH. optional: true keeps the pod schedulable before the Secret exists —
             # LettuceClientFactory then refuses to start with a message naming this key, which is
             # a readable failure rather than a pod stuck Pending with an empty log.
@@ -84,7 +90,7 @@ spec:
               valueFrom:
                 secretKeyRef:
                   name: recsys-secrets
-                  key: redis-password
+                  key: redis-catalog-password
                   optional: true
           ports:
             - name: http

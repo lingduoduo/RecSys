@@ -47,11 +47,96 @@ the test suite. Set it yourself if you run a service by hand against a passwordl
 export REDIS_ALLOW_NO_AUTH=true
 ```
 
+## ACL users
+
+`k8s/base/redis-users.acl.template` is the source of the ACL file the primary and replica load.
+It defines six users, one line each: `default` and five per-workload users — `catalog`, `model`,
+`online`, `gateway`, `reconciliation`. Each line has the form
+`user <name> on ><placeholder> <rules...>`; the operator substitutes each of the six
+`__*_PASSWORD__` placeholders (`__REDIS_PASSWORD__`, `__CATALOG_PASSWORD__`, `__MODEL_PASSWORD__`,
+`__ONLINE_PASSWORD__`, `__GATEWAY_PASSWORD__`, `__RECONCILIATION_PASSWORD__`) with a distinct
+generated password — same character constraints as `REDIS_PASSWORD` above — and stores the
+rendered result as the `redis-users.acl` key of `recsys-secrets`, alongside the existing
+`redis-password` key. `__REDIS_PASSWORD__` must be rendered with the *same* value already stored
+under `redis-password`: `--requirepass`, the replica's `--masterauth`, and Sentinel's
+`auth-pass` all still read that one key, and they must agree with what the ACL file's own
+`user default` line grants. The primary and replica StatefulSets mount the rendered result
+read-only at `/etc/redis/users.acl` via `--aclfile /etc/redis/users.acl`; a read-only mount is
+fine because nothing calls `ACL SAVE`. ACLs are per-node state, not replicated, so both
+StatefulSets need the mount — a replica missing it rejects every authenticated read, which is the
+normal AZ-aware read path in this system, not a rare failure mode.
+
+The template carries no comments. Redis aborts startup on any non-blank ACL-file line that does
+not begin with `user`, so the usual practice of documenting rationale inline is unavailable here;
+that reasoning lives in this runbook and beside the `--aclfile` argument in `redis-cluster.yaml`
+instead.
+
+**`user default on >__REDIS_PASSWORD__ ~* &* +@all` must never be dropped from the file.** It is
+tempting to assume an ACL file that says nothing about `default` leaves `requirepass` governing
+it, the way an absent option normally falls back to a default. Measured against a real
+`redis-server` on this branch, that assumption is false: `ACLLoadFromFile` *rebuilds* a missing
+default user as `on nopass ~* &* +@all`, which silently re-enables unauthenticated access
+(`ACL LIST` shows `nopass`, the log carries `# WARNING: Redis does not require authentication`, and
+an unauthenticated `redis-cli ping` returns `PONG`), breaks replication
+(`Unable to AUTH to MASTER … without any password configured for the default user`), and breaks
+the Flink job — while both the readiness and liveness `redis-cli ping` probes stay green
+throughout, since neither probe authenticates. This is the single worst failure mode an edit to
+the template can introduce, and it produces no error anywhere in the deploy path.
+
+Because `default` keeps `+@all`, the `redis-password` credential — the one Flink and every
+non-ACL-aware caller uses — can still run `FLUSHALL` against the whole instance. That is
+deliberate, not an oversight: Flink writes `u2vEmb:*` and `topk:*` authenticated as `default`, and
+nothing in this repository deploys Flink to exercise the risk. But it means the least-privilege
+boundary below covers the five service users, not the instance as a whole — `default` remains a
+full-access credential.
+
+The five service users are each `-@all +@read +@write +@connection -@dangerous`, plus
+`+@scripting` for `catalog`, `model`, and `online` (their trending reads, sharded record writes,
+topology publish, rate limiting, and submit-token consume all run as Lua `EVAL`, which
+`-@dangerous` does not strip and which is covered by none of `@read`/`@write`/`@connection`).
+`topk:*` is granted with `~` (full read-write) rather than `%R~` (read-only) for those same three
+users, even though their access to it is logically read-only: Redis requires full read-write
+permission on every key an `EVAL` script touches, even a script whose shebang declares
+`#!lua flags=no-writes`, and `ShardedTopKStore` passes `topk:` keys through `EVAL`. Granting
+`%R~` there fails every trending read with `NOPERM`.
+
+All of the above — the default-rebuild behavior, the comment restriction, and the `@scripting`/
+`topk:` requirements — was measured against `redis-server 8.6.2` on this branch. The manifests
+pin `redis:7-alpine`, and no Docker daemon was available on these machines to exercise Redis 7
+itself.
+
+Two limits worth stating plainly. The EKS overlays do not use this Redis at all — they point every
+client at ElastiCache and scale the in-cluster StatefulSet to zero, and ElastiCache authorizes
+access through RBAC user groups managed via the AWS API, a wholly different mechanism that none of
+this ACL file touches. And nothing here is enforced anywhere today: no EKS cluster exists in
+either region, so this is manifest correctness plus a merge-blocking conformance test
+(`RedisAclManifestTest`), not a running guarantee.
+
 ## Rotation
 
-`requirepass` holds exactly one password, so rotation is a coordinated restart rather than an
-overlap window. This is the accepted cost of `requirepass` over an ACL file; if rotation frequency
-ever makes it unacceptable, moving the `default` user to an `aclfile` buys multi-password overlap.
+Five ACL users means five distinct credentials to rotate, plus `default`'s `redis-password`. An
+ACL `user` line accepts several passwords at once, so rotating one *service* user is an overlap
+window rather than a coordinated restart:
+
+1. Add the new password to that user's line in the rendered ACL file — e.g.
+   `user catalog on >OLD_CATALOG_PASSWORD >NEW_CATALOG_PASSWORD ...` — so the user authenticates
+   with either for the duration of the rotation.
+2. Re-render the `redis-users.acl` key of `recsys-secrets` with that line and apply it.
+3. Restart Redis (primary and replica) so the new aclfile content is loaded — the file is read at
+   startup, not watched.
+4. Roll that one service's Deployment onto the new password.
+5. Once it is confirmed running on the new password, drop the old password from the user's line,
+   re-render the Secret again, and restart Redis a second time to retire it.
+
+`default` does not get this treatment. Its password is the single `redis-password` value, and
+that same value also drives `--requirepass`, the replica's `--masterauth`, and Sentinel's
+`auth-pass` — none of which support a second, overlapping password the way an ACL user line does.
+`default` therefore still rotates the old way, by coordinated restart, exactly as described
+below. One difference from before the ACL file existed: `redis-password` now backs two Secret
+keys, not one — patching `redis-password` alone changes `--requirepass`/`--masterauth`/
+`auth-pass` but leaves the ACL file's `user default` line on the old password, so step 1 below
+must also re-render `redis-users.acl`'s `user default` line to the same new value before the
+restart in step 2, or `default` ends up with two disagreeing passwords across the two keys.
 
 Expect Redis to be unreachable for the duration. Everything degrades to its no-Redis path, which is
 not a full outage but is a visible one.

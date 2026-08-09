@@ -1,0 +1,6 @@
+user default on >__REDIS_PASSWORD__ ~* &* +@all
+user catalog on >__CATALOG_PASSWORD__ -@all +@read +@write +@connection +@scripting -@dangerous ~i2vEmb:* ~u2vEmb:* ~topk:* ~svc:registry:recsys-catalog-serving %R~global:item_popularity
+user model on >__MODEL_PASSWORD__ -@all +@read +@write +@connection +@scripting -@dangerous ~submit_token:* ~login:* ~topk:* ~svc:registry:recsys-model-serving %R~i2vEmb:* %R~u2vEmb:* %R~user:*:recent_movies %R~global:item_popularity
+user online on >__ONLINE_PASSWORD__ -@all +@read +@write +@connection +@scripting -@dangerous +info ~sr:* ~shard:topology ~rate:online:* ~topk:* ~bias:item:* ~recsys:replica-lag-probe:* ~svc:registry:recsys-online-serving %R~u2vEmb:* %R~user:*:recent_movies %R~global:item_popularity %R~lineage:event:* %R~*:updated_at
+user gateway on >__GATEWAY_PASSWORD__ -@all +@read +@connection -@dangerous %R~svc:registry:recsys-catalog-serving %R~svc:registry:recsys-model-serving %R~svc:registry:recsys-online-serving
+user reconciliation on >__RECONCILIATION_PASSWORD__ -@all +@read +@connection -@dangerous %R~lineage:event:*
