@@ -111,7 +111,15 @@ class DocumentedMechanismTest {
             // 06_Consistent_Hashing §"Diagnosis" and 14_Partitioning describe this as a helper
             // available for hot-shard diagnosis; no endpoint or metric exposes it today, and the
             // docs say that rather than implying a live surface.
-            "distribution", "library helper, no wired surface — see 06_Consistent_Hashing");
+            "distribution", "library helper, no wired surface — see 06_Consistent_Hashing",
+            // redis-consumer-inventory §3 names both of these precisely BECAUSE nothing calls
+            // them — "no caller in src/main/java" is the finding, not an oversight. It is what
+            // makes bias:item:* a write-only namespace in production, and it is why the Redis ACL
+            // grants online no read on the arbitrary-key feature-store path. Wiring either one
+            // changes what k8s/base/redis-users.acl.template has to grant, so if a caller ever
+            // appears, re-derive that user's rules rather than just deleting the entry here.
+            "getFeatures", "documented as callerless — see redis-consumer-inventory §3",
+            "loadFromRedis", "documented as callerless — see redis-consumer-inventory §3");
 
     // ── Invariant 1: doc → source links resolve ──────────────────────────────────────
 

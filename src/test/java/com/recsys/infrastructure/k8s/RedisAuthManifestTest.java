@@ -30,13 +30,35 @@ class RedisAuthManifestTest {
     private static final Path BASE = Path.of("k8s", "base");
 
     /**
-     * Workloads that open a Redis connection. The outbox relay is deliberately absent: it dials
-     * MySQL and Kafka only, and granting it a Redis credential would widen its blast radius for
-     * nothing.
+     * Workloads that open a Redis connection, mapped to the ACL user each authenticates as. The
+     * outbox relay is deliberately absent: it dials MySQL and Kafka only, and granting it a Redis
+     * credential would widen its blast radius for nothing.
+     *
+     * <p>The ACL user name is the join key across three artifacts that must agree or the workload
+     * gets {@code WRONGPASS}: {@code REDIS_USERNAME=<user>} in the manifest, the Secret key
+     * {@code redis-<user>-password} the manifest reads {@code REDIS_PASSWORD} from, and the
+     * {@code >__<USER>_PASSWORD__} placeholder on that user's line in
+     * {@code redis-users.acl.template}. {@link #everyRedisClientReceivesItsOwnRedisPassword}
+     * checks all three against each other.
      */
-    private static final Set<String> REDIS_CLIENTS = Set.of(
-            "recsys-api-gateway", "recsys-catalog-serving", "recsys-model-serving",
-            "recsys-online-serving", "recsys-outbox-reconciliation");
+    private static final Map<String, String> REDIS_CLIENT_USERS = Map.of(
+            "recsys-api-gateway", "gateway",
+            "recsys-catalog-serving", "catalog",
+            "recsys-model-serving", "model",
+            "recsys-online-serving", "online",
+            "recsys-outbox-reconciliation", "reconciliation");
+
+    private static final Set<String> REDIS_CLIENTS = REDIS_CLIENT_USERS.keySet();
+
+    /**
+     * The {@code default} user's credential, and the one every workload used to share. Redis
+     * itself still reads this key ({@code redis-cluster.yaml}'s {@code --requirepass} and
+     * {@code REDISCLI_AUTH}), so it must keep existing — but no application workload may point at
+     * it again. That regression would not fail anything at runtime: every service would connect
+     * successfully, as {@code default}, with the whole keyspace and {@code +@all}, and the entire
+     * per-service ACL split would be silently inert.
+     */
+    private static final String DEFAULT_USER_SECRET_KEY = "redis-password";
 
     private static List<Map<String, Object>> baseDocuments() throws IOException {
         return ManifestDocuments.allIn(BASE);
@@ -54,30 +76,118 @@ class RedisAuthManifestTest {
                 .toList();
     }
 
+    /**
+     * Each workload must take {@code REDIS_PASSWORD} from <b>its own</b> Secret key, matching the
+     * ACL user it authenticates as.
+     *
+     * <p>This used to require the shared {@code redis-password} key for all five. That was the
+     * pre-ACL arrangement and it is now the failure mode rather than the requirement: the ACL
+     * template gives every user a distinct {@code __<USER>_PASSWORD__} placeholder, so five
+     * workloads sharing one key means four of them get {@code WRONGPASS} — measured against a real
+     * server — or, if every placeholder is rendered to the same value, the per-user split is
+     * decorative.
+     *
+     * <p>Pointing a workload back at {@code redis-password} is the quiet version of that: it is
+     * the {@code default} user's credential, so the pod starts, connects, and gets {@code ~* +@all}
+     * with no error anywhere. Asserted explicitly rather than left to the per-user check, because
+     * this is the regression that looks healthiest.
+     */
     @Test
-    void everyRedisClientReceivesTheRedisPassword() throws IOException {
+    void everyRedisClientReceivesItsOwnRedisPassword() throws IOException {
         List<Map<String, Object>> docs = baseDocuments();
+        List<String> problems = new java.util.ArrayList<>();
+        Set<String> unseen = new TreeSet<>(REDIS_CLIENTS);
+        Map<String, String> keyToWorkload = new java.util.LinkedHashMap<>();
 
-        Set<String> missing = new TreeSet<>(REDIS_CLIENTS);
         for (String kind : List.of("Deployment", "CronJob")) {
             for (Map<String, Object> workload : ofKind(docs, kind)) {
-                if (!REDIS_CLIENTS.contains(nameOf(workload))) continue;
-                boolean wired = envOf(workload).stream().anyMatch(e -> {
-                    if (!"REDIS_PASSWORD".equals(e.get("name"))) return false;
-                    Map<String, Object> ref = mapAt(e, "valueFrom", "secretKeyRef");
-                    return ref != null && "recsys-secrets".equals(ref.get("name"))
-                            && "redis-password".equals(ref.get("key"));
-                });
-                if (wired) missing.remove(nameOf(workload));
+                String name = nameOf(workload);
+                String user = REDIS_CLIENT_USERS.get(name);
+                if (user == null) continue;
+                unseen.remove(name);
+
+                String expectedKey = "redis-" + user + "-password";
+                List<Map<String, Object>> env = envOf(workload);
+
+                String username = env.stream()
+                        .filter(e -> "REDIS_USERNAME".equals(e.get("name")))
+                        .map(e -> String.valueOf(e.get("value")))
+                        .findFirst().orElse(null);
+                if (!user.equals(username)) {
+                    problems.add(name + " sets REDIS_USERNAME=" + username + ", expected " + user);
+                }
+
+                Map<String, Object> ref = env.stream()
+                        .filter(e -> "REDIS_PASSWORD".equals(e.get("name")))
+                        .map(e -> mapAt(e, "valueFrom", "secretKeyRef"))
+                        .filter(java.util.Objects::nonNull)
+                        .findFirst().orElse(null);
+                if (ref == null) {
+                    problems.add(name + " wires no REDIS_PASSWORD from a Secret at all");
+                    continue;
+                }
+                if (!"recsys-secrets".equals(ref.get("name"))) {
+                    problems.add(name + " reads REDIS_PASSWORD from Secret " + ref.get("name"));
+                }
+                String key = String.valueOf(ref.get("key"));
+                if (DEFAULT_USER_SECRET_KEY.equals(key)) {
+                    problems.add(name + " reads the shared " + DEFAULT_USER_SECRET_KEY + " key, "
+                            + "which is the default user's full-access credential — it would "
+                            + "connect successfully and ignore its ACL user entirely");
+                } else if (!expectedKey.equals(key)) {
+                    problems.add(name + " reads REDIS_PASSWORD from key " + key + ", expected "
+                            + expectedKey);
+                }
+                String clash = keyToWorkload.put(key, name);
+                if (clash != null) {
+                    problems.add(name + " shares Secret key " + key + " with " + clash);
+                }
             }
         }
 
-        assertThat(missing)
-                .as("these workloads dial Redis with no REDIS_PASSWORD wired from the "
-                        + "redis-password key of recsys-secrets. LettuceClientFactory refuses to "
-                        + "start without it, so each of these is a CrashLoopBackOff at rollout — "
-                        + "and before the guard existed it was a silent unauthenticated connection")
+        for (String name : unseen) {
+            problems.add(name + " has no Deployment or CronJob in " + BASE);
+        }
+
+        assertThat(problems)
+                .as("every Redis client must authenticate as its own ACL user with its own "
+                        + "credential. LettuceClientFactory refuses to start without a password, so "
+                        + "a missing key is a CrashLoopBackOff at rollout; a wrong-but-present key "
+                        + "is WRONGPASS; and the shared default-user key is the silent one, where "
+                        + "everything connects and the ACL split does nothing")
                 .isEmpty();
+    }
+
+    /**
+     * The Secret key each workload names must have a matching user line in the ACL template, and
+     * vice versa. A rename on either side is invisible until rollout, where it presents as
+     * {@code WRONGPASS} from one service while the other four are healthy.
+     */
+    @Test
+    void everyWorkloadsSecretKeyHasAMatchingAclUserPlaceholder() throws IOException {
+        Path template = BASE.resolve("redis-users.acl.template");
+        Set<String> placeholders = new TreeSet<>();
+        for (String line : Files.readAllLines(template)) {
+            String trimmed = line.strip();
+            if (!trimmed.startsWith("user ")) continue;
+            String[] tokens = trimmed.split("\\s+");
+            for (String token : tokens) {
+                if (token.startsWith(">__")) placeholders.add(tokens[1] + " " + token);
+            }
+        }
+
+        Set<String> expected = new TreeSet<>();
+        for (String user : REDIS_CLIENT_USERS.values()) {
+            expected.add(user + " >__" + user.toUpperCase(java.util.Locale.ROOT) + "_PASSWORD__");
+        }
+        expected.add("default >__REDIS_PASSWORD__");
+
+        assertThat(placeholders)
+                .as("%s must define exactly one placeholder-password line per ACL user, named for "
+                        + "that user. The workload manifests read redis-<user>-password from "
+                        + "recsys-secrets, so whoever renders this template has to produce one "
+                        + "Secret key per placeholder — a mismatch is WRONGPASS at rollout", template)
+                .isEqualTo(expected);
     }
 
     @Test
