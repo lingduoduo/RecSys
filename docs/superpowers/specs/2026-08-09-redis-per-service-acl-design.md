@@ -261,3 +261,30 @@ all, and `FLUSHALL` is denied to all five); and `~sr:*` covers both shard key fo
 
 All measurement was on `redis-server 8.6.2` while the manifests pin `redis:7-alpine`; no Docker
 daemon was available to exercise Redis 7 itself.
+
+### C3 is now closed as an inventory: `docs/system_design/redis-consumer-inventory.md`
+
+Derived **by consumer, not by store** — the distinction that cost three sweeps. 35 classes reference
+`RedisExecutor`: 6 are executor plumbing, 29 are consumers, 25 of those are constructed by a
+workload and 4 (`RedisTopKStore`, `RedisDistributedLock`, `RedisMutex`, `WatchdogLock`) are
+test-only, so `dlock:`, `mutex:` and `wdlock:` need no grant anywhere.
+
+It confirms C2's seven denied accesses independently, and adds three findings the ACL work had not
+seen:
+
+- **Six of the seven denials are silent.** `SCAN` survives `-@dangerous` and takes no key, so the
+  scans succeed and only the per-key follow-up is denied. Only `SISMEMBER lineage:event:*`
+  propagates an error; the rest degrade quietly.
+- **Three grants nothing uses:** the gateway's `~svc:registry:recsys-api-gateway` *and* its
+  `+@write` — it only ever `MGET`s, having no `ServiceRegistrar` — and reconciliation's
+  `%R~user:*:recent_movies`, where that string is the *member* of a `SISMEMBER`, not a key, so no
+  key pattern ever matches it.
+- **The three literal service names in the template are assumed, not derived.**
+  `ServiceRegistryStore` is constructed by all four services, but registration is gated on
+  `SERVICE_REGISTRY_ENABLED`, `SERVICE_REGISTRY_SERVICE_NAME` and `SERVICE_REGISTRY_ADVERTISE_URL`,
+  and **no manifest under `k8s/` sets any of the three**. A name mismatch would fail silently.
+
+Two Lua scripts also touch keys they do not declare in `KEYS`: the online rate limiter declares
+`rate:online:<bucket>` but touches `rate:online:<bucket>:<windowId>`, and the sharded-record script
+constructs `sr:rec:…` internally. Both are covered by today's `~rate:online:*` and `~sr:*` globs, but
+narrowing either pattern would break them in a way the declared `KEYS` list does not reveal.
