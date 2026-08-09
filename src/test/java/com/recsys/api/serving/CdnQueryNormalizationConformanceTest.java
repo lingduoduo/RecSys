@@ -32,7 +32,7 @@ import static org.assertj.core.api.Assertions.assertThat;
  * <p><b>Every scan here is closed, not best-effort.</b> A text scan that quietly drops what it
  * cannot parse compares two subsets and passes by omission — which is exactly how the first version
  * of this test shipped green while both {@code /api/*&#47;catalog/similar} behaviors were missing
- * from the function's map. Two reproduced holes, and the invariants that now close them:
+ * from the function's map. Four reproduced holes, and the invariants that now close them:
  *
  * <ul>
  *   <li>Reformatting an {@code ensure_cache_policy} call across two lines made {@code POLICY_DECL}
@@ -47,10 +47,27 @@ import static org.assertj.core.api.Assertions.assertThat;
  *       {@code FunctionAssociations}. Closed by parsing the same line for both, by bounding each
  *       association block at the next {@code PathPattern}, and by cross-checking the behavior count
  *       against the {@code CacheBehaviors: {Quantity: N} } the script declares.
+ *   <li>{@link #policyVariables} scanned every line of the shell script and {@code put} into a map,
+ *       so a commented-out {@code ensure_cache_policy} call placed <em>below</em> the live one
+ *       silently redefined the baseline this test compares against — real drift in the live line
+ *       (e.g. dropping a key from the whitelist) still passed, because the stale comment's value
+ *       won the last-write-wins map. Closed by skipping any line whose first non-whitespace
+ *       character is {@code #}, and by failing loudly on a genuine duplicate definition of the same
+ *       variable rather than letting either line win silently.
+ *   <li>{@code ALLOWED_ENTRY} and {@code JS_STRING} matched single-quoted keys and strings only, so
+ *       a double-quoted entry added to the function's {@code ALLOWED} literal silently vanished from
+ *       {@link #allowedInFunction} instead of surfacing as an unexpected extra route — the drop
+ *       direction was already caught by the equality check, only the extra-route direction was
+ *       silent. Closed by accepting either quote style for both the route key and the parameter
+ *       names.
  * </ul>
  *
  * <p>Scope: this compares two committed files. A cache policy edited by hand in the AWS console is
- * invisible here, as it is to every other conformance test in this repo.
+ * invisible here, as it is to every other conformance test in this repo. One known residue is the
+ * safe direction rather than the dangerous one: a commented-out entry <em>inside</em> the
+ * {@code ALLOWED} literal (e.g. {@code // '/api/x': ['y']}) is parsed as if it were live, so it
+ * fails the build with a phantom extra route rather than silently doing nothing — noisy, not
+ * closed, but never a false pass.
  */
 class CdnQueryNormalizationConformanceTest {
 
