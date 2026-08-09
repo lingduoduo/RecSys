@@ -3,9 +3,11 @@
 # The bound IAM role needs NO permissions. The gateway makes no AWS API calls — the only AWS SDK
 # client anywhere in src/main/java is SQS, and the gateway does not use it. The relationship with
 # Cloud Map runs the other way round: the gateway is the consumer, resolving its upstream hostnames
-# through Armeria's default DNS resolver (UpstreamEndpointGroups.java:32) — kube-DNS ClusterIP names
-# for in-cluster calls, Cloud Map's *.recsys.internal names where those are used (see
-# configmap-patch.yaml). Plain name resolution needs no IAM either way. And the "30 s Cloud Map DNS
+# through Armeria's default DNS resolver (UpstreamEndpointGroups.java:32) — always kube-DNS ClusterIP
+# names, never Cloud Map: configmap-patch.yaml keeps *.recsys.internal for callers OUTSIDE the cluster
+# and blue/green cutover, and deliberately does not use it in-cluster, because Cloud Map DNS is
+# topology-blind and would push these calls across AZs. Plain name resolution needs no IAM either way,
+# and the gateway does not resolve those Cloud Map names at all. And the "30 s Cloud Map DNS
 # TTL" in CLAUDE.md is really a client-side setting the gateway applies to itself — it caps the JVM's
 # own address cache (networkaddress.cache.ttl, MicroserviceGatewayServer.java:46-61) so blue/green
 # endpoint changes propagate. It is not a TTL Cloud Map grants, and nothing about it involves IAM.
