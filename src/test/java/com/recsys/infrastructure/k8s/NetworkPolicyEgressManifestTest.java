@@ -30,13 +30,18 @@ import static org.assertj.core.api.Assertions.assertThat;
  * <p>Egress drift is uniquely nasty because its failure modes are quiet. A blocked service
  * registry silently falls back to static routes and looks like a registry that resolved
  * nothing; a blocked sentinel connection fails at startup in a way that reads as a Redis
- * outage. So the addresses are <em>derived</em> from k8s/base/configmap.yaml rather than
- * restated here: change an upstream's address and the requirement follows it.
+ * outage. So the addresses are <em>derived</em> from the manifests rather than restated here:
+ * change an upstream's address and the requirement follows it. The source is the union of
+ * k8s/base/configmap.yaml and every base Deployment's inline env — SPLUNK_HEC_URL is declared
+ * only in the latter, and a ConfigMap-only derivation could not see that all four serving
+ * workloads dial splunk:8088.
  *
  * <p>Ownership cannot be derived the same way — recsys-config is a single ConfigMap
  * envFrom'd into all five workloads, so every service receives LLM_SERVICE_URL and MYSQL_URL
  * in its environment whether or not it dials them. {@link #OWNED_KEYS} is that missing half,
  * and {@link #everyConfigMapUpstreamKeyIsClaimed} is what stops it going stale.
+ * A Deployment env var is the opposite case — it names its own dialer, so ownership there is
+ * derived and needs no OWNED_KEYS entry.
  */
 class NetworkPolicyEgressManifestTest {
 
@@ -370,8 +375,7 @@ class NetworkPolicyEgressManifestTest {
 
         Set<String> unclaimed = new TreeSet<>();
         for (String key : cfg.keySet()) {
-            boolean isUpstream = UPSTREAM_KEY_SUFFIXES.stream().anyMatch(key::endsWith);
-            if (isUpstream && !claimed.contains(key)) unclaimed.add(key);
+            if (isUpstreamKey(key) && !claimed.contains(key)) unclaimed.add(key);
         }
 
         assertThat(unclaimed)
