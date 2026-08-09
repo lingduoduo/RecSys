@@ -12,8 +12,10 @@
 
 - **JDK 17.** Every Maven command: `JAVA_HOME=$(/usr/libexec/java_home -v 17) mvn ...`, run from the repo root — manifest tests resolve `Path.of("k8s", "base")` relative to the working directory.
 - **No Java source changes.** `LettuceClientFactory:120` and `:188` already read `REDIS_USERNAME`. Nothing under `src/main/java` may be touched.
-- **`user default` must NOT appear in the ACL file.** `requirepass` is Redis's shortcut for the default user's password; leaving `default` out of the file is what keeps the two from contending, and `default` must keep full access because the Flink job — deployed by nothing in this repo — writes `u2vEmb:*` and `topk:*` as `default`.
+- **`user default` MUST appear in the ACL file**, as `user default on >__REDIS_PASSWORD__ ~* &* +@all`. This was inverted in an earlier draft. An aclfile that omits it does **not** leave `requirepass` governing default — `ACLLoadFromFile` rebuilds default as `on nopass ~* &* +@all`, leaving Redis unauthenticated, breaking replication and Flink, and keeping both `redis-cli ping` probes green throughout. Measured on a real server. `default` must also keep full access: the Flink job, deployed by nothing in this repo, writes `u2vEmb:*` and `topk:*` as `default`.
 - **No real password may be committed.** The ACL template carries `__<USER>_PASSWORD__` placeholders, matching the existing `__REDIS_PASSWORD__` convention in the sentinel template. The operator renders it into the `recsys-secrets` Secret.
+- **The ACL file may contain no comments.** Redis aborts startup on any non-blank line not beginning with `user`, which CrashLoops the whole Redis tier. Rationale goes in the runbook and beside the `--aclfile` argument, never in the file.
+- **`+@scripting` is required** for `catalog`, `model` and `online`: it is in neither `@read` nor `@write`, and without it `EVAL` fails on the trending read path, the sharded record write, topology publish, the online rate limiter and the model service's submit-token consume.
 - **The new test must be non-docker and added to the `resilience` profile** `<includes>` in `pom.xml` — that profile is the PR gate.
 - **`redis:7-alpine`** is the image (`redis-cluster.yaml:66, 198, 316, 337`). `%R~` and `%W~` require Redis 7; do not use them if that image is ever downgraded.
 - Never merge to `main` directly — this ships as a PR.
@@ -26,12 +28,15 @@ Derived from the call graph, **not** from prefix names. The ACL audit's claim of
 | Prefix | Written by | Read by |
 |---|---|---|
 | `i2vEmb:` | catalog serving (`EmbeddingService.setEmbedding` via `/setembedding`; `RecSysServer.writeMissing` at startup) | catalog, model |
-| `u2vEmb:` | nothing in `src/main/java` — Flink, as `default` | catalog, model, online |
-| `topk:` | nothing in `src/main/java` — `ShardedTopKStore` exposes no write method | catalog, model, online |
+| `u2vEmb:` | Flink as `default`, **and catalog** via `RecSysServer.seedEmbeddings` -> `writeMissing` | catalog, model, online |
+| `topk:` | nothing directly, but read through `EVAL`, which Redis requires write permission for | catalog, model, online |
 | `sr:*` | online serving | online serving |
 | `shard:topology` | online serving | online serving |
+| `rate:online:*` | online serving (`RedisRateLimiter`) | online serving |
+| `submit_token:*`, `login:*` | model serving | model serving |
 | `svc:registry:<service>` | each service writes only its own key | gateway reads all |
-| `lineage:event:*`, `user:*:recent_movies` | Flink | reconciliation CronJob, read-only |
+| `lineage:event:*` | Flink | reconciliation CronJob, read-only |
+| `user:*:recent_movies` | Flink | reconciliation CronJob, **and online and model** (`OnlineFeatureStore:93,98`) |
 
 - `LlmResponseCache` is an **in-memory LRU** keyed by a SHA-256 of the request body. The gateway's only Redis use is the service registry.
 - Six manifests reference `REDIS_PASSWORD`: `api-gateway.yaml`, `catalog-serving.yaml`, `model-serving.yaml`, `online-serving.yaml`, `outbox-reconciliation-cronjob.yaml`, and `redis-cluster.yaml` itself. `outbox-relay-deployment.yaml` uses no Redis.
@@ -60,52 +65,34 @@ Derived from the call graph, **not** from prefix names. The ACL audit's claim of
 - Modify: `k8s/base/redis-cluster.yaml`
 
 **Interfaces:**
-- Produces: five user names — `catalog`, `model`, `online`, `gateway`, `reconciliation` — and the key patterns Task 2's test parses. The template's line format is `user <name> on >__<UPPER>_PASSWORD__ <rules...>`, one user per line.
+- Produces: six user names — `default`, `catalog`, `model`, `online`, `gateway`, `reconciliation` — and the key patterns Task 2's test parses. The template's line format is `user <name> on >__<UPPER>_PASSWORD__ <rules...>`, one user per line, no comments.
 
 - [ ] **Step 1: Write the ACL template**
 
-Create `k8s/base/redis-users.acl.template`:
+Create `k8s/base/redis-users.acl.template`.
+
+**No comments.** Redis aborts startup on any non-blank line in an ACL file that does not begin with
+`user` — measured, not assumed. All rationale lives in the runbook and beside the `--aclfile`
+argument in `redis-cluster.yaml`. Blank lines are permitted; nothing else is.
 
 ```
-# Redis ACL users, one per workload. Rendered into the `redis-users.acl` key of the
-# recsys-secrets Secret with real passwords substituted for the __*_PASSWORD__ placeholders —
-# see docs/runbooks/redis-auth.md. Same placeholder convention as the sentinel template in
-# redis-cluster.yaml.
-#
-# `user default` is deliberately absent. requirepass is Redis's shortcut for the default user's
-# password, and omitting default here is what keeps the two mechanisms from contending. It also
-# has to keep full access: the Flink streaming job writes u2vEmb:* and topk:* as default, and
-# nothing in this repo deploys it, so narrowing default would break the embedding and trending
-# write path with no error visible in any test or manifest here.
-#
-# Rule order matters — Redis applies rules left to right. `-@all` first, then the categories,
-# then `-@dangerous` last so it removes FLUSHALL/FLUSHDB/CONFIG/DEBUG/KEYS even though @write
-# and @read granted some of them. +@connection is required for AUTH/HELLO/PING; without it
-# Lettuce cannot complete a handshake. SCAN survives -@dangerous (it is @keyspace, not
-# dangerous), which RedisEmbeddingStore.scanIds and the key probes need.
-#
-# `~pattern` grants read AND write. `%R~` is read-only and `%W~` write-only; both need Redis 7,
-# which redis-cluster.yaml pins via redis:7-alpine.
-
-# Catalog serving (6010): writes item embeddings via /setembedding and startup seeding, reads
-# user embeddings and trending for recall.
-user catalog on >__CATALOG_PASSWORD__ -@all +@read +@write +@connection -@dangerous ~i2vEmb:* ~svc:registry:recsys-catalog-serving %R~u2vEmb:* %R~topk:*
-
-# Model serving (8080): scores candidates. Writes nothing but its own registry key.
-user model on >__MODEL_PASSWORD__ -@all +@read +@write +@connection -@dangerous ~svc:registry:recsys-model-serving %R~i2vEmb:* %R~u2vEmb:* %R~topk:*
-
-# Online serving (7010): owns the sharded record store and the shard topology. Reads user
-# embeddings (written by Flink) and trending.
-user online on >__ONLINE_PASSWORD__ -@all +@read +@write +@connection -@dangerous ~sr:* ~shard:topology ~svc:registry:recsys-online-serving %R~u2vEmb:* %R~topk:*
-
-# API gateway (8010): resolves upstreams from the service registry and renews its own entry.
-# LlmResponseCache is an in-memory LRU, so this is the gateway's only Redis use.
+user default on >__REDIS_PASSWORD__ ~* &* +@all
+user catalog on >__CATALOG_PASSWORD__ -@all +@read +@write +@connection +@scripting -@dangerous ~i2vEmb:* ~u2vEmb:* ~topk:* ~svc:registry:recsys-catalog-serving
+user model on >__MODEL_PASSWORD__ -@all +@read +@write +@connection +@scripting -@dangerous ~submit_token:* ~login:* ~topk:* ~svc:registry:recsys-model-serving %R~i2vEmb:* %R~u2vEmb:* %R~user:*:recent_movies
+user online on >__ONLINE_PASSWORD__ -@all +@read +@write +@connection +@scripting -@dangerous ~sr:* ~shard:topology ~rate:online:* ~topk:* ~svc:registry:recsys-online-serving %R~u2vEmb:* %R~user:*:recent_movies
 user gateway on >__GATEWAY_PASSWORD__ -@all +@read +@write +@connection -@dangerous ~svc:registry:recsys-api-gateway %R~svc:registry:*
-
-# Reconciliation CronJob: reads event lineage to find events that need republishing. Writes
-# nothing at all.
 user reconciliation on >__RECONCILIATION_PASSWORD__ -@all +@read +@connection -@dangerous %R~lineage:event:* %R~user:*:recent_movies
 ```
+
+**`user default` is present and must stay.** An ACL file that omits it does not leave `requirepass`
+governing the default user — `ACLLoadFromFile` rebuilds default as `on nopass ~* &* +@all`, which
+leaves Redis accepting unauthenticated connections, breaks replication, breaks Flink, and keeps both
+`redis-cli ping` probes green while it happens. Measured. `--requirepass` stays in the argument list
+for the sentinel's `auth-pass` pairing, but this line is what actually governs.
+
+`topk:` is `~` rather than `%R~` for all three serving users because `ShardedTopKStore` reads it
+through `EVAL`, and Redis demands full read-write permission on every key passed to a script — even
+one carrying a `#!lua flags=no-writes` shebang. Also measured.
 
 - [ ] **Step 2: Mount the rendered file into the primary**
 
@@ -157,11 +144,13 @@ Expected: all three print their OK line. Do **not** apply anything.
 - [ ] **Step 5: Confirm `user default` is absent and every user has a placeholder**
 
 ```bash
-grep -c "^user default" k8s/base/redis-users.acl.template
-grep -c "__.*_PASSWORD__" k8s/base/redis-users.acl.template
+grep -c "^user " k8s/base/redis-users.acl.template
+grep -c "^user default on >__REDIS_PASSWORD__ ~\\* &\\* +@all$" k8s/base/redis-users.acl.template
+grep -c "^#" k8s/base/redis-users.acl.template
 ```
 
-Expected: `0` and `5`.
+Expected: `6`, `1`, and `0`. The third is the one that matters — a single `#` line aborts Redis
+startup and CrashLoops the whole tier.
 
 - [ ] **Step 6: Commit**
 
@@ -253,9 +242,12 @@ class RedisAclManifestTest {
      * job writes both as {@code default}.
      */
     private static final Map<String, Set<String>> EXPECTED_WRITE_PATTERNS = Map.of(
-            "catalog", Set.of("i2vEmb:*", "svc:registry:recsys-catalog-serving"),
-            "model", Set.of("svc:registry:recsys-model-serving"),
-            "online", Set.of("sr:*", "shard:topology", "svc:registry:recsys-online-serving"),
+            "catalog", Set.of("i2vEmb:*", "u2vEmb:*", "topk:*",
+                    "svc:registry:recsys-catalog-serving"),
+            "model", Set.of("submit_token:*", "login:*", "topk:*",
+                    "svc:registry:recsys-model-serving"),
+            "online", Set.of("sr:*", "shard:topology", "rate:online:*", "topk:*",
+                    "svc:registry:recsys-online-serving"),
             "gateway", Set.of("svc:registry:recsys-api-gateway"),
             "reconciliation", Set.of());
 
