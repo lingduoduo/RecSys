@@ -345,6 +345,20 @@ POPs), and coarser whole-cache invalidation. See
    route's query string from the whitelist alone, rejecting a percent-encoded or repeated value
    with a `no-store` 400 and emitting the rest in a fixed order. The cache key is computed from
    the function's output, so that is what fragments the cache.
+   **The `ALLOWED[request.uri]` lookup fails closed.** Any URI that isn't an exact key in the
+   whitelist gets the same `no-store` 400, not a pass-through. The function is associated only
+   with the four exact-match cached behaviors, so a lookup miss cannot mean "some other,
+   unprotected route" — every URI legitimately reaching this handler is one of the four keys
+   above. A miss instead means the URI CloudFront handed the function differs from the URI
+   CloudFront matched the behavior on, and AWS documents exactly that gap: "CloudFront normalizes
+   URI paths consistent with RFC 3986 and then matches the path with the correct cache behavior.
+   Once the cache behavior is matched, CloudFront sends the raw URI path to the origin." Confirmed
+   against the real CloudFront runtime: `//api/catalog/item`, `/api/x/../catalog/item`, and
+   `/api/catalog/%69tem` all miss the map. Under the original pass-through branch, any of those —
+   including a bare leading slash — would have skipped the entire fix. Failing closed removes the
+   dependence on the raw-vs-normalized question below instead of betting on it, and matches
+   `GatewayProxyService.rejectNonCanonicalPath`, which already refuses a non-canonical spelling of
+   a public route rather than serving it.
    **The origin cannot help here, and must not be asked to.** Armeria's codecs overwrite `:path`
    with the normalized request target before any service runs (`Http1RequestDecoder:177` into
    `ArmeriaHttpUtil:679`; `Http2RequestDecoder:128` into `:614`), and
@@ -352,7 +366,12 @@ POPs), and coarser whole-cache invalidation. See
    `id=7`. Measured on a real server over a raw socket. A gateway-side guard was written, passed
    its unit tests, and was inert in production, because `ServiceRequestContext.of(request)` is the
    one place that preserves the caller's request verbatim.
-   **Still unverified:** whether CloudFront percent-decodes parameter *names* before whitelist
-   matching. The function is built not to depend on the answer, and `scripts/test-cdn-function.sh`
-   verifies its logic against the real CloudFront runtime — but no distribution exists in this
-   account, so the association and the parsing behaviour are unexercised.
+   **Still unverified:** two things. Whether CloudFront percent-decodes parameter *names* before
+   whitelist matching — the function is built not to depend on the answer, and
+   `scripts/test-cdn-function.sh` verifies its logic against the real CloudFront runtime, but no
+   distribution exists in this account, so the association and the parsing behaviour are
+   unexercised. And whether a CloudFront Function receives the raw or the normalized
+   `request.uri`: AWS states that the raw path reaches the origin *after* the behavior match, but
+   says nothing about what a Function sees *before* it — and `test-function` takes an
+   already-parsed event, never a raw wire path, so this is unmeasurable without a distribution
+   too. The fail-closed lookup above exists because this question has no answer here.
