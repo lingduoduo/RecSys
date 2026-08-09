@@ -391,6 +391,18 @@ class NetworkPolicyEgressManifestTest {
                 .as("OWNED_KEYS claims a key that recsys-config does not define — a typo here "
                         + "drops that workload's egress requirement without failing anything")
                 .containsAll(claimed);
+
+        // The Deployment half. everyDeclaredUpstreamIsPermittedByEgress iterates OWNED_KEYS, so a
+        // base Deployment missing from that map has its inline env upstreams checked by nothing —
+        // which is precisely how SPLUNK_HEC_URL went unnoticed, one level up. An entry with an
+        // empty key set is a valid claim: it says "this workload dials nothing from the ConfigMap".
+        Set<String> unmapped = new TreeSet<>(deploymentEnv(baseDocuments()).keySet());
+        unmapped.removeAll(OWNED_KEYS.keySet());
+        assertThat(unmapped)
+                .as("these k8s/base Deployments have no OWNED_KEYS entry, so no egress assertion "
+                        + "iterates them and any upstream in their inline env is unchecked. Add an "
+                        + "entry — Set.of() if the workload dials nothing from recsys-config")
+                .isEmpty();
     }
 
     /**
