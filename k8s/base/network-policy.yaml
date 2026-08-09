@@ -68,7 +68,35 @@ spec:
               app: redis
       ports:
         - port: 6379
-    - ports:
+    # Structured log shipping (SPLUNK_HEC_TOKEN present). SPLUNK_HEC_URL is a literal env value
+    # on each Deployment rather than a recsys-config key, which is why the ConfigMap-only
+    # derivation never required this rule. No Splunk is deployed by these manifests — the
+    # operator supplies a Service named `splunk`, see docs/runbooks/splunk-hec-logging.md.
+    # Blocked, this loses log events silently: the appender is bounded, drop-on-full and
+    # at-most-once, so nothing retries and nothing errors.
+    - to:
+        - podSelector:
+            matchLabels:
+              app: splunk
+      ports:
+        - port: 8088
+    # Scoped to kube-system rather than left destination-free. A rule with no `to[]` permits
+    # port 53 to ANY address, inside the cluster or out, which is a tunnel through an otherwise
+    # tight allow-list. Namespace rather than `podSelector: k8s-app=kube-dns` on purpose: CoreDNS's
+    # own labels vary across distributions, so a podSelector pinned to one would silently break on
+    # another — a namespace scope keeps matching even if the cluster's DNS provider in kube-system
+    # changes. Operational note: a cluster running NodeLocal DNSCache resolves through
+    # 169.254.20.10, a host-networked address that neither this namespaceSelector nor a podSelector
+    # would match (NetworkPolicy peers match pod IPs, and a host-networked DaemonSet's IP is the
+    # node's, which Calico/Cilium treat as a host endpoint, not a kube-system workload). Such a
+    # cluster needs an additional peer in this rule — `- to: [ipBlock: {cidr:
+    # 169.254.20.10/32}]` — not added here because no such cluster exists in this repo's overlays,
+    # and adding it unconditionally would permit link-local egress everywhere.
+    - to:
+        - namespaceSelector:
+            matchLabels:
+              kubernetes.io/metadata.name: kube-system
+      ports:
         - port: 53
           protocol: UDP
         - port: 53
@@ -118,7 +146,35 @@ spec:
               app: redis-sentinel
       ports:
         - port: 26379
-    - ports:
+    # Structured log shipping (SPLUNK_HEC_TOKEN present). SPLUNK_HEC_URL is a literal env value
+    # on each Deployment rather than a recsys-config key, which is why the ConfigMap-only
+    # derivation never required this rule. No Splunk is deployed by these manifests — the
+    # operator supplies a Service named `splunk`, see docs/runbooks/splunk-hec-logging.md.
+    # Blocked, this loses log events silently: the appender is bounded, drop-on-full and
+    # at-most-once, so nothing retries and nothing errors.
+    - to:
+        - podSelector:
+            matchLabels:
+              app: splunk
+      ports:
+        - port: 8088
+    # Scoped to kube-system rather than left destination-free. A rule with no `to[]` permits
+    # port 53 to ANY address, inside the cluster or out, which is a tunnel through an otherwise
+    # tight allow-list. Namespace rather than `podSelector: k8s-app=kube-dns` on purpose: CoreDNS's
+    # own labels vary across distributions, so a podSelector pinned to one would silently break on
+    # another — a namespace scope keeps matching even if the cluster's DNS provider in kube-system
+    # changes. Operational note: a cluster running NodeLocal DNSCache resolves through
+    # 169.254.20.10, a host-networked address that neither this namespaceSelector nor a podSelector
+    # would match (NetworkPolicy peers match pod IPs, and a host-networked DaemonSet's IP is the
+    # node's, which Calico/Cilium treat as a host endpoint, not a kube-system workload). Such a
+    # cluster needs an additional peer in this rule — `- to: [ipBlock: {cidr:
+    # 169.254.20.10/32}]` — not added here because no such cluster exists in this repo's overlays,
+    # and adding it unconditionally would permit link-local egress everywhere.
+    - to:
+        - namespaceSelector:
+            matchLabels:
+              kubernetes.io/metadata.name: kube-system
+      ports:
         - port: 53
           protocol: UDP
         - port: 53
@@ -168,7 +224,35 @@ spec:
               app: redis-sentinel
       ports:
         - port: 26379
-    - ports:
+    # Structured log shipping (SPLUNK_HEC_TOKEN present). SPLUNK_HEC_URL is a literal env value
+    # on each Deployment rather than a recsys-config key, which is why the ConfigMap-only
+    # derivation never required this rule. No Splunk is deployed by these manifests — the
+    # operator supplies a Service named `splunk`, see docs/runbooks/splunk-hec-logging.md.
+    # Blocked, this loses log events silently: the appender is bounded, drop-on-full and
+    # at-most-once, so nothing retries and nothing errors.
+    - to:
+        - podSelector:
+            matchLabels:
+              app: splunk
+      ports:
+        - port: 8088
+    # Scoped to kube-system rather than left destination-free. A rule with no `to[]` permits
+    # port 53 to ANY address, inside the cluster or out, which is a tunnel through an otherwise
+    # tight allow-list. Namespace rather than `podSelector: k8s-app=kube-dns` on purpose: CoreDNS's
+    # own labels vary across distributions, so a podSelector pinned to one would silently break on
+    # another — a namespace scope keeps matching even if the cluster's DNS provider in kube-system
+    # changes. Operational note: a cluster running NodeLocal DNSCache resolves through
+    # 169.254.20.10, a host-networked address that neither this namespaceSelector nor a podSelector
+    # would match (NetworkPolicy peers match pod IPs, and a host-networked DaemonSet's IP is the
+    # node's, which Calico/Cilium treat as a host endpoint, not a kube-system workload). Such a
+    # cluster needs an additional peer in this rule — `- to: [ipBlock: {cidr:
+    # 169.254.20.10/32}]` — not added here because no such cluster exists in this repo's overlays,
+    # and adding it unconditionally would permit link-local egress everywhere.
+    - to:
+        - namespaceSelector:
+            matchLabels:
+              kubernetes.io/metadata.name: kube-system
+      ports:
         - port: 53
           protocol: UDP
         - port: 53
@@ -227,7 +311,35 @@ spec:
               app: mysql
       ports:
         - port: 3306
-    - ports:
+    # Structured log shipping (SPLUNK_HEC_TOKEN present). SPLUNK_HEC_URL is a literal env value
+    # on each Deployment rather than a recsys-config key, which is why the ConfigMap-only
+    # derivation never required this rule. No Splunk is deployed by these manifests — the
+    # operator supplies a Service named `splunk`, see docs/runbooks/splunk-hec-logging.md.
+    # Blocked, this loses log events silently: the appender is bounded, drop-on-full and
+    # at-most-once, so nothing retries and nothing errors.
+    - to:
+        - podSelector:
+            matchLabels:
+              app: splunk
+      ports:
+        - port: 8088
+    # Scoped to kube-system rather than left destination-free. A rule with no `to[]` permits
+    # port 53 to ANY address, inside the cluster or out, which is a tunnel through an otherwise
+    # tight allow-list. Namespace rather than `podSelector: k8s-app=kube-dns` on purpose: CoreDNS's
+    # own labels vary across distributions, so a podSelector pinned to one would silently break on
+    # another — a namespace scope keeps matching even if the cluster's DNS provider in kube-system
+    # changes. Operational note: a cluster running NodeLocal DNSCache resolves through
+    # 169.254.20.10, a host-networked address that neither this namespaceSelector nor a podSelector
+    # would match (NetworkPolicy peers match pod IPs, and a host-networked DaemonSet's IP is the
+    # node's, which Calico/Cilium treat as a host endpoint, not a kube-system workload). Such a
+    # cluster needs an additional peer in this rule — `- to: [ipBlock: {cidr:
+    # 169.254.20.10/32}]` — not added here because no such cluster exists in this repo's overlays,
+    # and adding it unconditionally would permit link-local egress everywhere.
+    - to:
+        - namespaceSelector:
+            matchLabels:
+              kubernetes.io/metadata.name: kube-system
+      ports:
         - port: 53
           protocol: UDP
         - port: 53

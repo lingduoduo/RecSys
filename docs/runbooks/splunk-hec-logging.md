@@ -677,6 +677,14 @@ Splunk actually runs, that is one of:
   `online-serving.yaml`) to the actual collector URL via a Kustomize overlay patch, and
   re-render (`kubectl kustomize k8s/eks`) before applying.
 
+Whichever option you take, the destination needs an egress rule. `k8s/base/network-policy.yaml`
+permits `app: splunk` on 8088 from all four serving policies, which covers the first two options
+unchanged. The third does not: changing `SPLUNK_HEC_URL` in `k8s/base` fails
+`NetworkPolicyEgressManifestTest` until a matching rule exists, but changing it through an *overlay*
+patch is invisible to that test — it reads `k8s/base` only. An overlay that repoints Splunk must add
+the matching egress rule by hand, the same way `network-policy-elasticache-patch.yaml` does for
+ElastiCache.
+
 Only once one of those is in place does a rollout restart actually start shipping logs:
 
 ```bash

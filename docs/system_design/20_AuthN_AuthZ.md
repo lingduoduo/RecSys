@@ -246,10 +246,26 @@ The egress half is the half that rots. Ingress rules are stated once and stay tr
 encode the *addresses of dependencies*, and those move — a new upstream in the ConfigMap, a flag
 that opens a connection, an overlay that relocates Redis outside the cluster. Six such gaps had
 accumulated by 2026-08. `NetworkPolicyEgressManifestTest` is the response: it derives every
-upstream address from `recsys-config` and requires a matching rule, so the two sets can no longer
-diverge without failing a PR. Ownership is declared rather than derived — `recsys-config` is one
+upstream address from the union of `recsys-config` and every base Deployment's inline `env:`, and
+requires a matching rule, so the two sets can no longer diverge without failing a PR. The
+Deployment half was added after `SPLUNK_HEC_URL` — a literal env value on all four serving
+Deployments, not a ConfigMap key — turned out to be dialing an unpermitted `splunk:8088`.
+Ownership is declared rather than derived — `recsys-config` is one
 ConfigMap `envFrom`'d into all five workloads, so possession of an env var proves nothing about
-who dials it.
+who dials it. A Deployment env var is the opposite case: it names its own dialer.
+
+Two rules in that file are worth reading directly. Egress to `app: splunk` on 8088 exists because
+every serving workload ships structured logs there, and the appender's at-most-once, drop-on-full
+delivery means a blocked connection loses events with no error anywhere — the failure is
+indistinguishable from a service that logged nothing. The DNS rule is scoped to
+`namespaceSelector: kubernetes.io/metadata.name=kube-system` rather than left destination-free: a
+NetworkPolicy rule with no `to[]` permits its port to *every* address, so the bare `ports: [53]`
+this file used to carry was an unrestricted outbound channel from every workload. It stops at the
+namespace rather than adding `podSelector: k8s-app=kube-dns` because CoreDNS's own labels vary
+across distributions, so a podSelector pinned to one would break silently on another. Note that
+neither selector matches NodeLocal DNSCache, which is host-networked and therefore carries the
+node's IP: a cluster running it needs an additional `ipBlock` peer for `169.254.20.10/32` in the
+same rule.
 
 Design: [NetworkPolicy egress conformance](../superpowers/specs/2026-08-05-networkpolicy-egress-conformance-design.md).
 
@@ -498,10 +514,12 @@ Design: [user-scope authorization](../superpowers/specs/2026-08-05-gateway-user-
    in the cluster.
 9. **Nothing permits egress on 443.** The conformance test covers what the ConfigMap names, and
    the ConfigMap names no HTTPS endpoint. The Cognito JWKS fetch (once `GATEWAY_COGNITO_ISSUER` is
-   set), IRSA/STS, Cloud Map, and SQS all leave the cluster on 443 against no rule. On an
-   enforcing CNI, turning on Cognito JWT auth would fail every verification — and §8's test would
-   still be green, because a destination absent from the ConfigMap is a destination it cannot know
-   about.
+   set), IRSA/STS, Cloud Map, SQS, and PostHog feature flags (`PostHogFeatureFlagProvider`, which
+   POSTs `distinct_id` and `person_properties` to an external SaaS) all leave the cluster on 443
+   against no rule. On an enforcing CNI, turning on Cognito JWT auth would fail every verification
+   — and §8's test would still be green, because a destination named in neither `recsys-config`
+   nor a base Deployment's inline `env:` is a destination it cannot know about. Overlay-patched
+   addresses are outside its reach for the same reason.
 
 ## 11. The gateway proxy policy — what the gateway is willing to forward
 

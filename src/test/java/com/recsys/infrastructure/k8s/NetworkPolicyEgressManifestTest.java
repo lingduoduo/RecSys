@@ -30,13 +30,18 @@ import static org.assertj.core.api.Assertions.assertThat;
  * <p>Egress drift is uniquely nasty because its failure modes are quiet. A blocked service
  * registry silently falls back to static routes and looks like a registry that resolved
  * nothing; a blocked sentinel connection fails at startup in a way that reads as a Redis
- * outage. So the addresses are <em>derived</em> from k8s/base/configmap.yaml rather than
- * restated here: change an upstream's address and the requirement follows it.
+ * outage. So the addresses are <em>derived</em> from the manifests rather than restated here:
+ * change an upstream's address and the requirement follows it. The source is the union of
+ * k8s/base/configmap.yaml and every base Deployment's inline env — SPLUNK_HEC_URL is declared
+ * only in the latter, and a ConfigMap-only derivation could not see that all four serving
+ * workloads dial splunk:8088.
  *
  * <p>Ownership cannot be derived the same way — recsys-config is a single ConfigMap
  * envFrom'd into all five workloads, so every service receives LLM_SERVICE_URL and MYSQL_URL
  * in its environment whether or not it dials them. {@link #OWNED_KEYS} is that missing half,
  * and {@link #everyConfigMapUpstreamKeyIsClaimed} is what stops it going stale.
+ * A Deployment env var is the opposite case — it names its own dialer, so ownership there is
+ * derived and needs no OWNED_KEYS entry.
  */
 class NetworkPolicyEgressManifestTest {
 
@@ -71,7 +76,7 @@ class NetworkPolicyEgressManifestTest {
      * Hosts k8s/base names but does not deploy, so no Service can resolve their pod labels.
      * Resolution is otherwise strict — see {@link #destinationLabels}.
      */
-    static final Set<String> EXTERNALLY_DEPLOYED = Set.of("ollama", "mysql", "kafka");
+    static final Set<String> EXTERNALLY_DEPLOYED = Set.of("ollama", "mysql", "kafka", "splunk");
 
     /** Key shapes that name a network destination. Anything matching these needs an owner. */
     private static final List<String> UPSTREAM_KEY_SUFFIXES =
@@ -90,6 +95,70 @@ class NetworkPolicyEgressManifestTest {
         Map<String, String> data = new LinkedHashMap<>();
         ((Map<String, Object>) cm.get("data")).forEach((k, v) -> data.put(k, String.valueOf(v)));
         return data;
+    }
+
+    /**
+     * Inline `env:` entries carrying a literal `value:`, keyed by Deployment name. This is the
+     * other half of the source of truth. SPLUNK_HEC_URL is declared here rather than in
+     * recsys-config, so a ConfigMap-only derivation could not see that all four serving workloads
+     * dial splunk:8088 — and the Splunk appender is bounded, drop-on-full and at-most-once, so a
+     * blocked connection loses events with no signal at all.
+     *
+     * <p>valueFrom entries (Secret refs, field refs) are skipped: they name no address.
+     */
+    static Map<String, Map<String, String>> deploymentEnv(List<Map<String, Object>> docs) {
+        Map<String, Map<String, String>> byWorkload = new LinkedHashMap<>();
+        for (Map<String, Object> deployment : ofKind(docs, "Deployment")) {
+            Map<String, String> env = new LinkedHashMap<>();
+            Map<String, Object> podSpec = mapAt(deployment, "spec", "template", "spec");
+            for (Map<String, Object> container : listOf(podSpec, "containers")) {
+                for (Map<String, Object> entry : listOf(container, "env")) {
+                    Object name = entry.get("name");
+                    Object value = entry.get("value");
+                    if (name != null && value != null) {
+                        env.put(String.valueOf(name), String.valueOf(value));
+                    }
+                }
+            }
+            byWorkload.put(nameOf(deployment), env);
+        }
+        return byWorkload;
+    }
+
+    /** Key shapes that name a network destination. */
+    static boolean isUpstreamKey(String key) {
+        return UPSTREAM_KEY_SUFFIXES.stream().anyMatch(key::endsWith);
+    }
+
+    /** The upstream keys a workload dials, and the values to resolve them against. */
+    record Dialed(Set<String> keys, Map<String, String> values) {}
+
+    /**
+     * ConfigMap keys the workload claims in {@link #OWNED_KEYS}, unioned with every inline
+     * Deployment env key shaped like an upstream.
+     *
+     * <p>The asymmetry is deliberate. recsys-config is one ConfigMap envFrom'd into five
+     * workloads, so a ConfigMap key proves nothing about who dials it and ownership has to be
+     * declared. A Deployment env var names its own dialer, so ownership is derived there and
+     * cannot drift — which is why no OWNED_KEYS entry is required, or accepted, for one.
+     *
+     * <p>Blank values are skipped: an empty string names no destination. That is what keeps
+     * ONLINE_EVENTS_SQS_QUEUE_URL: "" from demanding an egress rule to a queue nobody dials.
+     *
+     * <p>values starts as the ConfigMap so Upstream.parse can resolve REDIS_HOST against
+     * REDIS_PORT, then Deployment env overrides it — the same precedence Kubernetes applies
+     * between inline env and envFrom.
+     */
+    static Dialed dialedBy(String workload, List<Map<String, Object>> docs) {
+        Map<String, String> values = new LinkedHashMap<>(configMap(docs));
+        Set<String> keys = new TreeSet<>(OWNED_KEYS.getOrDefault(workload, Set.of()));
+        deploymentEnv(docs).getOrDefault(workload, Map.of()).forEach((key, value) -> {
+            if (isUpstreamKey(key) && !value.isBlank()) {
+                keys.add(key);
+                values.put(key, value);
+            }
+        });
+        return new Dialed(keys, values);
     }
 
     static Map<String, Object> policyFor(String workload, List<Map<String, Object>> docs) {
@@ -207,17 +276,16 @@ class NetworkPolicyEgressManifestTest {
     @Test
     void everyDeclaredUpstreamIsPermittedByEgress() throws IOException {
         List<Map<String, Object>> docs = baseDocuments();
-        Map<String, String> cfg = configMap(docs);
 
         Set<String> unreachable = new TreeSet<>();
-        for (Map.Entry<String, Set<String>> entry : OWNED_KEYS.entrySet()) {
-            String workload = entry.getKey();
+        for (String workload : OWNED_KEYS.keySet()) {
             Map<String, Object> policy = policyFor(workload, docs);
             assertThat(policy).as("no NetworkPolicy named %s in k8s/base", workload).isNotNull();
             if (!restrictsEgress(policy)) continue;
 
-            for (String key : entry.getValue()) {
-                for (Upstream upstream : Upstream.parse(key, cfg)) {
+            Dialed dialed = dialedBy(workload, docs);
+            for (String key : dialed.keys()) {
+                for (Upstream upstream : Upstream.parse(key, dialed.values())) {
                     Map<String, Object> destLabels = destinationLabels(upstream.host(), docs);
                     if (!permitsEgress(policy, destLabels, upstream.port())) {
                         unreachable.add(workload + " -> " + key + " (" + upstream.host()
@@ -232,8 +300,11 @@ class NetworkPolicyEgressManifestTest {
                         + "it, so under an enforcing CNI the connection is dropped. The failures are "
                         + "quiet in different ways and need different fixes: a blocked service "
                         + "registry falls back to static routes and logs nothing unusual, a blocked "
-                        + "sentinel connection fails at startup looking like a Redis outage, and a "
-                        + "blocked MySQL connection surfaces only on the first outbox append. Add a "
+                        + "sentinel connection fails at startup looking like a Redis outage, a "
+                        + "blocked MySQL connection surfaces only on the first outbox append, "
+                        + "and a blocked Splunk connection loses log events entirely, because the "
+                        + "appender is bounded, drop-on-full and at-most-once by design — nothing "
+                        + "retries and nothing errors. Add a "
                         + "matching egress rule to k8s/base/network-policy.yaml")
                 .isEmpty();
     }
@@ -246,18 +317,17 @@ class NetworkPolicyEgressManifestTest {
     @Test
     void everyPermittedEgressIsAdmittedByItsDestination() throws IOException {
         List<Map<String, Object>> docs = baseDocuments();
-        Map<String, String> cfg = configMap(docs);
         List<Map<String, Object>> policies = ofKind(docs, "NetworkPolicy");
 
         Set<String> blocked = new TreeSet<>();
-        for (Map.Entry<String, Set<String>> entry : OWNED_KEYS.entrySet()) {
-            String workload = entry.getKey();
+        for (String workload : OWNED_KEYS.keySet()) {
             Map<String, Object> sourcePolicy = policyFor(workload, docs);
             if (sourcePolicy == null || !restrictsEgress(sourcePolicy)) continue;
             Map<String, Object> sourceLabels = mapAt(sourcePolicy, "spec", "podSelector", "matchLabels");
 
-            for (String key : entry.getValue()) {
-                for (Upstream upstream : Upstream.parse(key, cfg)) {
+            Dialed dialed = dialedBy(workload, docs);
+            for (String key : dialed.keys()) {
+                for (Upstream upstream : Upstream.parse(key, dialed.values())) {
                     Map<String, Object> destLabels = destinationLabels(upstream.host(), docs);
 
                     // Only destinations governed by a policy restrict ingress; ollama and mysql
@@ -305,8 +375,7 @@ class NetworkPolicyEgressManifestTest {
 
         Set<String> unclaimed = new TreeSet<>();
         for (String key : cfg.keySet()) {
-            boolean isUpstream = UPSTREAM_KEY_SUFFIXES.stream().anyMatch(key::endsWith);
-            if (isUpstream && !claimed.contains(key)) unclaimed.add(key);
+            if (isUpstreamKey(key) && !claimed.contains(key)) unclaimed.add(key);
         }
 
         assertThat(unclaimed)
@@ -326,6 +395,18 @@ class NetworkPolicyEgressManifestTest {
                 .as("OWNED_KEYS claims a key that recsys-config does not define — a typo here "
                         + "drops that workload's egress requirement without failing anything")
                 .containsAll(claimed);
+
+        // The Deployment half. everyDeclaredUpstreamIsPermittedByEgress iterates OWNED_KEYS, so a
+        // base Deployment missing from that map has its inline env upstreams checked by nothing —
+        // which is precisely how SPLUNK_HEC_URL went unnoticed, one level up. An entry with an
+        // empty key set is a valid claim: it says "this workload dials nothing from the ConfigMap".
+        Set<String> unmapped = new TreeSet<>(deploymentEnv(baseDocuments()).keySet());
+        unmapped.removeAll(OWNED_KEYS.keySet());
+        assertThat(unmapped)
+                .as("these k8s/base Deployments have no OWNED_KEYS entry, so no egress assertion "
+                        + "iterates them and any upstream in their inline env is unchecked. Add an "
+                        + "entry — Set.of() if the workload dials nothing from recsys-config")
+                .isEmpty();
     }
 
     /**
@@ -347,6 +428,70 @@ class NetworkPolicyEgressManifestTest {
                         + "Egress deliberately, extend OWNED_KEYS to cover every destination it "
                         + "dials and delete this assertion in the same commit")
                 .isFalse();
+    }
+
+    /**
+     * The only peer a DNS egress rule may name today: the kube-system namespace. See the
+     * operational note beside the port-53 rule in k8s/base/network-policy.yaml for why a
+     * namespaceSelector rather than a podSelector, and for the NodeLocal DNSCache ipBlock a
+     * cluster running that would need here — deliberately not added, since none of this repo's
+     * overlays run it.
+     */
+    private static final Map<String, Object> KUBE_SYSTEM_NAMESPACE_PEER = Map.of(
+            "namespaceSelector",
+            Map.of("matchLabels", Map.of("kubernetes.io/metadata.name", "kube-system")));
+
+    /**
+     * A NetworkPolicy egress rule's `to[]` must name the peer set exactly, not merely be
+     * non-empty: `to: [{ipBlock: {cidr: 0.0.0.0/0}}]` is as permissive as no `to[]` at all and
+     * would pass a check that only asks "is `to[]` empty?". Four policies carried a bare
+     * `ports: [53]` with no `to[]` at all — the one channel every workload needs was also the one
+     * channel that reached anywhere — a tunnel out of an allow-list built to prevent exactly that.
+     *
+     * <p>This assertion exists because over-permissiveness is invisible to every other test here:
+     * they all ask whether a destination is *reachable*, and a rule that reaches everything passes
+     * all of them. It also requires the port-53 rule to exist at all: a policy with no DNS egress
+     * rule would otherwise pass this check vacuously and then fail every DNS lookup at runtime
+     * with unknown-host under an enforcing CNI.
+     */
+    @Test
+    void dnsEgressIsScopedToKubeSystem() throws IOException {
+        List<Map<String, Object>> docs = baseDocuments();
+
+        Set<String> violations = new TreeSet<>();
+        for (Map<String, Object> policy : ofKind(docs, "NetworkPolicy")) {
+            if (!restrictsEgress(policy)) continue;
+
+            List<Map<String, Object>> port53Rules = listOf(mapAt(policy, "spec"), "egress").stream()
+                    .filter(rule -> listOf(rule, "ports").stream()
+                            .anyMatch(p -> Integer.valueOf(53).equals(p.get("port"))))
+                    .collect(java.util.stream.Collectors.toList());
+
+            if (port53Rules.isEmpty()) {
+                violations.add(nameOf(policy) + ": no port-53 egress rule at all");
+                continue;
+            }
+
+            for (Map<String, Object> rule : port53Rules) {
+                List<Map<String, Object>> peers = listOf(rule, "to");
+                boolean hasKubeSystemPeer = peers.contains(KUBE_SYSTEM_NAMESPACE_PEER);
+                boolean hasExtraPeer = peers.stream().anyMatch(p -> !KUBE_SYSTEM_NAMESPACE_PEER.equals(p));
+                if (!hasKubeSystemPeer || hasExtraPeer) {
+                    violations.add(nameOf(policy) + ": port-53 to[] = " + peers);
+                }
+            }
+        }
+
+        assertThat(violations)
+                .as("every Egress-restricted policy must carry a port-53 rule whose `to[]` "
+                        + "consists solely of a namespaceSelector matching "
+                        + "kubernetes.io/metadata.name=kube-system. A rule with no `to[]`, or one "
+                        + "with an extra peer such as an ipBlock, permits port 53 to more than "
+                        + "kube-system — so a workload whose other egress is confined to a "
+                        + "hand-checked allow-list can still send arbitrary UDP or TCP elsewhere on "
+                        + "53. A policy with no port-53 rule at all is just as wrong the other way: "
+                        + "every DNS lookup fails with unknown-host under an enforcing CNI")
+                .isEmpty();
     }
 
     /**
