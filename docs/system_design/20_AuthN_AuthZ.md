@@ -307,20 +307,56 @@ Clients read `REDIS_PASSWORD` from the `redis-password` key of `recsys-secrets`.
 `REDIS_ALLOW_NO_AUTH=true` — the same fail-closed shape as `GatewayAuthenticator.fromEnvironment`
 in §1. Local development and the test suite set it; no overlay does.
 
-The client also supports `REDIS_USERNAME` (Redis 6 ACL login) and `REDIS_TLS`. Both are unused
-today: the in-cluster Redis has no certificates, and per-service ACL users are a separate project.
-They exist so that project is configuration rather than a client change.
+The client also supports `REDIS_USERNAME` (Redis 6 ACL login) and `REDIS_TLS`. `REDIS_TLS` is
+still unused: the in-cluster Redis has no certificates. `REDIS_USERNAME` is no longer inert —
+authorization is covered below.
 
-Three things this does not do. Traffic between the pods and Redis is still unencrypted, so the
-NetworkPolicy remains the only control on who can read it in transit. All five clients share
-one credential over the whole keyspace, despite cleanly disjoint key ownership — that is the ACL
-work, not this. And Sentinel's own port 26379 has no `requirepass` of its own: `sentinel auth-pass`
-is how a sentinel authenticates *to* the primary, not how it authenticates callers. Anyone with
-network reach to 26379 can still issue `SENTINEL FAILOVER mymaster` and move the write leader —
-exactly the "NetworkPolicy is the only control" gap this closes for 6379, left open on the port
-that decides which node 6379 *is*.
+Two things this does not do. Traffic between the pods and Redis is still unencrypted, so the
+NetworkPolicy remains the only control on who can read it in transit. And Sentinel's own port
+26379 has no `requirepass` of its own: `sentinel auth-pass` is how a sentinel authenticates *to*
+the primary, not how it authenticates callers. Anyone with network reach to 26379 can still issue
+`SENTINEL FAILOVER mymaster` and move the write leader — exactly the "NetworkPolicy is the only
+control" gap this closes for 6379, left open on the port that decides which node 6379 *is*.
 
 Design: [Redis transport authentication](../superpowers/specs/2026-08-05-redis-transport-auth-design.md).
+
+**Authorization is a separate concern from authentication, and was closed later.** The paragraph
+above shipped every workload authenticating as `default`, and at the time this doc claimed the
+five clients shared one credential "despite cleanly disjoint key ownership." A 2026-08-05 ACL
+audit recorded that same claim, and it does not survive contact with the call graph: catalog,
+model, and online serving all read the same `i2vEmb:`/`u2vEmb:` embedding keyspace and the same
+`topk:` trending keyspace, so key ownership was never disjoint on the read side. Splitting reads
+apart would require moving those reads behind a service boundary, not an ACL change, and is not
+attempted. What the call graph does support is a write split: each key prefix has exactly one
+service that writes it (catalog writes `i2vEmb:*`/`u2vEmb:*`; online writes `sr:*`/
+`shard:topology`/`rate:online:*`; model writes `submit_token:*`/`login:*`; each service writes
+only its own `svc:registry:*` key), even though several services read across those boundaries.
+
+`k8s/base/redis-users.acl.template` now defines six ACL users — `default` plus one per workload
+(`catalog`, `model`, `online`, `gateway`, `reconciliation`) — mounted via `--aclfile` on both the
+primary and replica StatefulSets and wired to each workload's own `REDIS_USERNAME`. Each
+non-default user is scoped to `-@all +@read +@write +@connection -@dangerous` over its own write
+prefixes, `+@scripting` where `EVAL` is on the path (catalog, model, online — the trending read,
+sharded record write, topology publish, rate limiting, and submit-token consume all run as Lua),
+and read-only (`%R~`) grants onto the prefixes it reads but does not own. `topk:*` is the one
+prefix granted full read-write (`~`, not `%R~`) to all three serving users regardless of logical
+ownership, because `ShardedTopKStore` reads it through `EVAL` and Redis requires full read-write
+permission on every key a script touches. `default` keeps `~* &* +@all`, so the original
+`redis-password` credential — the one Flink authenticates as to write `u2vEmb:*` and `topk:*` — is
+still a full-access credential, including `FLUSHALL`; the least-privilege boundary here is the
+five service users, not the instance as a whole. See
+[the ACL users section](../runbooks/redis-auth.md#acl-users) for the mechanics, including a
+measured, load-bearing gotcha: an ACL file that omits `user default` does not leave `requirepass`
+governing it, it silently disables authentication.
+
+This still has two limits, both unchanged by the ACL work. The EKS overlays point every client at
+ElastiCache instead of this Redis, and ElastiCache authorizes access through RBAC user groups
+managed via the AWS API — a different mechanism that none of this ACL file touches. And nothing
+here is enforced anywhere today: no EKS cluster exists in either region, so this is manifest
+correctness plus a merge-blocking conformance test (`RedisAclManifestTest`), not a running
+guarantee.
+
+Design: [Redis per-service ACL users](../superpowers/specs/2026-08-09-redis-per-service-acl-design.md).
 
 MySQL is the other data tier, and closes a gap Connector/J leaves open by default rather than one
 this codebase left unset. `MySqlConnectionSettings`'s compact constructor refuses to build when
