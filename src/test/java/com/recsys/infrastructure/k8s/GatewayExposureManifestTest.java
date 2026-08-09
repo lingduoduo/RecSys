@@ -29,10 +29,25 @@ import static org.assertj.core.api.Assertions.assertThat;
  * booting. What base gives up is the exposure.
  *
  * <p><strong>Scope, stated rather than implied.</strong> This reads files; it does not render
- * kustomizations, so the overlay assertion is a coupling between texts and cannot see a patch that
- * fails to apply. Both of this week's overlay defects reached {@code main} through exactly that
- * hole. A test that renders each overlay would subsume this one and needs the {@code kustomize}
- * binary on CI.
+ * kustomizations, so the overlay assertion is a coupling between texts — not a proof that a
+ * kustomization actually applies — and cannot see a patch that fails to apply. Both of this
+ * week's overlay defects reached {@code main} through exactly that hole. A test that renders each
+ * overlay would subsume this one and needs the {@code kustomize} binary on CI.
+ *
+ * <p>Exposure in the region overlays is Ingress-based, not Service-based: {@code k8s/eks} and
+ * {@code k8s/eks-us-west-2} each ship a {@code waf-api-gateway-ingress.yaml} annotated
+ * {@code alb.ingress.kubernetes.io/scheme: internet-facing}, and switch the gateway {@code
+ * Service} itself to {@code ClusterIP} (see the {@code eks-shared} component). So the overlay
+ * check below looks for that ALB annotation as well as the base-style Service signals. The
+ * {@code GATEWAY_ALLOW_ANONYMOUS: "false"} that must accompany it does not live in either region
+ * directory though — it is set once, in {@code k8s/eks-shared/configmap-patch.yaml}, and pulled
+ * into both regions via {@code components: [../eks-shared]}. A per-directory text scan would
+ * therefore find the exposing Ingress in the region overlay but never find the authenticating
+ * flag, and flag a correctly-configured overlay as broken. This test follows that composition:
+ * for each region overlay it reads that overlay's own files *and* {@code eks-shared}'s files as
+ * one combined unit, mirroring what {@code components:} actually wires together, rather than
+ * scanning {@code eks-shared} a third time as if it were a deployable overlay on its own (it
+ * isn't — it is a Kustomize {@code Component}, never listed under {@code resources:} by itself).
  */
 class GatewayExposureManifestTest {
 
@@ -41,13 +56,21 @@ class GatewayExposureManifestTest {
     private static final String ANONYMOUS_KEY = "GATEWAY_ALLOW_ANONYMOUS";
     private static final String SCHEME_ANNOTATION =
             "service.beta.kubernetes.io/aws-load-balancer-scheme";
+    private static final String ALB_SCHEME_ANNOTATION = "alb.ingress.kubernetes.io/scheme";
 
     /** Service types that publish a Service outside the cluster. */
     private static final List<String> EXTERNAL_TYPES = List.of("LoadBalancer", "NodePort");
 
+    /**
+     * Independently deployable region overlays. {@code k8s/eks-shared} is deliberately not listed
+     * here — it is a Kustomize component, composed into each of these via {@code components:},
+     * not a standalone overlay — see {@link #EKS_SHARED} and the class javadoc.
+     */
     private static final List<Path> OVERLAYS =
-            List.of(Path.of("k8s", "eks"), Path.of("k8s", "eks-us-west-2"),
-                    Path.of("k8s", "eks-shared"));
+            List.of(Path.of("k8s", "eks"), Path.of("k8s", "eks-us-west-2"));
+
+    /** Region-agnostic component folded into every overlay above via {@code components:}. */
+    private static final Path EKS_SHARED = Path.of("k8s", "eks-shared");
 
     @Test
     void anAnonymousGatewayIsNotExposedOutsideTheCluster() throws IOException {
@@ -92,39 +115,54 @@ class GatewayExposureManifestTest {
     }
 
     /**
-     * The overlays are where internet-facing exposure belongs, and they must authenticate. Asserted
-     * over file text because this test does not render — see the class comment.
+     * The overlays are where internet-facing exposure belongs, and they must authenticate.
+     * Exposure here is Ingress-based ({@code alb.ingress.kubernetes.io/scheme: internet-facing})
+     * as well as Service-based, since {@code waf-api-gateway-ingress.yaml} — not the gateway
+     * {@code Service} — is what actually publishes each region overlay to the internet. Each
+     * overlay is scanned together with the {@code eks-shared} component it composes via {@code
+     * components:}, because the authenticating {@code GATEWAY_ALLOW_ANONYMOUS: "false"} lives only
+     * in {@code eks-shared/configmap-patch.yaml} — a per-directory scan would find the exposing
+     * Ingress in the region overlay but never the flag that guards it. Asserted over file text
+     * because this test does not render — see the class comment.
      */
     @Test
     void anyOverlayThatExposesTheGatewayAlsoRequiresAuthentication() throws IOException {
         List<String> problems = new ArrayList<>();
         boolean scanned = false;
 
+        String sharedText = Files.isDirectory(EKS_SHARED) ? combinedYamlText(EKS_SHARED) : "";
+
         for (Path overlay : OVERLAYS) {
             if (!Files.isDirectory(overlay)) {
                 continue;
             }
-            StringBuilder combined = new StringBuilder();
-            for (Path file : Files.list(overlay).sorted().toList()) {
-                if (file.toString().endsWith(".yaml")) {
-                    combined.append(Files.readString(file)).append('\n');
-                }
-            }
             scanned = true;
-            String text = combined.toString();
+            String text = combinedYamlText(overlay) + sharedText;
             boolean exposes = text.contains(SCHEME_ANNOTATION + ": internet-facing")
+                    || text.contains(ALB_SCHEME_ANNOTATION + ": internet-facing")
                     || text.contains("type: LoadBalancer")
                     || text.contains("type: NodePort");
             boolean authenticates = text.contains(ANONYMOUS_KEY + ": \"false\"");
 
             if (exposes && !authenticates) {
-                problems.add(overlay + " exposes a Service outside the cluster without setting "
+                problems.add(overlay + " (combined with " + EKS_SHARED
+                        + ") exposes the gateway outside the cluster without setting "
                         + ANONYMOUS_KEY + "=\"false\"");
             }
         }
 
         assertThat(scanned).as("no overlay directory was scanned").isTrue();
         assertThat(problems).isEmpty();
+    }
+
+    private static String combinedYamlText(Path dir) throws IOException {
+        StringBuilder combined = new StringBuilder();
+        for (Path file : Files.list(dir).sorted().toList()) {
+            if (file.toString().endsWith(".yaml")) {
+                combined.append(Files.readString(file)).append('\n');
+            }
+        }
+        return combined.toString();
     }
 
     private static String anonymousSetting(List<Map<String, Object>> docs) {
