@@ -7,10 +7,10 @@
 #
 # This file previously asked for servicediscovery:GetService / ListInstances and
 # route53:ChangeResourceRecordSets / ListHostedZones / ListResourceRecordSets. The Route 53 entries
-# were justified as letting external-dns manage records for recsys.internal — but external-dns is a
-# separate controller with its own ServiceAccount, and permissions on this role do not reach it.
-# Granting them here would give a public-facing pod DNS write for another component's benefit.
-# Those permissions belong on external-dns's own role.
+# were justified as letting external-dns manage records for recsys.internal — but this repo does not
+# deploy external-dns (only references it via annotations in cloud-map-service-patch.yaml). Route 53
+# permissions belong to wherever external-dns actually runs, not to the gateway. Granting them here
+# would give a public-facing pod DNS write for another component's benefit.
 #
 # If health-aware routing through the Cloud Map API is ever built, servicediscovery:GetService and
 # ListInstances come back with it — scoped to the recsys.internal namespace. Add them when the code
