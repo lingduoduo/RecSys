@@ -22,86 +22,118 @@ The audit recorded "cleanly disjoint key ownership (`i2vEmb:`/`u2vEmb:` catalog,
 online, `svc:registry:*` gateway)". **That is wrong**, and the design that follows from it —
 one user per service restricted to its own prefixes — would break recall on 8080 and 7010.
 
-Derived from the call graph rather than the prefix names:
+A first pass derived the following from the call graph. **Three of its rows are wrong**, and the
+corrections are in "What was measured" below — it is kept here only because the shape of the
+conclusion survives: reads are shared, writes are not.
 
 | Prefix | Written by | Read by |
 |---|---|---|
 | `i2vEmb:` | catalog serving — `EmbeddingService.setEmbedding` (`/setembedding`) and `RecSysServer.writeMissing` (startup seeding) | catalog, model |
-| `u2vEmb:` | **nothing in `src/main/java`** — the Flink job writes it out-of-band | catalog, model, online |
-| `topk:` | **nothing in `src/main/java`** — `ShardedTopKStore` exposes no write method at all | catalog, model, online |
+| `u2vEmb:` | ~~nothing~~ — **catalog also writes it**, via `RecSysServer.seedEmbeddings` | catalog, model, online |
+| `topk:` | nothing directly — but `ShardedTopKStore` reads it through `EVAL`, which needs write permission anyway | catalog, model, online |
 | `sr:*` | online serving | online serving |
 | `shard:topology` | online serving (bootstrap and reshard) | online serving |
 | `svc:registry:<service>` | each service writes only its own key | gateway reads all |
-| `lineage:event:*`, `user:*:recent_movies` | Flink | reconciliation CronJob, read-only |
+| `lineage:event:*` | Flink | reconciliation CronJob, read-only |
+| `user:*:recent_movies` | Flink | ~~CronJob only~~ — **online and model read it too** |
+| `rate:online:*` | online serving | online serving |
+| `submit_token:*`, `login:*` | model serving | model serving |
 
 Three of the four services read the same embedding and trending keyspace, so read isolation is not
 available without moving those reads behind an API — a service-boundary redesign, not an ACL
 change. **The boundary that the call graph does support is write access**, and that is what this
 design enforces.
 
-Two things fall out of the table that are worth stating on their own. The **gateway holds a
-full-keyspace credential and needs almost nothing**: `LlmResponseCache` is an in-memory LRU keyed by
-a SHA-256 of the request body, not a Redis structure, so the gateway's only Redis use is the service
-registry. And **model serving never writes anything** — yet today it can `FLUSHALL`.
+One thing falls out that is worth stating on its own: the **gateway holds a full-keyspace credential
+and needs almost nothing**. `LlmResponseCache` is an in-memory LRU keyed by a SHA-256 of the request
+body, not a Redis structure, so the gateway's only Redis use is the service registry — and it does
+not script, so it is the one user that keeps a genuine read-only grant.
+
+## What was measured
+
+Before any of this was designed, two Redis behaviours were asserted from documentation. Both are
+false, and a review that ran a real `redis-server` caught them. Everything below is measured.
+
+**An ACL file that omits `user default` does not leave `requirepass` governing it.**
+`ACLLoadFromFile` *rebuilds* the default user, and absent a `user default` line it comes back wide
+open. With `--requirepass supersecret --aclfile <file>`:
+
+```
+ACL LIST → user default on nopass sanitize-payload ~* &* +@all
+log       → # WARNING: Redis does not require authentication.
+redis-cli ping (no auth) → PONG
+```
+
+That is not a subtle regression: it leaves the in-cluster Redis unauthenticated, undoing PR #274;
+it breaks replication (`Unable to AUTH to MASTER … without any password configured for the default
+user`, `master_link_status:down`); it breaks Flink; and both `redis-cli ping` probes stay green
+throughout, so nothing reports it. **So `default` must be declared explicitly in the file**, and
+`--requirepass` becomes redundant rather than authoritative.
+
+**ACL files do not support comments.** Redis aborts startup on any non-blank line that does not
+begin with `user`. All rationale therefore lives in `docs/runbooks/redis-auth.md` and beside the
+`--aclfile` argument in `redis-cluster.yaml`, never in the file itself.
+
+Three more, all measured:
+
+- **`@scripting` is not covered by `@read`, `@write` or `@connection`.** Without `+@scripting` no
+  user can `EVAL`, which breaks the trending read path on all three serving services
+  (`ShardedTopKStore:198`), the sharded record write (`ShardedRecordStore:133`), topology publish
+  (`ShardTopologyStore:71`), the online rate limiter (`RedisRateLimiter:192`) and the model
+  service's submit-token consume (`SubmitTokenService:72`). `-@dangerous` does not strip it.
+- **`%R~` is incompatible with `EVAL`.** Redis demands full read-write permission on every key
+  passed to a script, even a read-only one carrying a `#!lua flags=no-writes` shebang. Since
+  `ShardedTopKStore` passes `topk:<window>:value` and `:version` as KEYS, `topk:` cannot be
+  read-only for anybody. It is granted `~` and the read-only split is forfeited there.
+- **A read-only aclfile is fine.** Mounted `chmod 444`, the server starts normally; nothing calls
+  `ACL SAVE`. This was the design's other open question, and the answer is yes.
+
+Caveat on all of it: measured against `redis-server 8.6.2` locally, while the manifests pin
+`redis:7-alpine` and no Docker daemon is available. The behaviours are longstanding — the aclfile
+default rebuild since 6.0, `%R~`/`%W~` since 7.0 — but Redis 7 itself was not exercised.
 
 ## The users
 
-Five, one per workload:
+Six, including `default`. The first table was a partial sweep and missed five prefixes; this one is
+derived from the call graph and from the review's per-command testing.
 
-| User | May write | May read |
-|---|---|---|
-| `catalog` | `i2vEmb:*`, `svc:registry:recsys-catalog-serving` | `u2vEmb:*`, `topk:*` |
-| `model` | `svc:registry:recsys-model-serving` | `i2vEmb:*`, `u2vEmb:*`, `topk:*` |
-| `online` | `sr:*`, `shard:topology`, `svc:registry:recsys-online-serving` | `u2vEmb:*`, `topk:*` |
-| `gateway` | `svc:registry:recsys-api-gateway` | `svc:registry:*` |
-| `reconciliation` | nothing | `lineage:event:*`, `user:*:recent_movies` |
+| User | May write | May read only | Scripting |
+|---|---|---|---|
+| `default` | everything (`~* &* +@all`) | — | yes |
+| `catalog` | `i2vEmb:*`, `u2vEmb:*`, `topk:*`, own registry key | — | yes |
+| `model` | `submit_token:*`, `login:*`, `topk:*`, own registry key | `i2vEmb:*`, `u2vEmb:*`, `user:*:recent_movies` | yes |
+| `online` | `sr:*`, `shard:topology`, `rate:online:*`, `topk:*`, own registry key | `u2vEmb:*`, `user:*:recent_movies` | yes |
+| `gateway` | own registry key | `svc:registry:*` | no |
+| `reconciliation` | nothing | `lineage:event:*`, `user:*:recent_movies` | no |
 
-All five are denied the dangerous command set — `FLUSHALL`, `FLUSHDB`, `CONFIG`, `DEBUG`, `SCRIPT`,
-`KEYS` — via `-@dangerous`, then granted `+@read` and, where the table allows it, `+@write`.
+Every non-default user is `-@all +@read +@write +@connection -@dangerous`, plus `+@scripting` where
+the table says so. `reconciliation` omits `+@write`. Order matters — `-@dangerous` last, so it
+removes `FLUSHALL`, `FLUSHDB`, `CONFIG`, `DEBUG` and `KEYS` even though `@read`/`@write` granted
+some of them. `SCAN`, `TTL`, `EXPIRE` and the `CLIENT` handshake commands survive, which
+`RedisEmbeddingStore.scanIds` and Lettuce need.
 
-`svc:registry:*` is a shared prefix with per-key ownership: each service renews only its own
-advertised address, and the gateway MGETs the set. Redis key patterns express that directly, so the
-write grant names the single key rather than the prefix.
+Corrections the review forced into this table, each verified against source:
 
-## `default` stays exactly as it is
+- **`catalog` writes `u2vEmb:*`.** `RecSysServer:96` calls `seedEmbeddings`, which at `:249` calls
+  `writeMissing` on the user-embedding store. The first table claimed nothing in `src/main/java`
+  writes it. That bites on a cold Redis — a fresh cluster, the DR region, or a partial eviction —
+  which is exactly what `writeMissing` exists for.
+- **`user:*:recent_movies` is read by `online` and `model`**, not only by the CronJob
+  (`OnlineFeatureStore:93,98`, constructed at `OnlinePredictionServer:128` and
+  `ModelRuntimeProvider:164`).
+- **`rate:online:*`** belongs to online serving, **`submit_token:*` and `login:*`** to model
+  serving. All three were absent.
 
-The Flink streaming job writes `u2vEmb:*`, `topk:*` and the feature keys, and **nothing in this repo
-deploys it** — `online/flink/` is excluded from the Maven build and runs on its own cluster. It
-authenticates as `default` today. Narrowing `default` would break the write path for embeddings and
-trending with no error visible in this repo's tests or manifests.
+## What the split still buys
 
-That is exactly the silent-breakage shape this project has been caught by before, so `default` keeps
-its current access and this document records why. Giving Flink its own user is a follow-up that
-belongs wherever Flink is deployed, not here.
+Less than the first draft claimed, and worth stating plainly. `topk:` is read-write for three
+services because of `EVAL`, and `default` remains omnipotent for Flink. What remains true, and was
+verified per-command:
 
-## Where it lives
-
-The primary Redis in `k8s/base/redis-cluster.yaml` takes its whole configuration as **command-line
-arguments**, including `--requirepass "$(REDIS_PASSWORD)"`. It mounts no config file at all — the
-only ConfigMap in that manifest is the *sentinel* template. So there is no `redis.conf` to add
-`user` directives to.
-
-Passing them as arguments instead is not acceptable: an ACL user rule carries its password inline,
-which would put five credentials in the process table. That manifest already refuses to do this once
-— `REDISCLI_AUTH` exists precisely so a probe's `-a` flag does not leak the password into `ps` and
-into probe failure output.
-
-So the users go in an **`aclfile`, projected from a Secret** (it contains passwords, so a ConfigMap
-is wrong), mounted read-only, with `--aclfile /etc/redis/users.acl` added to the argument list.
-Read-only is sufficient because nothing calls `ACL SAVE`; the file is only ever read at startup.
-
-**The ACL file must not define `user default`.** `requirepass` is Redis's shortcut for the default
-user's password, and leaving default out of the file is what keeps the two mechanisms from
-contending — which is also exactly what this design wants, since `default` is deliberately unchanged
-for Flink's sake.
-
-Each Deployment gets `REDIS_USERNAME` alongside its existing `REDIS_PASSWORD`, and each user's
-password comes from a new key in the existing `recsys-secrets` Secret. `LettuceClientFactory`
-consumes both already, so **no Java source changes**.
-
-Each Deployment gets `REDIS_USERNAME` alongside its existing `REDIS_PASSWORD`, and each user's
-password comes from a new key in the existing `recsys-secrets` Secret. `LettuceClientFactory`
-consumes both already, so **no Java source changes**.
+- model serving cannot write `i2vEmb:*` — it only scores
+- no service can write another's `svc:registry:` key
+- the reconciliation CronJob cannot write anything at all, and cannot read embeddings
+- no application user can `FLUSHALL`, `FLUSHDB`, `CONFIG`, `DEBUG` or `KEYS`
 
 ## Testing
 
