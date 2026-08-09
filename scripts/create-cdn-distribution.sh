@@ -130,6 +130,34 @@ ensure_cache_policy() {
     --cache-policy-config "$payload" --query 'CachePolicy.Id' --output text
 }
 
+# Create or update the viewer-request function, publish it, and return its LIVE ARN.
+#
+# Same create-or-update shape as ensure_cache_policy, and for the same reason: an edit to the .js
+# that never reached AWS would be a silent no-op, and the cache key is computed from this
+# function's OUTPUT. Publishing is separate from updating — an updated but unpublished function
+# still serves its old LIVE copy to every association.
+#
+# All diagnostics go to stderr: stdout is the ARN, consumed by the caller below.
+ensure_function() {
+  local name="$1" code_file="$2"
+  local config='{"Comment":"Normalize catalog cache-key query strings","Runtime":"cloudfront-js-2.0"}'
+  local etag
+
+  etag="$(aws cloudfront describe-function --name "$name" --query 'ETag' --output text 2>/dev/null || true)"
+  if [[ -z "$etag" || "$etag" == "None" ]]; then
+    aws cloudfront create-function --name "$name" \
+      --function-config "$config" --function-code "fileb://${code_file}" >&2
+  else
+    aws cloudfront update-function --name "$name" --if-match "$etag" \
+      --function-config "$config" --function-code "fileb://${code_file}" >&2
+  fi
+
+  etag="$(aws cloudfront describe-function --name "$name" --query 'ETag' --output text)"
+  aws cloudfront publish-function --name "$name" --if-match "$etag" >&2
+  aws cloudfront describe-function --name "$name" --stage LIVE \
+    --query 'FunctionSummary.FunctionMetadata.FunctionARN' --output text
+}
+
 # Cache keys whitelist ONLY the meaningful params. Forwarding all query strings would let
 # ?id=1&cachebuster=N fragment the cache arbitrarily and act as an origin-DoS amplifier. The
 # whitelist bounds parameter NAMES only — the origin canonicalizes the values
@@ -145,13 +173,15 @@ ensure_cache_policy() {
 #            error branch on these two routes depends on.
 item_policy="$(ensure_cache_policy recsys-item 0 3600 86400 '["id"]')"
 similar_policy="$(ensure_cache_policy recsys-similar 0 300 3600 '["movieId","k"]')"
+normalize_fn="$(ensure_function recsys-normalize-catalog-query \
+  "$(dirname "$0")/cdn/normalize-catalog-query.js")"
 
 jq -n \
   --arg comment "$COMMENT" --arg origin "$ORIGIN_DOMAIN" --arg alias "$ALIAS_DOMAIN" \
   --arg cert "$ACM_CERT_ARN" --arg acl "$WEB_ACL_ARN" --arg secret "$ORIGIN_SECRET" \
   --arg item_policy "$item_policy" --arg similar_policy "$similar_policy" \
   --arg caching_disabled "$CACHING_DISABLED" --arg all_viewer "$ALL_VIEWER_EXCEPT_HOST" \
-  --arg origin_protocol "$ORIGIN_PROTOCOL_POLICY" \
+  --arg origin_protocol "$ORIGIN_PROTOCOL_POLICY" --arg fn "$normalize_fn" \
   --arg ref "recsys-edge-1" '
 {
   CallerReference: $ref, Comment: $comment, Enabled: true, HttpVersion: "http2and3",
@@ -186,18 +216,22 @@ jq -n \
   CacheBehaviors: {Quantity: 4, Items: [
     {PathPattern: "/api/catalog/item", TargetOriginId: "alb-origin",
      ViewerProtocolPolicy: "redirect-to-https", CachePolicyId: $item_policy, Compress: true,
+     FunctionAssociations: {Quantity: 1, Items: [{EventType: "viewer-request", FunctionARN: $fn}]},
      AllowedMethods: {Quantity: 2, Items: ["GET","HEAD"],
        CachedMethods: {Quantity: 2, Items: ["GET","HEAD"]}}},
     {PathPattern: "/api/v1/catalog/item", TargetOriginId: "alb-origin",
      ViewerProtocolPolicy: "redirect-to-https", CachePolicyId: $item_policy, Compress: true,
+     FunctionAssociations: {Quantity: 1, Items: [{EventType: "viewer-request", FunctionARN: $fn}]},
      AllowedMethods: {Quantity: 2, Items: ["GET","HEAD"],
        CachedMethods: {Quantity: 2, Items: ["GET","HEAD"]}}},
     {PathPattern: "/api/catalog/similar", TargetOriginId: "alb-origin",
      ViewerProtocolPolicy: "redirect-to-https", CachePolicyId: $similar_policy, Compress: true,
+     FunctionAssociations: {Quantity: 1, Items: [{EventType: "viewer-request", FunctionARN: $fn}]},
      AllowedMethods: {Quantity: 2, Items: ["GET","HEAD"],
        CachedMethods: {Quantity: 2, Items: ["GET","HEAD"]}}},
     {PathPattern: "/api/v1/catalog/similar", TargetOriginId: "alb-origin",
      ViewerProtocolPolicy: "redirect-to-https", CachePolicyId: $similar_policy, Compress: true,
+     FunctionAssociations: {Quantity: 1, Items: [{EventType: "viewer-request", FunctionARN: $fn}]},
      AllowedMethods: {Quantity: 2, Items: ["GET","HEAD"],
        CachedMethods: {Quantity: 2, Items: ["GET","HEAD"]}}}
   ]},
