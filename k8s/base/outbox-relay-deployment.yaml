@@ -20,6 +20,13 @@ spec:
   # is broken today; but enabling SQS delivery needs an IRSA ServiceAccount and a role granting
   # sqs:SendMessage on that queue, and neither exists yet. Kafka delivery is unaffected — it uses no
   # AWS credentials.
+  #
+  # There is an outer gate too: OutboxRelayCommand.main returns immediately unless
+  # ONLINE_DURABLE_EVENTS_ENABLED is true (DurableConsistencyConfiguration.fromEnv), and
+  # k8s/base/configmap.yaml sets it "false" — so this pod delivers nothing at all today, SQS or
+  # Kafka. Enabling SQS delivery therefore means turning on durable events (which itself requires
+  # MYSQL_ENABLED, a consistency-token secret and Kafka bootstrap servers), setting the two
+  # SAGA_EVENTS_SQS_* keys, and provisioning the ServiceAccount and role.
   template:
     metadata:
       labels:

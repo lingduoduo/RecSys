@@ -1,9 +1,14 @@
 # IRSA ServiceAccount for the API gateway.
 #
 # The bound IAM role needs NO permissions. The gateway makes no AWS API calls — the only AWS SDK
-# client anywhere in src/main/java is SQS, and the gateway does not use it. Cloud Map reaches the
-# gateway through DNS resolution (the 30 s TTL described in CLAUDE.md), and resolving a name needs
-# no IAM.
+# client anywhere in src/main/java is SQS, and the gateway does not use it. The relationship with
+# Cloud Map runs the other way round: the gateway is the consumer, resolving its upstream hostnames
+# through Armeria's default DNS resolver (UpstreamEndpointGroups.java:32) — kube-DNS ClusterIP names
+# for in-cluster calls, Cloud Map's *.recsys.internal names where those are used (see
+# configmap-patch.yaml). Plain name resolution needs no IAM either way. And the "30 s Cloud Map DNS
+# TTL" in CLAUDE.md is really a client-side setting the gateway applies to itself — it caps the JVM's
+# own address cache (networkaddress.cache.ttl, MicroserviceGatewayServer.java:46-61) so blue/green
+# endpoint changes propagate. It is not a TTL Cloud Map grants, and nothing about it involves IAM.
 #
 # This file previously asked for servicediscovery:GetService / ListInstances and
 # route53:ChangeResourceRecordSets / ListHostedZones / ListResourceRecordSets. The Route 53 entries

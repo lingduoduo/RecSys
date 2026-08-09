@@ -13,25 +13,33 @@ route53:ChangeResourceRecordSets, ListHostedZones, ListResourceRecordSets
 ```
 
 **The gateway uses none of them.** The only AWS SDK client anywhere in `src/main/java` is SQS —
-there is no `servicediscovery` or `route53` API call in the codebase. Cloud Map reaches the gateway
-through DNS resolution (the 30-second TTL described in `CLAUDE.md`), and DNS resolution requires no
-IAM.
+there is no `servicediscovery` or `route53` API call in the codebase. The gateway is Cloud Map's
+*consumer*, not its subject: it resolves upstream hostnames through Armeria's default DNS resolver
+(`UpstreamEndpointGroups.java:32`), and name resolution requires no IAM. (The "30 s Cloud Map DNS
+TTL" in `CLAUDE.md` is a client-side cap the gateway puts on the JVM's own address cache —
+`networkaddress.cache.ttl`, `MicroserviceGatewayServer.java:46-61` — not a TTL Cloud Map hands out,
+and not a permission either way.)
 
 The Route 53 half is justified in the comment as *"so external-dns can manage Route 53 records"*.
-external-dns is a separate controller with its own service account; permissions on the **gateway's**
-role do not reach it. Following this file literally grants a public-facing pod
-`route53:ChangeResourceRecordSets` — DNS write — for another component's benefit.
+This repo does not deploy external-dns at all — it appears only as
+`external-dns.alpha.kubernetes.io/hostname` annotations in `cloud-map-service-patch.yaml`. Route 53
+permissions belong to wherever external-dns actually runs, which is not this ServiceAccount.
+Following this file literally grants a public-facing pod `route53:ChangeResourceRecordSets` — DNS
+write — for another component's benefit.
 
 The inverse problem exists on the workloads that do use AWS:
 
 | Workload | IRSA ServiceAccount | Documented permissions | Actually calls |
 |---|---|---|---|
-| API gateway | yes | five | none |
-| Model serving | yes, ARN only | none | `sqs:SendMessage`, conditionally |
-| Outbox relay | **none** | — | `sqs:SendMessage` via `SqsOutboxDeliveryAdapter` |
+| API gateway | yes, and bound to the pod | five | none |
+| Model serving | object exists, ARN only — **bound to no pod** | none | `sqs:SendMessageBatch`, conditionally |
+| Online serving | **none** | — | `sqs:SendMessageBatch` via `AsyncEventPublisherFactory`, conditionally |
+| Outbox relay | **none** | — | `sqs:SendMessage` via `SqsOutboxDeliveryAdapter`, conditionally |
 
-So the file that needs nothing is the only one that says anything, and one workload that needs a
-role has no service account to bind one to.
+So the file that needs nothing is the only one that says anything, and every workload that could
+need a role has no service account actually bound to it — `recsys-model-serving` exists as an
+object, but nothing in `k8s/` sets `serviceAccountName: recsys-model-serving`; the tree's only
+`serviceAccountName` is `recsys-gateway` (`k8s/eks-shared/gateway-irsa.yaml:10`).
 
 Found while auditing the IRSA dimension of the 2026-08-05 zero-data-leakage audit — the last of the
 three dimensions that had never been examined.
@@ -61,9 +69,9 @@ instead.
 ## The changes
 
 **`k8s/eks-shared/gateway-irsa-sa.yaml`** — replace the permission list with an accurate statement:
-the bound role needs no permissions, because the gateway makes no AWS API calls; Cloud Map is
-consumed by DNS, which needs no IAM; and the Route 53 permissions belong to external-dns's own
-service account rather than this one.
+the bound role needs no permissions, because the gateway makes no AWS API calls; the gateway
+*consumes* Cloud Map by resolving names, which needs no IAM; and the Route 53 permissions belong to
+wherever external-dns runs — which is not this repo — rather than to this service account.
 
 The comment should say what the code does today, and note that permissions would return alongside a
 feature that needs them — health-aware routing through the Cloud Map API would be one. The five
@@ -71,26 +79,55 @@ entries may record an intended design rather than a mistake, and the correction 
 otherwise.
 
 **`k8s/eks-shared/patches/irsa-model-serving.yaml`** — add the comment it has never had:
-`sqs:SendMessage` on the A/B exposure queue, needed only when `recsys.events.sqs.enabled` is true
-with a non-blank queue URL, and scoped to that queue's ARN rather than `*`. `SendMessage` is the only
-action: queue URLs arrive through environment variables, so nothing calls `GetQueueUrl`.
+`sqs:SendMessageBatch` on the A/B exposure queue, needed only when `recsys.events.sqs.enabled` is
+true with a non-blank queue URL, and scoped to that queue's ARN rather than `*`. `SendMessageBatch`
+rather than `SendMessage`, because `ModelEventConfig.abExposurePublisher` wires
+`SqsAsyncEventPublisher`, which batches unconditionally (`SqsAsyncEventPublisher.java:68`) — they
+are distinct IAM actions, and a role granting only `SendMessage` fails with `AccessDenied`. Nothing
+calls `GetQueueUrl`: queue URLs arrive through environment variables. The comment must also say that
+this ServiceAccount is bound to no pod, so the role it describes is assumed by nobody until a
+`serviceAccountName` is added.
+
+**`k8s/base/online-serving.yaml`** — record the same shape of gap for the fourth SQS-calling
+workload: `OnlinePredictionServer` builds `AsyncEventPublisherFactory.fromEnvironment("ONLINE_EVENTS")`,
+which constructs an `SqsAsyncEventPublisher` (`sqs:SendMessageBatch`) when
+`ONLINE_EVENTS_SQS_ENABLED=true` with a non-blank `ONLINE_EVENTS_SQS_QUEUE_URL` — both set off in
+this file — and the Deployment has no `serviceAccountName` to bind a role to.
 
 **`k8s/base/outbox-relay-deployment.yaml`** — record that `SqsOutboxDeliveryAdapter` calls
 `sqs:SendMessage` while this deployment has no `serviceAccountName`, so on EKS it runs under the
 namespace default service account and the SQS delivery path has no role to assume. Whoever enables
-SQS delivery needs a service account and a role first. This is currently written down nowhere.
+SQS delivery needs a service account and a role first — and, upstream of that,
+`ONLINE_DURABLE_EVENTS_ENABLED=true`, without which `OutboxRelayCommand.main` exits immediately.
+This is currently written down nowhere.
 
 ## Testing
 
-There is nothing to test. The change is three YAML comments; no manifest key, value or structure
-changes, so no conformance test's subject moves and no rendered output differs.
+The change is YAML comments only; no manifest key, value or structure changes, so no conformance
+test's subject moves and no rendered output differs. The check that proves that is `kubectl
+kustomize` over `k8s/base`, `k8s/eks` and `k8s/eks-us-west-2` before and after — three empty diffs,
+which also guards against a comment breaking YAML parsing.
 
-The one check worth running is that the manifests still build — `kubectl kustomize` over `k8s/base`,
-`k8s/eks` and `k8s/eks-us-west-2` — which guards against a comment breaking YAML parsing.
+A test asserting that these comments *say* particular things would pin prose, need updating whenever
+the wording improved, and still not catch the failure that actually happened here: a fourth
+SQS-calling workload (online serving) went undocumented through two reviews, because nothing checked
+the claims mechanically. So `IrsaPermissionSourceFactsTest` pins the **source facts the comments are
+derived from**, not the comments:
 
-Adding a test that asserts these comments say particular things would pin prose rather than
-behavior, and would need updating whenever the wording improved. The accuracy guarantee here is the
-review, not a test.
+1. No file under `src/main/java` imports an AWS SDK service client other than `sqs`. This is what
+   falsifies the gateway comment the moment someone adds a `servicediscovery`, `route53` or `s3`
+   client — the claim "the only AWS SDK client anywhere is SQS" stops being true and the build says
+   so.
+2. The set of files calling `sendMessage(` / `sendMessageBatch(`, and which of the two each calls,
+   equals an explicit expected set with a one-line note per entry naming the workload it belongs to.
+   A new caller — or an existing one switching action — fails the build until somebody documents
+   which role needs which permission.
+
+Both checks are pure file scans: no Redis, no Docker, no timing. It joins the `resilience` profile,
+which is what the PR gate runs, alongside the other `**/k8s/*ManifestTest` entries.
+
+Wording accuracy itself remains a review responsibility; the test guarantees only that the facts
+underneath the wording are still the facts.
 
 ## Documentation
 

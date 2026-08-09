@@ -70,6 +70,16 @@ spec:
                   name: recsys-online-admin
                   key: admin-token
                   optional: true
+            # AWS: OnlinePredictionServer builds its event publisher from
+            # AsyncEventPublisherFactory.fromEnvironment("ONLINE_EVENTS"), which constructs an
+            # SqsClient and an SqsAsyncEventPublisher — i.e. calls sqs:SendMessageBatch, which is
+            # the only send the batching publisher ever makes — when ONLINE_EVENTS_SQS_ENABLED=true
+            # and ONLINE_EVENTS_SQS_QUEUE_URL is non-blank. Both default off just below, so nothing
+            # is broken today; but this Deployment has no serviceAccountName, so on EKS it runs
+            # under the namespace default ServiceAccount, which is bound to no IAM role. Enabling
+            # SQS delivery needs an IRSA ServiceAccount and a role granting sqs:SendMessageBatch on
+            # that queue, scoped to its ARN, and neither exists yet. Kafka delivery
+            # (ONLINE_EVENTS_KAFKA_*) is unaffected — it uses no AWS credentials.
             - name: ONLINE_EVENTS_SQS_ENABLED
               value: "false"
             - name: ONLINE_EVENTS_SQS_QUEUE_URL
