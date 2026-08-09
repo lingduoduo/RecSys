@@ -34,7 +34,7 @@
 Facts verified against the repo, so you need not rediscover them:
 
 - The only AWS SDK service imported anywhere in `src/main/java` is `sqs`. There is no `servicediscovery` or `route53` call in the codebase.
-- The only SQS action called is `sendMessage` — in `SqsOutboxDeliveryAdapter:41` and `SqsSagaEventPublisher:46`. Queue URLs arrive via environment variables, so nothing calls `GetQueueUrl`.
+- Two different SQS actions are called, by different workloads. `SqsOutboxDeliveryAdapter:41` and `SqsSagaEventPublisher:46` call `sendMessage`. **`SqsAsyncEventPublisher:68` calls `sendMessageBatch`** — always, even for a single event — and that is the class `ModelEventConfig.abExposurePublisher` wires for the model-serving path. `sqs:SendMessage` and `sqs:SendMessageBatch` are distinct IAM actions, so the model-serving comment must name the batch one. Queue URLs arrive via environment variables, so nothing calls `GetQueueUrl`.
 - Model serving's SQS path is gated by `RECSYS_EVENTS_SQS_ENABLED` plus a non-blank `RECSYS_EVENTS_SQS_QUEUE_URL` (`application.yml:135-136`). Neither key appears in `k8s/base/configmap.yaml`, so it defaults off.
 - The outbox relay's SQS path is gated by `SAGA_EVENTS_SQS_ENABLED` plus a non-blank `SAGA_EVENTS_SQS_QUEUE_URL` (`OutboxRelayCommand:67-71`); both are in `k8s/base/configmap.yaml:93-94`, defaulting to `"false"` and `""`.
 - `SqsSagaEventPublisher` is **not** wired: `SagaEventPublishers` has no callers outside itself. Do not cite it as a live permission need.
@@ -78,14 +78,16 @@ Add above `apiVersion:` in `k8s/eks-shared/patches/irsa-model-serving.yaml`:
 #
 # The bound IAM role needs exactly one permission, and only conditionally:
 #
-#   sqs:SendMessage   on the A/B exposure queue named by RECSYS_EVENTS_SQS_QUEUE_URL
+#   sqs:SendMessageBatch   on the A/B exposure queue named by RECSYS_EVENTS_SQS_QUEUE_URL
 #
 # Required only when RECSYS_EVENTS_SQS_ENABLED=true with a non-blank queue URL (application.yml).
 # Neither key is set in k8s/base/configmap.yaml, so the path is off by default and the role needs
 # nothing until it is enabled. Scope the statement to that queue's ARN — not "*".
 #
-# SendMessage is the only action: the queue URL arrives through the environment, so nothing calls
-# GetQueueUrl.
+# SendMessageBatch, not SendMessage: ModelEventConfig wires SqsAsyncEventPublisher, which batches
+# unconditionally — even a single event goes through sendMessageBatch. They are distinct IAM
+# actions, and a role granting only SendMessage fails with AccessDenied the moment this is enabled.
+# Nothing calls GetQueueUrl: the queue URL arrives through the environment.
 #
 # The role ARN below is AWS's documentation placeholder; no such role exists. Replace it with your
 # account-specific value before applying.
