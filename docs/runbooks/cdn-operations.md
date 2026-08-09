@@ -19,8 +19,11 @@ repo has no IaC. There is no state file and no drift detection.
 > reverts it, with no error and no warning. Any console change that isn't also added to the
 > script's `jq` payload does not survive the next run.
 >
-> **This applies to the distribution config only.** The two cache policies (`recsys-item`,
-> `recsys-similar`) are separate resources, and they hold the cache key and the TTL ceilings.
+> **This applies to the distribution config only.** The script provisions three other AWS
+> resources, across two resource types with their own update semantics: two cache policies, and
+> one CloudFront **Function** (see "The viewer-request normalization function" below). The two
+> cache policies (`recsys-item`,
+> `recsys-similar`) hold the cache key and the TTL ceilings.
 > `ensure_cache_policy` diffs the fields the script manages and issues
 > `update-cache-policy --if-match` when they differ, printing the deployed-versus-desired diff
 > first. Before 2026-07-29 it had no update path at all, so a policy edit in the script was a
@@ -53,6 +56,81 @@ reaches the origin. **The hit ratio on the primary recommendation route is zero 
 that route is POST-only and personalized. The CDN earns its keep here through edge TLS
 termination, WAF, and backbone acceleration, not caching.
 
+## The viewer-request normalization function
+
+The four cached behaviors each run a CloudFront Function, `recsys-normalize-catalog-query`
+(source: `scripts/cdn/normalize-catalog-query.js`). It rebuilds the query string from the route's
+whitelist so that `?id=%37` cannot be a second cache key for the `?id=7` body. Background:
+[12_CDNS sharp edge 9](../system_design/12_CDNS.md).
+
+**The provisioning script owns it.** `create-cdn-distribution.sh` creates the function on its first
+run and updates it on every run after that, then calls `publish-function` **unconditionally** —
+even when the `.js` is byte-identical to what is already LIVE. That is deliberate (a publish is
+cheap and this is an operator-invoked tool, not a poll loop), but it means *any* re-run of the
+script for an unrelated reason — an origin-secret rotation, say — also republishes whatever
+`scripts/cdn/normalize-catalog-query.js` says at that moment. Check the working tree before
+re-running the script mid-incident.
+
+**Publishing propagates to every association at once, with no distribution update.** AWS states it
+directly (`aws cloudfront publish-function help`): publishing "copies the function code from the
+DEVELOPMENT stage to LIVE. This **automatically updates all cache behaviors that are using this
+function** to use the newly published copy in the LIVE stage." Associations name the function's
+ARN, which does not change, so `publish-function` alone pushes new code to every associated
+behavior in every distribution — no `update-distribution`, no invalidation. There is no staged or
+per-behavior rollout: update + publish is a fleet-wide code change to the request path of all four
+cached routes.
+
+**This function fails closed**, which sets the blast radius. Any URI that is not an exact key in
+its `ALLOWED` map gets a `no-store` 400 rather than a pass-through. So an `ALLOWED` map that drifts
+from the `PathPattern` list, or an association added to `DefaultCacheBehavior`, takes routes down
+rather than degrading them. `CdnQueryNormalizationConformanceTest` fails the build on both, so the
+realistic way to hit this in production is a console edit or a hand-run `update-function`.
+
+**Verify before you publish.** `./scripts/test-cdn-function.sh` runs the committed `.js` against
+the real CloudFront runtime via `create-function` + `test-function`. It uses a separate probe name
+(`recsys-cdn-normalize-probe`) in the `DEVELOPMENT` stage, associated with nothing, and deletes it
+on exit — it never touches `recsys-normalize-catalog-query` or any live traffic. It verifies logic
+only; see its header for what it cannot show.
+
+**Rollback is forward-only.** The CloudFront Functions API has exactly two stages, `DEVELOPMENT`
+and `LIVE`, and no way to re-publish an earlier version — `aws cloudfront` offers
+`create/update/publish/describe/get/list/test/delete-function` and nothing else (`list-functions`
+enumerates by stage; it cannot recover a superseded version either). There is no "roll back to the
+previous function". To revert:
+
+```bash
+# 1. What is live right now, byte for byte. Do this BEFORE changing anything.
+aws cloudfront get-function --name recsys-normalize-catalog-query --stage LIVE /tmp/live.js
+diff /tmp/live.js scripts/cdn/normalize-catalog-query.js
+
+# 2. Restore the known-good source in git, then verify it against the real runtime.
+git checkout <good-sha> -- scripts/cdn/normalize-catalog-query.js
+./scripts/test-cdn-function.sh
+
+# 3. Update + publish. Propagates to every association within minutes; no invalidation needed
+#    (the function runs on the viewer request, before the cache lookup).
+etag="$(aws cloudfront describe-function --name recsys-normalize-catalog-query \
+  --query 'ETag' --output text)"
+aws cloudfront update-function --name recsys-normalize-catalog-query --if-match "$etag" \
+  --function-config '{"Comment":"Normalize catalog cache-key query strings","Runtime":"cloudfront-js-2.0"}' \
+  --function-code fileb://scripts/cdn/normalize-catalog-query.js
+etag="$(aws cloudfront describe-function --name recsys-normalize-catalog-query \
+  --query 'ETag' --output text)"
+aws cloudfront publish-function --name recsys-normalize-catalog-query --if-match "$etag"
+```
+
+Step 1 is the one that is easy to skip and impossible to redo: once you have published over the
+live code, the only copy of what *was* live is whatever you saved.
+
+The emergency escape hatch, if the function itself is the outage and no good source is at hand, is
+to remove `FunctionAssociations` from the four cached behaviors and re-run
+`create-cdn-distribution.sh`. That restores pre-2026-08-08 behavior — the routes serve again, and
+the percent-encoded cache-buster is open again until the function is fixed. Removing the
+associations is also a prerequisite for deleting the function at all: "You cannot delete a function
+if it's associated with a cache behavior. First, update your distributions to remove the function
+association from all cache behaviors, then delete the function"
+(`aws cloudfront delete-function help`).
+
 ## Rollout
 
 Order matters. Reversing steps 5 and 6 locks all traffic out of the origin.
@@ -76,6 +154,11 @@ Order matters. Reversing steps 5 and 6 locks all traffic out of the origin.
    ./scripts/create-cdn-distribution.sh
    ```
    Save the `ORIGIN_SECRET` value — step 4 needs it.
+
+   This same invocation also creates and publishes the `recsys-normalize-catalog-query` function
+   and associates it with the four cached behaviors. It fails closed, so if those four routes
+   return 400 immediately after this step, read "The viewer-request normalization function" above
+   before touching anything else.
 
    **Origin protocol.** `ORIGIN_PROTOCOL_POLICY` defaults to `https-only`, which requires the ALB
    to have a `:443` listener and a **regional** ACM certificate (separate from the us-east-1 cert
