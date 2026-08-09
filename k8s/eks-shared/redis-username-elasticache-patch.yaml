@@ -1,0 +1,94 @@
+# Clears REDIS_USERNAME wherever Redis is ElastiCache rather than the in-cluster StatefulSets.
+#
+# k8s/base gives each workload its own Redis ACL user (`catalog`, `model`, `online`, `gateway`,
+# `reconciliation`), defined in k8s/base/redis-users.acl.template and loaded by the in-cluster
+# redis-primary/redis-replica via --aclfile. That works in base. It does not work here, for two
+# reasons that compound:
+#
+#   1. This overlay scales redis-primary, redis-replica and redis-sentinel to 0 and repoints
+#      REDIS_HOST at an ElastiCache endpoint. So --aclfile is an argument to StatefulSets that
+#      never run, and the six ACL users are defined nowhere the workloads can reach.
+#   2. ElastiCache does not read a redis.conf or an ACL file at all. Its access control is RBAC
+#      users and user groups created through the AWS API, and nothing in this repo creates them.
+#
+# Left unpatched, every workload here would send `AUTH catalog <password>` to an ElastiCache that
+# has no `catalog` user. That fails outright — not a degraded path, a refused connection — and it
+# would take out every Redis-backed feature in the region on rollout. LettuceClientFactory:220
+# sends a two-argument AUTH only when REDIS_USERNAME is non-blank, so clearing it restores the
+# legacy default-user AUTH that worked before the ACL users existed.
+#
+# Removing this patch is the last step of adopting ElastiCache RBAC, not the first: create the
+# user group and its five users, put each password in recsys-secrets under the matching
+# redis-<user>-password key, and only then let REDIS_USERNAME through. See
+# docs/system_design/22_Data_Leakage_Posture.md.
+apiVersion: apps/v1
+kind: Deployment
+metadata:
+  name: recsys-api-gateway
+  namespace: recsys
+spec:
+  template:
+    spec:
+      containers:
+        - name: api-gateway
+          env:
+            - name: REDIS_USERNAME
+              value: ""
+---
+apiVersion: apps/v1
+kind: Deployment
+metadata:
+  name: recsys-catalog-serving
+  namespace: recsys
+spec:
+  template:
+    spec:
+      containers:
+        - name: catalog-serving
+          env:
+            - name: REDIS_USERNAME
+              value: ""
+---
+apiVersion: apps/v1
+kind: Deployment
+metadata:
+  name: recsys-model-serving
+  namespace: recsys
+spec:
+  template:
+    spec:
+      containers:
+        - name: model-serving
+          env:
+            - name: REDIS_USERNAME
+              value: ""
+---
+apiVersion: apps/v1
+kind: Deployment
+metadata:
+  name: recsys-online-serving
+  namespace: recsys
+spec:
+  template:
+    spec:
+      containers:
+        - name: online-serving
+          env:
+            - name: REDIS_USERNAME
+              value: ""
+---
+apiVersion: batch/v1
+kind: CronJob
+metadata:
+  name: recsys-outbox-reconciliation
+  namespace: recsys
+spec:
+  jobTemplate:
+    spec:
+      template:
+        spec:
+          containers:
+            - name: reconciliation
+              env:
+                - name: REDIS_USERNAME
+                  value: ""
