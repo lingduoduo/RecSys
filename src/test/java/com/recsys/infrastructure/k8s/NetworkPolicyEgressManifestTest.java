@@ -350,6 +350,39 @@ class NetworkPolicyEgressManifestTest {
     }
 
     /**
+     * A NetworkPolicy egress rule with no `to[]` permits its ports to EVERY destination, in the
+     * cluster or outside it. Four policies carried a bare `ports: [53]`, so the one channel every
+     * workload needs was also the one channel that reached anywhere — a tunnel out of an allow-list
+     * built to prevent exactly that.
+     *
+     * <p>This assertion exists because over-permissiveness is invisible to every other test here:
+     * they all ask whether a destination is *reachable*, and a rule that reaches everything passes
+     * all of them. Deleting the `to[]` to "simplify" the file would reopen the hole silently.
+     */
+    @Test
+    void dnsEgressIsScopedToADestination() throws IOException {
+        List<Map<String, Object>> docs = baseDocuments();
+
+        Set<String> unscoped = new TreeSet<>();
+        for (Map<String, Object> policy : ofKind(docs, "NetworkPolicy")) {
+            if (!restrictsEgress(policy)) continue;
+            for (Map<String, Object> rule : listOf(mapAt(policy, "spec"), "egress")) {
+                boolean namesPort53 = listOf(rule, "ports").stream()
+                        .anyMatch(p -> Integer.valueOf(53).equals(p.get("port")));
+                if (namesPort53 && listOf(rule, "to").isEmpty()) unscoped.add(nameOf(policy));
+            }
+        }
+
+        assertThat(unscoped)
+                .as("these policies permit port 53 with no `to[]`, which in NetworkPolicy means "
+                        + "every destination — so a workload whose other egress is confined to a "
+                        + "hand-checked allow-list can still send arbitrary UDP or TCP anywhere on "
+                        + "53. Scope the rule to `namespaceSelector: "
+                        + "kubernetes.io/metadata.name=kube-system`")
+                .isEmpty();
+    }
+
+    /**
      * Both EKS overlays scale in-cluster Redis to zero and point REDIS_HOST at an ElastiCache
      * endpoint outside the cluster. A podSelector cannot match an external address, and nothing
      * patched the policy, so every Redis call in EKS was unpermitted.
