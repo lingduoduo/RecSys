@@ -65,13 +65,12 @@ All four cached behaviors are **GET/HEAD only**, `redirect-to-https`, `Compress:
   closing repeats, leading zeros, sign, whitespace, `-0`, out-of-range, and present-but-empty
   as cache-buster channels. One bounded alias remains and is accepted deliberately: an
   absent `k` and an explicit `k=10` are two keys for the same body, which cannot be removed
-  without rejecting the default spelling. Two channels are *not* closed, because
-  `cacheKeyIntParam` validates the **decoded** query value while the CDN cache key is built
-  from the **raw** query string: a percent-encoded value (`?id=%37`) is a second cache key for
-  the same body, and — the more serious direction, since it collapses distinct responses onto
-  one key rather than merely splitting one response across several — a percent-encoded
-  parameter **name** (`?%69d=7`) presents no whitelisted parameter to the edge at all, so it
-  collides with `?%69%64=8` and with a bare parameterless request. See sharp edge 9.
+  without rejecting the default spelling. One channel is not closed here, because
+  `cacheKeyIntParam` validates the **decoded** query value while the cache key is built from the
+  **raw** query string: a percent-encoded value (`?id=%37`) is a second cache key for the same
+  body. It is closed at the edge instead, by the viewer-request function in
+  `scripts/cdn/normalize-catalog-query.js`. An encoded parameter *name* is not a channel at all —
+  it is neither keyed nor forwarded. See sharp edge 9.
 - **`HeaderBehavior: none`** — `Authorization` is **not** part of the cache key on
   cached routes (a JWT-keyed cache would fragment per user and never hit). This is
   what forces the "these routes must be public" decision in §2. It also means **no
@@ -330,14 +329,30 @@ POPs), and coarser whole-cache invalidation. See
    inverse of the drift hazard the runbook warns about for the distribution. It now diffs the
    fields it manages and updates with `--if-match`, which propagates a cache-behavior change
    to every edge: not a step to take casually mid-incident.
-9. **`cacheKeyIntParam` validates the decoded value; the cache key is built from the raw query
-   string — known, open, not regressed by this branch.** `?id=%37` decodes to a valid `7` and
-   is accepted, but is a second CloudFront cache key over the `id=7` body. Worse, `?%69d=7`
-   decodes its *parameter name* to `id` and is likewise accepted by the origin, but the edge
-   whitelist matches on the raw name, so it presents no whitelisted parameter at all and
-   collides with `?%69%64=8` and with a bare parameterless request — many bodies under one key.
-   This is pre-existing (`requiredIntParam` accepted the same spellings before 2026-07-29), not
-   something `cacheKeyIntParam` regresses or closes. Verified on this project's Armeria
-   classpath: both decode to the same value/name before validation runs. Not verified: whether
-   CloudFront itself percent-decodes before whitelist matching — the local nginx harness looks
-   up `$arg_id` on the undecoded literal, which is the only evidence this repo has either way.
+9. **Two of the three percent-encoding channels never existed; the third is closed at the edge.**
+   This entry claimed until 2026-08-08 that `?%69d=7` "collides with `?%69%64=8` and with a bare
+   parameterless request — many bodies under one key". It does not. The four cached behaviors
+   carry no `OriginRequestPolicyId`, and AWS forwards to the origin only what is in the cache key
+   ("Other information from the viewer request, such as URL query strings, HTTP headers, and
+   cookies, is not included in the origin request by default"). So a non-whitelisted `%69d` never
+   reaches the origin: it 400s on the missing `id`, `no-store`, uncached, and no bodies collide.
+   The same reasoning kills the `k`-default variant — `?movieId=1&%6b=200` forwards no `k`, the
+   origin uses its default, and the body matches its key. **One channel is real:** `?id=%37` is a
+   whitelisted name, so the encoded value is both keyed and forwarded, and the origin decodes it
+   to `7` — a second cache key over one body, and an unbounded attacker-controlled cache-buster
+   of exactly the kind sharp edge 7's ceiling exists to prevent. It is closed by
+   `scripts/cdn/normalize-catalog-query.js`, a viewer-request function that rebuilds each cached
+   route's query string from the whitelist alone, rejecting a percent-encoded or repeated value
+   with a `no-store` 400 and emitting the rest in a fixed order. The cache key is computed from
+   the function's output, so that is what fragments the cache.
+   **The origin cannot help here, and must not be asked to.** Armeria's codecs overwrite `:path`
+   with the normalized request target before any service runs (`Http1RequestDecoder:177` into
+   `ArmeriaHttpUtil:679`; `Http2RequestDecoder:128` into `:614`), and
+   `QUERY_MUST_PRESERVE_ENCODING` excludes alphanumerics — so `?id=%37` arrives at the gateway as
+   `id=7`. Measured on a real server over a raw socket. A gateway-side guard was written, passed
+   its unit tests, and was inert in production, because `ServiceRequestContext.of(request)` is the
+   one place that preserves the caller's request verbatim.
+   **Still unverified:** whether CloudFront percent-decodes parameter *names* before whitelist
+   matching. The function is built not to depend on the answer, and `scripts/test-cdn-function.sh`
+   verifies its logic against the real CloudFront runtime — but no distribution exists in this
+   account, so the association and the parsing behaviour are unexercised.

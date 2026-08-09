@@ -57,6 +57,10 @@ server {
         # ONLY `id` is in the key. nginx's default key is the whole $request_uri, which would
         # let ?id=1&cachebuster=N fragment the cache arbitrarily and act as an origin-DoS
         # amplifier — the exact thing CloudFront's query-string whitelist prevents.
+        # Mirrors scripts/cdn/normalize-catalog-query.js: a percent-encoded value is a second
+        # cache key for the same body. nginx's $arg_id is the raw, undecoded value, so this sees
+        # what the edge sees. Unexecuted — Docker has never run on this project's machines.
+        if ($arg_id ~ "%") { return 400; }
         proxy_cache_key "$uri|$arg_id";
 
         # NOTE: there is deliberately NO proxy_cache_valid here. Cache lifetime comes only from
@@ -77,6 +81,11 @@ server {
         proxy_set_header x-origin-secret ${CDN_ORIGIN_SECRET};
 
         proxy_cache cdn;
+        # Mirrors scripts/cdn/normalize-catalog-query.js: a percent-encoded value is a second
+        # cache key for the same body. nginx's $arg_ variables are raw and undecoded, so these see
+        # what the edge sees. Unexecuted — Docker has never run on this project's machines.
+        if ($arg_movieId ~ "%") { return 400; }
+        if ($arg_k ~ "%") { return 400; }
         proxy_cache_key "$uri|$arg_movieId|$arg_k";
         # No proxy_cache_valid — see the note above.
         proxy_cache_background_update on;
@@ -93,6 +102,10 @@ server {
         proxy_set_header x-origin-secret ${CDN_ORIGIN_SECRET};
 
         proxy_cache cdn;
+        # Mirrors scripts/cdn/normalize-catalog-query.js: a percent-encoded value is a second
+        # cache key for the same body. nginx's $arg_id is the raw, undecoded value, so this sees
+        # what the edge sees. Unexecuted — Docker has never run on this project's machines.
+        if ($arg_id ~ "%") { return 400; }
         proxy_cache_key "$uri|$arg_id";
         proxy_cache_background_update on;
         proxy_cache_use_stale updating error timeout http_500 http_502 http_503 http_504;
@@ -108,6 +121,11 @@ server {
         proxy_set_header x-origin-secret ${CDN_ORIGIN_SECRET};
 
         proxy_cache cdn;
+        # Mirrors scripts/cdn/normalize-catalog-query.js: a percent-encoded value is a second
+        # cache key for the same body. nginx's $arg_ variables are raw and undecoded, so these see
+        # what the edge sees. Unexecuted — Docker has never run on this project's machines.
+        if ($arg_movieId ~ "%") { return 400; }
+        if ($arg_k ~ "%") { return 400; }
         proxy_cache_key "$uri|$arg_movieId|$arg_k";
         proxy_cache_background_update on;
         proxy_cache_use_stale updating error timeout http_500 http_502 http_503 http_504;

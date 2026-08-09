@@ -444,6 +444,7 @@
                 <include>**/serving/CacheKeyParamTest.java</include>
                 <include>**/serving/CatalogCacheHeadersTest.java</include>
                 <include>**/serving/SimilarCacheHeadersTest.java</include>
+                <include>**/serving/CdnQueryNormalizationConformanceTest.java</include>
                 <!-- The only path that sends an application user identifier to a third party.
                      Pins that PostHog receives a salted digest and never the userId itself. -->
                 <include>**/featureflags/providers/PostHogFeatureFlagProviderTest.java</include>
