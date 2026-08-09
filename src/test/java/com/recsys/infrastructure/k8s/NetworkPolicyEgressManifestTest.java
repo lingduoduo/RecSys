@@ -350,35 +350,66 @@ class NetworkPolicyEgressManifestTest {
     }
 
     /**
-     * A NetworkPolicy egress rule with no `to[]` permits its ports to EVERY destination, in the
-     * cluster or outside it. Four policies carried a bare `ports: [53]`, so the one channel every
-     * workload needs was also the one channel that reached anywhere — a tunnel out of an allow-list
-     * built to prevent exactly that.
+     * The only peer a DNS egress rule may name today: the kube-system namespace. See the
+     * operational note beside the port-53 rule in k8s/base/network-policy.yaml for why a
+     * namespaceSelector rather than a podSelector, and for the NodeLocal DNSCache ipBlock a
+     * cluster running that would need here — deliberately not added, since none of this repo's
+     * overlays run it.
+     */
+    private static final Map<String, Object> KUBE_SYSTEM_NAMESPACE_PEER = Map.of(
+            "namespaceSelector",
+            Map.of("matchLabels", Map.of("kubernetes.io/metadata.name", "kube-system")));
+
+    /**
+     * A NetworkPolicy egress rule's `to[]` must name the peer set exactly, not merely be
+     * non-empty: `to: [{ipBlock: {cidr: 0.0.0.0/0}}]` is as permissive as no `to[]` at all and
+     * would pass a check that only asks "is `to[]` empty?". Four policies carried a bare
+     * `ports: [53]` with no `to[]` at all — the one channel every workload needs was also the one
+     * channel that reached anywhere — a tunnel out of an allow-list built to prevent exactly that.
      *
      * <p>This assertion exists because over-permissiveness is invisible to every other test here:
      * they all ask whether a destination is *reachable*, and a rule that reaches everything passes
-     * all of them. Deleting the `to[]` to "simplify" the file would reopen the hole silently.
+     * all of them. It also requires the port-53 rule to exist at all: a policy with no DNS egress
+     * rule would otherwise pass this check vacuously and then fail every DNS lookup at runtime
+     * with unknown-host under an enforcing CNI.
      */
     @Test
-    void dnsEgressIsScopedToADestination() throws IOException {
+    void dnsEgressIsScopedToKubeSystem() throws IOException {
         List<Map<String, Object>> docs = baseDocuments();
 
-        Set<String> unscoped = new TreeSet<>();
+        Set<String> violations = new TreeSet<>();
         for (Map<String, Object> policy : ofKind(docs, "NetworkPolicy")) {
             if (!restrictsEgress(policy)) continue;
-            for (Map<String, Object> rule : listOf(mapAt(policy, "spec"), "egress")) {
-                boolean namesPort53 = listOf(rule, "ports").stream()
-                        .anyMatch(p -> Integer.valueOf(53).equals(p.get("port")));
-                if (namesPort53 && listOf(rule, "to").isEmpty()) unscoped.add(nameOf(policy));
+
+            List<Map<String, Object>> port53Rules = listOf(mapAt(policy, "spec"), "egress").stream()
+                    .filter(rule -> listOf(rule, "ports").stream()
+                            .anyMatch(p -> Integer.valueOf(53).equals(p.get("port"))))
+                    .collect(java.util.stream.Collectors.toList());
+
+            if (port53Rules.isEmpty()) {
+                violations.add(nameOf(policy) + ": no port-53 egress rule at all");
+                continue;
+            }
+
+            for (Map<String, Object> rule : port53Rules) {
+                List<Map<String, Object>> peers = listOf(rule, "to");
+                boolean hasKubeSystemPeer = peers.contains(KUBE_SYSTEM_NAMESPACE_PEER);
+                boolean hasExtraPeer = peers.stream().anyMatch(p -> !KUBE_SYSTEM_NAMESPACE_PEER.equals(p));
+                if (!hasKubeSystemPeer || hasExtraPeer) {
+                    violations.add(nameOf(policy) + ": port-53 to[] = " + peers);
+                }
             }
         }
 
-        assertThat(unscoped)
-                .as("these policies permit port 53 with no `to[]`, which in NetworkPolicy means "
-                        + "every destination — so a workload whose other egress is confined to a "
-                        + "hand-checked allow-list can still send arbitrary UDP or TCP anywhere on "
-                        + "53. Scope the rule to `namespaceSelector: "
-                        + "kubernetes.io/metadata.name=kube-system`")
+        assertThat(violations)
+                .as("every Egress-restricted policy must carry a port-53 rule whose `to[]` "
+                        + "consists solely of a namespaceSelector matching "
+                        + "kubernetes.io/metadata.name=kube-system. A rule with no `to[]`, or one "
+                        + "with an extra peer such as an ipBlock, permits port 53 to more than "
+                        + "kube-system — so a workload whose other egress is confined to a "
+                        + "hand-checked allow-list can still send arbitrary UDP or TCP elsewhere on "
+                        + "53. A policy with no port-53 rule at all is just as wrong the other way: "
+                        + "every DNS lookup fails with unknown-host under an enforcing CNI")
                 .isEmpty();
     }
 

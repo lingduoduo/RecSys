@@ -70,10 +70,16 @@ spec:
         - port: 6379
     # Scoped to kube-system rather than left destination-free. A rule with no `to[]` permits
     # port 53 to ANY address, inside the cluster or out, which is a tunnel through an otherwise
-    # tight allow-list. Namespace rather than `podSelector: k8s-app=kube-dns` on purpose:
-    # NodeLocal DNSCache is host-networked and a podSelector may not match it on every CNI, and
-    # the cost of over-tightening here is every DNS lookup dropped — a total outage on a control
-    # nobody has confirmed the cluster even enforces.
+    # tight allow-list. Namespace rather than `podSelector: k8s-app=kube-dns` on purpose: CoreDNS's
+    # own labels vary across distributions, so a podSelector pinned to one would silently break on
+    # another — a namespace scope keeps matching even if the cluster's DNS provider in kube-system
+    # changes. Operational note: a cluster running NodeLocal DNSCache resolves through
+    # 169.254.20.10, a host-networked address that neither this namespaceSelector nor a podSelector
+    # would match (NetworkPolicy peers match pod IPs, and a host-networked DaemonSet's IP is the
+    # node's, which Calico/Cilium treat as a host endpoint, not a kube-system workload). Such a
+    # cluster needs an additional peer in this rule — `- to: [ipBlock: {cidr:
+    # 169.254.20.10/32}]` — not added here because no such cluster exists in this repo's overlays,
+    # and adding it unconditionally would permit link-local egress everywhere.
     - to:
         - namespaceSelector:
             matchLabels:
@@ -130,10 +136,16 @@ spec:
         - port: 26379
     # Scoped to kube-system rather than left destination-free. A rule with no `to[]` permits
     # port 53 to ANY address, inside the cluster or out, which is a tunnel through an otherwise
-    # tight allow-list. Namespace rather than `podSelector: k8s-app=kube-dns` on purpose:
-    # NodeLocal DNSCache is host-networked and a podSelector may not match it on every CNI, and
-    # the cost of over-tightening here is every DNS lookup dropped — a total outage on a control
-    # nobody has confirmed the cluster even enforces.
+    # tight allow-list. Namespace rather than `podSelector: k8s-app=kube-dns` on purpose: CoreDNS's
+    # own labels vary across distributions, so a podSelector pinned to one would silently break on
+    # another — a namespace scope keeps matching even if the cluster's DNS provider in kube-system
+    # changes. Operational note: a cluster running NodeLocal DNSCache resolves through
+    # 169.254.20.10, a host-networked address that neither this namespaceSelector nor a podSelector
+    # would match (NetworkPolicy peers match pod IPs, and a host-networked DaemonSet's IP is the
+    # node's, which Calico/Cilium treat as a host endpoint, not a kube-system workload). Such a
+    # cluster needs an additional peer in this rule — `- to: [ipBlock: {cidr:
+    # 169.254.20.10/32}]` — not added here because no such cluster exists in this repo's overlays,
+    # and adding it unconditionally would permit link-local egress everywhere.
     - to:
         - namespaceSelector:
             matchLabels:
@@ -190,10 +202,16 @@ spec:
         - port: 26379
     # Scoped to kube-system rather than left destination-free. A rule with no `to[]` permits
     # port 53 to ANY address, inside the cluster or out, which is a tunnel through an otherwise
-    # tight allow-list. Namespace rather than `podSelector: k8s-app=kube-dns` on purpose:
-    # NodeLocal DNSCache is host-networked and a podSelector may not match it on every CNI, and
-    # the cost of over-tightening here is every DNS lookup dropped — a total outage on a control
-    # nobody has confirmed the cluster even enforces.
+    # tight allow-list. Namespace rather than `podSelector: k8s-app=kube-dns` on purpose: CoreDNS's
+    # own labels vary across distributions, so a podSelector pinned to one would silently break on
+    # another — a namespace scope keeps matching even if the cluster's DNS provider in kube-system
+    # changes. Operational note: a cluster running NodeLocal DNSCache resolves through
+    # 169.254.20.10, a host-networked address that neither this namespaceSelector nor a podSelector
+    # would match (NetworkPolicy peers match pod IPs, and a host-networked DaemonSet's IP is the
+    # node's, which Calico/Cilium treat as a host endpoint, not a kube-system workload). Such a
+    # cluster needs an additional peer in this rule — `- to: [ipBlock: {cidr:
+    # 169.254.20.10/32}]` — not added here because no such cluster exists in this repo's overlays,
+    # and adding it unconditionally would permit link-local egress everywhere.
     - to:
         - namespaceSelector:
             matchLabels:
@@ -259,10 +277,16 @@ spec:
         - port: 3306
     # Scoped to kube-system rather than left destination-free. A rule with no `to[]` permits
     # port 53 to ANY address, inside the cluster or out, which is a tunnel through an otherwise
-    # tight allow-list. Namespace rather than `podSelector: k8s-app=kube-dns` on purpose:
-    # NodeLocal DNSCache is host-networked and a podSelector may not match it on every CNI, and
-    # the cost of over-tightening here is every DNS lookup dropped — a total outage on a control
-    # nobody has confirmed the cluster even enforces.
+    # tight allow-list. Namespace rather than `podSelector: k8s-app=kube-dns` on purpose: CoreDNS's
+    # own labels vary across distributions, so a podSelector pinned to one would silently break on
+    # another — a namespace scope keeps matching even if the cluster's DNS provider in kube-system
+    # changes. Operational note: a cluster running NodeLocal DNSCache resolves through
+    # 169.254.20.10, a host-networked address that neither this namespaceSelector nor a podSelector
+    # would match (NetworkPolicy peers match pod IPs, and a host-networked DaemonSet's IP is the
+    # node's, which Calico/Cilium treat as a host endpoint, not a kube-system workload). Such a
+    # cluster needs an additional peer in this rule — `- to: [ipBlock: {cidr:
+    # 169.254.20.10/32}]` — not added here because no such cluster exists in this repo's overlays,
+    # and adding it unconditionally would permit link-local egress everywhere.
     - to:
         - namespaceSelector:
             matchLabels:
