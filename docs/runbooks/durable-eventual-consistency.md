@@ -26,6 +26,12 @@ in the ConfigMap:
 - `MYSQL_PASSWORD`
 - `ONLINE_CONSISTENCY_TOKEN_SECRET` — **must be ≥ 32 UTF-8 bytes**; startup fails otherwise.
 
+`MYSQL_URL` must carry `sslMode=VERIFY_IDENTITY` — spelled exactly that way, since Connector/J
+property names are case-sensitive and a wrong-case key is dropped silently — and must not carry
+the deprecated `useSSL`. Loopback hosts (`localhost`, `127.0.0.1`, `[::1]`) are exempt. Any
+service that builds MySQL settings refuses to start otherwise; Connector/J's `PREFERRED` default
+would otherwise fall back to plaintext without an error.
+
 Key env vars: `MYSQL_ENABLED`, `MYSQL_URL`, `MYSQL_USER`; `ONLINE_DURABLE_EVENTS_ENABLED`;
 `OUTBOX_KAFKA_BOOTSTRAP_SERVERS`, `OUTBOX_KAFKA_ONLINE_TOPIC`, `OUTBOX_DELIVERY_DEADLINE_MS`;
 `OUTBOX_RELAY_*` (relay tuning; `OUTBOX_RELAY_POLL_MS` is the claim cadence, the per-send /
@@ -37,7 +43,9 @@ relay-cycle deadline is `OUTBOX_DELIVERY_DEADLINE_MS`); `RECONCILIATION_WINDOW_H
 1. **Migrate schema.** Apply Flyway migrations for `event_outbox` and `saga_instance`
    (`V2__create_event_outbox_and_sagas.sql` and later). Schema is additive and safe to apply while
    the feature is off.
-2. **Deploy metrics + relay, no traffic.** Set `MYSQL_ENABLED=true` and roll out
+2. **Deploy metrics + relay, no traffic.** Set `MYSQL_ENABLED=true` — and confirm `MYSQL_URL`
+   sets `sslMode=VERIFY_IDENTITY` first, or every workload that builds MySQL settings, including
+   6010, refuses to start — then roll out
    `recsys-outbox-relay`. With no producers yet the relay idles; confirm `/health/ready` is green
    and `/metrics` scrapes (`outbox_pending_events` ≈ 0).
 3. **Enable durable API acceptance.** Set `ONLINE_DURABLE_EVENTS_ENABLED=true` and provide

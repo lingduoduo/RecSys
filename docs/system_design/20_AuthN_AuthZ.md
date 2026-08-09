@@ -306,6 +306,49 @@ that decides which node 6379 *is*.
 
 Design: [Redis transport authentication](../superpowers/specs/2026-08-05-redis-transport-auth-design.md).
 
+MySQL is the other data tier, and closes a gap Connector/J leaves open by default rather than one
+this codebase left unset. `MySqlConnectionSettings`'s compact constructor refuses to build when
+`MYSQL_ENABLED=true` and `MYSQL_URL` does not set `sslMode=VERIFY_IDENTITY`, and refuses a URL that
+still carries the deprecated `useSSL` property (Connector/J 8 lets `sslMode` override it silently,
+so the two together read as one thing and behave as another). MySQL client construction is
+otherwise unconditional: `CatalogComponent.fromEnvironment()`, which `RecSysServer` (6010) calls on
+every startup, builds `MySqlConnectionSettings` regardless of whether MySQL is enabled, so the
+guard is live the moment `MYSQL_ENABLED=true` is set — a URL without a verified `sslMode` fails 6010
+at pod start. `OnlinePredictionServer` (7010) builds it only when durable online event acceptance
+is on (`ONLINE_DURABLE_EVENTS_ENABLED=true`), which itself requires `MYSQL_ENABLED=true` and throws
+if it is unset — so the same guard applies to 7010 whenever that feature is enabled, not merely
+whenever MySQL is. A third construction site is ungated in the same way 6010 is:
+`ReconciliationCommand.main` builds `MySqlConnectionSettings` unconditionally, unlike
+`OutboxRelayCommand.main`, which returns early when `ONLINE_DURABLE_EVENTS_ENABLED` is false. Its
+CronJob `envFrom`s `recsys-config`, so a `MYSQL_URL` without a verified `sslMode` fails the
+reconciliation job at every scheduled run — as a `CrashLoopBackOff` on a periodic pod rather than
+at a rollout, which is the quieter of the two failures to notice.
+
+`VERIFY_IDENTITY` rather than `REQUIRED`: `REQUIRED` encrypts the connection but verifies no
+certificate, so it stops silent plaintext but not an active man-in-the-middle presenting any
+certificate at all. Against RDS this costs no extra provisioning: per `MySqlConnectionSettings`'s
+javadoc, Amazon's CAs are already in the JVM truststore, so an RDS certificate verifies with no
+extra truststore work. `k8s/eks/redis-elasticache-patch.yaml` documents the same shape for the
+other data tier's TLS — that ElastiCache's certificate verifies against the JVM truststore because
+it already trusts the Amazon Root CA that ElastiCache's certificates chain to — though that file
+only speaks to ElastiCache, not RDS.
+
+Loopback hosts (`localhost`, `127.0.0.1`, `[::1]`) are exempt from the whole requirement, including
+the `useSSL` rejection. This is a host test on the URL, not an opt-out flag: the host `k8s/base`
+sets is `mysql`, and any RDS endpoint is a DNS name, so no manifest value can satisfy the loopback
+test and disable the guard the way a manifest can set `REDIS_ALLOW_NO_AUTH=true` above. That is the
+shape the Redis finding lacked — there, the opt-out is a flag a manifest could in principle carry;
+here, exemption is unreachable from any deployed configuration.
+
+The consequence is real but bounded: `MYSQL_ENABLED` defaults to `"false"` in every manifest, so
+today this guard is dormant everywhere, and nothing in this repository deploys a MySQL server for
+it to run against — the requirement is unverified against a real TLS handshake. `k8s/base/configmap.yaml`
+now sets `MYSQL_URL` to a value that satisfies the guard (`?sslMode=VERIFY_IDENTITY`), so enabling
+MySQL by flipping `MYSQL_ENABLED` alone does not trip it; a manifest change that touches `MYSQL_URL`
+without preserving that parameter would.
+
+Design: [MySQL transport TLS](../superpowers/specs/2026-08-05-mysql-transport-tls-design.md).
+
 ## 10. User-scope authorization — is this caller allowed to name this user?
 
 §1–§4 answer "is this caller authenticated". This section answers "may this caller act on *this*

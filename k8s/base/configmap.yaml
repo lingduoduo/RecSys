@@ -98,7 +98,10 @@ data:
   # MYSQL_PASSWORD and ONLINE_CONSISTENCY_TOKEN_SECRET come from the recsys-secrets Secret,
   # never this ConfigMap.
   MYSQL_ENABLED: "false"
-  MYSQL_URL: "jdbc:mysql://mysql:3306/recsys"
+  # sslMode=VERIFY_IDENTITY is required, not decorative: Connector/J defaults to PREFERRED, which
+  # falls back to plaintext without error and verifies no certificate. MySqlConnectionSettings
+  # refuses to construct without it when MYSQL_ENABLED=true.
+  MYSQL_URL: "jdbc:mysql://mysql:3306/recsys?sslMode=VERIFY_IDENTITY"
   MYSQL_USER: "recsys"
   # Outbox relay + reconciliation share these Kafka settings.
   OUTBOX_KAFKA_BOOTSTRAP_SERVERS: "kafka:9092"

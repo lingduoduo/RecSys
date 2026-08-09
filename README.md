@@ -389,7 +389,8 @@ their main class directly.
 MySQL remains off in the standard workflow. If you enable it, follow the
 requirements for `MYSQL_URL`, `MYSQL_USER`, `MYSQL_PASSWORD`, and
 `MYSQL_CURSOR_SIGNING_KEY` in the Configuration Guide before starting the
-catalog service.
+catalog service. In particular `MYSQL_URL` must set `sslMode=VERIFY_IDENTITY`
+unless the host is loopback, or the service refuses to start.
 
 ## Troubleshooting
 

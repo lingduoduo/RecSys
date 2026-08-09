@@ -116,7 +116,7 @@ corresponding Service, probe, and gateway upstream configuration.
 | `SHARDED_RECORD_MAX_TTL_SECONDS` | `86400` | Previous-generation dual-read period after a reshard. |
 | `SHARD_ADMIN_TOKEN` | unset | Secret guarding online shard-topology and operations endpoints; unset fails those surfaces closed. |
 | `MYSQL_ENABLED` | `false` | Enables the MySQL catalog path; see the durable-event requirements below. |
-| `MYSQL_URL` / `MYSQL_USER` / `MYSQL_PASSWORD` | local JDBC URL / `recsys` / empty | Required and nonblank (including password) when MySQL is enabled. Supply the password from a Secret. |
+| `MYSQL_URL` / `MYSQL_USER` / `MYSQL_PASSWORD` | local JDBC URL / `recsys` / empty | Required and nonblank (including password) when MySQL is enabled. Supply the password from a Secret. **`MYSQL_URL` must also carry `sslMode=VERIFY_IDENTITY`** (spelled exactly that way — Connector/J property names are case-sensitive) and must not carry the deprecated `useSSL`; loopback hosts (`localhost`, `127.0.0.1`, `[::1]`) are exempt. The service **refuses to start** otherwise, because Connector/J's `PREFERRED` default falls back to plaintext without error. |
 | `MYSQL_CURSOR_SIGNING_KEY` | empty | At least 32 UTF-8 bytes when MySQL is enabled; keep it in a Secret. |
 | `MYSQL_QUERY_TIMEOUT_SECONDS` | `2` | Required range: 1–30. |
 | `MYSQL_READ_MAX_ATTEMPTS` | `2` | Required range: 1–2. |
