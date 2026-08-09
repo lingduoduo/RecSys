@@ -375,6 +375,11 @@
                      looks like a dependency outage, not a policy bug. Pure file parsing. -->
                 <include>**/k8s/NetworkPolicyEgressManifestTest.java</include>
                 <include>**/k8s/RedisAuthManifestTest.java</include>
+                <!-- The per-service Redis ACL analogue of RedisAuthManifestTest: that test proves
+                     every workload authenticates; this proves each one authenticates as its own
+                     user and can write only the prefixes its code writes, not the whole keyspace.
+                     Pure file parsing. -->
+                <include>**/k8s/RedisAclManifestTest.java</include>
                 <!-- The operator tier's credential and the code that reads it live in different
                      files with nothing else tying them together; a service that enforces the tier
                      without the Secret rejects every operator request and says so only in a
