@@ -392,6 +392,7 @@
                      regresses to no sslMode fails the PR gate rather than pod start. Pure file
                      parsing. -->
                 <include>**/k8s/MySqlTlsManifestTest.java</include>
+                <include>**/k8s/GatewayExposureManifestTest.java</include>
                 <!-- The IRSA comments in k8s/ are the instructions an operator provisions IAM
                      from, and no machine applies them, so a wrong claim there fails as an
                      AccessDenied in production or as a silent over-grant. This pins the source
