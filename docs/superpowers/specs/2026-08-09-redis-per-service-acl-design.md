@@ -186,7 +186,27 @@ restart-based rotation. No automation is added.
 
 ---
 
-## Status: NOT MERGEABLE — open findings from the 2026-08-09 final review
+## Status: all four Criticals closed (2026-08-09)
+
+C1, C2, C3 and C4 below are **fixed**, each verified against a real `redis-server` — 63 accesses
+exercised across the five users, and all five of C4's mutations now fail the build. `-Presilience`
+is green at 615.
+
+The record of each finding is kept below because the measurements are the valuable part, and
+because the branch's history is a case study in what happens when Redis behaviour is assumed. Two
+things remain genuinely open, neither a defect in this branch:
+
+- **The Secret must be rendered out-of-band** before `k8s/base` is applied. `redis-server` aborts
+  on a missing `--aclfile`, so both Redis pods stay in `CreateContainerConfigError` until the
+  `redis-users.acl` key exists, and each workload now needs its own `redis-<user>-password` key.
+- **`RedisPersistentKeyProbe` reports `unavailable` permanently and silently** under the bounded
+  read grant. `SCAN` is not ACL-filtered — it returns keys the user cannot read — and the probe's
+  TTL loop shares one `try`, so a single foreign key aborts the page. The alternative was `%R~*`
+  for online serving, which would hand it read access to model serving's auth keyspace and invert
+  the point of the split. The proper fix is per-key catch-and-continue in `src/main/java`, out of
+  scope here.
+
+### The findings, as originally recorded
 
 Everything below was **measured against a real `redis-server`**, not reasoned from documentation.
 The branch boots and its gate is green at 613 tests; neither fact means what it appears to.
