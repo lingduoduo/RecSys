@@ -104,8 +104,11 @@ class RedisAclManifestTest {
      *       that would hand online serving read access to {@code login:*} and
      *       {@code submit_token:*}; the degraded probe is the cheaper loss. See the design doc.
      *       </li>
-     *   <li>{@code gateway} has no {@code +@write} and no {@code ~svc:registry:recsys-api-gateway}:
-     *       it has no {@code ServiceRegistrar} and {@code MGET} is its only Redis command.
+     *   <li>{@code gateway} has no {@code +@write} and no {@code svc:registry:recsys-api-gateway}
+     *       pattern in any form: it has no {@code ServiceRegistrar} and {@code MGET} is its only
+     *       Redis command. Its three patterns are the exact keys {@code ServiceRegistryProvider}
+     *       {@code MGET}s, spelled out rather than globbed as {@code %R~svc:registry:*}, because
+     *       the glob would silently re-grant read on the gateway's own unused registry key.
      *       {@code reconciliation} has no {@code user:*:recent_movies} pattern: that string is
      *       the <i>member</i> of a {@code SISMEMBER}, not a key, and ACL key patterns never see
      *       members.</li>
@@ -136,7 +139,9 @@ class RedisAclManifestTest {
             "gateway", List.of(
                     "on", ">__GATEWAY_PASSWORD__",
                     "-@all", "+@read", "+@connection", "-@dangerous",
-                    "%R~svc:registry:*"),
+                    "%R~svc:registry:recsys-catalog-serving",
+                    "%R~svc:registry:recsys-model-serving",
+                    "%R~svc:registry:recsys-online-serving"),
             "reconciliation", List.of(
                     "on", ">__RECONCILIATION_PASSWORD__",
                     "-@all", "+@read", "+@connection", "-@dangerous",
