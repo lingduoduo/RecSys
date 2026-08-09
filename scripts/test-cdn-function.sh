@@ -63,9 +63,20 @@ expect 'unlisted parameter is dropped'    '"querystring":"movieId=1"' \
   "$(req /api/catalog/similar '{"movieId":{"value":"1"},"%6b":{"value":"200"}}')"
 expect 'repeated parameter is rejected'   '"statusCode":400' \
   "$(req /api/catalog/item '{"id":{"value":"7","multiValue":[{"value":"7"},{"value":"8"}]}}')"
-# On a non-cached URI the request is returned untouched, so querystring is still an OBJECT.
-expect 'non-cached uri is untouched'      '"querystring":{"q":{"value":"%20"}}' \
+# This function is associated ONLY with the four exact-match cached behaviors, so a URI it
+# does not recognize cannot mean "some other, unprotected route" — it can only mean the raw
+# URI the function was handed differs from the one CloudFront matched the behavior on (see the
+# .js header). The miss branch fails closed rather than passing the request through untouched.
+expect 'unrecognised uri is rejected'     '"statusCode":400' \
   "$(req /api/recommend '{"q":{"value":"%20"}}')"
+expect 'v1 item: encoded value is rejected' '"statusCode":400' \
+  "$(req /api/v1/catalog/item '{"id":{"value":"%37"}}')"
+expect 'v1 item: clean value passes through' '"querystring":"id=7"' \
+  "$(req /api/v1/catalog/item '{"id":{"value":"7"}}')"
+expect 'v1 similar: encoded value is rejected' '"statusCode":400' \
+  "$(req /api/v1/catalog/similar '{"movieId":{"value":"%37"}}')"
+expect 'v1 similar: clean value passes through' '"querystring":"movieId=1&k=5"' \
+  "$(req /api/v1/catalog/similar '{"movieId":{"value":"1"},"k":{"value":"5"}}')"
 
 if (( FAILURES > 0 )); then
   printf '\n%d check(s) failed\n' "$FAILURES"

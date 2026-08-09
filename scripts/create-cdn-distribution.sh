@@ -132,10 +132,16 @@ ensure_cache_policy() {
 
 # Create or update the viewer-request function, publish it, and return its LIVE ARN.
 #
-# Same create-or-update shape as ensure_cache_policy, and for the same reason: an edit to the .js
-# that never reached AWS would be a silent no-op, and the cache key is computed from this
-# function's OUTPUT. Publishing is separate from updating — an updated but unpublished function
-# still serves its old LIVE copy to every association.
+# Unlike ensure_cache_policy, this does NOT diff before writing: update-function +
+# publish-function run unconditionally on every invocation of this script, minting a new
+# function version and propagating it to every edge location even when the .js is
+# byte-identical to what is already LIVE. That is acceptable here for two reasons this
+# script does not hold for cache policies: a function publish is cheap (no capacity/config
+# impact at the edge, unlike a cache-policy field that changes what gets cached) and this
+# script is not expected to run on a tight poll loop — it is an operator-invoked
+# provisioning tool, so an occasional redundant publish costs a version bump, not a
+# behavior change. Publishing is separate from updating — an updated but unpublished
+# function still serves its old LIVE copy to every association.
 #
 # All diagnostics go to stderr: stdout is the ARN, consumed by the caller below.
 ensure_function() {

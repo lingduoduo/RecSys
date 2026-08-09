@@ -22,6 +22,17 @@
 //
 // The 400 carries no-store, so a rejection is never cached at the edge.
 //
+// Two things this function does NOT close, left as origin-side responsibility rather than
+// edge logic:
+//   - `?movieId=1` and `?movieId=1&k=10` are two distinct cache keys over one response body,
+//     since `k`'s origin default is 10. Bounded at 2x, not eliminated — "one spelling, one
+//     identity" above is aspirational, not literally true, for a parameter with a default.
+//   - A non-canonical but UNENCODED value (`007`, `+7`, an empty string, `7é`) has no `%` in
+//     it, so it clears the check below and passes through as its own cache key. It relies
+//     entirely on the origin's cacheKeyIntParam rejecting it with no-store to avoid being
+//     cached under that spelling. The two layers split this responsibility on purpose; this
+//     file only owns the percent-encoded half of it.
+//
 // Pinned to the cache policies by CdnQueryNormalizationConformanceTest — the ALLOWED literal
 // below is parsed by that test, so keep it a plain object of string arrays.
 var ALLOWED = {
@@ -35,7 +46,28 @@ function handler(event) {
     var request = event.request;
     var allowed = ALLOWED[request.uri];
     if (!allowed) {
-        return request;
+        // This function is associated ONLY with the four exact-match cached behaviors, so a
+        // miss here cannot mean "some other, unprotected route" — every URI that legitimately
+        // reaches this handler is one of the four keys above. A miss means the URI CloudFront
+        // handed the function differs from the URI CloudFront matched the behavior on. AWS
+        // documents exactly that gap: "CloudFront normalizes URI paths consistent with RFC 3986
+        // and then matches the path with the correct cache behavior. Once the cache behavior is
+        // matched, CloudFront sends the raw URI path to the origin." If viewer-request functions
+        // are handed that same raw (pre-normalization) path, a spelling like `//api/catalog/item`
+        // or `/api/x/../catalog/item` would match the behavior on the normalized path yet miss
+        // this whitelist on the raw one — silently falling through the whole percent-encoding
+        // guard this file exists to enforce. Whether Functions actually receive the raw or the
+        // normalized path is not measurable from here: `test-function` takes an already-parsed
+        // event, never a raw wire path, and there is no distribution in this repo to observe it
+        // on. Passing through on a miss would bet the guard's soundness on an unmeasured fact;
+        // rejecting removes the dependence on that fact entirely. This mirrors the gateway's
+        // existing discipline in rejectNonCanonicalPath: a non-canonical spelling of a public
+        // route is refused outright, not served as if it were the canonical one.
+        return {
+            statusCode: 400,
+            statusDescription: 'Bad Request',
+            headers: { 'cache-control': { value: 'no-store' } }
+        };
     }
     var qs = [];
     for (var i = 0; i < allowed.length; i++) {
