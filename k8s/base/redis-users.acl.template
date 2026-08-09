@@ -1,0 +1,38 @@
+# Redis ACL users, one per workload. Rendered into the `redis-users.acl` key of the
+# recsys-secrets Secret with real passwords substituted for the __*_PASSWORD__ placeholders —
+# see docs/runbooks/redis-auth.md. Same placeholder convention as the sentinel template in
+# redis-cluster.yaml.
+#
+# `user default` is deliberately absent. requirepass is Redis's shortcut for the default user's
+# password, and omitting default here is what keeps the two mechanisms from contending. It also
+# has to keep full access: the Flink streaming job writes u2vEmb:* and topk:* as default, and
+# nothing in this repo deploys it, so narrowing default would break the embedding and trending
+# write path with no error visible in any test or manifest here.
+#
+# Rule order matters — Redis applies rules left to right. `-@all` first, then the categories,
+# then `-@dangerous` last so it removes FLUSHALL/FLUSHDB/CONFIG/DEBUG/KEYS even though @write
+# and @read granted some of them. +@connection is required for AUTH/HELLO/PING; without it
+# Lettuce cannot complete a handshake. SCAN survives -@dangerous (it is @keyspace, not
+# dangerous), which RedisEmbeddingStore.scanIds and the key probes need.
+#
+# `~pattern` grants read AND write. `%R~` is read-only and `%W~` write-only; both need Redis 7,
+# which redis-cluster.yaml pins via redis:7-alpine.
+
+# Catalog serving (6010): writes item embeddings via /setembedding and startup seeding, reads
+# user embeddings and trending for recall.
+user catalog on >__CATALOG_PASSWORD__ -@all +@read +@write +@connection -@dangerous ~i2vEmb:* ~svc:registry:recsys-catalog-serving %R~u2vEmb:* %R~topk:*
+
+# Model serving (8080): scores candidates. Writes nothing but its own registry key.
+user model on >__MODEL_PASSWORD__ -@all +@read +@write +@connection -@dangerous ~svc:registry:recsys-model-serving %R~i2vEmb:* %R~u2vEmb:* %R~topk:*
+
+# Online serving (7010): owns the sharded record store and the shard topology. Reads user
+# embeddings (written by Flink) and trending.
+user online on >__ONLINE_PASSWORD__ -@all +@read +@write +@connection -@dangerous ~sr:* ~shard:topology ~svc:registry:recsys-online-serving %R~u2vEmb:* %R~topk:*
+
+# API gateway (8010): resolves upstreams from the service registry and renews its own entry.
+# LlmResponseCache is an in-memory LRU, so this is the gateway's only Redis use.
+user gateway on >__GATEWAY_PASSWORD__ -@all +@read +@write +@connection -@dangerous ~svc:registry:recsys-api-gateway %R~svc:registry:*
+
+# Reconciliation CronJob: reads event lineage to find events that need republishing. Writes
+# nothing at all.
+user reconciliation on >__RECONCILIATION_PASSWORD__ -@all +@read +@connection -@dangerous %R~lineage:event:* %R~user:*:recent_movies

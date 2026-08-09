@@ -84,6 +84,13 @@ spec:
             - "/data"
             - "--requirepass"
             - "$(REDIS_PASSWORD)"
+            # ACL users, one per workload — see k8s/base/redis-users.acl.template. Rules are
+            # passed as a file rather than as `--user` arguments because a user rule carries its
+            # password inline, and this manifest already refuses to put a credential in the
+            # process table (see REDISCLI_AUTH below). Read-only is sufficient: nothing calls
+            # ACL SAVE, so the file is only ever read at startup.
+            - "--aclfile"
+            - "/etc/redis/users.acl"
           env:
             - name: REDIS_PASSWORD
               valueFrom:
@@ -104,6 +111,9 @@ spec:
           volumeMounts:
             - name: redis-primary-data
               mountPath: /data
+            - name: redis-acl
+              mountPath: /etc/redis
+              readOnly: true
           readinessProbe:
             exec:
               command: ["redis-cli", "ping"]
@@ -121,6 +131,13 @@ spec:
             limits:
               cpu: 300m
               memory: 384Mi
+      volumes:
+        - name: redis-acl
+          secret:
+            secretName: recsys-secrets
+            items:
+              - key: redis-users.acl
+                path: users.acl
   volumeClaimTemplates:
     - metadata:
         name: redis-primary-data
@@ -216,6 +233,13 @@ spec:
             # failing — the most expensive way for this change to go wrong.
             - "--masterauth"
             - "$(REDIS_PASSWORD)"
+            # ACL users, one per workload — see k8s/base/redis-users.acl.template. Rules are
+            # passed as a file rather than as `--user` arguments because a user rule carries its
+            # password inline, and this manifest already refuses to put a credential in the
+            # process table (see REDISCLI_AUTH below). Read-only is sufficient: nothing calls
+            # ACL SAVE, so the file is only ever read at startup.
+            - "--aclfile"
+            - "/etc/redis/users.acl"
           env:
             - name: REDIS_PASSWORD
               valueFrom:
@@ -233,6 +257,10 @@ spec:
                   optional: true
           ports:
             - containerPort: 6379
+          volumeMounts:
+            - name: redis-acl
+              mountPath: /etc/redis
+              readOnly: true
           readinessProbe:
             exec:
               command: ["redis-cli", "ping"]
@@ -250,6 +278,13 @@ spec:
             limits:
               cpu: 300m
               memory: 384Mi
+      volumes:
+        - name: redis-acl
+          secret:
+            secretName: recsys-secrets
+            items:
+              - key: redis-users.acl
+                path: users.acl
 ---
 apiVersion: v1
 kind: Service
