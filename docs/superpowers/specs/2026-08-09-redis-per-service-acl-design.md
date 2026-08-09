@@ -76,9 +76,28 @@ belongs wherever Flink is deployed, not here.
 
 ## Where it lives
 
-`k8s/base/redis-cluster.yaml` already renders a `redis.conf` through a ConfigMap and starts the
-server with `--requirepass "$(REDIS_PASSWORD)"`. The ACL users are added there as `user` directives
-in the same config — no new resource type, no `aclfile` volume.
+The primary Redis in `k8s/base/redis-cluster.yaml` takes its whole configuration as **command-line
+arguments**, including `--requirepass "$(REDIS_PASSWORD)"`. It mounts no config file at all — the
+only ConfigMap in that manifest is the *sentinel* template. So there is no `redis.conf` to add
+`user` directives to.
+
+Passing them as arguments instead is not acceptable: an ACL user rule carries its password inline,
+which would put five credentials in the process table. That manifest already refuses to do this once
+— `REDISCLI_AUTH` exists precisely so a probe's `-a` flag does not leak the password into `ps` and
+into probe failure output.
+
+So the users go in an **`aclfile`, projected from a Secret** (it contains passwords, so a ConfigMap
+is wrong), mounted read-only, with `--aclfile /etc/redis/users.acl` added to the argument list.
+Read-only is sufficient because nothing calls `ACL SAVE`; the file is only ever read at startup.
+
+**The ACL file must not define `user default`.** `requirepass` is Redis's shortcut for the default
+user's password, and leaving default out of the file is what keeps the two mechanisms from
+contending — which is also exactly what this design wants, since `default` is deliberately unchanged
+for Flink's sake.
+
+Each Deployment gets `REDIS_USERNAME` alongside its existing `REDIS_PASSWORD`, and each user's
+password comes from a new key in the existing `recsys-secrets` Secret. `LettuceClientFactory`
+consumes both already, so **no Java source changes**.
 
 Each Deployment gets `REDIS_USERNAME` alongside its existing `REDIS_PASSWORD`, and each user's
 password comes from a new key in the existing `recsys-secrets` Secret. `LettuceClientFactory`
@@ -113,6 +132,13 @@ base manifests actually define, and says so rather than implying broader coverag
 
 **Read isolation is not attempted.** Three services read the same embedding keyspace by design; the
 write split is the whole of the least-privilege claim.
+
+**Two Redis behaviours here are asserted from documentation, not measured**, because no Redis can be
+started on these machines: that `--aclfile` is accepted as a command-line argument like any other
+directive, and that an ACL file which omits `user default` leaves `requirepass` governing default.
+Both are load-bearing — if either is wrong, the StatefulSet fails to start. The plan records them as
+the first thing to check the moment a Redis is reachable, and the conformance test cannot cover
+either, since it reads manifests rather than running a server.
 
 **Password rotation gets better, not worse.** `docs/runbooks/redis-auth.md` already records the
 current cost — "`requirepass` holds exactly one password, so rotation is a coordinated restart
