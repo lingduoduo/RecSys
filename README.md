@@ -491,6 +491,7 @@ without updating it.
 | 19 | [Pagination](docs/system_design/19_Pagination.md) | Keyset and offset implementations, and the shared signed live-keyset recommendation contract |
 | 20 | [AuthN / AuthZ](docs/system_design/20_AuthN_AuthZ.md) | The six credentials, fail-closed startup, credential stripping, and the operator-token tier |
 | 21 | [Observability](docs/system_design/21_Observability.md) | The two-phase split — logs to Splunk, system health to Prometheus — the metric inventory, and the alerts that keep it honest |
+| 22 | [Data-Leakage Posture](docs/system_design/22_Data_Leakage_Posture.md) | What the twenty data-leakage controls actually enforce as rendered, which are inert and why, the base-versus-overlay gap, and the conformance tests that pass while the control is off |
 
 Cross-cutting entry points:
 - [API versioning](docs/system_design/09_API_Gateway.md#api-versioning-and-deprecation)

@@ -25,6 +25,8 @@ patches:
   - path: gateway-auth-patch.yaml            # GATEWAY_API_KEYS from Secret (fail-closed auth)
   - path: gateway-irsa.yaml                  # gateway Deployment -> IRSA ServiceAccount
   - path: topology-aware-routing-patch.yaml  # PreferClose same-AZ routing
+  # Redis here is ElastiCache, which has none of k8s/base's ACL users. See the file's header.
+  - path: redis-username-elasticache-patch.yaml
   # ipBlock egress to ElastiCache, appended to each serving policy (REPLACE_ME CIDR).
   - path: network-policy-elasticache-patch.yaml
     target:
