@@ -26,17 +26,31 @@ the pod cannot start without, and the gateway strips caller credentials before p
 upstream. Everything else on the list is either dormant, placeholder-shaped, or dependent
 on a Secret or an AWS resource that this repository does not create.
 
-**The single most consequential finding is not on the PR list at all.** `k8s/base`
-publishes the API gateway as an `internet-facing` NLB
-([`k8s/base/api-gateway.yaml`](../../k8s/base/api-gateway.yaml), `type: LoadBalancer`
-with `aws-load-balancer-scheme: internet-facing`) *and* sets
-`GATEWAY_ALLOW_ANONYMOUS: "true"`. Those two facts compose. A first cluster, a
-demo environment, or any overlay that builds on `../base` without also composing
-`../eks-shared` gets an internet-reachable gateway that authenticates nobody — and
-because `GatewayAuthenticator` short-circuits when disabled, the `PROTECTED_PREFIXES`
-never-public guard is not consulted either. Anonymous callers reach
-`/api/catalog/user`, `/api/users/**`, `/api/features/**`, `/api/online/**` and every
-user-scoped recommendation route with an arbitrary `userId`.
+**The single most consequential finding was not on the PR list at all — and it has since
+been fixed.** `k8s/base` used to publish the API gateway as an `internet-facing` NLB
+(`type: LoadBalancer` with `aws-load-balancer-scheme: internet-facing`) *and* set
+`GATEWAY_ALLOW_ANONYMOUS: "true"`. Those two facts composed: a first cluster, a demo
+environment, or any overlay that built on `../base` without also composing `../eks-shared`
+got an internet-reachable gateway that authenticated nobody — and because
+`GatewayAuthenticator` short-circuits when disabled, the `PROTECTED_PREFIXES` never-public
+guard was not consulted either, so the routes that declared themselves protected were as
+open as everything else. Anonymous callers could reach `/api/catalog/user`,
+`/api/users/**`, `/api/features/**`, `/api/online/**` and every user-scoped recommendation
+route with an arbitrary `userId`. Nothing in the repo read `GATEWAY_ALLOW_ANONYMOUS` at all
+before this was found.
+
+`k8s/base`'s gateway `Service` is now `ClusterIP`
+([`k8s/base/api-gateway.yaml`](../../k8s/base/api-gateway.yaml)), with the eleven
+`aws-load-balancer-*` annotations removed. `GATEWAY_ALLOW_ANONYMOUS` is still `"true"` in
+base — flipping it was never the fix, since `GatewayAuthenticator.fromEnvironment` refuses
+to start without a credential source and base has none — but the anonymous gateway is no
+longer reachable from outside the cluster; reaching it now means
+`kubectl port-forward svc/recsys-api-gateway 8010:80 -n recsys`. The pairing is now pinned
+by `GatewayExposureManifestTest`: in `k8s/base`, an anonymous gateway must not be
+`LoadBalancer`/`NodePort` or carry `aws-load-balancer-scheme: internet-facing`, and any
+region overlay that exposes the gateway must also set `GATEWAY_ALLOW_ANONYMOUS: "false"`.
+The test reads manifest text rather than rendering a kustomization, so the overlay half is
+a coupling between texts, not a proof of what a cluster actually receives — see §5.
 
 ## 2. Control inventory
 
@@ -140,8 +154,10 @@ function and WAF (no distribution, placeholder ARN). Gateway authentication *in 
 
 **`k8s/base` applied to a real cluster** (assuming an operator supplies a `recsys-secrets`
 carrying the cursor signing key and `redis-users.acl`, without which nothing starts at
-all): an internet-facing NLB fronts a gateway that authenticates nobody. Any caller on the
-internet reaches every proxied route including `/api/catalog/user`, `/api/users/**`,
+all): the gateway `Service` is `ClusterIP`, so nothing on the internet reaches it. Whoever
+*can* reach it — another pod in the cluster, or an operator running
+`kubectl port-forward svc/recsys-api-gateway 8010:80 -n recsys` — still hits a gateway that
+authenticates nobody: every proxied route including `/api/catalog/user`, `/api/users/**`,
 `/api/features/**` and every user-scoped recommendation route with an arbitrary `userId`,
 plus the gateway's unauthenticated `/metrics`. The only things they cannot reach are the
 four `OPERATOR`-classified routes, which 403 for everyone. Redis traffic is plaintext.
@@ -164,22 +180,24 @@ all.
 
 ## 4. The base-versus-overlay gap
 
-`k8s/base` is materially weaker than the EKS overlays on exactly one control, and it is
-the most important one.
+`k8s/base` is still weaker than the EKS overlays on one control, but the composition that
+used to make it severe no longer holds.
 
 | | `k8s/base` | EKS overlays |
 |---|---|---|
 | `GATEWAY_ALLOW_ANONYMOUS` | `"true"` | `"false"` |
 | `GATEWAY_API_KEYS` | absent | required Secret, `optional: false` |
-| Gateway Service | `type: LoadBalancer`, `internet-facing` NLB | patched to `ClusterIP`; ALB Ingress is the sole entry |
+| Gateway Service | `ClusterIP` | `ClusterIP`; ALB Ingress is the sole entry, gated by `GATEWAY_ALLOW_ANONYMOUS: "false"` |
 
-The composition is what makes this sharp. Neither half is obviously wrong on its own — an
-anonymous gateway is a reasonable local-dev default, and an internet-facing NLB is a
-reasonable base for a service meant to be public. Together, in the configuration someone
-would most plausibly reach for first, they publish an unauthenticated gateway to the
-internet. The `eks-shared` component fixes both, but it is a *component*: any new overlay
-that composes `../base` and forgets `../eks-shared` inherits the weak pair silently, and
-no test would notice (§5).
+An anonymous gateway is a reasonable local-dev default on its own — it is what lets base
+run without a Cognito pool or key Secret. What made it dangerous was pairing it with
+`type: LoadBalancer` and `aws-load-balancer-scheme: internet-facing`: together, in the
+configuration someone would most plausibly reach for first, they published an
+unauthenticated gateway to the internet. That pairing is gone — base's gateway `Service` is
+now `ClusterIP`, matching the overlays, and `GatewayExposureManifestTest` (§5) keeps it
+that way. Base is still the weaker configuration on authentication itself — anonymous, no
+API keys — but that weakness is now scoped to whoever can reach the cluster network or hold
+a `kubectl` credential, not to the internet.
 
 Every other control is equal or worse in the overlays, not better: `REDIS_TLS` is set to
 `"false"` explicitly there rather than merely defaulting to it, and the Redis ACL file
@@ -222,13 +240,26 @@ The specific false-assurance cases:
   cache policy edited by hand in the console is invisible to it, and no distribution
   exists to be compared against.
 
-**No test asserts `GATEWAY_ALLOW_ANONYMOUS` is `false` anywhere.** The only Java
-occurrences are in-memory env maps in `GatewayAuthenticatorTest`, which proves the code
-fails closed without asserting anything about a manifest. And **no test renders a
-kustomization**, so no test has ever seen the composed base + overlay result that a
-cluster actually receives. Two consequences: the `eks-shared` flip to `"false"` is
-unguarded, and a new overlay that drops the component would ship anonymous access with a
-fully green gate.
+**`GatewayExposureManifestTest` now asserts the pairing that made the base finding
+severe.** In `k8s/base`, an anonymous gateway must not be `LoadBalancer`/`NodePort` or
+carry `aws-load-balancer-scheme: internet-facing`; and any region overlay that exposes the
+gateway — via `alb.ingress.kubernetes.io/scheme: internet-facing` on its WAF Ingress, which
+is how it is actually done here, not the Service-type NLB annotation — must also set
+`GATEWAY_ALLOW_ANONYMOUS: "false"`. Before this test existed, no test asserted
+`GATEWAY_ALLOW_ANONYMOUS` anywhere; the only Java occurrences were in-memory env maps in
+`GatewayAuthenticatorTest`, which proves the code fails closed without asserting anything
+about a manifest.
+
+That coverage has a real limit, stated rather than implied: **the test reads files, it does
+not render a kustomization**, so the overlay half is a coupling between texts, not proof
+that a kustomization applies as written, and it cannot see a patch that fails to apply.
+Both of this week's overlay defects reached `main` through exactly that hole — an
+exposure check that at first only recognized the Service-type NLB annotation and missed the
+ALB-Ingress annotation the region overlays actually use, and a per-directory scan that
+could not see `GATEWAY_ALLOW_ANONYMOUS: "false"`, which lives only in the `eks-shared`
+component pulled in via `components:`, not in either region overlay's own files. A test
+that renders each overlay would subsume this one and would need the `kustomize` binary on
+CI.
 
 `GatewayOriginSecretTest` is not in the `resilience` allow-list at all — the origin
 lockdown control has no gate coverage in either direction.
@@ -242,8 +273,10 @@ lockdown control has no gate coverage in either direction.
 2. **"Redis ACL users shipped" does not mean per-workload least privilege is in force
    anywhere it matters.** In EKS the `--aclfile` belongs to StatefulSets scaled to zero.
 3. **"Gateway authentication is fail-closed" is a property of the code, not of
-   `k8s/base`.** Base opts out explicitly, and pairs the opt-out with an internet-facing
-   load balancer.
+   `k8s/base`.** Base still opts out explicitly — `GATEWAY_ALLOW_ANONYMOUS: "true"` remains
+   the deliberate local-dev default — but it no longer pairs that opt-out with an
+   internet-facing load balancer: the gateway `Service` is `ClusterIP`, and
+   `GatewayExposureManifestTest` keeps it that way.
 4. **"User-scope authorization shipped" does not mean user data is scoped.** It is dormant
    in all three renders, and in the meantime *nothing* constrains which `userId` a caller
    may name.
