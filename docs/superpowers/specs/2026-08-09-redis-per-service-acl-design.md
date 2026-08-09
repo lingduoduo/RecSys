@@ -183,3 +183,81 @@ a compromise.
 Five users do mean five secret keys where there was one. The runbook is updated with the per-user
 procedure and with the fact that `default` — still the credential Flink uses — keeps the old
 restart-based rotation. No automation is added.
+
+---
+
+## Status: NOT MERGEABLE — open findings from the 2026-08-09 final review
+
+Everything below was **measured against a real `redis-server`**, not reasoned from documentation.
+The branch boots and its gate is green at 613 tests; neither fact means what it appears to.
+
+### C1 — no workload can authenticate as its own user
+
+All five workloads take `REDIS_PASSWORD` from the single shared `recsys-secrets/redis-password`
+key (`catalog-serving.yaml:89`, `model-serving.yaml:98`, `online-serving.yaml:122`,
+`api-gateway.yaml:92`, `outbox-reconciliation-cronjob.yaml:61`), while the template gives each
+service user a distinct `__<USER>_PASSWORD__` placeholder and the runbook says to generate distinct
+passwords. Measured: `redis-cli --user catalog --pass <default's password>` → `WRONGPASS`.
+
+So either every workload fails to connect, or all six placeholders render identically — which makes
+the runbook's per-user rotation unimplementable. **Until this is fixed, all five still hold the
+full-access credential and the ACL users are decorative.**
+
+Fix: a per-user Secret key each (`redis-catalog-password`, …), with `redis-cluster.yaml`'s own
+`REDIS_PASSWORD`/`REDISCLI_AUTH` staying on `redis-password` since those are the `default`
+credential.
+
+### C2 — accesses the code performs that the ACLs deny
+
+| Access | Call site | Users needing it |
+|---|---|---|
+| `ZREVRANGE global:item_popularity` | `RecSysServer:111`, `OnlinePredictionServer:130`, `ModelRuntimeProvider:162` | catalog, model, online |
+| `SET bias:item:<id>` | `OnlineLearner:116` | online |
+| `SET/GET recsys:replica-lag-probe:*` | `OnlinePredictionServer:172` | online |
+| `SISMEMBER lineage:event:*` | `OnlinePredictionServer:215` | online |
+| `GET <key>:updated_at` | `RedisFeatureVersionSampler:31-35` | online |
+| `TTL` on any scanned key | `RedisPersistentKeyProbe` | online |
+| `INFO` (stripped by `-@dangerous`, needs an explicit `+info`) | `RedisCacheStatsProbe:55` | online |
+
+Popularity and ColdStart recall return **empty silently** on all three serving services —
+`GlobalPopularityStore` swallows the exception — and three alerts
+(`prometheus-rules.yaml:102`, `:113`, `:187`) would fire permanently.
+
+### C3 — the keyspace sweep has been wrong three times, and the method is why
+
+This document has listed 10 prefixes. **~30 classes in `src/main/java` consume a `RedisExecutor`.**
+Every pass so far enumerated *stores* and each missed a different set. Any future attempt must
+enumerate **every `RedisExecutor` consumer** and every key literal it builds, then map those to the
+workloads that construct it — and record in the table that it was derived that way.
+
+### C4 — `RedisAclManifestTest` proves little
+
+It stays 5/5 green under five mutations that each break a real server: `~` → `%W~` (the derived
+write-set cannot tell them apart); `+@scripting` deleted from `online` (nothing asserts it); a
+`+@dangerous` appended after `-@dangerous` (so `FLUSHALL` returns `OK`); a password rule replaced
+with `nopass` (the placeholder check only inspects rules starting with `>`); and `-@all` moved after
+the grants (leaving the user able to do nothing). Fix: assert the **exact ordered rule-token list**
+per user.
+
+### Important
+
+- `RedisAclManifestTest`'s own javadoc still claims nothing writes `topk:`/`u2vEmb:`, contradicted
+  six lines below it and by `RecSysServer:249`.
+- The `redis-users.acl` Secret key is a hard, undocumented startup dependency — no `optional`, and
+  `redis-server` aborts on a missing `--aclfile` regardless. Applying `k8s/base` before the key
+  exists leaves both Redis pods in `CreateContainerConfigError`.
+- The aclfile **silently overrides** `--requirepass`: `CONFIG GET requirepass` still reports the CLI
+  value while only the aclfile password authenticates. The runbook says they "must agree" but not
+  that the file wins.
+- `model`'s `%R~i2vEmb:*` is latent unless `recsys.model.item-embeddings-source=redis`.
+
+### What is genuinely fixed and worth keeping
+
+The template boots; `default` carries a real password rather than `nopass` and unauthenticated
+`PING` is refused; `+@scripting` plus `~topk:*` make the trending `EVAL` work for all three serving
+users; the write split holds where it is granted (catalog cannot write `sr:`, model cannot write
+`i2vEmb:`, the gateway cannot write another service's registry key, reconciliation cannot write at
+all, and `FLUSHALL` is denied to all five); and `~sr:*` covers both shard key formats.
+
+All measurement was on `redis-server 8.6.2` while the manifests pin `redis:7-alpine`; no Docker
+daemon was available to exercise Redis 7 itself.
