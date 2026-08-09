@@ -114,20 +114,35 @@ SQS-calling workload (online serving) went undocumented through two reviews, bec
 the claims mechanically. So `IrsaPermissionSourceFactsTest` pins the **source facts the comments are
 derived from**, not the comments:
 
-1. No file under `src/main/java` imports an AWS SDK service client other than `sqs`. This is what
-   falsifies the gateway comment the moment someone adds a `servicediscovery`, `route53` or `s3`
-   client — the claim "the only AWS SDK client anywhere is SQS" stops being true and the build says
-   so.
+1. No file under `src/main/java` mentions an AWS SDK v2 service client package other than `sqs`. The
+   scan matches the `software.amazon.awssdk.services.<service>` string anywhere in the file — an
+   import, a fully-qualified use, a javadoc, a string literal — not a parsed import; it over-matches
+   deliberately, because a false positive is one line to excuse and a false negative is an
+   undocumented permission. This is what falsifies the gateway comment the moment someone adds a
+   `servicediscovery`, `route53` or `s3` client — the claim "the only AWS SDK client anywhere is
+   SQS" stops being true and the build says so.
 2. The set of files calling `sendMessage(` / `sendMessageBatch(`, and which of the two each calls,
    equals an explicit expected set with a one-line note per entry naming the workload it belongs to.
-   A new caller — or an existing one switching action — fails the build until somebody documents
+   This pins the **action**: `sqs:SendMessage` and `sqs:SendMessageBatch` are distinct IAM actions,
+   and a publisher that switches between them invalidates the action its workload's comment names.
+3. The set of files that **construct** an SQS client or an SQS-backed publisher — `SqsClient` /
+   `SqsAsyncClient` builders, `new Sqs*Publisher(`/`Adapter(`, and `fromEnvironment(` calls on the
+   publisher factories — equals an explicit expected map keyed by the workload each belongs to. This
+   pins the **workload list**, and it is the check that catches the failure that actually happened:
+   online serving reused an existing publisher class, so it added no `sendMessage(` file and changed
+   no action set. Check 2 would have stayed green through it; check 3 fails until somebody says
    which role needs which permission.
 
-Both checks are pure file scans: no Redis, no Docker, no timing. It joins the `resilience` profile,
-which is what the PR gate runs, alongside the other `**/k8s/*ManifestTest` entries.
+All three checks are pure file scans keyed on the path relative to `src/main/java`: no Redis, no
+Docker, no timing. The test joins the `resilience` profile, which is what the PR gate runs, alongside
+the other `**/k8s/*ManifestTest` entries.
 
-Wording accuracy itself remains a review responsibility; the test guarantees only that the facts
-underneath the wording are still the facts.
+What they do **not** catch, spelled out in the test's javadoc so a reader does not over-trust them:
+any SQS action that is not a send (`ReceiveMessage`, `DeleteMessage`, `GetQueueUrl`); a workload note
+that names the wrong Deployment, since nothing verifies reachability; AWS SDK v1 (`com.amazonaws.*`),
+which check 1's pattern does not match; and anything outside `src/main/java`. Wording accuracy itself
+remains a review responsibility; the tests guarantee only that the facts underneath the wording are
+still the facts.
 
 ## Documentation
 

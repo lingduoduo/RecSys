@@ -389,10 +389,14 @@
                 <!-- The IRSA comments in k8s/ are the instructions an operator provisions IAM
                      from, and no machine applies them, so a wrong claim there fails as an
                      AccessDenied in production or as a silent over-grant. This pins the source
-                     facts those comments assert — only sqs among AWS SDK service clients, and an
-                     explicit set of SQS send call sites — rather than their prose. A fourth
-                     SQS-calling workload went undocumented through two reviews because nothing
-                     checked it mechanically. Pure file parsing. -->
+                     facts those comments assert — only sqs among AWS SDK v2 service clients, an
+                     explicit set of SQS send call sites, and an explicit set of SQS client
+                     construction sites — rather than their prose. The construction-site set is
+                     the one that catches a new workload reusing an existing publisher class,
+                     which is how a fourth SQS-calling workload went undocumented through two
+                     reviews. It catches sends only; a non-send SQS action, a wrong workload
+                     note, SDK v1 and anything outside src/main/java all stay green — see the
+                     test's javadoc. Pure file parsing. -->
                 <include>**/k8s/IrsaPermissionSourceFactsTest.java</include>
                 <include>**/k8s/UpstreamTest.java</include>
                 <!-- These two are the producer half of the data-freshness alerts.
