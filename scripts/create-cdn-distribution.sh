@@ -132,10 +132,11 @@ ensure_cache_policy() {
 
 # Create or update the viewer-request function, publish it, and return its LIVE ARN.
 #
-# Unlike ensure_cache_policy, this does NOT diff before writing: update-function +
-# publish-function run unconditionally on every invocation of this script, minting a new
-# function version and propagating it to every edge location even when the .js is
-# byte-identical to what is already LIVE. That is acceptable here for two reasons this
+# Unlike ensure_cache_policy, this does NOT diff before writing. The first invocation creates
+# the function; every invocation after that updates it — and either way publish-function then
+# runs unconditionally, minting a new function version and propagating it to every edge
+# location even when the .js is byte-identical to what is already LIVE. That is acceptable
+# here for two reasons this
 # script does not hold for cache policies: a function publish is cheap (no capacity/config
 # impact at the edge, unlike a cache-policy field that changes what gets cached) and this
 # script is not expected to run on a tight poll loop — it is an operator-invoked

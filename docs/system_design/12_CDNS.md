@@ -320,8 +320,8 @@ POPs), and coarser whole-cache invalidation. See
    new cacheable route must parse its cache-key parameters with `cacheKeyIntParam`, not
    `optionalIntParam`; clamping is only safe off the cached behaviors. `cacheKeyIntParam` closes
    the decoded-value spellings (leading zeros, sign, whitespace, repeats, out-of-range) — it is
-   not on its own sufficient to make one cache key map to one body; see sharp edge 9 for the
-   percent-encoding channels it does not close.
+   not on its own sufficient to make one cache key map to one body; the percent-encoded value
+   spelling it cannot see is closed at the edge instead — see sharp edge 9.
 8. **The cache policies were create-once; the distribution is create-or-update.** They are
    different AWS resources with different update semantics, and the cache key plus the TTL
    ceilings live in the *policy*. Until 2026-07-29 `ensure_cache_policy` returned the existing
@@ -366,12 +366,35 @@ POPs), and coarser whole-cache invalidation. See
    `id=7`. Measured on a real server over a raw socket. A gateway-side guard was written, passed
    its unit tests, and was inert in production, because `ServiceRequestContext.of(request)` is the
    one place that preserves the caller's request verbatim.
-   **Still unverified:** two things. Whether CloudFront percent-decodes parameter *names* before
-   whitelist matching — the function is built not to depend on the answer, and
-   `scripts/test-cdn-function.sh` verifies its logic against the real CloudFront runtime, but no
-   distribution exists in this account, so the association and the parsing behaviour are
-   unexercised. And whether a CloudFront Function receives the raw or the normalized
-   `request.uri`: AWS states that the raw path reaches the origin *after* the behavior match, but
-   says nothing about what a Function sees *before* it — and `test-function` takes an
-   already-parsed event, never a raw wire path, so this is unmeasurable without a distribution
-   too. The fail-closed lookup above exists because this question has no answer here.
+   **Still unverified:** three things, all of the same shape — what CloudFront puts *into* the
+   event object, which `test-function` can never show because it consumes an event somebody else
+   already built.
+   1. Whether CloudFront percent-decodes parameter *names* before whitelist matching. The function
+      is built not to depend on the answer: raw `%69d` is unlisted and dropped, decoded `id` is
+      whitelisted and passes through as `id=7`, which was already correct.
+   2. Whether a CloudFront Function receives the raw or the normalized `request.uri`. AWS states
+      that the raw path reaches the origin *after* the behavior match, but says nothing about what
+      a Function sees *before* it. The fail-closed lookup above exists because this question has no
+      answer here.
+   3. **Whether query-string *values* arrive raw or percent-decoded — and this one is not neutral.**
+      The whole mechanism is `param.value.indexOf('%') >= 0`, which assumes the raw wire value is in
+      the event. AWS's event-structure documentation does not say, and the harness supplies the
+      literal `%37` itself — the identical shape of the Armeria failure above, where a guard passed
+      its tests on an encoding production had already decoded away. *Cache-key soundness survives
+      either way*: under decoding, `%37` is already `7` when the rebuild runs, so `?id=%37` and
+      `?id=7` collapse onto one key and the channel still closes. What would be wrong is the
+      **stated** behaviour — `?id=%37` would return 200 from the `id=7` entry rather than a 400,
+      i.e. the edge *decoding* the alias, which this design explicitly refuses ("decoding `%37` to
+      `7` here would CREATE a second working spelling"). The guard would have degraded from
+      reject-the-alias to normalize-the-alias. Conditional on the same branch, a decoded `%26`
+      would arrive as a bare `&` the check cannot see.
+
+   That last point has a second edge. The function concatenates `name + '=' + param.value`
+   **unencoded**, which is safe only because a value containing `%` was rejected first: on the raw
+   branch nothing reaching the join can carry an encoded `&`, `=` or `#` and split itself into
+   extra parameters. The `%` check is an injection guard as well as a cache-key measure, and
+   relaxing it into a decode means adding encoding at the join.
+
+   No distribution exists in this account, so the association wiring is unexercised too;
+   `scripts/test-cdn-function.sh` verifies the function's *logic* against the real CloudFront
+   runtime and nothing beyond that.
