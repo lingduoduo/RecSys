@@ -67,10 +67,15 @@ class CdnQueryNormalizationConformanceTest {
     /** {@code CacheBehaviors: {Quantity: 4, Items: [} */
     private static final Pattern BEHAVIOR_QUANTITY = Pattern.compile(
             "CacheBehaviors:\\s*\\{\\s*Quantity:\\s*(\\d+)");
-    /** {@code '/api/catalog/similar': ['movieId', 'k']} */
+    /**
+     * {@code '/api/catalog/similar': ['movieId', 'k']} — key quoted with either {@code '} or
+     * {@code "}. A backreference ties the closing quote to the opener so a key cannot itself
+     * contain the other quote character; that is already true of every path here.
+     */
     private static final Pattern ALLOWED_ENTRY = Pattern.compile(
-            "'(/[^']*)'\\s*:\\s*\\[([^\\]]*)\\]");
-    private static final Pattern JS_STRING = Pattern.compile("'([^']*)'");
+            "(['\"])(/[^'\"]*)\\1\\s*:\\s*\\[([^\\]]*)\\]");
+    /** A single JS string literal, quoted with either {@code '} or {@code "}. */
+    private static final Pattern JS_STRING = Pattern.compile("(['\"])([^'\"]*)\\1");
 
     /** First line of the {@code CacheBehaviors} array's successor — the scan's hard right edge. */
     private static final String BEHAVIORS_END = "ViewerCertificate:";
@@ -288,11 +293,11 @@ class CdnQueryNormalizationConformanceTest {
         Matcher m = ALLOWED_ENTRY.matcher(body);
         while (m.find()) {
             List<String> names = new ArrayList<>();
-            Matcher s = JS_STRING.matcher(m.group(2));
+            Matcher s = JS_STRING.matcher(m.group(3));
             while (s.find()) {
-                names.add(s.group(1));
+                names.add(s.group(2));
             }
-            allowed.put(m.group(1), names);
+            allowed.put(m.group(2), names);
         }
         return allowed;
     }
