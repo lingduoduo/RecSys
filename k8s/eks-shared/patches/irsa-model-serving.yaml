@@ -1,3 +1,30 @@
+# IRSA ServiceAccount for model serving (8080).
+#
+# Nothing binds this ServiceAccount to a pod: no manifest in k8s/ sets
+# serviceAccountName: recsys-model-serving — the only serviceAccountName in the whole tree is
+# recsys-gateway (k8s/eks-shared/gateway-irsa.yaml:10). So a role provisioned from the statement
+# below is assumed by nobody, and turning the SQS path on would still fail for want of credentials.
+# Enabling it needs the serviceAccountName added to the model-serving Deployment as well as the
+# role — the same gap k8s/base/outbox-relay-deployment.yaml records about itself.
+#
+# The bound IAM role needs one permission for what the code calls today, and only conditionally:
+#
+#   sqs:SendMessageBatch   on the A/B exposure queue named by RECSYS_EVENTS_SQS_QUEUE_URL
+#
+# Required only when RECSYS_EVENTS_SQS_ENABLED=true with a non-blank queue URL (application.yml).
+# Neither key is set in k8s/base/configmap.yaml, so the path is off by default and the role needs
+# nothing until it is enabled. Scope the statement to that queue's ARN — not "*". Re-derive the list
+# against the queue you actually create rather than treating it as final: server-side encryption
+# with a customer-managed key, for one, puts requirements on the sender beyond the sqs: action.
+#
+# SendMessageBatch, not SendMessage: ModelEventConfig.abExposurePublisher constructs
+# SqsAsyncEventPublisher, which always calls sqsClient.sendMessageBatch(...) and never plain
+# sendMessage. They are distinct IAM actions, and a role granting only SendMessage fails with
+# AccessDenied the moment this is enabled. No other SQS action is called on this path: the queue URL
+# arrives through the environment, so nothing calls GetQueueUrl.
+#
+# The role ARN below is AWS's documentation placeholder; no such role exists. Replace it with your
+# account-specific value before applying.
 apiVersion: v1
 kind: ServiceAccount
 metadata:
