@@ -89,6 +89,35 @@ spec:
             # password inline, and this manifest already refuses to put a credential in the
             # process table (see REDISCLI_AUTH below). Read-only is sufficient: nothing calls
             # ACL SAVE, so the file is only ever read at startup.
+            #
+            # The template itself carries no comments: Redis aborts startup on any non-blank
+            # ACL-file line that doesn't start with `user` — measured against a real
+            # redis-server, not assumed — so a `#` header line CrashLoops both StatefulSets.
+            # This is where that rationale lives instead.
+            #
+            # `user default` is the template's first line and must stay. Omitting it does not
+            # leave --requirepass above governing the default user: ACLLoadFromFile rebuilds a
+            # missing default as `on nopass ~* &* +@all`, which silently re-enables
+            # unauthenticated access (measured: ACL LIST shows nopass, the log warns Redis does
+            # not require authentication, and `redis-cli ping` with no auth returns PONG) and
+            # also breaks replication and Flink, both of which authenticate as default — while
+            # both readiness/liveness ping probes stay green throughout.
+            #
+            # catalog, model and online all carry +@scripting. It is in neither @read nor
+            # @write, and without it EVAL fails on the trending read path (ShardedTopKStore),
+            # the sharded record write, topology publish, the online rate limiter, and the
+            # submit-token consume — all of which run as Lua scripts.
+            #
+            # topk: keys are granted `~` (full read-write) rather than `%R~` for all three
+            # serving users, even though the access is logically read-only: Redis requires full
+            # read-write permission on every key an EVAL script touches, even a script whose
+            # shebang declares `#!lua flags=no-writes`. `%R~` there fails every trending EVAL
+            # with NOPERM. Also measured.
+            #
+            # Prefix coverage was swept from the actual callers, not guessed: catalog also
+            # writes u2vEmb:* (RecSysServer.seedEmbeddings, not just i2vEmb:*); online and
+            # model both read user:*:recent_movies; and rate:online:*, submit_token:*, and
+            # login:* were each missing from an earlier, partial pass.
             - "--aclfile"
             - "/etc/redis/users.acl"
           env:
@@ -238,6 +267,35 @@ spec:
             # password inline, and this manifest already refuses to put a credential in the
             # process table (see REDISCLI_AUTH below). Read-only is sufficient: nothing calls
             # ACL SAVE, so the file is only ever read at startup.
+            #
+            # The template itself carries no comments: Redis aborts startup on any non-blank
+            # ACL-file line that doesn't start with `user` — measured against a real
+            # redis-server, not assumed — so a `#` header line CrashLoops both StatefulSets.
+            # This is where that rationale lives instead.
+            #
+            # `user default` is the template's first line and must stay. Omitting it does not
+            # leave --requirepass above governing the default user: ACLLoadFromFile rebuilds a
+            # missing default as `on nopass ~* &* +@all`, which silently re-enables
+            # unauthenticated access (measured: ACL LIST shows nopass, the log warns Redis does
+            # not require authentication, and `redis-cli ping` with no auth returns PONG) and
+            # also breaks replication and Flink, both of which authenticate as default — while
+            # both readiness/liveness ping probes stay green throughout.
+            #
+            # catalog, model and online all carry +@scripting. It is in neither @read nor
+            # @write, and without it EVAL fails on the trending read path (ShardedTopKStore),
+            # the sharded record write, topology publish, the online rate limiter, and the
+            # submit-token consume — all of which run as Lua scripts.
+            #
+            # topk: keys are granted `~` (full read-write) rather than `%R~` for all three
+            # serving users, even though the access is logically read-only: Redis requires full
+            # read-write permission on every key an EVAL script touches, even a script whose
+            # shebang declares `#!lua flags=no-writes`. `%R~` there fails every trending EVAL
+            # with NOPERM. Also measured.
+            #
+            # Prefix coverage was swept from the actual callers, not guessed: catalog also
+            # writes u2vEmb:* (RecSysServer.seedEmbeddings, not just i2vEmb:*); online and
+            # model both read user:*:recent_movies; and rate:online:*, submit_token:*, and
+            # login:* were each missing from an earlier, partial pass.
             - "--aclfile"
             - "/etc/redis/users.acl"
           env:
