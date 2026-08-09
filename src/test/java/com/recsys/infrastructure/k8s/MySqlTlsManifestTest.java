@@ -45,8 +45,11 @@ class MySqlTlsManifestTest {
      *
      * <p>That shared logic is the reason this test is not a safety net for the guard: it checks
      * the manifest against the same rules the guard applies, so a flaw in the rules is invisible
-     * to both. Three divergences from the real driver survived independent reviews of each file
-     * precisely this way. When either copy changes, change the other in the same commit.
+     * to both. Four divergences from the real driver survived independent reviews of each file
+     * precisely this way — a case-insensitive property name, {@code ;} read as a separator,
+     * {@code ?} read as a separator, and a {@code #} fragment not discarded. Every one of them made
+     * the pair accept a URL the driver runs at {@code PREFERRED}. When either copy changes, change
+     * the other in the same commit.
      */
     private static final Pattern USE_SSL = Pattern.compile("(?i)[?&;]useSSL=");
 
