@@ -386,6 +386,14 @@
                      regresses to no sslMode fails the PR gate rather than pod start. Pure file
                      parsing. -->
                 <include>**/k8s/MySqlTlsManifestTest.java</include>
+                <!-- The IRSA comments in k8s/ are the instructions an operator provisions IAM
+                     from, and no machine applies them, so a wrong claim there fails as an
+                     AccessDenied in production or as a silent over-grant. This pins the source
+                     facts those comments assert — only sqs among AWS SDK service clients, and an
+                     explicit set of SQS send call sites — rather than their prose. A fourth
+                     SQS-calling workload went undocumented through two reviews because nothing
+                     checked it mechanically. Pure file parsing. -->
+                <include>**/k8s/IrsaPermissionSourceFactsTest.java</include>
                 <include>**/k8s/UpstreamTest.java</include>
                 <!-- These two are the producer half of the data-freshness alerts.
                      ScrapeTargetManifestTest above proves the series get collected;
