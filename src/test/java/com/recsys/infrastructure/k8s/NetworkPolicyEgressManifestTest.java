@@ -71,7 +71,7 @@ class NetworkPolicyEgressManifestTest {
      * Hosts k8s/base names but does not deploy, so no Service can resolve their pod labels.
      * Resolution is otherwise strict — see {@link #destinationLabels}.
      */
-    static final Set<String> EXTERNALLY_DEPLOYED = Set.of("ollama", "mysql", "kafka");
+    static final Set<String> EXTERNALLY_DEPLOYED = Set.of("ollama", "mysql", "kafka", "splunk");
 
     /** Key shapes that name a network destination. Anything matching these needs an owner. */
     private static final List<String> UPSTREAM_KEY_SUFFIXES =
@@ -90,6 +90,70 @@ class NetworkPolicyEgressManifestTest {
         Map<String, String> data = new LinkedHashMap<>();
         ((Map<String, Object>) cm.get("data")).forEach((k, v) -> data.put(k, String.valueOf(v)));
         return data;
+    }
+
+    /**
+     * Inline `env:` entries carrying a literal `value:`, keyed by Deployment name. This is the
+     * other half of the source of truth. SPLUNK_HEC_URL is declared here rather than in
+     * recsys-config, so a ConfigMap-only derivation could not see that all four serving workloads
+     * dial splunk:8088 — and the Splunk appender is bounded, drop-on-full and at-most-once, so a
+     * blocked connection loses events with no signal at all.
+     *
+     * <p>valueFrom entries (Secret refs, field refs) are skipped: they name no address.
+     */
+    static Map<String, Map<String, String>> deploymentEnv(List<Map<String, Object>> docs) {
+        Map<String, Map<String, String>> byWorkload = new LinkedHashMap<>();
+        for (Map<String, Object> deployment : ofKind(docs, "Deployment")) {
+            Map<String, String> env = new LinkedHashMap<>();
+            Map<String, Object> podSpec = mapAt(deployment, "spec", "template", "spec");
+            for (Map<String, Object> container : listOf(podSpec, "containers")) {
+                for (Map<String, Object> entry : listOf(container, "env")) {
+                    Object name = entry.get("name");
+                    Object value = entry.get("value");
+                    if (name != null && value != null) {
+                        env.put(String.valueOf(name), String.valueOf(value));
+                    }
+                }
+            }
+            byWorkload.put(nameOf(deployment), env);
+        }
+        return byWorkload;
+    }
+
+    /** Key shapes that name a network destination. */
+    static boolean isUpstreamKey(String key) {
+        return UPSTREAM_KEY_SUFFIXES.stream().anyMatch(key::endsWith);
+    }
+
+    /** The upstream keys a workload dials, and the values to resolve them against. */
+    record Dialed(Set<String> keys, Map<String, String> values) {}
+
+    /**
+     * ConfigMap keys the workload claims in {@link #OWNED_KEYS}, unioned with every inline
+     * Deployment env key shaped like an upstream.
+     *
+     * <p>The asymmetry is deliberate. recsys-config is one ConfigMap envFrom'd into five
+     * workloads, so a ConfigMap key proves nothing about who dials it and ownership has to be
+     * declared. A Deployment env var names its own dialer, so ownership is derived there and
+     * cannot drift — which is why no OWNED_KEYS entry is required, or accepted, for one.
+     *
+     * <p>Blank values are skipped: an empty string names no destination. That is what keeps
+     * ONLINE_EVENTS_SQS_QUEUE_URL: "" from demanding an egress rule to a queue nobody dials.
+     *
+     * <p>values starts as the ConfigMap so Upstream.parse can resolve REDIS_HOST against
+     * REDIS_PORT, then Deployment env overrides it — the same precedence Kubernetes applies
+     * between inline env and envFrom.
+     */
+    static Dialed dialedBy(String workload, List<Map<String, Object>> docs) {
+        Map<String, String> values = new LinkedHashMap<>(configMap(docs));
+        Set<String> keys = new TreeSet<>(OWNED_KEYS.getOrDefault(workload, Set.of()));
+        deploymentEnv(docs).getOrDefault(workload, Map.of()).forEach((key, value) -> {
+            if (isUpstreamKey(key) && !value.isBlank()) {
+                keys.add(key);
+                values.put(key, value);
+            }
+        });
+        return new Dialed(keys, values);
     }
 
     static Map<String, Object> policyFor(String workload, List<Map<String, Object>> docs) {
@@ -207,17 +271,16 @@ class NetworkPolicyEgressManifestTest {
     @Test
     void everyDeclaredUpstreamIsPermittedByEgress() throws IOException {
         List<Map<String, Object>> docs = baseDocuments();
-        Map<String, String> cfg = configMap(docs);
 
         Set<String> unreachable = new TreeSet<>();
-        for (Map.Entry<String, Set<String>> entry : OWNED_KEYS.entrySet()) {
-            String workload = entry.getKey();
+        for (String workload : OWNED_KEYS.keySet()) {
             Map<String, Object> policy = policyFor(workload, docs);
             assertThat(policy).as("no NetworkPolicy named %s in k8s/base", workload).isNotNull();
             if (!restrictsEgress(policy)) continue;
 
-            for (String key : entry.getValue()) {
-                for (Upstream upstream : Upstream.parse(key, cfg)) {
+            Dialed dialed = dialedBy(workload, docs);
+            for (String key : dialed.keys()) {
+                for (Upstream upstream : Upstream.parse(key, dialed.values())) {
                     Map<String, Object> destLabels = destinationLabels(upstream.host(), docs);
                     if (!permitsEgress(policy, destLabels, upstream.port())) {
                         unreachable.add(workload + " -> " + key + " (" + upstream.host()
@@ -232,8 +295,11 @@ class NetworkPolicyEgressManifestTest {
                         + "it, so under an enforcing CNI the connection is dropped. The failures are "
                         + "quiet in different ways and need different fixes: a blocked service "
                         + "registry falls back to static routes and logs nothing unusual, a blocked "
-                        + "sentinel connection fails at startup looking like a Redis outage, and a "
-                        + "blocked MySQL connection surfaces only on the first outbox append. Add a "
+                        + "sentinel connection fails at startup looking like a Redis outage, a "
+                        + "blocked MySQL connection surfaces only on the first outbox append, "
+                        + "and a blocked Splunk connection loses log events entirely, because the "
+                        + "appender is bounded, drop-on-full and at-most-once by design — nothing "
+                        + "retries and nothing errors. Add a "
                         + "matching egress rule to k8s/base/network-policy.yaml")
                 .isEmpty();
     }
@@ -246,18 +312,17 @@ class NetworkPolicyEgressManifestTest {
     @Test
     void everyPermittedEgressIsAdmittedByItsDestination() throws IOException {
         List<Map<String, Object>> docs = baseDocuments();
-        Map<String, String> cfg = configMap(docs);
         List<Map<String, Object>> policies = ofKind(docs, "NetworkPolicy");
 
         Set<String> blocked = new TreeSet<>();
-        for (Map.Entry<String, Set<String>> entry : OWNED_KEYS.entrySet()) {
-            String workload = entry.getKey();
+        for (String workload : OWNED_KEYS.keySet()) {
             Map<String, Object> sourcePolicy = policyFor(workload, docs);
             if (sourcePolicy == null || !restrictsEgress(sourcePolicy)) continue;
             Map<String, Object> sourceLabels = mapAt(sourcePolicy, "spec", "podSelector", "matchLabels");
 
-            for (String key : entry.getValue()) {
-                for (Upstream upstream : Upstream.parse(key, cfg)) {
+            Dialed dialed = dialedBy(workload, docs);
+            for (String key : dialed.keys()) {
+                for (Upstream upstream : Upstream.parse(key, dialed.values())) {
                     Map<String, Object> destLabels = destinationLabels(upstream.host(), docs);
 
                     // Only destinations governed by a policy restrict ingress; ollama and mysql

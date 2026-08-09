@@ -68,6 +68,18 @@ spec:
               app: redis
       ports:
         - port: 6379
+    # Structured log shipping (SPLUNK_HEC_TOKEN present). SPLUNK_HEC_URL is a literal env value
+    # on each Deployment rather than a recsys-config key, which is why the ConfigMap-only
+    # derivation never required this rule. No Splunk is deployed by these manifests — the
+    # operator supplies a Service named `splunk`, see docs/runbooks/splunk-hec-logging.md.
+    # Blocked, this loses log events silently: the appender is bounded, drop-on-full and
+    # at-most-once, so nothing retries and nothing errors.
+    - to:
+        - podSelector:
+            matchLabels:
+              app: splunk
+      ports:
+        - port: 8088
     # Scoped to kube-system rather than left destination-free. A rule with no `to[]` permits
     # port 53 to ANY address, inside the cluster or out, which is a tunnel through an otherwise
     # tight allow-list. Namespace rather than `podSelector: k8s-app=kube-dns` on purpose: CoreDNS's
@@ -134,6 +146,18 @@ spec:
               app: redis-sentinel
       ports:
         - port: 26379
+    # Structured log shipping (SPLUNK_HEC_TOKEN present). SPLUNK_HEC_URL is a literal env value
+    # on each Deployment rather than a recsys-config key, which is why the ConfigMap-only
+    # derivation never required this rule. No Splunk is deployed by these manifests — the
+    # operator supplies a Service named `splunk`, see docs/runbooks/splunk-hec-logging.md.
+    # Blocked, this loses log events silently: the appender is bounded, drop-on-full and
+    # at-most-once, so nothing retries and nothing errors.
+    - to:
+        - podSelector:
+            matchLabels:
+              app: splunk
+      ports:
+        - port: 8088
     # Scoped to kube-system rather than left destination-free. A rule with no `to[]` permits
     # port 53 to ANY address, inside the cluster or out, which is a tunnel through an otherwise
     # tight allow-list. Namespace rather than `podSelector: k8s-app=kube-dns` on purpose: CoreDNS's
@@ -200,6 +224,18 @@ spec:
               app: redis-sentinel
       ports:
         - port: 26379
+    # Structured log shipping (SPLUNK_HEC_TOKEN present). SPLUNK_HEC_URL is a literal env value
+    # on each Deployment rather than a recsys-config key, which is why the ConfigMap-only
+    # derivation never required this rule. No Splunk is deployed by these manifests — the
+    # operator supplies a Service named `splunk`, see docs/runbooks/splunk-hec-logging.md.
+    # Blocked, this loses log events silently: the appender is bounded, drop-on-full and
+    # at-most-once, so nothing retries and nothing errors.
+    - to:
+        - podSelector:
+            matchLabels:
+              app: splunk
+      ports:
+        - port: 8088
     # Scoped to kube-system rather than left destination-free. A rule with no `to[]` permits
     # port 53 to ANY address, inside the cluster or out, which is a tunnel through an otherwise
     # tight allow-list. Namespace rather than `podSelector: k8s-app=kube-dns` on purpose: CoreDNS's
@@ -275,6 +311,18 @@ spec:
               app: mysql
       ports:
         - port: 3306
+    # Structured log shipping (SPLUNK_HEC_TOKEN present). SPLUNK_HEC_URL is a literal env value
+    # on each Deployment rather than a recsys-config key, which is why the ConfigMap-only
+    # derivation never required this rule. No Splunk is deployed by these manifests — the
+    # operator supplies a Service named `splunk`, see docs/runbooks/splunk-hec-logging.md.
+    # Blocked, this loses log events silently: the appender is bounded, drop-on-full and
+    # at-most-once, so nothing retries and nothing errors.
+    - to:
+        - podSelector:
+            matchLabels:
+              app: splunk
+      ports:
+        - port: 8088
     # Scoped to kube-system rather than left destination-free. A rule with no `to[]` permits
     # port 53 to ANY address, inside the cluster or out, which is a tunnel through an otherwise
     # tight allow-list. Namespace rather than `podSelector: k8s-app=kube-dns` on purpose: CoreDNS's
