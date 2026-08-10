@@ -361,6 +361,11 @@
                      fails closed. Without it in the gate, a change that drops auth from the
                      client merges green and the manifest test still passes. -->
                 <include>**/redis/LettuceClientFactoryTest.java</include>
+                <!-- The Flink/Spark half of the same guarantee: StreamingRedisUri.from is the
+                     jobs' only entry point into Redis auth, and it must build byte-for-byte the
+                     same credentials LettuceClientFactory.standaloneUri builds for every service,
+                     or a job and a service authenticate differently against the same server. -->
+                <include>**/redis/StreamingRedisUriTest.java</include>
                 <include>**/redis/RedisEmbeddingStoreTest.java</include>
                 <include>**/redis/RedisEvictionPolicyManifestTest.java</include>
                 <include>**/redis/RedisCacheStatsProbeTest.java</include>
