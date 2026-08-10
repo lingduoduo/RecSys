@@ -116,13 +116,34 @@ true, with no host-based exemption. The escape hatch is set only in Surefire con
 
 Two caveats that matter. First, it protects the *client's* posture, not the server's: it
 guarantees this service will not speak to Redis unauthenticated, not that Redis rejects
-anyone else. Second, two Redis clients bypass the factory entirely — the Flink streaming
-job and the Spark item-embedding job both call `RedisClient.create(RedisURI.create(host,
-port))` with no username, no password and no TLS, and the Flink sinks write the very
-feature, embedding and top-K keys the serving path reads. Neither is compiled into the
-Maven build and neither has a manifest in this repo, so their deployed configuration is
-outside what can be established here — but "every Redis client authenticates" is not a
-statement this codebase supports.
+anyone else. Second, two Redis clients bypass the factory — the Flink streaming job and
+the Spark item-embedding job — and the Flink sinks write the very feature, embedding and
+top-K keys the serving path reads.
+
+That second caveat has narrowed but has **not** closed. Both jobs used to call
+`RedisClient.create(RedisURI.create(host, port))` with no username, no password and no
+TLS, so they *could not* authenticate at all. They now build the URI through
+`com.recsys.infrastructure.redis.StreamingRedisUri`, which delegates to the same
+`LettuceClientFactory.standaloneUri` every service uses, and each job reads
+`redis.username` / `redis.password` / `redis.tls` (Spark: `--redis-username` /
+`--redis-password` / `--redis-tls`), defaulting to `REDIS_USERNAME` / `REDIS_PASSWORD` /
+`REDIS_TLS`. See `docs/runbooks/redis-auth.md`.
+
+What remains is the whole of the risk. **Nothing in this repository submits either job**,
+so no credential is configured anywhere here; the ability to authenticate is not the same
+as authenticating. If `requirepass` is deployed and whoever submits these jobs does not
+supply those parameters or those environment variables, both jobs still fail `NOAUTH` —
+and the failure lands on the keys the serving path reads. The outage risk is unchanged
+until the submitting configuration is updated, which cannot be verified from here.
+
+Neither call site is verified by the default build: `online/flink/` and
+`training/rulebased/` are excluded from the Maven compile, so `mvn package` and the
+`resilience` gate never compile either file. The credential-building logic they call is in
+the compiled tree and is covered by `StreamingRedisUriTest`; the calls themselves are not
+covered by any gating test. They do compile under the opt-in `-Pstreaming-flink` and
+`-Poffline-embedding` profiles, neither of which CI runs. So "every Redis client
+authenticates" is still not a statement this codebase supports — it is now a statement
+about the *deployment* of two jobs rather than about their code.
 
 **Cursor signing (#279).** Enforced in a way few controls here are: the signing key is a
 non-optional `secretKeyRef` on all three serving workloads and the config rejects a short
@@ -310,8 +331,9 @@ lockdown control has no gate coverage in either direction.
   correct. All out-of-band.
 - **Whether the ALB Controller actually rejects a nonexistent WAF ARN.** The repo asserts
   it in comments; nothing verifies it.
-- **How the Flink and Spark jobs are deployed**, and therefore whether their
-  factory-bypassing Redis connections run against an authenticated server.
+- **How the Flink and Spark jobs are deployed**, and therefore whether anyone passes them
+  the Redis credentials they can now accept. The code no longer prevents them from
+  authenticating; nothing here shows that they do.
 - **Whether the CloudFront viewer-request function receives raw or normalized percent
   encoding.** The function's own header says only a real distribution distinguishes the
   two and none exists.

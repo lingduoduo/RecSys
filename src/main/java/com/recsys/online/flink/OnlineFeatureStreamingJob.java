@@ -35,8 +35,8 @@ import org.apache.flink.streaming.api.windowing.windows.TimeWindow;
 import org.apache.flink.util.Collector;
 import org.apache.flink.util.StringUtils;
 import org.apache.kafka.clients.admin.Admin;
+import com.recsys.infrastructure.redis.StreamingRedisUri;
 import io.lettuce.core.RedisClient;
-import io.lettuce.core.RedisURI;
 import io.lettuce.core.ScriptOutputType;
 import io.lettuce.core.api.StatefulRedisConnection;
 import io.lettuce.core.api.sync.RedisCommands;
@@ -69,6 +69,11 @@ public final class OnlineFeatureStreamingJob {
 
         String redisHost = params.get("redis.host", "localhost");
         int redisPort = params.getInt("redis.port", 6379);
+        // Default to the same environment variables the services read, so a job submitted into a
+        // cluster inherits the credentials without a bespoke configuration path. Never logged.
+        String redisUsername = params.get("redis.username", System.getenv("REDIS_USERNAME"));
+        String redisPassword = params.get("redis.password", System.getenv("REDIS_PASSWORD"));
+        boolean redisTls = Boolean.parseBoolean(params.get("redis.tls", System.getenv("REDIS_TLS")));
         int recentMovieLimit = params.getInt("recent-movie-limit", 3);
         int topK = params.getInt("top-k", 10);
         int topKBucketCount = params.getInt("top-k-bucket-count", jobConfiguration.operatorParallelism());
@@ -125,7 +130,9 @@ public final class OnlineFeatureStreamingJob {
                 .uid("recent-movies-v1")
                 .setParallelism(jobConfiguration.operatorParallelism())
                 .setMaxParallelism(jobConfiguration.maxParallelism());
-        attachSink(recentUpdates, new RedisRecentMoviesSink(redisHost, redisPort), bridgeMode,
+        attachSink(recentUpdates,
+                new RedisRecentMoviesSink(redisHost, redisPort, redisUsername, redisPassword, redisTls),
+                bridgeMode,
                 "redis-user-history-sink", "redis-user-history-sink-v1", jobConfiguration);
 
         DataStream<StringFeatureUpdate> embeddingUpdates = events
@@ -136,7 +143,9 @@ public final class OnlineFeatureStreamingJob {
                 .name("user-embedding-feature")
                 .uid("user-embedding-feature-v1").setParallelism(jobConfiguration.operatorParallelism())
                 .setMaxParallelism(jobConfiguration.maxParallelism());
-        attachSink(embeddingUpdates, new RedisStringFeatureSink(redisHost, redisPort), bridgeMode,
+        attachSink(embeddingUpdates,
+                new RedisStringFeatureSink(redisHost, redisPort, redisUsername, redisPassword, redisTls),
+                bridgeMode,
                 "redis-user-embedding-sink", "redis-user-embedding-sink-v1", jobConfiguration);
 
         DataStream<StringFeatureUpdate> sessionUpdates = events
@@ -147,7 +156,9 @@ public final class OnlineFeatureStreamingJob {
                 .name("session-feature")
                 .uid("session-feature-v1").setParallelism(jobConfiguration.operatorParallelism())
                 .setMaxParallelism(jobConfiguration.maxParallelism());
-        attachSink(sessionUpdates, new RedisStringFeatureSink(redisHost, redisPort), bridgeMode,
+        attachSink(sessionUpdates,
+                new RedisStringFeatureSink(redisHost, redisPort, redisUsername, redisPassword, redisTls),
+                bridgeMode,
                 "redis-session-feature-sink", "redis-session-feature-sink-v1", jobConfiguration);
 
         DataStream<MovieMetricUpdate> metricUpdates = events
@@ -158,7 +169,9 @@ public final class OnlineFeatureStreamingJob {
                 .name("movie-metrics")
                 .uid("movie-metrics-v1").setParallelism(jobConfiguration.operatorParallelism())
                 .setMaxParallelism(jobConfiguration.maxParallelism());
-        attachSink(metricUpdates, new RedisMovieMetricSink(redisHost, redisPort), bridgeMode,
+        attachSink(metricUpdates,
+                new RedisMovieMetricSink(redisHost, redisPort, redisUsername, redisPassword, redisTls),
+                bridgeMode,
                 "redis-movie-metric-sink", "redis-movie-metric-sink-v1", jobConfiguration);
 
         DataStream<PartialTopK> partials = events
@@ -178,7 +191,9 @@ public final class OnlineFeatureStreamingJob {
                 .setParallelism(Math.min(finalTopKParallelism, jobConfiguration.operatorParallelism()))
                 .setMaxParallelism(jobConfiguration.maxParallelism());
 
-        attachSink(topKSnapshots, new RedisTopKSink(redisHost, redisPort), bridgeMode,
+        attachSink(topKSnapshots,
+                new RedisTopKSink(redisHost, redisPort, redisUsername, redisPassword, redisTls),
+                bridgeMode,
                 "redis-topk-sink", "redis-topk-sink-v1", jobConfiguration);
         // Keep the retired terminal UID as a state-only no-op so existing savepoints restore cleanly.
         attachSink(topKSnapshots, new NoOpStateSink<>(), bridgeMode,
@@ -936,17 +951,25 @@ public final class OnlineFeatureStreamingJob {
 
         private final String host;
         private final int port;
+        // Credentials travel to the task managers as plain String/boolean fields, which is what
+        // the sink's serialization already required of host/port; a RedisURI is not serializable.
+        private final String username;
+        private final String password;
+        private final boolean tls;
         transient RedisClient client;
         transient StatefulRedisConnection<String, String> connection;
 
-        AbstractRedisSink(String host, int port) {
+        AbstractRedisSink(String host, int port, String username, String password, boolean tls) {
             this.host = host;
             this.port = port;
+            this.username = username;
+            this.password = password;
+            this.tls = tls;
         }
 
         @Override
         public void open(Configuration parameters) {
-            client = RedisClient.create(RedisURI.create(host, port));
+            client = RedisClient.create(StreamingRedisUri.from(host, port, username, password, tls));
             connection = client.connect(StringCodec.UTF8);
         }
 
@@ -996,7 +1019,9 @@ public final class OnlineFeatureStreamingJob {
     }
 
     static final class RedisStringFeatureSink extends AbstractRedisSink<StringFeatureUpdate> {
-        RedisStringFeatureSink(String host, int port) { super(host, port); }
+        RedisStringFeatureSink(String host, int port, String username, String password, boolean tls) {
+            super(host, port, username, password, tls);
+        }
 
         @Override
         public void invoke(StringFeatureUpdate value, Context context) {
@@ -1006,7 +1031,9 @@ public final class OnlineFeatureStreamingJob {
     }
 
     static final class RedisRecentMoviesSink extends AbstractRedisSink<UserRecentMoviesUpdate> {
-        RedisRecentMoviesSink(String host, int port) { super(host, port); }
+        RedisRecentMoviesSink(String host, int port, String username, String password, boolean tls) {
+            super(host, port, username, password, tls);
+        }
 
         @Override
         public void invoke(UserRecentMoviesUpdate value, Context context) {
@@ -1016,7 +1043,9 @@ public final class OnlineFeatureStreamingJob {
     }
 
     static final class RedisMovieMetricSink extends AbstractRedisSink<MovieMetricUpdate> {
-        RedisMovieMetricSink(String host, int port) { super(host, port); }
+        RedisMovieMetricSink(String host, int port, String username, String password, boolean tls) {
+            super(host, port, username, password, tls);
+        }
 
         @Override
         public void invoke(MovieMetricUpdate value, Context context) {
@@ -1050,7 +1079,9 @@ public final class OnlineFeatureStreamingJob {
                 return 1
                 """;
 
-        RedisTopKSink(String host, int port) { super(host, port); }
+        RedisTopKSink(String host, int port, String username, String password, boolean tls) {
+            super(host, port, username, password, tls);
+        }
 
         @Override
         public void invoke(TopKSnapshot value, Context context) {

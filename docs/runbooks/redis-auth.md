@@ -83,12 +83,13 @@ the Flink job — while both the readiness and liveness `redis-cli ping` probes 
 throughout, since neither probe authenticates. This is the single worst failure mode an edit to
 the template can introduce, and it produces no error anywhere in the deploy path.
 
-Because `default` keeps `+@all`, the `redis-password` credential — the one Flink and every
-non-ACL-aware caller uses — can still run `FLUSHALL` against the whole instance. That is
-deliberate, not an oversight: Flink writes `u2vEmb:*` and `topk:*` authenticated as `default`, and
-nothing in this repository deploys Flink to exercise the risk. But it means the least-privilege
-boundary below covers the five service users, not the instance as a whole — `default` remains a
-full-access credential.
+Because `default` keeps `+@all`, the `redis-password` credential — the one the streaming jobs and
+every other non-ACL-aware caller uses — can still run `FLUSHALL` against the whole instance. That is
+deliberate, not an oversight: the Flink job writes `u2vEmb:*` and `topk:*` as `default`, and nothing
+in this repository deploys it to exercise the risk. But it means the least-privilege boundary below
+covers the five service users, not the instance as a whole — `default` remains a full-access
+credential. See [Streaming jobs](#streaming-jobs) for what giving those two their own user would
+take.
 
 The five service users are each `-@all +@read +@write +@connection -@dangerous`, plus
 `+@scripting` for `catalog`, `model`, and `online` (their trending reads, sharded record writes,
@@ -198,6 +199,67 @@ not a full outage but is a visible one.
 
    Any pod in `CrashLoopBackOff` is the startup guard reporting that this region's Redis did not get
    the same password its clients did.
+
+   **The two streaming jobs are not in this list and cannot be.** Nothing in this repository submits
+   them, so a rotation here does not reach them — see [Streaming jobs](#streaming-jobs) below. If
+   they are running, whoever submits them must be rotated in the same window, or they start failing
+   `NOAUTH` against the keys the serving path reads.
+
+## Streaming jobs
+
+`OnlineFeatureStreamingJob` (Flink) and `ItemEmbeddingJob` (Spark) are built from this source but
+submitted from outside it: there is no manifest, compose service, or submit script for either one
+here. They do not go through `LettuceClientFactory`, so the startup guard above never applies to
+them — a job with no credentials does not refuse to start, it connects and then fails `NOAUTH` on
+the first command once `requirepass` is in force.
+
+Both now accept credentials. They build their `RedisURI` through
+`com.recsys.infrastructure.redis.StreamingRedisUri`, which delegates to the same
+`LettuceClientFactory.standaloneUri` every service uses, so a job and a service authenticate
+identically against the same server.
+
+| Job | Parameters | Falls back to |
+|---|---|---|
+| `OnlineFeatureStreamingJob` | `--redis.username`, `--redis.password`, `--redis.tls` (beside the existing `--redis.host` / `--redis.port`) | `REDIS_USERNAME`, `REDIS_PASSWORD`, `REDIS_TLS` on the submitting process |
+| `ItemEmbeddingJob` | `--redis-username=`, `--redis-password=`, `--redis-tls=` (beside `--redis-host=` / `--redis-port=`) | the same three variables |
+
+A blank or absent username means legacy default-user `AUTH`; a non-blank one means a Redis 6+ ACL
+login. Blank and absent are treated identically, because a parameter default and an unset
+environment variable arrive differently. `--redis.tls` / `--redis-tls` must be `true` against a
+server with encryption-in-transit — ElastiCache with an AUTH token always is.
+
+Prefer the environment variables to the command-line form: a password passed as a job argument is
+visible in `ps` on the submitting host and in the Flink Web UI's job configuration.
+
+**Supplying the credentials is not something this repository can do.** Both jobs ship able to
+authenticate; whether they *do* depends entirely on the submitting configuration, which lives
+elsewhere. Until that is updated, deploying `requirepass` still breaks them — and
+`OnlineFeatureStreamingJob` writes `u2vEmb:*` and `topk:*`, which every serving path reads, while
+`ItemEmbeddingJob` writes `i2vEmb:*`.
+
+### Why they authenticate as `default`
+
+Both send whatever `REDIS_USERNAME` holds, and nothing sets it for them, so in practice they log in
+as `default`. That is why the ACL work (#284) left `user default` at `~* &* +@all` rather than
+narrowing it: a job authenticating as `default` needs write access to the key prefixes it owns, and
+`default` is also the credential `--requirepass`, `--masterauth`, and Sentinel's `auth-pass` use.
+The cost is that `default` remains a full-access credential — it can `FLUSHALL` the instance — so
+the least-privilege boundary in [ACL users](#acl-users) covers the five service users, not the
+instance as a whole.
+
+Giving the jobs their own ACL user would mean: adding two `user` lines to
+`k8s/base/redis-users.acl.template` (a Flink user granted `~u2vEmb:* ~topk:* ~feature:* ~lineage:*`
+plus `+@scripting`, since the sinks write through `EVAL`; a Spark user granted `~i2vEmb:*`),
+rendering their passwords into `recsys-secrets`, and setting `REDIS_USERNAME`/`REDIS_PASSWORD` on
+whatever submits each job. The last step is the blocker, and it is the same unknown as everything
+else in this section: nothing here knows where these jobs run. Until that is known, narrowing
+`default` would break them silently.
+
+Neither call site is exercised by any build in this repository — `online/flink/` and
+`training/rulebased/` are excluded from the Maven compile, so `mvn package` and the `resilience`
+gate never compile them. `StreamingRedisUri` and its tests are in the compiled tree and do gate;
+the two lines that call it do not. They compile only under the opt-in `-Pstreaming-flink` and
+`-Poffline-embedding` profiles, which CI does not run.
 
 ## ElastiCache
 

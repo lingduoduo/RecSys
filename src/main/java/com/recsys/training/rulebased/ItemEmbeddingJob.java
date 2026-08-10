@@ -12,10 +12,10 @@ import org.apache.spark.sql.Row;
 import org.apache.spark.sql.SparkSession;
 import org.apache.spark.sql.api.java.UDF1;
 import org.apache.spark.sql.types.DataTypes;
+import com.recsys.infrastructure.redis.StreamingRedisUri;
 import io.lettuce.core.LettuceFutures;
 import io.lettuce.core.RedisClient;
 import io.lettuce.core.RedisFuture;
-import io.lettuce.core.RedisURI;
 import io.lettuce.core.SetArgs;
 import io.lettuce.core.api.StatefulRedisConnection;
 import io.lettuce.core.api.async.RedisAsyncCommands;
@@ -165,11 +165,17 @@ public class ItemEmbeddingJob {
         final int port = config.redisPort();
         final String prefix = config.redisKeyPrefix();
         final long ttl = config.redisTtl();
+        // Read the credentials into serializable locals here; the URI itself is built inside the
+        // lambda below, because a RedisURI captured from out here would not be serializable.
+        final String username = config.redisUsername();
+        final String password = config.redisPassword();
+        final boolean tls = config.redisTls();
 
         itemEmbeddings.foreachPartition(rows -> {
             // Create the Lettuce client inside the partition lambda so nothing
             // non-serializable crosses the Spark closure boundary.
-            RedisClient client = RedisClient.create(RedisURI.create(host, port));
+            RedisClient client = RedisClient.create(
+                    StreamingRedisUri.from(host, port, username, password, tls));
             try (StatefulRedisConnection<String, String> conn = client.connect(StringCodec.UTF8)) {
                 conn.setAutoFlushCommands(false);
                 RedisAsyncCommands<String, String> async = conn.async();
@@ -212,6 +218,9 @@ public class ItemEmbeddingJob {
             boolean saveToRedis,
             String redisHost,
             int redisPort,
+            String redisUsername,
+            String redisPassword,
+            boolean redisTls,
             String redisKeyPrefix,
             long redisTtl,
             String synonymMovieId,
@@ -231,6 +240,11 @@ public class ItemEmbeddingJob {
             boolean saveToRedis = false;
             String redisHost = "localhost";
             int redisPort = 6379;
+            // Default to the environment so a submitted job inherits the same credentials a
+            // service reads, and so no password has to appear on the spark-submit command line.
+            String redisUsername = System.getenv("REDIS_USERNAME");
+            String redisPassword = System.getenv("REDIS_PASSWORD");
+            boolean redisTls = Boolean.parseBoolean(System.getenv("REDIS_TLS"));
             String redisKeyPrefix = "i2vEmb";
             long redisTtl = 60 * 60 * 24;
             String synonymMovieId = "1";
@@ -257,6 +271,9 @@ public class ItemEmbeddingJob {
                     case "save-to-redis"    -> saveToRedis = Boolean.parseBoolean(value);
                     case "redis-host"       -> redisHost = value;
                     case "redis-port"       -> redisPort = Integer.parseInt(value);
+                    case "redis-username"   -> redisUsername = value;
+                    case "redis-password"   -> redisPassword = value;
+                    case "redis-tls"        -> redisTls = Boolean.parseBoolean(value);
                     case "redis-key-prefix" -> redisKeyPrefix = value;
                     case "redis-ttl"        -> redisTtl = Long.parseLong(value);
                     case "synonym-movie-id" -> synonymMovieId = value.isBlank() ? null : value;
@@ -269,7 +286,8 @@ public class ItemEmbeddingJob {
             return new JobConfig(
                     ratingsPath, outputPath, master,
                     vectorSize, windowSize, minCount, maxIter, stepSize, minRating,
-                    saveToRedis, redisHost, redisPort, redisKeyPrefix, redisTtl,
+                    saveToRedis, redisHost, redisPort, redisUsername, redisPassword, redisTls,
+                    redisKeyPrefix, redisTtl,
                     synonymMovieId, synonymCount, lshAnalysis
             );
         }
