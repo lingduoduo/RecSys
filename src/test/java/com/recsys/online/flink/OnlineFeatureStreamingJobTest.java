@@ -331,7 +331,8 @@ class OnlineFeatureStreamingJobTest {
                 "key", "state", 1L, 60, "event"));
         var configuration = new OnlineFeatureStreamingJob.JobConfiguration(24, 1, 1, 128);
         OnlineFeatureStreamingJob.attachSink(input,
-                new OnlineFeatureStreamingJob.RedisStringFeatureSink("localhost", 6379), true,
+                new OnlineFeatureStreamingJob.RedisStringFeatureSink("localhost", 6379, null, null, false),
+                true,
                 "redis-test-sink", "redis-test-sink-v1", configuration);
 
         var nodes = env.getStreamGraph().getStreamNodes().stream().toList();
@@ -344,7 +345,8 @@ class OnlineFeatureStreamingJobTest {
         var normalInput = normalEnv.fromElements(new OnlineFeatureStreamingJob.StringFeatureUpdate(
                 "key", "state", 1L, 60, "event"));
         OnlineFeatureStreamingJob.attachSink(normalInput,
-                new OnlineFeatureStreamingJob.RedisStringFeatureSink("localhost", 6379), false,
+                new OnlineFeatureStreamingJob.RedisStringFeatureSink("localhost", 6379, null, null, false),
+                false,
                 "redis-test-sink", "redis-test-sink-v1", configuration);
         assertThat(normalEnv.getStreamGraph().getStreamNodes()).anyMatch(
                 node -> node.getOperatorName().contains("redis-test-sink"));
@@ -479,7 +481,8 @@ class OnlineFeatureStreamingJobTest {
     void equalTimestampUsesEventIdTieBreakerRegardlessOfArrivalOrder() throws Exception {
         GenericContainer<?> redis = redis();
         withRedis(redis.getHost(), redis.getMappedPort(6379), RedisCommands::flushall);
-        var sink = new OnlineFeatureStreamingJob.RedisTopKSink(redis.getHost(), redis.getMappedPort(6379));
+        var sink = new OnlineFeatureStreamingJob.RedisTopKSink(
+                redis.getHost(), redis.getMappedPort(6379), null, null, false);
         sink.open(new Configuration());
         try {
             sink.apply(snapshot(1_000L, "b", scored(2, 9)));
@@ -495,7 +498,8 @@ class OnlineFeatureStreamingJobTest {
     void replayOfIdenticalTopKVersionIsNoOp() throws Exception {
         GenericContainer<?> redis = redis();
         withRedis(redis.getHost(), redis.getMappedPort(6379), RedisCommands::flushall);
-        var sink = new OnlineFeatureStreamingJob.RedisTopKSink(redis.getHost(), redis.getMappedPort(6379));
+        var sink = new OnlineFeatureStreamingJob.RedisTopKSink(
+                redis.getHost(), redis.getMappedPort(6379), null, null, false);
         sink.open(new Configuration());
         try {
             var value = snapshot(2_000L, "replay", scored(2, 9));
@@ -510,7 +514,8 @@ class OnlineFeatureStreamingJobTest {
     void atomicScriptUpdatesAllTopKRepresentationsAndLineage() throws Exception {
         GenericContainer<?> redis = redis();
         withRedis(redis.getHost(), redis.getMappedPort(6379), RedisCommands::flushall);
-        var sink = new OnlineFeatureStreamingJob.RedisTopKSink(redis.getHost(), redis.getMappedPort(6379));
+        var sink = new OnlineFeatureStreamingJob.RedisTopKSink(
+                redis.getHost(), redis.getMappedPort(6379), null, null, false);
         sink.open(new Configuration());
         try {
             sink.apply(snapshot(3_000L, "evt-topk", scored(2, 9)));
@@ -603,7 +608,7 @@ class OnlineFeatureStreamingJobTest {
         String host = redis.getHost();
         int port = redis.getMappedPort(6379);
 
-        var sink = new OnlineFeatureStreamingJob.RedisStringFeatureSink(host, port);
+        var sink = new OnlineFeatureStreamingJob.RedisStringFeatureSink(host, port, null, null, false);
         sink.open(new Configuration());
         try {
             var update = new OnlineFeatureStreamingJob.StringFeatureUpdate(
@@ -629,7 +634,7 @@ class OnlineFeatureStreamingJobTest {
         String host = redis.getHost();
         int port = redis.getMappedPort(6379);
 
-        var sink = new OnlineFeatureStreamingJob.RedisStringFeatureSink(host, port);
+        var sink = new OnlineFeatureStreamingJob.RedisStringFeatureSink(host, port, null, null, false);
         sink.open(new Configuration());
         try {
             sink.invoke(new OnlineFeatureStreamingJob.StringFeatureUpdate(
@@ -656,7 +661,7 @@ class OnlineFeatureStreamingJobTest {
         String host = redis.getHost();
         int port = redis.getMappedPort(6379);
 
-        var sink = new OnlineFeatureStreamingJob.RedisStringFeatureSink(host, port);
+        var sink = new OnlineFeatureStreamingJob.RedisStringFeatureSink(host, port, null, null, false);
         sink.open(new Configuration());
         try {
             for (int i = 1; i <= 6; i++) {
