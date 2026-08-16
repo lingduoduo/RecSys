@@ -352,6 +352,37 @@ compose file. And because the cumulative counters are **retained** across an una
 sample (only `_available` drops to 0), a Redis gap can't masquerade as a counter reset and
 corrupt `rate()`.
 
+### Surveying the Redis tier: by consumer, not by store
+
+A recurring mistake when reasoning about this tier — three separate attempts made it during the
+2026-08-09 ACL work — is to enumerate the Redis *stores* (`RedisEmbeddingStore`,
+`ShardedTopKStore`, `RecommendationCache`, …) and treat that as the keyspace. It is not. Around
+**29 consumers sit behind the 35 references to `RedisExecutor`**, and the ones a store-first sweep
+misses are exactly the interesting ones: classes that build keys inline, and classes that span
+several stores. Each of the three store-first passes missed a *different* set.
+
+Two consequences are worth knowing before changing anything in this tier.
+
+**Failures here are usually silent.** `GlobalPopularityStore` catches `RuntimeException` and returns
+an empty result so the caller falls back (`GlobalPopularityStore.java:40`), which is correct for a
+Redis outage and indistinguishable from a permission error. So a denied `ZREVRANGE
+global:item_popularity` makes Popularity and ColdStart recall quietly return nothing on all three
+serving services. `SCAN` compounds this: it takes no key argument, so under a restricted ACL the
+scan itself succeeds and only the per-key follow-up is refused — six of the seven access failures
+found in that audit were invisible for this reason.
+
+**Two Lua scripts touch keys they do not declare in `KEYS`** — the online rate limiter reaches
+`rate:online:<bucket>:<windowId>` while declaring only `rate:online:<bucket>`, and the
+sharded-record script constructs `sr:rec:…` internally. Today's key patterns cover both, but the
+declared `KEYS` list will not warn anyone who narrows them. Note also that Redis requires *full
+read-write* permission on every key passed to `EVAL`, even for a read-only script — so no key
+reached through a script can be granted read-only access.
+
+**Three consumers are test-only:** `RedisTopKStore`, `RedisDistributedLock` and `RedisMutex` are
+constructed nowhere in `src/main/java`, so `dlock:` and `mutex:` are dead prefixes. `WatchdogLock`
+is *not* in that group — it has a live construction, and an earlier survey that grouped it with the
+other three was wrong.
+
 ## Sharp edges — notes
 
 1. **Most caches don't invalidate on writes.** Only the two write-through embedding
