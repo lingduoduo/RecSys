@@ -61,6 +61,17 @@ spec:
                   name: recsys-secrets
                   key: recommendation-cursor-previous-key
                   optional: true
+            # Must stay <= RECALL_CHANNEL_TIMEOUT_MS (default 200). The channel timeout is
+            # applied as CompletableFuture.orTimeout, which completes the *caller's* future
+            # and neither cancels nor interrupts the task already running on the recall
+            # bulkhead — so a stalled Redis holds a bulkhead thread for the full command
+            # timeout, not for 200ms. Left unset, this defaults to 2000 (LettuceClientFactory
+            # .DEFAULT_TIMEOUT_MS) and the bulkhead drains 10x slower than the budget above it
+            # implies. online-serving pins the same value; model-serving caps it in code
+            # instead (ModelRuntimeProvider.RECALL_REDIS_TIMEOUT_MS = 150). Pinned by
+            # CatalogRedisTimeoutManifestTest; see docs/system_design/23_Online_Serving_Latency.md §2.
+            - name: REDIS_TIMEOUT_MS
+              value: "200"
             - name: JAVA_OPTS
               value: "-Xms512m -Xmx1g"
             # Splunk HEC log shipping. Inert until the recsys-splunk Secret exists, so

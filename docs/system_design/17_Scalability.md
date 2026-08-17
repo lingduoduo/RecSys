@@ -120,6 +120,16 @@ alongside the bounded `X-Recall-Degradation-Reason`
 from an empty one caused by unavailable channels — see
 [Fault Tolerance](18_Fault_Tolerance.md#channel-health-and-per-channel-timeouts).
 
+Two sizing facts qualify the above. `orTimeout` bounds the **caller's** wait, not the
+task: the bulkhead worker stays occupied until the underlying Redis command times out, so
+the bulkhead's drain rate is set by `REDIS_TIMEOUT_MS` rather than by
+`RECALL_CHANNEL_TIMEOUT_MS`. And `cores×2` threads with a `pool×4` queue is **10 task
+slots** under `limits.cpu: "1"`, against an admission gate that allows 64 concurrent
+requests fanning out to 6 channels each — so channel rejection is the steady state well
+before the admission gate engages, which is what `recall.degradedRatio` is actually
+reporting. Both are measured and quantified in
+[23_Online_Serving_Latency §2](23_Online_Serving_Latency.md#2-async-apis--where-the-asynchrony-actually-stops).
+
 ### Rate limiting (`ratelimit/TokenBucket` primitive)
 
 | Limiter | Scope | Notes |

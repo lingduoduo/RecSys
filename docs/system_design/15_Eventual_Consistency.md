@@ -55,6 +55,18 @@ Three outcomes:
 - primary unavailable → 503.
 - **No token** → the fast, stale-tolerant path (reads may hit lagging replicas).
 
+**The 202 is unreachable whenever it would matter most.** That 2 s poll runs on the
+blocking-task thread inside a request whose Armeria deadline is `ONLINE_REQUEST_TIMEOUT_MS`
+= **500 ms**. If the event materializes quickly the path works as described; if it does not,
+Armeria terminates the response at 500 ms while the handler keeps polling for the remaining
+~1.5 s and then builds a `202` nobody receives. The client sees a generic timeout instead of
+the backpressure signal, and the thread is held for 4× the request budget. This is latent —
+`ONLINE_DURABLE_EVENTS_ENABLED` is `"false"` in `k8s/base` and overridden in no overlay — so
+it becomes real on the day the token path is enabled, which is the day the `202` starts being
+relied upon. Either the wait must be bounded by the request's remaining budget or the request
+timeout must exceed it; the two numbers cannot both stay as they are. See
+[23_Online_Serving_Latency §7](23_Online_Serving_Latency.md#7-graceful-fallbacks--layered-with-one-deliberate-exception).
+
 **Staleness is measured, not assumed.** `RedisReplicaLagProbe` writes a sequence
 marker to the primary and reads it back through replica routing to continuously
 sample replica lag in seconds

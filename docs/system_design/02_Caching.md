@@ -289,8 +289,15 @@ warm-up, it doesn't block it.
 deadline applies even to commands queued while disconnected) plus
 `DisconnectedBehavior.REJECT_COMMANDS` (commands error immediately instead of buffering).
 Without this, a dead Redis would stall callers past their budget instead of tripping the
-serve-stale paths in §1–§2; the recall path additionally caps the command timeout via
-`LettuceClientFactory.fromEnv(maxTimeoutMs)`.
+serve-stale paths in §1–§2.
+
+The command timeout itself is capped per service, and not in one place. Model serving passes
+`RECALL_REDIS_TIMEOUT_MS` (150 ms) to `LettuceClientFactory.routingFromEnv(int)`; catalog 6010
+and online 7010 call the **uncapped** overload and depend on `REDIS_TIMEOUT_MS` in
+`k8s/base` (200 ms each) instead, so an unset env var leaves them at the 2000 ms default —
+10× the recall channel budget layered above them. Why that gap is a capacity problem rather
+than a latency one, and the measurement behind it, is
+[23_Online_Serving_Latency §2](23_Online_Serving_Latency.md#2-async-apis--where-the-asynchrony-actually-stops).
 
 **Connections.** Each executor keeps one **lazily opened** shared multiplexed connection
 for sync commands plus a commons-pool2 pool (`REDIS_POOL_MAX_TOTAL` 50, maxIdle 10,
@@ -398,6 +405,14 @@ other three was wrong.
 4. **LLM caching assumes determinism.** Caching a model's output is only sound because the
    demo runs at temperature 0; a nonzero-temperature deployment would serve one sampled
    answer for all identical prompts.
+5. **The caches' wait budgets exceed the request deadline.** The cold-miss `SingleFlight`
+   (2000 ms), `ShardedTopKStore.FETCH_WAIT_TIMEOUT_MS` (2000 ms),
+   `OnlineFeatureStore.REDIS_FETCH_TIMEOUT_MS` (2000 ms) and the recommendation cache's
+   compute-wait (2000 ms) were each chosen independently of online serving's 500 ms
+   `ONLINE_REQUEST_TIMEOUT_MS`. None is reachable as client-visible latency there; all remain
+   load-bearing as thread occupancy — see
+   [23_Online_Serving_Latency §4](23_Online_Serving_Latency.md#4-caching--the-wait-budgets-are-larger-than-the-request),
+   which also covers the pool knobs not bounding the serving path (§5).
 5. **Null sentinels are a 30 s bet.** Absent-ID sentinels expire after 30 s, so a newly
    *added* embedding for a previously-missing ID isn't visible until the sentinel lapses
    (or a write-through happens).
