@@ -471,7 +471,7 @@ without updating it.
 | # | Investigation | Covers |
 |---|---|---|
 | 01 | [Load Balancing](docs/system_design/01_Load_Balancing.md) | ALB → kube-proxy/topology-aware routing → Armeria health-checked groups, and the capacity-weight feedback signal |
-| 02 | [Caching](docs/system_design/02_Caching.md) | Three-tier embedding cache, soft-TTL serve-stale-while-refresh, single-flight snapshots |
+| 02 | [Caching](docs/system_design/02_Caching.md) | The cache classes and the per-object inventory: what each of user/item embeddings, popular-item lists, recommendation lists and candidate sets actually gets, its TTL and invalidation, the two meanings of cold start, and what a Redis outage does to each |
 | 03 | [DB Scaling & Sharding](docs/system_design/03_DB_Scaling_Sharding.md) | The two Redis sharded stores, versioned topology and online reshard, which scaling lever buys what, and where sharding ends the single-transaction guarantee |
 | 04 | [Replication](docs/system_design/04_Replication.md) | Single-primary Redis with AZ-aware read replicas, Sentinel failover, replica-lag probing, cross-region DR |
 | 05 | [CAP](docs/system_design/05_CAP.md) | Where each store chooses consistency over availability during a partition, and the tunable dial |
@@ -495,6 +495,11 @@ without updating it.
 | 23 | [Online Serving & Latency](docs/system_design/23_Online_Serving_Latency.md) | The end-to-end timeout budget across four services, where it inverts, why `orTimeout` bounds the caller but not the bulkhead worker, and what batching, pooling and fallbacks actually cost |
 
 Cross-cutting entry points:
+- [What a Redis outage actually does](docs/system_design/02_Caching.md#9-what-happens-when-redis-goes-down)
+  — per cached object, warm cache versus cold. Serve-stale is fail-open only when a last-good
+  value exists; on a cold cache three of the four cache families rethrow, and the reads that
+  do so sit outside every degradation layer in
+  [18_Fault_Tolerance §3](docs/system_design/18_Fault_Tolerance.md#3-graceful-degradation--a-degraded-answer-beats-no-answer).
 - [The serving latency budget](docs/system_design/23_Online_Serving_Latency.md#1-the-budget-chain-as-deployed)
   — every timeout on the request path in one table, read outside-in. The individual
   mechanisms live in [02_Caching](docs/system_design/02_Caching.md),
