@@ -181,6 +181,15 @@ recovers, so one slow/failing channel doesn't stall every request. A timeout,
 error, or bulkhead rejection returns an empty channel result — the two-phase
 quota merge gap-fills the shortfall from the remaining channels.
 
+**Every layer in this section is inside the fan-out.** The per-channel `exceptionally`, the
+health-monitor backoff and the quota gap-fill all protect work dispatched *as a channel*.
+`OnlineRecommendationService.recommend` makes three Redis reads outside it — recent history
+before recall, the cold-start probe inside `recall()` (whose `catch` names only
+`NumberFormatException`), and the trending response snapshot after the fan-out — and on a cold
+cache a Redis failure in any of them bypasses all of this and returns 500 with readiness still
+green. Measured in
+[02_Caching §9](02_Caching.md#9-what-happens-when-redis-goes-down).
+
 **`orTimeout` protects the response, not the thread.** It completes the dependent future
 exceptionally without cancelling or interrupting the task already running on the bulkhead;
 a task blocked in a socket read would not observe an interrupt anyway. Measured with a
