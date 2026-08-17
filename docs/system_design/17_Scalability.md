@@ -128,7 +128,7 @@ slots** under `limits.cpu: "1"`, against an admission gate that allows 64 concur
 requests fanning out to 6 channels each — so channel rejection is the steady state well
 before the admission gate engages, which is what `recall.degradedRatio` is actually
 reporting. Both are measured and quantified in
-[23_Online_Serving §2](23_Online_Serving.md#2-async-apis--where-the-asynchrony-actually-stops).
+the subsections below.
 
 ### Rate limiting (`ratelimit/TokenBucket` primitive)
 
@@ -163,6 +163,116 @@ The model 8080 path is uniquely graceful: on a full shedder it first tries
 **degrade-to-cache** (`tryServeFromCache` → HTTP 200 + `X-Served-From:
 degraded-cache`) and only throws `ServiceOverloadedException` (latency-derived
 `Retry-After`) on a cache miss.
+
+### The request time budget, end to end
+
+The gates above each bound one layer. Read outside-in they form a **budget chain**, and the
+chain is what determines whether a gate protects anything — as deployed:
+
+| Layer | catalog 6010 | online 7010 | model 8080 | gateway 8010 |
+|---|---|---|---|---|
+| Armeria server request timeout | **10 s** (unset → Armeria default) | **500 ms** (`ONLINE_REQUEST_TIMEOUT_MS`) | — (Tomcat) | **10 s** (unset → Armeria default) |
+| Upstream client timeout | — | — | — | **3 s** (`GATEWAY_TIMEOUT_MS`) + 1 retry ≈ **6.05 s** |
+| Recall channel timeout | **200 ms** | **200 ms** | **200 ms** | — |
+| Redis command timeout | **2000 ms** (unset → code default) | **200 ms** (`k8s/base` env) | **150 ms** (code constant) | — |
+| Redis pool max-wait | 250 ms (default) | 100 ms (`k8s/base`) | 250 ms | — |
+| Admission limit | 64 concurrent | 64 concurrent | semaphore | rate limiter |
+| Recall bulkhead | `cores×2` threads, `pool×4` queue | same | same | — |
+| Container CPU limit | `1` | `1` | `2` | `750m` |
+
+`RECALL_CHANNEL_TIMEOUT_MS` is set in no manifest, so all three recall paths run at the
+
+`RECALL_CHANNEL_TIMEOUT_MS` is set in no manifest, so all three recall paths run at the 200 ms
+default. `REDIS_TIMEOUT_MS` is set in one, `k8s/base/online-serving.yaml`. 7010 is the only
+Armeria service that sets `requestTimeoutMillis`; 6010 and 8010 inherit Armeria's 10 s default
+(`DefaultFlagsProvider.DEFAULT_REQUEST_TIMEOUT_MILLIS`).
+
+**The chain is not monotonically decreasing.** The gateway waits up to ~6 s for a backend that
+stops itself at 500 ms, and inside 6010 a 200 ms channel budget sits above a 2000 ms command
+budget with no server deadline between them. Where a chain inverts, the inner timeout is
+decorative for the *client* and load-bearing only for *thread occupancy* — which is the next
+subsection.
+
+### `orTimeout` bounds the caller's wait, not the work — measured
+
+Each channel is dispatched as
+`CompletableFuture.supplyAsync(channel, recallBulkhead).orTimeout(200ms)`. `orTimeout`
+completes the *dependent* future; it does not cancel or interrupt the task already running on
+the bulkhead, and a task blocked in a socket read would not observe an interrupt anyway.
+Running that exact shape — a 1-thread pool, a task blocking 2000 ms, `.orTimeout(200ms)`:
+
+```
+caller saw 'degraded:TimeoutException' at 220ms
+pool active=1 queued=0 at 238ms
+  [task] completed normally at 2014ms
+next task waited 1790ms for a worker (submitted at 2035ms)
+```
+
+The caller degraded on schedule. The worker stayed occupied, and **the next request's channel
+task waited 1790 ms for a thread**. So the recall bulkhead's drain rate under a stalled backing
+store is set by the **Redis command timeout**, not by `RECALL_CHANNEL_TIMEOUT_MS`. The channel
+timeout protects the *response*; only the command timeout protects the *thread*. Two of the
+three recall paths cap that command timeout, and they do it in different places:
+
+| Service | How the command timeout is bounded | Effective cap |
+|---|---|---|
+| model 8080 | `ModelRuntimeProvider.RECALL_REDIS_TIMEOUT_MS` code constant, passed to `LettuceClientFactory.routingFromEnv(int)` | 150 ms |
+| online 7010 | `REDIS_TIMEOUT_MS: "200"` in `k8s/base/online-serving.yaml` | 200 ms |
+| catalog 6010 | nothing | 2000 ms |
+
+The same hazard was mitigated twice, in two different layers, and missed on the third — 6010
+calls the *uncapped* `LettuceClientFactory.routingFromEnv()` where 8080 calls the capped
+overload. Setting `REDIS_TIMEOUT_MS: "200"` for catalog-serving in `k8s/base` closed it the way
+7010's is closed, and `CatalogRedisTimeoutManifestTest` pins the pairing in both directions:
+every recall service must set it, and the value must not exceed the channel budget as
+`RecallConfig` resolves it. That test reads manifest text — it proves a coupling between two
+files, not what a cluster receives, and a deployment not applying `k8s/base` still gets the
+2000 ms code default.
+
+### Bulkhead width versus admitted concurrency
+
+The recall bulkhead is `availableProcessors() * 2` threads with a `pool × 4` queue. Under
+`limits.cpu: "1"` the JVM reports 1 processor, so a pod gets **2 threads and 8 queue slots** —
+10 task slots. Admission control allows **64** concurrent requests, each fanning out to **6**
+channels: up to 384 channel tasks against 10 slots. The two gates are dimensioned in different
+units (requests vs. tasks) from different inputs (an env default vs. the CPU limit), and
+nothing ties them together.
+
+That is not a bug — the bounded queue exists so overflow throws and degrades to an empty
+channel result. But it means **channel rejection is the normal steady state above a few
+concurrent requests**, not an overload signal, and `recall.degradedRatio` should be read with
+that in mind. What the gap changes is *which* mechanism sheds first: the bulkhead, long before
+the admission gate it nominally sits behind.
+
+### Batching and connection pools
+
+Batching is implemented wherever a batch exists: `RedisEmbeddingStore.getEmbeddings` MGETs in
+`REDIS_EMBEDDING_MGET_BATCH_SIZE` (500) chunks, `setEmbeddings` uses one pipelined batch,
+`loadAll` MGETs each SCAN page immediately (bounded heap), `OnlineFeatureStore` batches the
+same way, `LogicalExpiryEmbeddingCache.getEmbeddings` collapses all cold misses into one
+backing-store call, and `UserTowerInferenceService.scoreCandidates` runs **one** batched ONNX
+`session.run` for every candidate.
+
+The gap is *between* stages. The online path issues its independent reads serially:
+`getRecentMovieIds` (Redis) → the cold-start probe inside `recall()` (Redis, on the calling
+thread, outside both the channel timeout and the fan-out) → the 6-channel fan-out → the
+trending snapshot (Redis). Three of those are mutually independent and could share one round
+trip; they don't. Two are also **read twice per request** — recent history by both
+`OnlineRecommendationService` and the `OnlineRecentHistory` channel, trending by both the
+`Trending` channel and the response snapshot — absorbed by the 5 s / 2 s JVM caches on a warm
+pod, genuine extra round trips on a cold one. There is no **cross-request** batching anywhere,
+which for per-user features is the right call but is worth stating, because "batching" in a
+serving system usually means the cross-request kind.
+
+**The pool knobs do not bound the serving path.** `LettuceRedisExecutor` serves all normal
+reads and writes from **one shared multiplexed connection**; the commons-pool2 pool is used
+only for pipelines and timed primary reads. So `REDIS_POOL_MAX_TOTAL`, `_MAX_IDLE`, `_MIN_IDLE`
+and `_MAX_WAIT_MS` govern neither serving read — 7010's `REDIS_POOL_MAX_TOTAL: "64"` applies to
+`executePipelined` and `executePrimaryRead` only. Request-path concurrency against Redis is
+bounded by the admission gate and the bulkhead instead, which is why multiplexing was chosen,
+but it means tuning the pool in response to a serving-latency incident would change nothing.
+`testOnBorrow` also defaults `true`, so each pipeline or primary read pays a validation round
+trip before its own.
 
 ## 3. Data-tier scaling — horizontal everywhere
 
@@ -303,3 +413,24 @@ genuinely deferred assumptions. Current status:
    it to the primary baseline in one step (`dr-standby-capacity.sh promote`, HPA-docs
    only). It remains a **manual** step, so expect a brief scale-out window if a
    cutover lands before promote runs.
+6. **The time budget inverts between layers (§2).** The gateway waits ~6 s for a backend that
+   stops at 500 ms, and 6010 ran a 200 ms channel budget over a 2000 ms command timeout with no
+   server deadline above it. The command-timeout half is **fixed** for 6010 via
+   `REDIS_TIMEOUT_MS: "200"` in `k8s/base` — but that fix is configuration: any deployment not
+   applying base (local `run-microservices-local.sh`, an overlay not composing it) still gets
+   the 2000 ms code default. The durable fix is to cap it in code the way 8080 does. **Open:**
+   6010 and 8010 still set no server request timeout at all, so they run on Armeria's 10 s
+   default and no layer bounds a request end-to-end.
+7. **Bulkhead width vs. admitted concurrency (§2) — open.** 10 task slots against 64 admitted
+   requests × 6 channels under `limits.cpu: "1"`. Deliberate bounded-queue behaviour, but it
+   makes channel rejection the steady state rather than an overload signal. Sizing both gates
+   from one input needs a decision about which is the real limit; that decision has not been
+   made.
+8. **Serial stages and duplicated reads (§2) — open by omission.** Three independent Redis
+   round trips issued serially, with recent history and trending each read twice. Invisible on
+   a warm pod, real on a cold one. Pipelining them has a measurable benefit only under
+   cold-cache conditions that nothing currently measures.
+9. **The recall bulkhead's background refreshes run on the common pool.** Blocking Redis I/O on
+   a one-worker `ForkJoinPool.commonPool()` under `limits.cpu: "1"`, contradicting the warning
+   `MultiChannelRecallService` gives about that same pool. Degrades refresh freshness, not
+   availability — see [02_Caching](02_Caching.md#sharp-edges--notes).

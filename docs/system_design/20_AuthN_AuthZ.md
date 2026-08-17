@@ -688,3 +688,172 @@ Scope note: `person_properties` is empty at the one call site. If it ever carrie
 that is a fresh disclosure decision and this section does not authorize it.
 
 Design: [PostHog pseudonymous distinct_id](../superpowers/specs/2026-08-05-posthog-pseudonymous-distinct-id-design.md).
+
+## 13. Data-leakage posture — what these controls enforce as deployed
+
+Sections 1–12 describe controls as *designed*. This one records what they **enforce as
+rendered** (`kubectl kustomize k8s/base`, `k8s/eks`, `k8s/eks-us-west-2` at `123977a`),
+because overlays override and a patch read in isolation says nothing about what a cluster
+receives. Eleven PRs (#274–#284) shipped against four threat models — exfiltration by a
+compromised workload, cross-user leakage, data reaching third parties, and accidental
+disclosure through responses/metrics/logs — and every one is closed. A list of merged PRs is
+not a posture. This is an audit of manifests and code, not a penetration test; nothing here
+was executed against a live cluster.
+
+### 13.1 The short answer
+
+**Three controls would actually stop a leak if these manifests were applied today, and all
+three are properties of code rather than configuration:** the Redis client refuses to start
+without a password, the recommendation cursor is HMAC-signed with a key the pod cannot start
+without, and the gateway strips caller credentials before proxying (§2). Everything else is
+dormant, placeholder-shaped, or dependent on a Secret or AWS resource this repository does
+not create.
+
+**The most consequential finding was not on the PR list — and is now fixed.** `k8s/base`
+used to publish the gateway as an `internet-facing` NLB *and* set
+`GATEWAY_ALLOW_ANONYMOUS: "true"`. Those composed: any overlay building on `../base` without
+`../eks-shared` got an internet-reachable gateway that authenticated nobody, and because
+`GatewayAuthenticator` short-circuits when disabled, the `PROTECTED_PREFIXES` guard (§3) was
+never consulted either — so `/api/catalog/user`, `/api/users/**`, `/api/features/**`,
+`/api/online/**` and every user-scoped route were open with an arbitrary `userId`. Base's
+Service is now `ClusterIP` with the eleven `aws-load-balancer-*` annotations removed;
+`GATEWAY_ALLOW_ANONYMOUS` stays `"true"` there deliberately (flipping it was never the fix —
+`fromEnvironment` refuses to start without a credential source and base has none), but
+reaching it now requires `kubectl port-forward`. `GatewayExposureManifestTest` pins the
+pairing.
+
+### 13.2 Control inventory
+
+Twenty controls. **ON** = enforcing as rendered. **FAIL-CLOSED** = configured to deny, which
+denies legitimate operators too. **OFF** = present but not enforcing. **N/A** = the resource
+does not exist in that configuration.
+
+| # | Control | What it does | `k8s/base` | `k8s/eks` + `k8s/eks-us-west-2` | What makes it inert |
+|---|---|---|---|---|---|
+| 1 | Redis client auth guard (#274) | `LettuceClientFactory` throws at startup rather than connecting to Redis as the unauthenticated `default` user | ON (guard active; `REDIS_ALLOW_NO_AUTH` set in no manifest) | ON | Nothing disables it in-cluster. But `REDIS_PASSWORD` comes from an `optional: true` `secretKeyRef` on `recsys-secrets`, and **no `kind: Secret` exists anywhere under `k8s/`** — without an out-of-band Secret every serving pod CrashLoops. The control is real; its failure mode is outage, not silent plaintext |
+| 2 | Redis transport TLS (#274) | `REDIS_TLS=true` wraps the Lettuce connection in TLS (Lettuce's default `SslVerifyMode.FULL` — chain + hostname) | OFF (unset → code default `false`) | **OFF (explicitly `REDIS_TLS: "false"` in both overlays)** | Redis traffic — embeddings, device history, the login-token→API-key mapping — is plaintext on the wire in every rendered configuration. The overlay comment states the overlay must not be applied until ElastiCache has transit encryption |
+| 3 | Redis server-side `requirepass` (#274) | In-cluster Redis StatefulSets pass `--requirepass $(REDIS_PASSWORD)` | ON, conditional on the Secret | **N/A** — `k8s/eks-shared` scales `redis-primary`/`redis-replica`/`redis-sentinel` to `replicas: 0`; every client dials ElastiCache instead | In EKS the flag governs pods that do not run. ElastiCache AUTH is out-of-band and unverifiable from here |
+| 4 | Redis per-workload ACL users (#284) | Six users (`default`, `catalog`, `model`, `online`, `gateway`, `reconciliation`) with per-key-prefix grants, loaded via `--aclfile`; each workload sends `REDIS_USERNAME` | Conditional | **INERT** — `--aclfile` is an argument to StatefulSets scaled to zero | `k8s/base/redis-users.acl.template` is a *template* with `__X_PASSWORD__` placeholders. It is mounted from a **non-optional** Secret volume (`recsys-secrets`, key `redis-users.acl`), so without that Secret the Redis pods block in `ContainerCreating`. In EKS the equivalent is ElastiCache RBAC user groups, which nothing in this repo creates — yet the workloads still send `REDIS_USERNAME`, so an ElastiCache without those users fails AUTH outright |
+| 5 | Gateway authentication | API key (`x-api-key`/bearer) or Cognito JWT, else 401 | **OFF — `GATEWAY_ALLOW_ANONYMOUS: "true"`, no `GATEWAY_API_KEYS`** | ON — `GATEWAY_ALLOW_ANONYMOUS: "false"` and `GATEWAY_API_KEYS` from `recsys-gateway-auth` with `optional: false` (pod will not start without it) | In base, `GatewayAuthenticator.fromEnvironment` returns the `DISABLED` instance; `check` then allows every path unconditionally |
+| 6 | Never-public prefix guard | `PROTECTED_PREFIXES` overrides `GATEWAY_PUBLIC_PATHS` so user-data routes can never be listed public | OFF (only consulted when authentication is enabled) | ON | Rides entirely on #5 |
+| 7 | User-scope authorization (#275) | A JWT caller may only name its own `userId`; 403 + `gateway_user_scope_rejected_total` otherwise | **INERT** | **INERT** | `GATEWAY_COGNITO_ISSUER: ""` in all three renders, and blank is treated as unset. With no verifier, no principal can ever be `Tier.USER`; API-key and anonymous callers are `Tier.SERVICE` and the check returns immediately. Confirmed dormant, exactly as recorded |
+| 8 | What authorizes user-scoped routes instead | — | **Nothing.** `userId` is client-supplied in the query string or body on every user-scoped route | Same | This is the honest answer to "what guards user data in the meantime": an authenticated API-key caller may name any `userId`, and in base an unauthenticated one may too |
+| 9 | Gateway operator token (#276, #277) | `BackendRoutePolicy` classifies four backend paths `OPERATOR`; `GatewayRequestForwarder` requires a matching `X-Admin-Token`, tier-independent | FAIL-CLOSED | FAIL-CLOSED | `SHARD_ADMIN_TOKEN` comes from `recsys-online-admin` with `optional: true`, and that Secret is not in the repo. Unset ⇒ 403 for **every** caller on `/api/catalog/setembedding`, the three model version endpoints and `/api/online/online/ops`. The gateway logs a startup warning. Correctly fail-closed; also currently unusable |
+| 10 | Online-serving operator token | `AdminTokenGuard` on `/online/ops`, `POST /shards/topology`, `GET /shards/shard` | FAIL-CLOSED | FAIL-CLOSED | Same Secret. Note the coverage is narrower than the gateway's: `GET /shards/device` and the record write path are unguarded, and 7010 logs **no** startup warning |
+| 11 | Origin secret | `x-origin-secret` on a server-wide decorator; 403 + counter otherwise; `/health` and `/metrics` exempt | **OFF** | **OFF** | `GATEWAY_ORIGIN_SECRET` is an `optional: true` `secretKeyRef` on `recsys-gateway-origin-secret`, absent from the repo. When blank the decorator is not registered at all. This is the only server-wide gate on the gateway, and it is off |
+| 12 | Credential stripping | The gateway removes `authorization`, `x-api-key` and `x-origin-secret` before forwarding upstream | **ON** | **ON** | Unconditional in code. One of the few controls with no configuration dependency |
+| 13 | PostHog pseudonymization (#278) | Sends `sha256(salt + ":" + userId)` as `distinct_id`; blank salt fails construction | **INERT** | **INERT** | `POSTHOG_FEATURE_FLAGS_ENABLED` defaults `false` and is set in no manifest, compose file, or overlay, so the provider is never constructed. The code path *is* wired (model serving → `RecommendationService` → cold-start flag), so it is not dead code — but no NetworkPolicy egress rule permits reaching PostHog either. Confirmed dormant and unrouted |
+| 14 | Pagination cursor signing (#279) | HMAC-SHA256 over `(version, issuedAt, userId, queryFingerprint, score, itemId)`; unsigned/tampered/expired/mismatched ⇒ 400 | **ON** | **ON** | `RECOMMENDATION_CURSOR_SIGNING_KEY` is a **non-optional** `secretKeyRef` on all three serving workloads and the config rejects a key under 32 bytes, so a pod cannot start with signing off. `RECOMMENDATION_CURSOR_ACCEPT_LEGACY: "false"` closes the unsigned legacy format. Genuinely enforced — but see §3 for what it is and is not worth |
+| 15 | MySQL transport TLS (#280) | `MySqlConnectionSettings` refuses a `MYSQL_URL` without `sslMode=VERIFY_IDENTITY`, loopback exempt | **INERT** | **INERT** | `MYSQL_ENABLED: "false"` in all three renders, and the validation sits entirely behind that flag. No `mysql` Service or StatefulSet exists in `k8s/` at all. There is also a documented residual bypass: the guard does not percent-decode parameter names, so `?sslMode=VERIFY_IDENTITY&%73slMode=DISABLED` passes the guard and resolves to `DISABLED` in Connector/J |
+| 16 | NetworkPolicy ingress lockdown | Restricts 6010/7010/8080 to the `recsys-api-gateway` pod selector (+ Prometheus) | Present | Present | **Enforcement is CNI-dependent and nothing in this repo establishes it.** There is no IaC of any kind — no Terraform, CDK, eksctl config, no Calico/Cilium install, no `ENABLE_NETWORK_POLICY`. EKS's default VPC CNI does not enforce NetworkPolicy unless explicitly enabled. Also: the gateway's own ingress rule on 8010 has no `from`, so any pod in any namespace may reach it |
+| 17 | NetworkPolicy egress (#273, #283) | Denies unlisted egress on the four serving workloads; DNS scoped to `kube-system` | Present | Present, plus a `10.0.0.0/16` ElastiCache `ipBlock` marked `REPLACE_ME` | Same CNI dependency. Gaps that survive: there is **no default-deny**, the `recsys-outbox-reconciliation` CronJob is selected by no policy at all (unrestricted both directions), and `recsys-outbox-relay`, `redis` and `redis-sentinel` declare `policyTypes: [Ingress]` only. The relay's unrestricted egress is *pinned by a test as intentional* |
+| 18 | CDN viewer-request normalization (#282) | Whitelists four URIs and their parameters, rejects multi-value and any `%`-containing value with 400, canonicalizes parameter order | **N/A** | **N/A** | `scripts/cdn/normalize-catalog-query.js` is deployed only by the manual `scripts/create-cdn-distribution.sh`; no workflow invokes it and the repo states no distribution exists in the account. Neither base nor the overlays reference CloudFront |
+| 19 | CDN WAF WebACL | ALB Ingress annotation attaching a regional WebACL | **N/A** — base has no Ingress | Present but placeholder: `...:123456789012:regional/webacl/recsys-api-gateway/REPLACE_ME` | No WebACL rules exist anywhere in the repo. The repo's comments claim the ALB Controller rejects an invalid ARN at apply time; nothing here verifies that claim, and if it is wrong the failure mode is an internet-facing ALB with no WAF |
+| 20 | Splunk log shipping | Ships structured JSON log events to HEC; bounded, drop-on-full, at-most-once | **OFF** | **OFF** | `SPLUNK_HEC_TOKEN` is an `optional: true` `secretKeyRef` on `recsys-splunk`, which is not in the repo, and no `splunk` Service is deployed either. Unset ⇒ the appender installs and starts but allocates no queue and no drain thread. Because delivery is at-most-once by design, a Splunk search is a lower bound on what was logged even when it *is* on |
+
+Two further controls are worth naming because a reader may assume they are load-bearing:
+
+- **Submit-token CSRF** (`RECSYS_SUBMIT_TOKEN_ENABLED`) defaults `false` and is set in no
+  manifest. Even enabled it is not an authorization control — the token is obtainable
+  anonymously from `GET /api/v1/token`.
+- **Log PII redaction does not exist.** Nothing masks `userId` in log lines. The three
+  redaction helpers in the tree scrub HEC tokens from error text, JDBC credentials from a
+  URL, and feature-map keys in the Kafka path — none touches log events, and the Splunk
+  serializer copies every MDC entry verbatim. Concrete userIds do reach log lines in the
+  A/B exposure path.
+
+The two EKS overlays **do not differ on any control here** — `k8s/eks-us-west-2` differs only
+in region and HPA minimums, and both compose the same `k8s/eks-shared`.
+
+### 13.3 Enforced, inert, and who could reach what
+
+**Genuinely enforced.** Redis *client* authentication (`requireAuthentication` throws unless a
+password is present or `REDIS_ALLOW_NO_AUTH` is explicitly set, which no manifest sets) —
+but it protects the client's posture, not the server's, and the Flink and Spark jobs are
+separate clients: they can now authenticate via `StreamingRedisUri`, yet **nothing in this
+repository submits either job**, so no credential is configured anywhere here and neither
+call site is compiled by the default build. Cursor signing (non-optional `secretKeyRef` on
+all three serving workloads, key under 32 bytes rejected, so no configuration runs with it
+off) — though it is a pagination-integrity control, not a cross-user one: the cursor is bound
+to a `userId` the client already supplies, so what signing prevents is arbitrary keyset
+repositioning and replay, not reading another user's data. Credential stripping
+(unconditional). Operator-token fail-closure (denies everyone with the token unset, which is
+correct and also means the tier cannot be used).
+
+**Inert:** `REDIS_TLS` (explicitly `"false"` in both overlays). Redis ACL users in EKS (an
+argument to StatefulSets scaled to zero). User-scope authorization (§10 — no Cognito issuer
+in any render). PostHog pseudonymization (§12 — flag off, provider never constructed, egress
+not permitted). MySQL TLS (`MYSQL_ENABLED=false`). Origin secret (§4 — Secret absent, so the
+decorator is never registered). Splunk. CDN function and WAF. Gateway authentication *in
+base*.
+
+**Concretely, who could reach what:**
+
+- **`k8s/base` applied** — the gateway is `ClusterIP`, so nothing on the internet reaches it.
+  Whoever can (another pod, or `kubectl port-forward`) hits a gateway that authenticates
+  nobody: every proxied route including `/api/catalog/user` and `/api/users/**` with an
+  arbitrary `userId`, plus the unauthenticated `/metrics`. Only the four `OPERATOR` routes
+  refuse, and they refuse everyone. Redis traffic is plaintext.
+- **Either EKS overlay applied** — which its own comments say must not happen until
+  ElastiCache has transit encryption: an API key is required, and an API-key caller is
+  `Tier.SERVICE` and unrestricted, so **any valid API key can read any user's data by naming
+  their `userId`**.
+- **From inside the cluster, in any configuration** — the backends authenticate nobody. 6010,
+  7010 and 8080 apply no authentication to serving routes, validate no header the gateway
+  sets, and Spring Security is not on the classpath. `/setembedding` on 6010 — which the
+  gateway classifies `OPERATOR` — is open to any pod that can reach the port. Only the
+  NetworkPolicy separates them, and its enforcement is unestablished (§13.5).
+
+### 13.4 Conformance tests that pass green while the control is off
+
+Every gating security test here is a **file-shape test**. The PR gate runs `-Presilience` and
+strips `@Tag("docker")` regardless of includes, so every test exercising a real Redis, MySQL,
+Splunk or CDN is structurally incapable of blocking a merge.
+
+- **`MySqlTlsManifestTest`** asserts `sslMode=VERIFY_IDENTITY` in `k8s/base` and never reads
+  `MYSQL_ENABLED`, which is `"false"` — green, control unreachable. Its own javadoc notes the
+  parser is a hand-copy of the production tokenizer, so a flaw in the rule is invisible to both.
+- **`OperatorTokenManifestTest`** requires `optional: true` deliberately, so it asserts the
+  *reference* and never the Secret. No `kind: Secret` exists under `k8s/`.
+- **`RedisAclManifestTest`** asserts the template's passwords are *placeholders* — i.e. that
+  the real credential is absent.
+- **`RedisAuthManifestTest`** asserts `--requirepass` on StatefulSets the overlays scale to zero.
+- **`NetworkPolicyEgressManifestTest`** is thorough about rule shape and cannot assert
+  enforcement; its own messages say "under an enforcing CNI".
+- **`SplunkLogbackWiringTest`** contains an assertion that *requires the control to be off* —
+  it `assumeTrue`s the token is unset, then asserts the counters are zero.
+- **`CdnQueryNormalizationConformanceTest`** compares two committed files to each other.
+- **`GatewayOriginSecretTest`** is not in the `resilience` allow-list at all.
+
+`GatewayExposureManifestTest` now pins the pairing behind §13.1's finding, with a stated
+limit: **it reads files, it does not render a kustomization**, so the overlay half is a
+coupling between texts. Both of that week's overlay defects reached `main` through exactly
+that hole — an exposure check that only recognized the Service-type NLB annotation and missed
+the ALB-Ingress annotation the overlays actually use, and a per-directory scan that could not
+see `GATEWAY_ALLOW_ANONYMOUS: "false"` because it lives only in the `eks-shared` component
+pulled in via `components:`.
+
+### 13.5 What a reader should not assume, and what could not be established
+
+Nine inferences the PR list invites and the manifests refuse: Redis transport auth shipping
+does **not** mean traffic is encrypted; ACL users shipping does **not** mean least privilege
+is in force where it matters; gateway fail-closed authentication is a property of the code,
+not of `k8s/base`; user-scope authorization shipping does **not** mean user data is scoped
+(nothing constrains which `userId` a caller names); the operator token "enforced" currently
+means every operator route rejects every caller; NetworkPolicy conformance proves rule shape,
+not enforcement — **and the entire argument for why the backends need no authentication of
+their own rests on that unverified assumption**; the CDN controls describe a distribution
+that does not exist, behind a WAF ARN that is the literal string `REPLACE_ME`; a green PR gate
+says nothing about any of it; and Splunk being shipped does not mean there is an audit trail —
+delivery is at-most-once and nothing redacts userIds.
+
+Not establishable from this repository: whether any target cluster's CNI enforces
+NetworkPolicy (no IaC of any kind exists — the single assumption the largest number of other
+claims depend on); whether the required out-of-band Secrets exist (`recsys-secrets`,
+`recsys-gateway-auth`, `recsys-online-admin`, `recsys-gateway-origin-secret`, `recsys-splunk`)
+— note the asymmetry, an absent `recsys-gateway-auth` blocks the EKS gateway from starting
+while an absent `recsys-online-admin` silently disables the operator tier; whether ElastiCache
+has transit encryption, an AUTH token or RBAC groups; whether the ALB Controller really
+rejects a nonexistent WAF ARN; how the Flink and Spark jobs are deployed, and therefore
+whether anyone passes them the credentials they can now accept; and whether the CloudFront
+viewer-request function receives raw or normalized percent encoding.

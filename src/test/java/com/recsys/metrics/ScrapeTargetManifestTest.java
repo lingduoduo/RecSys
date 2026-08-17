@@ -46,7 +46,7 @@ class ScrapeTargetManifestTest {
             // Service endpoints via ServiceMonitors and never reads those annotations.
             "recsys-outbox-relay");
 
-    /** The port each target is actually scraped on (see docs/system_design/21_Observability.md §3.1). */
+    /** The port each target is actually scraped on (see docs/system_design/18_Fault_Tolerance.md §8.1). */
     private static final Map<String, Integer> SCRAPE_PORTS = Map.ofEntries(
             entry("recsys-online-serving", 7010),
             entry("recsys-api-gateway", 8010),
@@ -172,7 +172,7 @@ class ScrapeTargetManifestTest {
             // A missing NetworkPolicy is a distinct failure from one that omits Prometheus:
             // Kubernetes admits all ingress by default when no policy targets a pod, so
             // Prometheus's scrape would technically get through — but so would everything
-            // else. These four services are documented (CLAUDE.md, 21_Observability.md §3.2)
+            // else. These four services are documented (CLAUDE.md, 18_Fault_Tolerance.md §8.2)
             // as deliberately ingress-restricted, so a policy silently disappearing is itself
             // a regression this test should catch, not wave through as "nothing to restrict".
             assertThat(policy)

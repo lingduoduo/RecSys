@@ -69,7 +69,7 @@ spec:
             # .DEFAULT_TIMEOUT_MS) and the bulkhead drains 10x slower than the budget above it
             # implies. online-serving pins the same value; model-serving caps it in code
             # instead (ModelRuntimeProvider.RECALL_REDIS_TIMEOUT_MS = 150). Pinned by
-            # CatalogRedisTimeoutManifestTest; see docs/system_design/23_Online_Serving.md §2.
+            # CatalogRedisTimeoutManifestTest; see docs/system_design/17_Scalability.md §2.
             - name: REDIS_TIMEOUT_MS
               value: "200"
             - name: JAVA_OPTS

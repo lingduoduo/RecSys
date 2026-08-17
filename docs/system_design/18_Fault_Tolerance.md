@@ -197,7 +197,7 @@ a task blocked in a socket read would not observe an interrupt anyway. Measured 
 1790 ms for a worker. So "one slow channel doesn't stall every request" holds for the
 *request* and not for the *pool* — the Redis command timeout is what bounds worker
 occupancy, and it is capped in a different place for each of the three recall services. See
-[23_Online_Serving §2](23_Online_Serving.md#2-async-apis--where-the-asynchrony-actually-stops).
+[17_Scalability §2](17_Scalability.md#ortimeout-bounds-the-callers-wait-not-the-work--measured).
 
 [`RecallDegradationMetrics`](../../src/main/java/com/recsys/application/retrieval/multichannel/RecallDegradationMetrics.java)
 classifies failures (REJECTED / TIMEOUT / ERROR), tracks
@@ -231,7 +231,7 @@ When personalization is unavailable the path still returns something useful:
   when the embedding is absent or the `userId` is unparseable. Note the quotas bound
   candidate **sources**, not content: they guarantee an embedding-led page still contains
   trending and popularity items, and guarantee nothing about genre spread. Content diversity
-  is unimplemented — [23_Online_Serving §11](23_Online_Serving.md#11-availability-freshness-diversity--misnamed-reversed-and-scoped-out).
+  is unimplemented — see "Which serving rules are applied" in [README](../../README.md#which-serving-rules-are-applied).
 - **Trending fallback** — if every channel returns empty, the trending snapshot
   is served so the response is never blank.
 - **Fail-open stores** —
@@ -328,6 +328,49 @@ contract rather than leaking SQL internals:
 | MySQL disabled, or HikariCP pool unavailable/exhausted (`MySqlPoolUnavailableException`) | `503` |
 | Query exceeds `MYSQL_QUERY_TIMEOUT_SECONDS` (`SQLTimeoutException`) | `504` |
 | Unexpected SQL or mapping failure | `500` |
+
+### Retry policy, in one place
+
+| Path | Policy |
+|---|---|
+| gateway → backend | 1 retry, `IOException` **only**, explicitly *not* `SocketTimeoutException`, `Backoff.fixed(50)`, `maxTotalAttempts(2)` |
+| gateway → LLM | retry-once on upstream `429`, scheduled non-blocking |
+| MySQL reads | retry with 50 ms backoff; not on timeout, auth, or syntax errors |
+| **any Redis call** | **none** |
+
+The gateway rule is the load-bearing one and it is right: retrying an `IOException` recovers the
+Cloud Map deregistration window, while refusing to retry a timeout is what stops the gateway
+amplifying a slow backend into 2× load at the moment it can least absorb it. The cost is
+bounded and visible — worst-case upstream time becomes `3 s + 50 ms + 3 s ≈ 6.05 s`, which is
+the number that exceeds 7010's own 500 ms ceiling twelvefold
+([17_Scalability §2](17_Scalability.md#the-request-time-budget-end-to-end)).
+
+Redis has no retry **by design**: `disconnectedBehavior(REJECT_COMMANDS)` plus
+`TimeoutOptions.enabled()` make a disconnected Redis fail immediately rather than buffer, which
+is precisely what hands control to the serve-stale caches. Retrying there would convert a fast,
+absorbable failure into a slow one.
+
+### The primary-read path has no fallbacks, deliberately
+
+Everything in §3 describes the default read path. When a caller presents a consistency token,
+`recommendPrimary` / `recallPrimary` disable **every** one of those layers: an unavailable
+channel throws `PrimaryRecallUnavailableException` → 503, replica reads are bypassed, and stale
+values are never served. That is the correct trade for read-your-writes, but it means the
+consistency path has a strictly worse availability profile than the default path — and it is
+also the path carrying the longest wait in the system.
+
+`ConsistencyWaiter.await(eventId, userId, Duration.ofSeconds(2))` polls the lineage key every
+50 ms up to a 2 s budget, on the blocking-task thread, inside a request whose Armeria deadline
+is **500 ms**. When materialization is fast it returns well inside the deadline. When it is
+not, Armeria terminates the response at 500 ms while the handler keeps polling for the
+remaining ~1.5 s and then constructs the `202 Accepted` + `Retry-After: 1` that the design uses
+to tell the client to come back. Nobody receives it: the client sees a generic timeout instead
+of the backpressure signal, and the thread stays held for 4× the request budget. This is
+**latent, not live** — `ONLINE_DURABLE_EVENTS_ENABLED` is `"false"` in `k8s/base` and
+overridden in no overlay — so it becomes real on the day that flag is turned on, which is
+exactly when the `202` contract is being relied upon. Either the wait must be bounded by the
+request's remaining budget or `ONLINE_REQUEST_TIMEOUT_MS` must exceed it; the two numbers
+cannot both stay as they are.
 
 ### LLM proxy timeouts and retry
 
@@ -448,6 +491,280 @@ The load / characterization harnesses pin the gate knees:
 `InferenceLoadTest`, `KafkaFlinkPartitionLoadTest`). How to run them is in
 [overload-characterization.md](../runbooks/overload-characterization.md).
 
+## 8. Observability — knowing that any of this happened
+
+Sections 1–7 describe mechanisms that degrade, shed and recover. This one is how you find out
+they did. Two questions, two tools, and **deliberately no derivation between them**.
+
+**Splunk answers "what happened in this request?"** — a specific `traceId`, a stack trace, one
+user's malformed cursor. Per-event, high-cardinality (a `userId` is a fine log field and a
+forbidden metric label), delivered **at-most-once**: `SplunkHecAppender` drops on a full queue
+or failed POST rather than blocking a serving thread, so a Splunk search is a lower bound on
+what happened. Gated entirely on `SPLUNK_HEC_TOKEN`; unset, it is a no-op. Console output is
+the authoritative copy. Full design in
+[splunk-hec-logging](../runbooks/splunk-hec-logging.md).
+
+**Prometheus answers "is the system healthy right now?"** — rates, saturation, percentiles,
+scraped every 15 s and retained so `rate()` means something. It cannot say which user hit the
+bug; it can say 12% of requests have been failing for six minutes.
+
+**Neither is derived from the other.** No metric is computed by parsing a log line — there is
+no log processor or Prometheus exporter reading `logs/*.log`; and no log line represents a
+metric. Gauges and counters are read straight off the same `AtomicLong`/`LongAdder` fields the
+request path already updates. The apparent exception proves the rule: `SplunkHecMetrics`
+publishes the *appender's own* delivery counters, which is metrics about the logging
+pipeline's mechanics, not metrics derived from log content. Operationally: **alerting reads
+Prometheus, investigation reads Splunk.** No alert here fires on "an ERROR log appeared".
+
+### 8.1 What each service exposes, and what collects it
+
+| Service | Port | Metrics path | `ServiceMonitor` |
+|---|---:|---|---|
+| RecSys Serving API (`RecSysServer`) | 6010 | `/metrics` | `recsys-catalog-serving` |
+| Online Serving (`OnlinePredictionServer`) | 7010 | `/metrics` | `recsys-online-serving` |
+| API Gateway (`MicroserviceGatewayServer`) | 8010 | `/metrics` | `recsys-api-gateway` |
+| Model Serving (Spring Boot, `ModelApplication`) | 8080 | `/actuator/prometheus` | `recsys-model-serving` |
+| Outbox relay (`OutboxRelayCommand`) | 7020 | `/metrics` | `recsys-outbox-relay` |
+
+The three Armeria mains wire a `PrometheusMeterRegistry` and mount
+`PrometheusExpositionService`; the Spring model service uses Actuator's
+`/actuator/prometheus` — different path, same format. All five `ServiceMonitor`s live in
+[servicemonitor.yaml](../../k8s/base/servicemonitor.yaml), scraping every 15 s.
+
+**Two different selectors are involved and are easy to blur.** Each `ServiceMonitor`'s
+`spec.selector.matchLabels` picks the *Service* it scrapes — by the Service's
+`metadata.labels`, **not** its pod selector. Separately, `release: kube-prometheus-stack` sits
+on the `ServiceMonitor`'s own `metadata`, and is what the Prometheus CR's
+`serviceMonitorSelector` matches to decide which monitors it honours at all. Get the first
+wrong and the monitor scrapes nothing; get the second wrong and Prometheus never looks at the
+monitor.
+
+### 8.2 The scrape gap was three layers deep, and each fails silently
+
+Online-serving and the gateway once published exposition that nothing could collect:
+
+| Layer | What was missing | Symptom without it |
+|---|---|---|
+| `ServiceMonitor` | No CR existed for `recsys-online-serving` / `recsys-api-gateway` | Prometheus never learns the target exists — no series, no error, nothing to alert on because there is no `up{job=...}` to be `0` |
+| Service `metadata.labels` | The two Services had a pod `selector` but no `metadata.labels` | Even with a `ServiceMonitor` present, `spec.selector.matchLabels` matches the **Service's own labels**, not the Service's pod selector — the easy confusion. A monitor pointed at a label no Service carries matches nothing and scrapes nothing, with no error anywhere |
+| `NetworkPolicy` ingress | No rule admitting traffic from the `monitoring` namespace | Prometheus's scrape connection is dropped at the network layer. This looks identical to a slow or hung target from Prometheus's side — it just times out |
+
+Fixing any one alone would have changed nothing observable. This is the clearest example in
+the repo of instrumentation that looked present — metrics computed, endpoint answering `curl`
+— and was observable by nothing.
+
+**The outbox relay was a fifth target and failed differently**, which is the instructive part.
+Its `/metrics` always answered *and it looked configured*: the deployment carried
+`prometheus.io/scrape: "true"` and friends. Those annotations are a convention for an
+annotation-scraping Prometheus that this cluster does not run — a ServiceMonitor-driven
+Operator discovers `Service`+`Endpoints` and never reads them, and no `Service` existed for the
+relay to select. **Configuration that documents an intent nobody implemented is worse than
+none, because it reads as evidence the wiring exists.** The cost was concrete: `up{}` had no
+series for the relay, so `RecsysTargetDown` could not cover the very component
+`OutboxBacklogGrowing` is about. All three layers now exist and
+`ScrapeTargetManifestTest`'s `EXPECTED_SCRAPE_TARGETS` lists five services.
+
+### 8.3 Metric inventory, by subsystem
+
+Every metric is named at its registration call site; **the file is the source of truth, not
+this table.**
+
+**Serving** — request-shape and outcome metrics for the online-serving and catalog paths.
+
+| Metric | Registered in |
+|---|---|
+| `online_serving_qps`, `_failure_rate`, `_rejected_rate`, `_p50_ms`, `_p95_ms`, `_p99_ms` | [`metrics/OnlineServingMetricsService.java`](../../src/main/java/com/recsys/metrics/OnlineServingMetricsService.java) |
+| `recsys.recall.degradation.outcomes` (dotted → `recsys_recall_degradation_outcomes_total`, tagged `outcome`) | [`application/retrieval/multichannel/RecallDegradationMetrics.java`](../../src/main/java/com/recsys/application/retrieval/multichannel/RecallDegradationMetrics.java) |
+| `recsys.pagination.cursor.rejected` (tagged `reason`), `.cursor.legacy.accepted`, `.cursor.previous_key.verified`, `.page.returned` (tagged `terminal`), `.budget.exhausted` | [`application/pagination/RecommendationPaginationMetrics.java`](../../src/main/java/com/recsys/application/pagination/RecommendationPaginationMetrics.java) |
+
+**Gateway** — service-registry resolution health and origin-secret enforcement.
+
+| Metric | Registered in |
+|---|---|
+| `gateway_registry_services_total`, `_services_resolved`, `_snapshot_age_seconds`, `_refresh_total`, `_refresh_failures_total` | [`metrics/GatewayRegistryMetrics.java`](../../src/main/java/com/recsys/metrics/GatewayRegistryMetrics.java) |
+| `gateway_origin_secret_rejected_total` | [`application/gateway/GatewayOriginSecret.java`](../../src/main/java/com/recsys/application/gateway/GatewayOriginSecret.java) |
+
+**Redis** — cache-tier and replication health, independent of application-side hit rates.
+
+| Metric | Registered in |
+|---|---|
+| `redis_cache_available`, `_used_memory_bytes`, `_max_memory_bytes`, `_evicted_keys`, `_keyspace_hits`, `_keyspace_misses`, `_evicts_only_volatile_keys`, `redis_keyspace_sampled_keys`, `redis_keyspace_sample_available`, `redis_unexpected_persistent_keys` | [`metrics/RedisCacheMetrics.java`](../../src/main/java/com/recsys/metrics/RedisCacheMetrics.java) |
+| `redis_replica_lag_available`, `redis_replica_lag_seconds`, `redis_feature_version_min`, `_max`, `_age_seconds`, `redis_feature_version_sample_available` | [`metrics/ConsistencyMetrics.java`](../../src/main/java/com/recsys/metrics/ConsistencyMetrics.java) |
+| `recsys_online_rate_limit_decisions_total` (tagged `source`, `result`) | [`ratelimit/RedisRateLimiter.java`](../../src/main/java/com/recsys/ratelimit/RedisRateLimiter.java) |
+
+`redis_feature_version_sample_available` is the same availability-companion pattern as
+`redis_keyspace_sample_available` in the row above, and exists for the same reason:
+`redis_feature_version_age_seconds` initializes to `0` and is written only by a *successful*
+sample from [`RedisFeatureVersionSampler`](../../src/main/java/com/recsys/infrastructure/redis/RedisFeatureVersionSampler.java),
+and is deliberately **not** cleared on failure so the last known-good age survives for
+diagnosis. Both properties mean a low age is not by itself evidence of fresh data — a
+process that never sampled, and one whose sampler died, both read as a small healthy number
+forever. Only the companion gauge distinguishes them. Note it is registered by *every*
+`ConsistencyMetrics`, including the relay's, which runs no sampler and so reports `0`
+permanently; §4's alerts scope to `job="recsys-online-serving"` for that reason.
+
+**Outbox / consistency** — transactional outbox backlog and durable-delivery bookkeeping,
+all in the one class because they share the online server's `ConsistencyMetrics` instance.
+
+| Metric | Registered in |
+|---|---|
+| `outbox_pending_events`, `outbox_in_flight_events`, `outbox_delivery_lag_seconds` (tagged `destination`), `outbox_delivery_failures_total` (tagged `destination`), `async_events_dropped_total` (tagged `event_type`), `consistency_token_validation_total` (tagged `outcome`), `consistency_wait_total` (tagged `outcome`), `consistency_wait_duration_seconds`, `reconciliation_events_total` (tagged `outcome`) | [`metrics/ConsistencyMetrics.java`](../../src/main/java/com/recsys/metrics/ConsistencyMetrics.java) |
+
+**Inference** — the model-serving (8080) request path.
+
+| Metric | Registered in |
+|---|---|
+| `recsys.inference.requests` (dotted → `recsys_inference_requests_total`, tagged `result`), `.recent_failure_rate`, `.throughput_per_second` | [`metrics/InferenceMetricsService.java`](../../src/main/java/com/recsys/metrics/InferenceMetricsService.java) |
+
+**Load shedding** — the model-serving semaphore gate.
+
+| Metric | Registered in |
+|---|---|
+| `recsys.load_shedder.requests` (dotted → `recsys_load_shedder_requests_total`, tagged `result`), `.in_flight_requests`, `.utilization` | [`loadshed/LoadShedder.java`](../../src/main/java/com/recsys/loadshed/LoadShedder.java) |
+
+**Splunk shipping** — the Phase 1 → Phase 2 bridge (§2, §4).
+
+| Metric | Registered in |
+|---|---|
+| `splunk_hec_events_sent_total`, `_dropped_total`, `_failed_total`, `_indeterminate_total`, `splunk_hec_queue_depth` | [`metrics/SplunkHecMetrics.java`](../../src/main/java/com/recsys/metrics/SplunkHecMetrics.java) |
+
+**These five Splunk metrics nearly went dark on every restart, silently.** Micrometer's
+`Gauge.builder`/`FunctionCounter.builder` hold the *state* object as a `WeakReference` by
+design; the value *function* is held strongly. `SplunkHecMetrics.register()` originally built
+its `SnapshotHolder` as a plain local and no value-lambda closed over it, so nothing held a
+strong reference once `register()` returned, and the first GC cleared it. The two meter types
+then fail **differently**, which is what makes this dangerous rather than merely broken: a
+`Gauge` reading a cleared reference reports `NaN` — visibly wrong — while a `FunctionCounter`
+**freezes at its last pre-GC value and reports no error** (`DefaultGauge.value()` returns
+`NaN`; `CumulativeFunctionCounter.count()` falls back to a cached `last`). A frozen counter is
+indistinguishable from a quiet system, so `SplunkHecDroppingEvents` would have stopped being
+able to fire the moment the first GC ran. The fix is `SplunkHecMetrics.RETAINED`, a static
+list holding every `SnapshotHolder` for the JVM's life — bounded, deliberate retention, **do
+not "clean up" that field** — proven by
+`SplunkHecMetricsTest#metersSurviveGarbageCollectionOfTheirBackingState`, which forces a real
+GC verified via a canary `WeakReference`.
+
+Every other class in the inventory was checked individually rather than assumed, and each
+state object has a lifetime independent of its registration call: `RedisCacheMetrics`' fields
+ride along on the long-lived probe callbacks; `ConsistencyMetrics` keeps counters on a `State`
+in a static `WeakHashMap<MeterRegistry, State>`, which holds only its *keys* weakly;
+`InferenceMetricsService` and `LoadShedder` pass `this` as Spring singletons and additionally
+call `.strongReference(true)`. One narrow case is worth flagging rather than papering over:
+`gateway_registry_services_total`'s state is a `names` list built only inside `register()` —
+the same shape as the bug — and it survives today only because a sibling meter's lambda
+happens to close over the identical list. That is real protection but **incidental**;
+rewriting that sibling would silently reintroduce the bug in that one gauge.
+
+**Two naming conventions coexist deliberately.** Most metrics are registered with
+Prometheus-native `snake_case`; a handful (`recsys.inference.*`, `recsys.load_shedder.*`,
+`recsys.recall.degradation.*`, `recsys.pagination.*`) use dotted Micrometer convention, which
+the Prometheus registry converts to underscores on exposition. Both end up snake_case on the
+wire.
+
+### 8.4 Alerts
+
+Thirteen, all in [prometheus-rules.yaml](../../k8s/base/prometheus-rules.yaml). Every
+expression was checked against a real metric name in `src/main/java` first — an alert on a
+metric that is never emitted looks like coverage and can never fire.
+
+| Alert | Means | Likely cause | First response |
+|---|---|---|---|
+| `RecsysTargetDown` | `up{namespace="recsys"} == 0` for 5 m — Prometheus cannot scrape a target at all | Pod crashed, is stuck starting, or its metrics endpoint hung | `kubectl get pods -n recsys`, then the pod's logs for startup errors. **Every other alert in this file is blind for that service until this resolves** — its blind spot is the mirror image of §3.2: `up` only exists for targets Prometheus already knows about, so a `ServiceMonitor` that was never created produces no series to be zero. `ScrapeTargetManifestTest` covers that side; this alert covers a target that existed and stopped answering. |
+| `SplunkHecDroppingEvents` | `increase(splunk_hec_events_dropped_total[10m]) > 0` for 2 m — the bounded queue filled and events were discarded | A burst of log volume outran the drain thread, or Splunk itself is slow/down | These log events are gone for good (at-most-once, §2) — check `SPLUNK_HEC_QUEUE_CAPACITY` headroom and whether Splunk is reachable; raise the capacity if this is a recurring burst pattern rather than a one-off. |
+| `SplunkHecIndeterminateDelivery` | `increase(splunk_hec_events_indeterminate_total[10m]) > 0` for 2 m — a batch was sent but never acknowledged | Usually a read timeout, or `stop()` running past its 2 s drain budget on shutdown | Delivery is unknown, not lost — check whether the events actually landed in Splunk before assuming loss; if this correlates with deploys, it is probably shutdown timing, not a live outage. |
+| `GatewayRegistryStale` | `gateway_registry_snapshot_age_seconds > 120 or gateway_registry_snapshot_age_seconds == -1` for 5 m — the gateway is resolving upstreams from an old registry snapshot, or has never completed one | Redis is unreachable from the gateway, or `SERVICE_REGISTRY_REFRESH_MS` polling has stalled | Check Redis availability from the gateway pod and `gateway_registry_refresh_failures_total`; the gateway falls back to static routes when a service is unregistered, so this is a staleness warning, not an outage by itself. |
+| `OnlineServingShedding` | `online_serving_rejected_rate > 0.1` for 10 m — admission control is rejecting more than 10% of traffic on a sustained basis | Genuine overload, or `ONLINE_MAX_CONCURRENT_REQUESTS` set too low for real traffic | Check `recsys_load_shedder_utilization` and the pod's CPU; this is a partial-degradation warning (90%+ of traffic still succeeds), not a full outage. |
+| `RedisCacheUnavailable` | `redis_cache_available == 0` for 5 m — the cache stats probe cannot reach Redis at all | Redis pod down, or a NetworkPolicy egress rule blocking the connection | Check Redis pod status and the relevant service's egress rule in `k8s/base/network-policy.yaml`; serving degrades to stale-or-empty results depending on the path (§1 of [02_Caching](02_Caching.md)) rather than erroring outright. |
+| `RedisReplicaLagHigh` | `redis_replica_lag_seconds > 10 or redis_replica_lag_available == 0` for 10 m — replica reads are stale, or the lag probe itself can't tell | Replica pod slow/overloaded, or a network partition to the replica | Check replica pod status and network connectivity between replicas; a read routed to a lagging replica can contradict a write that already succeeded elsewhere. |
+| `OutboxBacklogGrowing` | `outbox_pending_events > 1000 and delta(outbox_pending_events[15m]) > 0` for 3 m — more than 1000 events pending **and** still rising | The outbox relay is falling behind its publish target (Kafka or SNS) | Check `outbox_delivery_failures_total` and `outbox_delivery_lag_seconds` to identify which destination is backed up; eventual-consistency windows widen for as long as this holds. |
+
+**Serving data-freshness SLOs** — five more in the `recsys.data` group, watching the *data* at
+two boundaries rather than the request path. Incident procedure in
+[serving-data-freshness](../runbooks/serving-data-freshness.md). Internal objectives, not
+customer SLAs.
+
+| Alert | Means | Likely cause | First response |
+|---|---|---|---|
+| `OnlineFeatureDataStale` | `redis_feature_version_age_seconds{job="recsys-online-serving"} > 60` for 5 m | The Flink online-feature job is stalled, restarting, or falling behind its Kafka sources | 60 s is the entire stale-on-error budget `OnlineFeatureStore` may serve within, so this means five minutes outside serving's own contract. Check the Flink job's state and checkpoints first, then Kafka consumer lag. Serving continues on bounded stale data — restore the writer, do **not** delete feature keys. |
+| `OnlineFeatureDataCriticallyStale` | Same series `> 300` for 5 m — **critical** | The feature view has effectively stopped advancing | Treat recommendations as built from abandoned data. Same diagnosis order; also check whether Redis lost the feature keyspace entirely. |
+| `OnlineFeatureVersionSampleUnavailable` | `redis_feature_version_sample_available{job="recsys-online-serving"} == 0` for 5 m | Redis unreachable from online serving, no `*:updated_at` keys exist, or the sampler never started | **The two alerts above are blind while this fires.** The age gauge is frozen at its last good value, so a low age is stale evidence, not fresh data. Cross-check `RedisCacheUnavailable`: if both fire, this is a Redis connectivity incident. |
+| `OutboxDeliveryLatencyHigh` | `outbox_delivery_lag_seconds_max{destination="kafka_online"} > 30` for 10 m | Relay throughput, Kafka partition leadership churn, or a contended MySQL outbox table | `_max`, not the bare meter name — Micrometer exposes a Timer as `_count`/`_sum`/`_max`. It is a *decaying window* max, so a relay that stops delivering **entirely** falls back toward 0 and does not raise this; that case is `OutboxBacklogGrowing`'s. The two are complementary. |
+| `OutboxDeliveryFailuresSustained` | `increase(outbox_delivery_failures_total{destination="kafka_online"}[5m]) > 0` for 10 m | A destination that keeps rejecting — auth, unknown topic, timeout, serialization | Events stay durable in the MySQL outbox; the consistency window widens until delivery recovers. Check relay logs for the failure class. Do not clear the outbox table to silence it. |
+
+Two properties of that group are deliberate and easy to "fix" into being wrong. **The `job`
+selector on the three feature alerts is load-bearing**: every process building a
+`ConsistencyMetrics` registers the feature gauges, including the relay, which runs no sampler
+and reports a permanent `0` — unscoped, `OnlineFeatureVersionSampleUnavailable` would page
+forever about a process never meant to observe the feature view. And
+**`OutboxDeliveryFailuresSustained` inverts the range/`for:` rule below on purpose**: the
+counter increments per failed *attempt* and the relay retries, so a short burst is routine and
+must not page; measured with `promtool`, a four-attempt burst under `[10m]`/`for: 10m` fires
+spuriously at t=11 m, while a 5 m window cannot span a 10 m hold.
+
+**Three traps this file fell into once, worth not repeating elsewhere:**
+
+- **`for:` cannot equal the `increase()`/`delta()` range window.** An isolated spike ages out
+  of the range and flips the expression false *before* `for:` is satisfied, so the alert can
+  only fire on a continuously regenerating condition — which defeats alerting on a burst. Fix
+  by shrinking `for:` well below the range (2–3 m against 10–15 m), not widening the range.
+  `promtool check rules` does not catch this.
+- **A gauge that goes `NaN` on failure silently defeats a `>` comparison.**
+  `RedisReplicaLagHigh` once read only `redis_replica_lag_seconds > 10`; an unreachable
+  replica reports `NaN`, and `NaN > 10` is false — so the worst case the alert existed to
+  catch produced no alert. The fix checks the paired availability gauge explicitly.
+- **A sentinel value defeats `>` the same way, without needing missing data.**
+  `GatewayRegistryStale` once read only `> 120`; `GatewayRegistryMetrics` reports a literal
+  `-1` when the gateway has never completed a refresh, and `-1 > 120` is false — so a gateway
+  that never resolved anything stayed silent while one three minutes stale correctly paged.
+  Ask what a gauge reports for "never happened yet", not only "happened too long ago".
+  Note `GatewayRegistryStale` **cannot fire in any configuration this repo ships**:
+  `SERVICE_REGISTRY_ENABLED` defaults false and appears nowhere under `k8s/`, so the gauge is
+  never registered.
+
+`prometheus-rules.test.yaml` (run by `promtool test rules` in
+[prometheus-rules.yml](../../.github/workflows/prometheus-rules.yml)) gives every alert both a
+firing case and a **near-miss** that must not fire — the near-miss matters more than it looks,
+because an expression that fires on everything passes a fire-only suite while being useless.
+
+### 8.5 What is deliberately absent
+
+Read this before assuming any of it works.
+
+- **No Grafana.** Nothing renders or validates a dashboard. A panel querying a renamed metric
+  fails silently, showing a flat line that looks like normal quiet.
+- **No log-derived metrics, no metric-derived logs** — restated because it is the
+  load-bearing design decision, not a gap.
+- **No tracing backend.** `traceId` exists in MDC but only the Spring model service populates
+  it (`TraceIdAspect` is Spring AOP; the three Armeria mains have no container to weave into),
+  and there is no collector — no Jaeger, Zipkin or OTel — anywhere. **Do not assume
+  distributed tracing works**: a `traceId` search surfaces model-service events only and
+  cannot follow a request across the gateway → backend hop it actually took.
+- **No Prometheus.** Every `ServiceMonitor` and the `PrometheusRule` are CRs a **Prometheus
+  Operator** interprets, and nothing here installs one. `kubectl apply` succeeds, the objects
+  exist, and nothing evaluates them. **A committed alert file is evidence that alerts are
+  written, not that anything evaluates them** — the same shape of failure as §8.2's scrape gap.
+- **The gateway's `/metrics` is public by design, and the NetworkPolicy rule added for
+  Prometheus is redundant.** `GatewayOriginSecret.EXEMPT_PATHS` includes `/metrics`, the EKS
+  ALB routes `/` to the gateway, and that policy already had an ingress rule on 8010 with **no
+  `from:`** — all sources were already admitted. So the full exposition is reachable from the
+  internet behind only WAF. This bullet exists so nobody reads "ingress rules added for
+  Prometheus" as "gateway metrics are access-controlled".
+
+### 8.6 How this stays honest
+
+Four mechanisms, each closing a gap the others cannot see. `RecsysTargetDown` catches a target
+that existed and went silent — blind to one that never existed, since `up{}` has no series for
+a `ServiceMonitor` never created. **`ScrapeTargetManifestTest`** closes exactly that blind
+spot statically for all three layers of §8.2, in the `-Presilience` gate. **`promtool`**
+actually executes the alert expressions against synthetic series — the only mechanism proving
+an expression behaves as its prose claims. **`DocumentationIndexTest`** keeps the docs indexed,
+though it cannot check that content still matches code.
+
+None proves the whole chain: a Prometheus Operator that silently stopped evaluating rules, or
+a cluster whose `serviceMonitorSelector` uses a different `release` label, slips past all
+four. That gap is inherent to testing manifests that assume infrastructure this repo does not
+provision.
+
 ## Sharp edges — status
 
 1. **Bulkhead saturates before the concurrency gate (by design).** On 6010 the
@@ -474,3 +791,13 @@ The load / characterization harnesses pin the gate knees:
    and the `infrastructure/autoscaling` ASG model are tested simulations — real
    scaling and failover capacity come from EKS HPA + cluster-autoscaler and the
    manual DR promote above.
+- **The consistency path's `202` is unreachable when it matters** (§4). A 2 s
+  `ConsistencyWaiter` poll inside a 500 ms Armeria deadline means a slow materialization yields
+  a generic timeout, not the designed `202 + Retry-After`. Latent behind
+  `ONLINE_DURABLE_EVENTS_ENABLED=false`; live the day the token path is enabled. Fixing it
+  means changing one of two numbers, and which one depends on whether the token path is meant
+  to be slower than the default path — a product question, not a tuning one.
+- **Observability assumes infrastructure this repo does not provision** (§8.5). Every
+  `ServiceMonitor` and the `PrometheusRule` are CRs a Prometheus Operator interprets, and
+  nothing installs one; a committed alert file is evidence alerts are written, not that
+  anything evaluates them.
