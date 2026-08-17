@@ -181,6 +181,15 @@ recovers, so one slow/failing channel doesn't stall every request. A timeout,
 error, or bulkhead rejection returns an empty channel result — the two-phase
 quota merge gap-fills the shortfall from the remaining channels.
 
+**`orTimeout` protects the response, not the thread.** It completes the dependent future
+exceptionally without cancelling or interrupting the task already running on the bulkhead;
+a task blocked in a socket read would not observe an interrupt anyway. Measured with a
+1-thread pool and a 2000 ms task: the caller degraded at 220 ms, and the next task waited
+1790 ms for a worker. So "one slow channel doesn't stall every request" holds for the
+*request* and not for the *pool* — the Redis command timeout is what bounds worker
+occupancy, and it is capped in a different place for each of the three recall services. See
+[23_Online_Serving_Latency §2](23_Online_Serving_Latency.md#2-async-apis--where-the-asynchrony-actually-stops).
+
 [`RecallDegradationMetrics`](../../src/main/java/com/recsys/application/retrieval/multichannel/RecallDegradationMetrics.java)
 classifies failures (REJECTED / TIMEOUT / ERROR), tracks
 `degradedRatio = degradedRecalls / totalRecalls`, and records four bounded

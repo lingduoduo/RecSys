@@ -368,6 +368,14 @@
                 <include>**/redis/StreamingRedisUriTest.java</include>
                 <include>**/redis/RedisEmbeddingStoreTest.java</include>
                 <include>**/redis/RedisEvictionPolicyManifestTest.java</include>
+                <!-- The recall channel timeout bounds the caller; the Redis command timeout
+                     bounds the bulkhead worker. orTimeout does not interrupt the running task
+                     (measured: caller degraded at 220ms, next task waited 1790ms for a thread),
+                     so an unset REDIS_TIMEOUT_MS drains the bulkhead at the 2000ms default while
+                     the 200ms channel budget suggests otherwise. Three services run recall and
+                     each bounded this differently; catalog-serving bounded it nowhere until
+                     2026-08-17. Pure file parsing. -->
+                <include>**/redis/CatalogRedisTimeoutManifestTest.java</include>
                 <include>**/redis/RedisCacheStatsProbeTest.java</include>
                 <include>**/redis/RedisPersistentKeyProbeTest.java</include>
                 <include>**/redis/RedisReplicaLagProbeTest.java</include>
