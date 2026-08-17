@@ -38,7 +38,7 @@ import static org.assertj.core.api.Assertions.assertThat;
  * <p>Scope limit: this reads manifest text. It proves a coupling between two files, not what a
  * cluster receives, and it says nothing about a deployment that does not apply {@code k8s/base}
  * — {@code scripts/run-microservices-local.sh} still gets the 2000 ms code default. See
- * {@code docs/system_design/23_Online_Serving.md} §2 and sharp edge 1.
+ * {@code docs/system_design/17_Scalability.md} §2 and sharp edge 6.
  */
 class CatalogRedisTimeoutManifestTest {
 

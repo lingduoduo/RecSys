@@ -490,15 +490,13 @@ without updating it.
 | 18 | [Fault Tolerance](docs/system_design/18_Fault_Tolerance.md) | Resilience contracts, graceful drain, failure-path evidence, and status |
 | 19 | [Pagination](docs/system_design/19_Pagination.md) | Keyset and offset implementations, and the shared signed live-keyset recommendation contract |
 | 20 | [AuthN / AuthZ](docs/system_design/20_AuthN_AuthZ.md) | The six credentials, fail-closed startup, credential stripping, and the operator-token tier |
-| 21 | [Observability](docs/system_design/21_Observability.md) | The two-phase split — logs to Splunk, system health to Prometheus — the metric inventory, and the alerts that keep it honest |
-| 22 | [Data-Leakage Posture](docs/system_design/22_Data_Leakage_Posture.md) | What the twenty data-leakage controls actually enforce as rendered, which are inert and why, the base-versus-overlay gap, and the conformance tests that pass while the control is off |
-| 23 | [Online Serving](docs/system_design/23_Online_Serving.md) | The serving path under both its budgets — **time** (the timeout chain across four services, where it inverts, why `orTimeout` bounds the caller but not the bulkhead worker) and **rules** (which business rules a candidate must pass; see the table below) |
 
 ### Which serving rules are applied
 
 The rule layer that decides whether a candidate may be shown at all. Detail, and the four
 incompatible definitions of "already consumed", in
-[23_Online_Serving §§9–11](docs/system_design/23_Online_Serving.md#9-the-rule-layer--nine-rules-four-of-which-do-not-exist).
+[17_Scalability §2](docs/system_design/17_Scalability.md#2-overload-protection--the-layers-that-let-it-scale-without-collapsing)
+and [18_Fault_Tolerance §3](docs/system_design/18_Fault_Tolerance.md#3-graceful-degradation--a-degraded-answer-beats-no-answer).
 
 | Rule | Status |
 |---|---|
@@ -513,8 +511,55 @@ incompatible definitions of "already consumed", in
 | Frequency caps | ❌ absent — nothing tracks how often an item was *shown* |
 
 Most absences are data-model gaps first: `Movie` is `(id, title, year, genres)`, so four of
-the five have no field to read. This is a demonstration system — "absent" means *not
-implemented*, not *broken*.
+the five have no field to read — each is "acquire and plumb a signal, then filter", not "add a
+filter". Diversity is the exception, needing only `genres`. The carrier exists and is inert:
+`MovieCandidate.features` and `RankedMovie.features` are `Map<String, Object>` threaded from
+recall through ranking and are `Map.of()` at every construction site but one. There is **no
+`Rule`, `Filter` or `Policy` interface anywhere in `src/main/java`** — each rule lives wherever
+it was first needed, which is the mechanical reason one rule acquired four definitions. This is
+a demonstration system: "absent" means *not implemented*, not *broken*.
+
+**"Already consumed" means four different things**, so the same user asking the same question
+has 3, 20, or all of their history excluded depending on which port answers:
+
+| Definition | Source of truth | Applied by |
+|---|---|---|
+| **Entire watch history** | `DataManager.getWatchedMovieIds` — classpath ratings, static | catalog 6010 `RecommendationService.V1`; `CandidateGenerator.byEmbedding` / `byUserHistory` |
+| **3 most recent** | live `OnlineFeatureStore` | online 7010 `OnlineRecommendationService.RECENT_HISTORY_LIMIT = 3` |
+| **20 most recent** | live `OnlineFeatureStore` | model 8080 `ModelRetrievalStage.RECENT_EXCLUDE_LIMIT = 20` |
+| **The user's own rating map** | in-memory CF matrix | `Channels.UserSimilarity` (`currentRatings.containsKey(movieId)`) |
+
+It is also inconsistent *within* a single 7010 request — the `Embedding` channel excludes the
+full classpath watch history while the quota merge excludes only the 3 live recent items.
+Enforcement, once a set exists, is correct (`legacyMerge`, `quotaMerge`, `ColdStartChannel`,
+`OnnxInferencePipeline`); the defect is upstream in deciding the contents.
+
+**On the canonical route, caller exclusions never reach recall.** `POST /api/recommend` routes
+to 7010's `/v2/recommend`, and `OnlineRecommendationRequest` is `(userId, window, k)` — nowhere
+to put them — so `OnlineBlendingPipeline` applies the caller's list to the *finished ranked
+list*. Recall and ranking spend their budget on candidates then discarded.
+`ModelRetrievalStage.withRecentExclusions` is the correct shape one service over: it merges
+caller + recent history into the query *before* recall, and `catch (RuntimeException e)`
+degrades instead of failing.
+
+Three more qualifications behind the ⚠️ rows. **`addIfAvailable` checks
+`ModelArtifactService.getAvailableItemIds()`**, which returns the model's item-vocab keys — so
+"available" means *scoreable*, not published or licensed, and it runs only on 8080's Redis-down
+fallback. **`RankingStage`'s strict tiering** appends every out-of-vocab candidate below every
+in-vocab one, by design ("so the two score scales never need reconciling") — sound reason,
+undocumented consequence: a new item cannot outrank anything the model knows until the next
+artifact, so freshness is bounded by retraining cadence and the upstream recency boost is inert
+whenever an in-vocab candidate is present. **Quotas cap candidate *sources*, not content**: the
+2026-06-15 cold-start design named the gap ("No mechanism guarantees diversity or cold-start
+coverage") and only the coverage half shipped, so nothing bounds genre spread — and since the
+embedding channel retrieves neighbours of one user vector, a single-genre block is the expected
+case. Detail on all of these lives with the mechanisms in
+[17_Scalability §2](docs/system_design/17_Scalability.md#2-overload-protection--the-layers-that-let-it-scale-without-collapsing)
+and [18_Fault_Tolerance §3](docs/system_design/18_Fault_Tolerance.md#3-graceful-degradation--a-degraded-answer-beats-no-answer).
+
+These findings are a **code audit**, not a behavioural test: the 3-item claim comes from
+`RECENT_HISTORY_LIMIT` and its call sites, not from a response, and the ordering consequence is
+derived from `RankingStage`'s code and comment rather than measured against a real artifact.
 
 Cross-cutting entry points:
 - [What a Redis outage actually does](docs/system_design/02_Caching.md#9-what-happens-when-redis-goes-down)
@@ -522,11 +567,9 @@ Cross-cutting entry points:
   value exists; on a cold cache three of the four cache families rethrow, and the reads that
   do so sit outside every degradation layer in
   [18_Fault_Tolerance §3](docs/system_design/18_Fault_Tolerance.md#3-graceful-degradation--a-degraded-answer-beats-no-answer).
-- [The serving latency budget](docs/system_design/23_Online_Serving.md#1-the-budget-chain-as-deployed)
-  — every timeout on the request path in one table, read outside-in. The individual
-  mechanisms live in [02_Caching](docs/system_design/02_Caching.md),
-  [17_Scalability](docs/system_design/17_Scalability.md) and
-  [18_Fault_Tolerance](docs/system_design/18_Fault_Tolerance.md); a budget that inverts
+- [The serving time budget](docs/system_design/17_Scalability.md#the-request-time-budget-end-to-end)
+  — every timeout on the request path in one table, read outside-in, plus the measurement
+  showing `orTimeout` frees the caller but not the bulkhead worker. A budget that inverts
   between two layers is a property of neither and is invisible from inside either.
 - [API versioning](docs/system_design/09_API_Gateway.md#api-versioning-and-deprecation)
   — the gateway-owned `/api/v{n}` path version, why an unversioned `/api` path is

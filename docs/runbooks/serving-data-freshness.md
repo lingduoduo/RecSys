@@ -15,7 +15,7 @@ group `recsys.data`.
 
 > Related: [Durable eventual consistency](durable-eventual-consistency.md) explains the outbox,
 > relay, and retry model these delivery alerts observe;
-> [21_Observability](../system_design/21_Observability.md) is the full metric and alert
+> [18_Fault_Tolerance §8](../system_design/18_Fault_Tolerance.md#8-observability--knowing-that-any-of-this-happened) is the full metric and alert
 > inventory.
 
 ## The objectives
@@ -214,7 +214,7 @@ resolve the alert.
 #### Why the lookback is shorter than the hold
 
 This alert uses a 5-minute `increase()` window under a 10-minute `for:`, which is the inverse
-of the relationship §4 of [21_Observability](../system_design/21_Observability.md) warns about
+of the relationship [18_Fault_Tolerance §8.4](../system_design/18_Fault_Tolerance.md#84-alerts) warns about
 for burst alerts — and deliberately so:
 
 - A burst alert wants `for:` **well below** the range window, or an isolated spike ages out of

@@ -135,7 +135,7 @@ the four `ServiceMonitor`s in `k8s/base/servicemonitor.yaml`. Alerts live in
 in CI (`.github/workflows/prometheus-rules.yml`); both files assume a Prometheus Operator is
 already running in the cluster — they do nothing on their own otherwise. The Splunk
 appender's delivery counters surface here too, as `splunk_hec_*` gauges/counters
-(`SplunkHecMetrics`). See `docs/system_design/21_Observability.md`.
+(`SplunkHecMetrics`). See `docs/system_design/18_Fault_Tolerance.md` §8.
 
 ## Architecture
 

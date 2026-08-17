@@ -20,7 +20,7 @@
 # Removing this patch is the last step of adopting ElastiCache RBAC, not the first: create the
 # user group and its five users, put each password in recsys-secrets under the matching
 # redis-<user>-password key, and only then let REDIS_USERNAME through. See
-# docs/system_design/22_Data_Leakage_Posture.md.
+# docs/system_design/20_AuthN_AuthZ.md §13.
 apiVersion: apps/v1
 kind: Deployment
 metadata:

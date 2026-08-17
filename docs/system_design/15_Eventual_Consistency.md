@@ -65,7 +65,7 @@ the backpressure signal, and the thread is held for 4× the request budget. This
 it becomes real on the day the token path is enabled, which is the day the `202` starts being
 relied upon. Either the wait must be bounded by the request's remaining budget or the request
 timeout must exceed it; the two numbers cannot both stay as they are. See
-[23_Online_Serving §7](23_Online_Serving.md#7-graceful-fallbacks--layered-with-one-deliberate-exception).
+[18_Fault_Tolerance §4](18_Fault_Tolerance.md#the-primary-read-path-has-no-fallbacks-deliberately).
 
 **Staleness is measured, not assumed.** `RedisReplicaLagProbe` writes a sequence
 marker to the primary and reads it back through replica routing to continuously
