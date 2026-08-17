@@ -311,7 +311,7 @@ and online 7010 call the **uncapped** overload and depend on `REDIS_TIMEOUT_MS` 
 `k8s/base` (200 ms each) instead, so an unset env var leaves them at the 2000 ms default —
 10× the recall channel budget layered above them. Why that gap is a capacity problem rather
 than a latency one, and the measurement behind it, is
-[23_Online_Serving_Latency §2](23_Online_Serving_Latency.md#2-async-apis--where-the-asynchrony-actually-stops).
+[23_Online_Serving §2](23_Online_Serving.md#2-async-apis--where-the-asynchrony-actually-stops).
 
 **Connections.** Each executor keeps one **lazily opened** shared multiplexed connection
 for sync commands plus a commons-pool2 pool (`REDIS_POOL_MAX_TOTAL` 50, maxIdle 10,
@@ -589,7 +589,7 @@ variant. An empty Redis is a supported state. An *unreachable* one, on a cold JV
    compute-wait (2000 ms) were each chosen independently of online serving's 500 ms
    `ONLINE_REQUEST_TIMEOUT_MS`. None is reachable as client-visible latency there; all remain
    load-bearing as thread occupancy — see
-   [23_Online_Serving_Latency §4](23_Online_Serving_Latency.md#4-caching--the-wait-budgets-are-larger-than-the-request),
+   [23_Online_Serving §4](23_Online_Serving.md#4-caching--the-wait-budgets-are-larger-than-the-request),
    which also covers the pool knobs not bounding the serving path (§5).
 6. **Null sentinels are a 30 s bet.** Absent-ID sentinels expire after 30 s, so a newly
    *added* embedding for a previously-missing ID isn't visible until the sentinel lapses

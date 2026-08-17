@@ -197,7 +197,7 @@ a task blocked in a socket read would not observe an interrupt anyway. Measured 
 1790 ms for a worker. So "one slow channel doesn't stall every request" holds for the
 *request* and not for the *pool* — the Redis command timeout is what bounds worker
 occupancy, and it is capped in a different place for each of the three recall services. See
-[23_Online_Serving_Latency §2](23_Online_Serving_Latency.md#2-async-apis--where-the-asynchrony-actually-stops).
+[23_Online_Serving §2](23_Online_Serving.md#2-async-apis--where-the-asynchrony-actually-stops).
 
 [`RecallDegradationMetrics`](../../src/main/java/com/recsys/application/retrieval/multichannel/RecallDegradationMetrics.java)
 classifies failures (REJECTED / TIMEOUT / ERROR), tracks
@@ -228,7 +228,10 @@ When personalization is unavailable the path still returns something useful:
   (0.4) for users with no embedding.
   [`QuotaPolicy`](../../src/main/java/com/recsys/application/retrieval/coldstart/QuotaPolicy.java)
   picks a cold quota (weighted toward `cold_start` / `trending` / `popularity`)
-  when the embedding is absent or the `userId` is unparseable.
+  when the embedding is absent or the `userId` is unparseable. Note the quotas bound
+  candidate **sources**, not content: they guarantee an embedding-led page still contains
+  trending and popularity items, and guarantee nothing about genre spread. Content diversity
+  is unimplemented — [23_Online_Serving §11](23_Online_Serving.md#11-availability-freshness-diversity--misnamed-reversed-and-scoped-out).
 - **Trending fallback** — if every channel returns empty, the trending snapshot
   is served so the response is never blank.
 - **Fail-open stores** —

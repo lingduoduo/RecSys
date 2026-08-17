@@ -492,7 +492,29 @@ without updating it.
 | 20 | [AuthN / AuthZ](docs/system_design/20_AuthN_AuthZ.md) | The six credentials, fail-closed startup, credential stripping, and the operator-token tier |
 | 21 | [Observability](docs/system_design/21_Observability.md) | The two-phase split — logs to Splunk, system health to Prometheus — the metric inventory, and the alerts that keep it honest |
 | 22 | [Data-Leakage Posture](docs/system_design/22_Data_Leakage_Posture.md) | What the twenty data-leakage controls actually enforce as rendered, which are inert and why, the base-versus-overlay gap, and the conformance tests that pass while the control is off |
-| 23 | [Online Serving & Latency](docs/system_design/23_Online_Serving_Latency.md) | The end-to-end timeout budget across four services, where it inverts, why `orTimeout` bounds the caller but not the bulkhead worker, and what batching, pooling and fallbacks actually cost |
+| 23 | [Online Serving](docs/system_design/23_Online_Serving.md) | The serving path under both its budgets — **time** (the timeout chain across four services, where it inverts, why `orTimeout` bounds the caller but not the bulkhead worker) and **rules** (which business rules a candidate must pass; see the table below) |
+
+### Which serving rules are applied
+
+The rule layer that decides whether a candidate may be shown at all. Detail, and the four
+incompatible definitions of "already consumed", in
+[23_Online_Serving §§9–11](docs/system_design/23_Online_Serving.md#9-the-rule-layer--nine-rules-four-of-which-do-not-exist).
+
+| Rule | Status |
+|---|---|
+| Deduplication | ✅ applied on all three serving paths |
+| Already-consumed removal | ⚠️ applied, but **four incompatible definitions** (3 recent on 7010, 20 on 8080, full history on 6010, own-ratings map in one channel) |
+| Freshness | ⚠️ applied in recall, **reversed in ranking** — strict tiering puts every out-of-vocab item below every in-vocab one |
+| Availability | ⚠️ **name only** — `addIfAvailable` checks model-vocabulary membership, not whether an item is published or licensed |
+| Diversity | ❌ absent — channel quotas bound candidate *sources*, not content |
+| Eligibility | ❌ absent — no region, age, tier or entitlement check |
+| Safety / moderation | ❌ absent — no blocklist, maturity rating or suppression list |
+| Sponsored content | ❌ absent — no promoted slots or organic/paid separation |
+| Frequency caps | ❌ absent — nothing tracks how often an item was *shown* |
+
+Most absences are data-model gaps first: `Movie` is `(id, title, year, genres)`, so four of
+the five have no field to read. This is a demonstration system — "absent" means *not
+implemented*, not *broken*.
 
 Cross-cutting entry points:
 - [What a Redis outage actually does](docs/system_design/02_Caching.md#9-what-happens-when-redis-goes-down)
@@ -500,7 +522,7 @@ Cross-cutting entry points:
   value exists; on a cold cache three of the four cache families rethrow, and the reads that
   do so sit outside every degradation layer in
   [18_Fault_Tolerance §3](docs/system_design/18_Fault_Tolerance.md#3-graceful-degradation--a-degraded-answer-beats-no-answer).
-- [The serving latency budget](docs/system_design/23_Online_Serving_Latency.md#1-the-budget-chain-as-deployed)
+- [The serving latency budget](docs/system_design/23_Online_Serving.md#1-the-budget-chain-as-deployed)
   — every timeout on the request path in one table, read outside-in. The individual
   mechanisms live in [02_Caching](docs/system_design/02_Caching.md),
   [17_Scalability](docs/system_design/17_Scalability.md) and
