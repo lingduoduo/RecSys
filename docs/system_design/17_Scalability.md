@@ -128,7 +128,7 @@ slots** under `limits.cpu: "1"`, against an admission gate that allows 64 concur
 requests fanning out to 6 channels each — so channel rejection is the steady state well
 before the admission gate engages, which is what `recall.degradedRatio` is actually
 reporting. Both are measured and quantified in
-[23_Online_Serving_Latency §2](23_Online_Serving_Latency.md#2-async-apis--where-the-asynchrony-actually-stops).
+[23_Online_Serving §2](23_Online_Serving.md#2-async-apis--where-the-asynchrony-actually-stops).
 
 ### Rate limiting (`ratelimit/TokenBucket` primitive)
 

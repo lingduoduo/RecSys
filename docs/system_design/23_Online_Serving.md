@@ -1,9 +1,15 @@
-# Online Serving and Latency in Recsys-Backend-Service
+# Online Serving in Recsys-Backend-Service
 
-An investigation of the online serving path as a **latency budget**: what each layer is
-allowed to spend, whether the layers agree with each other, and what happens to the work
-already in flight when one of them gives up. Seven mechanisms are in scope — async APIs,
-batching, caching, connection pools, timeouts, retries, and graceful fallbacks.
+An investigation of the online serving path under its two budgets. **§§1–8 are the time
+budget** — what each layer is allowed to spend, whether the layers agree with each other, and
+what happens to work already in flight when one of them gives up (async APIs, batching,
+caching, connection pools, timeouts, retries, graceful fallbacks). **§§9–11 are the rule
+budget** — which business rules a candidate must pass before it may be shown (availability,
+eligibility, safety, already-consumed removal, diversity, freshness, sponsored content,
+frequency caps, deduplication).
+
+The two halves fail in opposite ways. The time budget is built out of real mechanisms that
+disagree with each other about numbers; the rule layer is mostly not built at all.
 
 The individual mechanisms are already documented where they live:
 [02_Caching](02_Caching.md) covers the cache tiers,
@@ -320,6 +326,137 @@ between two files, not what a cluster receives, the same limitation
 
 Everything else in §§1–7 is documented and **not** fixed. Sharp edges below say why.
 
+## 9. The rule layer — nine rules, four of which do not exist
+
+A latency budget describes how fast an answer arrives. This is the other question: whether a
+candidate was allowed to be in it. **One rule is applied consistently, three are applied
+partially or under a misleading name, and five do not exist.**
+
+| Rule | Status | Where |
+|---|---|---|
+| **Deduplication** | applied on all three paths | `legacyMerge` (max-score-wins), `quotaMerge` (`selectedIds`), `RankingStage` `putIfAbsent`, `LinkedHashSet` in every channel |
+| **Already-consumed removal** | applied, **four incompatible definitions** | §10 |
+| **Freshness** | applied in recall, **reversed in ranking** | recency boost in `OnlineRecentHistory` (`30.0 + 8i`), `getLatestMovies`, trending window weights — undone by `RankingStage` tiering (§11) |
+| **Availability** | **name only** — means "the model can score it" | `CandidateSelectionService.addIfAvailable` (§11) |
+| **Diversity** | absent — channel quotas are not content diversity | §11 |
+| **Eligibility** | absent | no region, age, tier or entitlement check anywhere on the serving path |
+| **Safety / moderation** | absent | no blocklist, moderation signal, maturity rating or suppression list |
+| **Sponsored content** | absent | no promoted slots, campaign concept, or organic/paid separation |
+| **Frequency caps** | absent | nothing tracks how often an item was *shown*, as distinct from consumed |
+
+There is **no `Rule`, `Filter` or `Policy` interface anywhere in `src/main/java`**. No stage
+owns "is this candidate allowed"; each rule lives wherever it was first needed. That is
+survivable for deduplication, which is a property of the merge itself, and it is the
+mechanical reason one rule acquired four definitions.
+
+**Most of the absences are data-model gaps before they are code gaps.** `Movie` is the whole
+item model — `record Movie(int id, String title, int year, List<String> genres)` — with no
+availability flag, maturity rating, region, license window or sponsorship field. Availability,
+eligibility, safety and sponsored content have nothing to read, so each is "acquire and plumb
+a signal, then filter", not "add a filter". Diversity and frequency caps are the exceptions:
+diversity needs only `genres`, which already exists, and impression capping needs only the
+`feature_view` events and `topk:` counters the pipeline already produces.
+
+The carrier such a rule would use exists and is inert. `MovieCandidate.features` and
+`RankedMovie.features` are both `Map<String, Object>` threaded from recall through ranking, and
+both are `Map.of()` at every construction site in the repository except
+`Channels.UserSimilarity`, which passes `Map.of("neighbors", …)`.
+
+Absences were established by searching `src/main/java`, the tests, the manifests, and the
+compile-excluded `online/flink` and `training/rulebased` trees. Note the scope limit that
+applies to this half of the document: §§9–11 are a **code audit**, not a behavioural test.
+Nothing below was executed, and this is a demonstration system — "absent" means *not
+implemented*, not *should be implemented*.
+
+## 10. Already-consumed removal — one rule, four definitions
+
+The only business rule applied on all three serving paths, and each path means something
+different by it.
+
+| Definition | Source of truth | Applied by |
+|---|---|---|
+| **Entire watch history** | `DataManager.getWatchedMovieIds` — classpath ratings, static | catalog 6010 `RecommendationService.V1`; `CandidateGenerator.byEmbedding` / `byUserHistory` |
+| **3 most recent** | live `OnlineFeatureStore` | online 7010 `OnlineRecommendationService.RECENT_HISTORY_LIMIT = 3` |
+| **20 most recent** | live `OnlineFeatureStore` | model 8080 `ModelRetrievalStage.RECENT_EXCLUDE_LIMIT = 20` |
+| **The user's own rating map** | in-memory CF matrix | `Channels.UserSimilarity` (`currentRatings.containsKey(movieId)`) |
+
+The same user asking the same question has 3, 20, or all of their history excluded depending on
+which port answers. It is also inconsistent **within a single request**: on 7010 the
+`Embedding` channel excludes the full classpath watch history (inside `byEmbedding`) while the
+quota merge excludes only the 3 live recent items, so two channels in one fan-out disagree
+about what the user has seen, and which exclusion applies depends on which channel produced
+the candidate.
+
+Once a set exists it is enforced in the right places — `legacyMerge`, `quotaMerge`,
+`ColdStartChannel`, `Channels.UserSimilarity`, and `OnnxInferencePipeline` (which forwards it
+to `RecommendRequest.setExcludeItemIds`). The defect is upstream, in deciding the contents.
+
+**On the canonical recommend route, caller exclusions never reach recall.**
+`POST /api/recommend` routes to 7010's `/v2/recommend` →
+[`OnlineBlendingPipeline`](../../src/main/java/com/recsys/application/online/OnlineBlendingPipeline.java),
+which cannot pass them down because the request type has nowhere to put them:
+
+```java
+public record OnlineRecommendationRequest(int userId, String window, int k)
+```
+
+So it calls `recommend(new OnlineRecommendationRequest(userId, null, maxCandidates))` and
+applies the caller's list to the finished ranked list instead. Recall and ranking therefore
+spend their budget on candidates that are then discarded, and an excluded item still occupies a
+slot in every intermediate top-*k*. The page size itself is not short — the filter runs before
+`pagination.page(...)` — so the cost is wasted candidate budget, not a truncated response.
+
+The correct pattern is one service over.
+[`ModelRetrievalStage.withRecentExclusions`](../../src/main/java/com/recsys/application/retrieval/ModelRetrievalStage.java)
+merges the caller's set with recent history and rebuilds the query **before** recall, and
+`catch (RuntimeException e) { return query; }` degrades to "no recent exclusions" when the
+feature store is down. That is the same failure class where the online path's cold-start probe
+catches only `NumberFormatException` and returns 500
+([02_Caching §9](02_Caching.md#9-what-happens-when-redis-goes-down)) — the model path handles
+it correctly, the busiest path does not.
+
+## 11. Availability, freshness, diversity — misnamed, reversed, and scoped out
+
+**`addIfAvailable` does not check availability.** In
+[`CandidateSelectionService`](../../src/main/java/com/recsys/application/recommendation/CandidateSelectionService.java)
+the filter is `availableItems.contains(itemId)`, where `availableItems` is
+`ModelArtifactService.getAvailableItemIds()` — which returns `itemVocab.keySet()`, or
+`itemEmbeddings.keySet()` when the vocab is empty. "Available" means **the model has a
+vocabulary entry for it**, i.e. that it is scoreable. It says nothing about whether the item is
+published, licensed, in-region or in stock, and the method name invites exactly the wrong
+inference. Its reach is narrow too: `CandidateSelectionService` is the **Redis-down fallback
+pool** on 8080, not the main selector, reached only when `retrievalStage().retrieve(...)`
+returns empty — and one of its two call sites (`computeColdStartPool`) passes a `null` user and
+`Set.of()` exclusions, so the watched-history and exclusion branches are dead there. Renaming
+it is free and worth doing whether or not a real availability rule ever lands.
+
+**Freshness is applied in recall and undone in ranking.** `RankingStage` splits candidates by
+model-vocabulary membership and concatenates them, in-vocab first, `putIfAbsent`. Its own
+comment states the intent: *"Strict tiering — the model's known items always rank above
+fresh/unknown ones — so the two score scales never need reconciling."* That is a real
+justification: the ONNX score and the recall score are not on a common scale, and interleaving
+them would compare incomparable numbers. The consequence is that a **brand-new item cannot
+outrank anything the model knows** until the next artifact includes it in the vocabulary, so
+new-item exposure is bounded by retraining cadence rather than by the recency signals upstream
+— and the recency boost computed in recall has no effect on final order whenever any in-vocab
+candidate is present, which is the normal case. The comment explains the mechanism to a reader
+of that class and never states this consequence, which is product-visible.
+
+**Diversity was identified as a gap and half fixed.** The 2026-06-15 cold-start design
+([spec](../superpowers/specs/2026-06-15-cold-start-multi-channel-recall-design.md)) said so in
+its own words: *"Max-score-wins merge: All channels compete for the same slot pool. When
+`EmbeddingChannel` is warm, it takes all top slots. No mechanism guarantees diversity or
+cold-start coverage."* `QuotaSpec` / `QuotaPolicy` shipped and fixed the **cold-start
+coverage** half. The diversity half was never revisited: quotas cap slots **per channel** —
+per *source* of candidates — not per genre or any item attribute. That guarantees an
+embedding-led page still contains trending and popularity items; it guarantees nothing about
+content, and since the embedding channel retrieves nearest neighbours of one user vector, a
+single-genre block of slots is the expected case rather than an edge case.
+`LIMIT_PER_GENRE = 50` in `CandidateSelectionService` is sometimes mistaken for a diversity
+cap — it bounds each genre's contribution to a *retrieval pool* on the fallback path, and
+nothing carries it into the output. Diversity is the one absent rule needing no new data, and
+`quotaMerge` — which already assembles the list slot by slot — is where it would go.
+
 ## Sharp edges — status
 
 1. **6010's command timeout — FIXED** (§2, §8). Was 2000 ms under a 200 ms channel
@@ -352,6 +489,27 @@ Everything else in §§1–7 is documented and **not** fixed. Sharp edges below 
    round trips issued serially; recent history and trending each read twice. Invisible on a
    warm pod, real on a cold one. Pipelining them is a code change with a measurable
    benefit only under cold-cache conditions that nothing currently measures.
+8. **Four definitions of "already consumed" — OPEN** (§10). 3 recent (7010), 20 recent
+   (8080), full history (6010), own-ratings map (`UserSimilarity`) — and two of them
+   disagree inside a single 7010 request. Converging them is a serving-contract decision:
+   the strictest definition changes what every path returns, and the live feature store and
+   the classpath rating data are not the same set.
+9. **Caller exclusions post-filter on the canonical route — OPEN** (§10).
+   `OnlineRecommendationRequest` has no exclusions field, so `/v2/recommend` filters after
+   ranking. The fix is to widen that record and thread the set into recall, which is the
+   shape `ModelRetrievalStage` already uses.
+10. **`addIfAvailable` does not check availability — OPEN** (§11). It checks
+   model-vocabulary membership, and runs only on 8080's Redis-down fallback. The rename is
+   free; a real availability rule needs a field on `Movie` that does not exist.
+11. **Strict tiering caps new-item exposure — OPEN, deliberate** (§11). Sound reason (the
+   score scales are incomparable), undocumented consequence (freshness bounded by retraining
+   cadence). Any fix requires calibrating the two scales, which is a modelling task.
+12. **Diversity was scoped out and stayed out — OPEN** (§11). Named in the 2026-06-15
+   design, coverage half shipped as quotas, content half never revisited. The only absent
+   rule reachable with today's domain model.
+13. **No rule abstraction — OPEN, structural** (§9). No `Rule`/`Filter`/`Policy` interface,
+   so there is no stage where a reviewer can read "what must a candidate pass". Introducing
+   one is the prerequisite for edges 8, 10 and 12 rather than a refactor for its own sake.
 
 ## What was not investigated
 
@@ -371,3 +529,16 @@ Everything else in §§1–7 is documented and **not** fixed. Sharp edges below 
 - **CDN and ALB contributions are excluded.** The budget chain starts at the gateway
   process. Edge cache-hit ratio and its effect on origin latency are in
   [12_CDNS](12_CDNS.md).
+- **The rule layer was read, not run.** §§9–11 are a code audit. The claim that 7010 excludes
+  only 3 items comes from `RECENT_HISTORY_LIMIT` and its call sites, not from a response;
+  §11's ordering consequence is derived from `RankingStage`'s code and comment, not measured
+  against a real model artifact.
+- **Whether the missing rules should exist.** A demonstration system has no advertisers,
+  moderation queue, or licensing windows. §9's data-model point is the input to that
+  decision, not the decision.
+- **Ranking quality.** Whether the quota fractions, the recency constants (`30.0 + 8i`), or
+  the trending window weights produce *good* recommendations is an offline-evaluation
+  question, and no metric in this repository measures it.
+- **The Flink and Spark rule surface.** `online/flink` and `training/rulebased` were searched
+  for the nine rules and matched none, but they are excluded from the Maven compile and were
+  not read in full.
