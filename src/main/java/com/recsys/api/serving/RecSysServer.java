@@ -13,6 +13,7 @@ import com.linecorp.armeria.server.metric.MetricCollectingService;
 import com.linecorp.armeria.server.metric.PrometheusExpositionService;
 import com.linecorp.armeria.common.metric.PrometheusMeterRegistries;
 import com.recsys.config.EnvConfig;
+import com.recsys.infrastructure.observability.SlowRequestLogger;
 import com.recsys.infrastructure.dataloading.DataLoader;
 import com.recsys.infrastructure.dataloading.DataManager;
 import com.recsys.application.model.PairPredictionService;
@@ -302,6 +303,8 @@ public class RecSysServer {
                 // no path tag, so cardinality is bounded.
                 .decorator(MetricCollectingService.newDecorator(
                         MeterIdPrefixFunction.ofDefault("catalog_serving")))
+                .decorator(SlowRequestLogger.newDecorator("catalog-serving",
+                        EnvConfig.readLong("SLOW_REQUEST_LOG_THRESHOLD_MS", 500)))
                 .service(
                         "/metrics",
                         PrometheusExpositionService.of(registry.getPrometheusRegistry()));

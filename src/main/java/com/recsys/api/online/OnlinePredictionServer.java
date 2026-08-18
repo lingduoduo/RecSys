@@ -21,6 +21,7 @@ import com.recsys.infrastructure.redis.RedisPersistentKeyProbe;
 import com.recsys.infrastructure.redis.RedisReplicaLagProbe;
 import com.recsys.infrastructure.redis.RedisFeatureVersionSampler;
 import com.recsys.jvm.GcEventTracker;
+import com.recsys.infrastructure.observability.SlowRequestLogger;
 
 import com.linecorp.armeria.server.Route;
 import com.linecorp.armeria.server.Server;
@@ -240,6 +241,8 @@ public final class OnlinePredictionServer {
               .meterRegistry(registry)
               .decorator(MetricCollectingService.newDecorator(
                       MeterIdPrefixFunction.ofDefault("online_serving")))
+              .decorator(SlowRequestLogger.newDecorator("online-serving",
+                      EnvConfig.readLong("SLOW_REQUEST_LOG_THRESHOLD_MS", 300)))
               .service("/health/live", new OnlineServices.Live())
               .service("/health/ready",
                       new OnlineHealthService(metricsService, loadShedder))

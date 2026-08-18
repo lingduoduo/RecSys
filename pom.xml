@@ -517,6 +517,20 @@
                      Connector/J defaults to a mode that falls back to plaintext without error,
                      so the transport requirement is only real if something pins it. -->
                 <include>**/persistence/MySqlConnectionSettingsTest.java</include>
+                <!-- The classification is the single definition of which requests reach Splunk,
+                     shared by the Armeria decorator and the Spring interceptor so four services
+                     cannot disagree. Pins two things the gate must not lose: 4xx does not
+                     trigger an event (it is caller-controlled, and a bounded drop-on-full HEC
+                     queue makes that a remote way to discard the ERROR events), and no MDC field
+                     name collides with SplunkHecEventSerializer's reserved set, where a
+                     collision is silently dropped rather than reported. Pure unit-level. -->
+                <include>**/observability/RequestOutcomeTest.java</include>
+                <!-- The decorator half: emits for slow and 5xx, stays silent otherwise, and
+                     clears MDC on the pooled event loop thread it runs on. A leaked MDC entry
+                     would attach itself to unrelated later log lines from that thread, which
+                     poisons exactly the searches this feature exists to enable. In-process
+                     Armeria server, no Redis, no Docker. -->
+                <include>**/observability/SlowRequestLoggerTest.java</include>
               </includes>
               <excludedGroups>load,docker</excludedGroups>
             </configuration>

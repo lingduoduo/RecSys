@@ -11,6 +11,7 @@ import com.recsys.application.gateway.GatewayAuthenticator;
 import com.recsys.application.gateway.GatewayOriginSecret;
 import com.recsys.application.gateway.MicroserviceRoute;
 import com.recsys.application.gateway.RecommendationGatewayService;
+import com.recsys.config.EnvConfig;
 import com.recsys.config.EnvVars;
 import com.recsys.ratelimit.LlmTokenRateLimiter;
 import com.recsys.ratelimit.GatewayRateLimiter;
@@ -18,6 +19,7 @@ import com.recsys.resilience.RouteCircuitBreaker;
 import com.recsys.infrastructure.cache.LlmResponseCache;
 import com.recsys.infrastructure.redis.LettuceClientFactory;
 import com.recsys.infrastructure.redis.RedisExecutor;
+import com.recsys.infrastructure.observability.SlowRequestLogger;
 import com.recsys.infrastructure.registry.ServiceRegistryProvider;
 import com.recsys.infrastructure.registry.ServiceRegistryStore;
 import com.recsys.jvm.GcEventTracker;
@@ -169,6 +171,8 @@ public final class MicroserviceGatewayServer {
         sb.meterRegistry(meterRegistry);
         sb.decorator(MetricCollectingService.newDecorator(
                 MeterIdPrefixFunction.ofDefault("api_gateway")));
+        sb.decorator(SlowRequestLogger.newDecorator("api-gateway",
+                EnvConfig.readLong("SLOW_REQUEST_LOG_THRESHOLD_MS", 1000)));
 
         // Prometheus metrics endpoint (always present, matching the other services). Registry meters
         // are registered only when the registry consumer is active. The registry itself is created
