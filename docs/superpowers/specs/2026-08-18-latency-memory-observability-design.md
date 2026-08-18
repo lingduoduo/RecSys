@@ -70,14 +70,38 @@ A decorator on the three Armeria mains and a `HandlerInterceptor` on the model s
 response completion, emit **one WARN, only when** the request was slow or unsuccessful:
 
 - `durationMs > SLOW_REQUEST_LOG_THRESHOLD_MS` (default 500, `EnvConfig.readLong`), or
-- the response is 5xx, or the request was rejected by admission control, load shedding or a
-  circuit breaker.
+- the response is 5xx.
 
-**4xx does not qualify.** A malformed cursor or a missing API key is a client error, not a service
-incident, and 4xx is the one class an external caller can generate at will — making it a log
-trigger hands anyone with a URL the ability to fill the bounded HEC queue. Rejections are included
-even though they often surface as 429/503 because those are the service's own decision to refuse
-work, which is precisely what an operator investigating a latency incident needs to see.
+`RequestOutcome.classify` is the single definition both emitters share, and it recognizes exactly
+two outcomes: `"slow"` and `"failed"`. There is no third trigger for admission-control rejection,
+load shedding, or circuit-breaker refusal as such — those are visible to this event only insofar
+as they happen to produce a 5xx (`"failed"`) or exceed the duration threshold (`"slow"`).
+`classify(429, 1, 500)` returns `null`: a rejection that surfaces as 429 emits no Splunk event at
+all, pinned by `RequestOutcomeTest`.
+
+**4xx does not qualify, full stop — including rejections.** A malformed cursor or a missing API key
+is a client error, not a service incident, and 4xx is the one class an external caller can generate
+at will. Making *any* 4xx a log trigger, rejections included, hands anyone with a URL the ability to
+fill the bounded HEC queue on demand: hammer a rate limiter and you get one 429 per request, which
+is exactly the bounded-queue-fill vector 4xx was excluded for in the first place. This was
+considered and rejected rather than merely never built:
+
+1. **Rejection *rates* are already fully covered by Prometheus** —
+   `online_serving_rejected_rate`, `recsys_load_shedder_requests_total{result}`, and
+   `recsys_online_rate_limit_decisions_total{source,result}` all exist today. A Splunk event per
+   rejection would be a metric wearing a log's clothes, the exact §8 boundary violation this design
+   exists to avoid.
+2. **A 429 is caller-forceable.** Any external caller can generate one on demand by hammering the
+   rate limiter, so logging on 429 reopens the same queue-fill vector excluded above — the
+   protection is not that 4xx as a class is safe to ignore, it's that nothing about a 4xx trigger
+   can be made safe against a caller who wants to trigger it.
+
+**Known limitation, stated rather than papered over:** a *shed* request can surface as either status,
+and the two are not treated alike. `RecSysServer` sheds with 503, and `classify` labels any 5xx
+`"failed"` — so a deliberate, working-as-designed shed is indistinguishable in Splunk from a genuine
+failure. A shed that surfaces as 429 produces no event at all, per the 4xx rule above. Neither case
+gets its own `"rejected"`/`"shed"` outcome value; an operator who needs to tell them apart reaches for
+the Prometheus series named in point 1, not Splunk.
 
 A fast, successful request logs nothing. This is deliberate and is the whole volume story: the
 appender is at-most-once over a bounded drop-on-full queue, so logging every request would push
@@ -95,7 +119,7 @@ serializer change:
 | `route` | route pattern, never the raw path |
 | `method` | HTTP method |
 | `status` | response status code |
-| `outcome` | `slow`, `failed`, `rejected`, `shed` |
+| `outcome` | `slow`, `failed` — see A1's rejection/shedding discussion above for why there is no third value |
 | `durationMs` | measured wall time |
 | `traceId` | model service only today — see the tracing caveat below |
 
