@@ -5,10 +5,80 @@ independently runnable HTTP services. It includes catalog and recommendation
 serving, online features, ONNX model serving, an API gateway, and the Redis,
 Kafka, and Flink infrastructure used by the local demo.
 
-This README is the contributor entry point: build the project, start it
-locally, check health, run the right tests, and find the document that owns a
-deeper topic. Architecture and production operations stay in the linked
-system-design documents and runbooks.
+![Recsys Backend Pipeline](recsys-architecture.png)
+
+> Interactive version: [recsys-architecture.html](recsys-architecture.html)
+
+## Features
+
+- Online serving and latency, including async APIs, batching, caching, connection pools, timeouts, retries, and graceful fallbacks. 
+- Cache user embeddings, item embeddings, popular-item lists, user recommendation lists, or candidate sets. Know cache-aside patterns, TTL, invalidation, cold-start behavior, and what happens when Redis goes down.
+- Apply availability, eligibility, safety, already-consumed-item removal, diversity, freshness, sponsored-content rules, frequency caps, or deduplication
+
+## Repository layout
+
+```text
+.
+├── src/main/java/com/recsys/
+│   ├── api/                  HTTP entry points and service main classes
+│   ├── application/          recommendation, gateway, model, and workflow logic
+│   ├── domain/               domain records and value objects
+│   ├── infrastructure/       Redis, MySQL, messaging, caches, and integrations
+│   ├── online/flink/         opt-in Flink online-feature job
+│   ├── health/, loadshed/    health, admission, drain, and shutdown controls
+│   └── config/, metrics/     runtime parsing and serving metrics
+├── src/main/resources/       Spring config, fallback ONNX, and DB migrations
+├── src/test/java/com/recsys/ matching unit, contract, load, and Docker tests
+├── streaming/online-serving/ local event data, replay scripts, and guide
+├── scripts/                  local startup and operational helpers
+├── config/jvm/               per-service local JVM option profiles
+├── docker/, k8s/             local infrastructure and deployment manifests
+├── docs/                     subsystem investigations and runbooks
+├── .github/workflows/        deterministic and scheduled resilience CI
+├── docker-compose.streaming.yml
+├── CONFIG_GUIDE.md
+└── pom.xml
+```
+
+## Documentation map
+
+Configuration and local operation:
+
+- [Configuration Guide](CONFIG_GUIDE.md) — authoritative environment
+  variables, defaults, parsing rules, and deployment overrides.
+- [Online-serving and streaming guide](streaming/online-serving/README.md) —
+  deeper material for sample events, Redis features, and the opt-in Flink
+  workflow; this existing path is linked because there is no `docs/ml/` index.
+
+Architecture:
+
+[System-design investigations](docs/system_design/) — the numbered investigation
+directory. **Every investigation is listed here**; this section is the index, and
+`DocumentationIndexTest` fails the build if a doc is added, renamed, or removed
+without updating it.
+
+| # | Investigation | Covers |
+|---|---|---|
+| 01 | [Load Balancing](docs/system_design/01_Load_Balancing.md) | ALB → kube-proxy/topology-aware routing → Armeria health-checked groups, and the capacity-weight feedback signal |
+| 02 | [Caching](docs/system_design/02_Caching.md) | The cache classes and the per-object inventory: what each of user/item embeddings, popular-item lists, recommendation lists and candidate sets actually gets, its TTL and invalidation, the two meanings of cold start, and what a Redis outage does to each |
+| 03 | [DB Scaling & Sharding](docs/system_design/03_DB_Scaling_Sharding.md) | The two Redis sharded stores, versioned topology and online reshard, which scaling lever buys what, and where sharding ends the single-transaction guarantee |
+| 04 | [Replication](docs/system_design/04_Replication.md) | Single-primary Redis with AZ-aware read replicas, Sentinel failover, replica-lag probing, cross-region DR |
+| 05 | [CAP](docs/system_design/05_CAP.md) | Where each store chooses consistency over availability during a partition, and the tunable dial |
+| 06 | [Consistent Hashing](docs/system_design/06_Consistent_Hashing.md) | The shared FNV-1a primitive and the virtual-node ring that maps devices to shards |
+| 07 | [Message Queue](docs/system_design/07_Message_Queue.md) | The fire-and-forget bounded queue carrying behavioral/experiment events off the serving path |
+| 08 | [Rate Limits](docs/system_design/08_Rate_Limits.md) | One token-bucket primitive, three per-instance limiters, one global cluster limiter |
+| 09 | [API Gateway](docs/system_design/09_API_Gateway.md) | Route ownership, authentication, health aggregation, circuit breakers, metrics |
+| 10 | [Microservices](docs/system_design/10_MicroServices.md) | Service boundaries, one-image/four-mains deployment model, layering, and why every hop is HTTP/JSON |
+| 11 | [Service Discovery](docs/system_design/11_Service_Discovery.md) | Static route table, the opt-in Redis registry, and Cloud Map resolution |
+| 12 | [CDN](docs/system_design/12_CDNS.md) | What CloudFront caches, cache-key constraints, origin lockdown, and the local stand-in |
+| 13 | [DB Indexing](docs/system_design/13_DB_Indexing.md) | Which secondary indexes exist, and how every query is pinned to its index by contract tests |
+| 14 | [Partitioning](docs/system_design/14_Partitioning.md) | The five partition dimensions, and where the shards physically live |
+| 15 | [Eventual Consistency](docs/system_design/15_Eventual_Consistency.md) | How eventual consistency manifests and is deliberately bounded per layer |
+| 16 | [SSE Streaming](docs/system_design/16_SSE_Streaming.md) | The LLM-proxy SSE passthrough, its lifecycle, and why no WebSockets or gRPC |
+| 17 | [Scalability](docs/system_design/17_Scalability.md) | Compute-tier HPA, data-tier levers, and the overload-protection layers that let it scale without collapsing |
+| 18 | [Fault Tolerance](docs/system_design/18_Fault_Tolerance.md) | Resilience contracts, graceful drain, failure-path evidence, and status |
+| 19 | [Pagination](docs/system_design/19_Pagination.md) | Keyset and offset implementations, and the shared signed live-keyset recommendation contract |
+| 20 | [AuthN / AuthZ](docs/system_design/20_AuthN_AuthZ.md) | The six credentials, fail-closed startup, credential stripping, and the operator-token tier |
 
 ## What runs locally
 
@@ -330,31 +400,6 @@ the [pull-request resilience workflow](.github/workflows/resilience-pr.yml),
 and the [scheduled resilience workflow](.github/workflows/resilience-scheduled.yml)
 for the maintained commands and artifact paths.
 
-## Repository layout
-
-```text
-.
-├── src/main/java/com/recsys/
-│   ├── api/                  HTTP entry points and service main classes
-│   ├── application/          recommendation, gateway, model, and workflow logic
-│   ├── domain/               domain records and value objects
-│   ├── infrastructure/       Redis, MySQL, messaging, caches, and integrations
-│   ├── online/flink/         opt-in Flink online-feature job
-│   ├── health/, loadshed/    health, admission, drain, and shutdown controls
-│   └── config/, metrics/     runtime parsing and serving metrics
-├── src/main/resources/       Spring config, fallback ONNX, and DB migrations
-├── src/test/java/com/recsys/ matching unit, contract, load, and Docker tests
-├── streaming/online-serving/ local event data, replay scripts, and guide
-├── scripts/                  local startup and operational helpers
-├── config/jvm/               per-service local JVM option profiles
-├── docker/, k8s/             local infrastructure and deployment manifests
-├── docs/                     subsystem investigations and runbooks
-├── .github/workflows/        deterministic and scheduled resilience CI
-├── docker-compose.streaming.yml
-├── CONFIG_GUIDE.md
-└── pom.xml
-```
-
 ## Configuration
 
 The clean-clone quick start uses the catalog port and Redis defaults. The
@@ -451,45 +496,6 @@ lsof -nP -iTCP:6010 -sTCP:LISTEN
 Changing a backend port also requires changing the corresponding gateway
 upstream URL. See the Configuration Guide rather than changing only one side.
 
-## Documentation map
-
-Configuration and local operation:
-
-- [Configuration Guide](CONFIG_GUIDE.md) — authoritative environment
-  variables, defaults, parsing rules, and deployment overrides.
-- [Online-serving and streaming guide](streaming/online-serving/README.md) —
-  deeper material for sample events, Redis features, and the opt-in Flink
-  workflow; this existing path is linked because there is no `docs/ml/` index.
-
-Architecture:
-
-[System-design investigations](docs/system_design/) — the numbered investigation
-directory. **Every investigation is listed here**; this section is the index, and
-`DocumentationIndexTest` fails the build if a doc is added, renamed, or removed
-without updating it.
-
-| # | Investigation | Covers |
-|---|---|---|
-| 01 | [Load Balancing](docs/system_design/01_Load_Balancing.md) | ALB → kube-proxy/topology-aware routing → Armeria health-checked groups, and the capacity-weight feedback signal |
-| 02 | [Caching](docs/system_design/02_Caching.md) | The cache classes and the per-object inventory: what each of user/item embeddings, popular-item lists, recommendation lists and candidate sets actually gets, its TTL and invalidation, the two meanings of cold start, and what a Redis outage does to each |
-| 03 | [DB Scaling & Sharding](docs/system_design/03_DB_Scaling_Sharding.md) | The two Redis sharded stores, versioned topology and online reshard, which scaling lever buys what, and where sharding ends the single-transaction guarantee |
-| 04 | [Replication](docs/system_design/04_Replication.md) | Single-primary Redis with AZ-aware read replicas, Sentinel failover, replica-lag probing, cross-region DR |
-| 05 | [CAP](docs/system_design/05_CAP.md) | Where each store chooses consistency over availability during a partition, and the tunable dial |
-| 06 | [Consistent Hashing](docs/system_design/06_Consistent_Hashing.md) | The shared FNV-1a primitive and the virtual-node ring that maps devices to shards |
-| 07 | [Message Queue](docs/system_design/07_Message_Queue.md) | The fire-and-forget bounded queue carrying behavioral/experiment events off the serving path |
-| 08 | [Rate Limits](docs/system_design/08_Rate_Limits.md) | One token-bucket primitive, three per-instance limiters, one global cluster limiter |
-| 09 | [API Gateway](docs/system_design/09_API_Gateway.md) | Route ownership, authentication, health aggregation, circuit breakers, metrics |
-| 10 | [Microservices](docs/system_design/10_MicroServices.md) | Service boundaries, one-image/four-mains deployment model, layering, and why every hop is HTTP/JSON |
-| 11 | [Service Discovery](docs/system_design/11_Service_Discovery.md) | Static route table, the opt-in Redis registry, and Cloud Map resolution |
-| 12 | [CDN](docs/system_design/12_CDNS.md) | What CloudFront caches, cache-key constraints, origin lockdown, and the local stand-in |
-| 13 | [DB Indexing](docs/system_design/13_DB_Indexing.md) | Which secondary indexes exist, and how every query is pinned to its index by contract tests |
-| 14 | [Partitioning](docs/system_design/14_Partitioning.md) | The five partition dimensions, and where the shards physically live |
-| 15 | [Eventual Consistency](docs/system_design/15_Eventual_Consistency.md) | How eventual consistency manifests and is deliberately bounded per layer |
-| 16 | [SSE Streaming](docs/system_design/16_SSE_Streaming.md) | The LLM-proxy SSE passthrough, its lifecycle, and why no WebSockets or gRPC |
-| 17 | [Scalability](docs/system_design/17_Scalability.md) | Compute-tier HPA, data-tier levers, and the overload-protection layers that let it scale without collapsing |
-| 18 | [Fault Tolerance](docs/system_design/18_Fault_Tolerance.md) | Resilience contracts, graceful drain, failure-path evidence, and status |
-| 19 | [Pagination](docs/system_design/19_Pagination.md) | Keyset and offset implementations, and the shared signed live-keyset recommendation contract |
-| 20 | [AuthN / AuthZ](docs/system_design/20_AuthN_AuthZ.md) | The six credentials, fail-closed startup, credential stripping, and the operator-token tier |
 
 ### Which serving rules are applied
 
