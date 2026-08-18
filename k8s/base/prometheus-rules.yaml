@@ -252,10 +252,15 @@ spec:
         # is scoped to whether a service is currently able to serve traffic well.
 
         - alert: JvmHeapPressureHigh
+          # namespace="recsys" is load-bearing, not decoration: jvm_memory_used_bytes /
+          # jvm_memory_max_bytes are emitted by every Micrometer/JMX JVM Prometheus scrapes,
+          # not just ours -- see RecsysTargetDown's `up{namespace="recsys"}` for the same
+          # pattern. Unscoped, this pages on foreign workloads with {{ $labels.job }} naming
+          # a service that isn't recsys at all.
           expr: >-
-            sum by (job, instance) (jvm_memory_used_bytes{area="heap"})
+            sum by (job, instance) (jvm_memory_used_bytes{area="heap", namespace="recsys"})
             /
-            sum by (job, instance) (jvm_memory_max_bytes{area="heap"} > 0)
+            sum by (job, instance) (jvm_memory_max_bytes{area="heap", namespace="recsys"} > 0)
             > 0.90
           for: 10m
           labels:
@@ -290,7 +295,10 @@ spec:
           # here is roughly 13-15m, slower for a marginal overshoot because rate()'s own
           # boundary extrapolation takes longer to climb across the threshold when the true
           # rate is barely above it. Not a false negative on sustained pressure, just latency.
-          expr: sum by (job, instance) (rate(jvm_gc_pause_seconds_sum[5m])) > 0.10
+          # namespace="recsys" is load-bearing here too, same reasoning as JvmHeapPressureHigh
+          # immediately above: jvm_gc_pause_seconds_sum is a generic Micrometer JVM metric name,
+          # not one of ours.
+          expr: sum by (job, instance) (rate(jvm_gc_pause_seconds_sum{namespace="recsys"}[5m])) > 0.10
           for: 10m
           labels:
             severity: warning

@@ -488,14 +488,14 @@ tests:
   - interval: 1m
     input_series:
       # 95% used: must fire.
-      - series: 'jvm_memory_used_bytes{area="heap", job="recsys-api-gateway", instance="10.0.0.1:8010", id="G1 Old Gen"}'
+      - series: 'jvm_memory_used_bytes{area="heap", namespace="recsys", job="recsys-api-gateway", instance="10.0.0.1:8010", id="G1 Old Gen"}'
         values: '950000000x20'
-      - series: 'jvm_memory_max_bytes{area="heap", job="recsys-api-gateway", instance="10.0.0.1:8010", id="G1 Old Gen"}'
+      - series: 'jvm_memory_max_bytes{area="heap", namespace="recsys", job="recsys-api-gateway", instance="10.0.0.1:8010", id="G1 Old Gen"}'
         values: '1000000000x20'
       # 85% used: near-miss, must NOT fire.
-      - series: 'jvm_memory_used_bytes{area="heap", job="recsys-online-serving", instance="10.0.0.2:7010", id="G1 Old Gen"}'
+      - series: 'jvm_memory_used_bytes{area="heap", namespace="recsys", job="recsys-online-serving", instance="10.0.0.2:7010", id="G1 Old Gen"}'
         values: '850000000x20'
-      - series: 'jvm_memory_max_bytes{area="heap", job="recsys-online-serving", instance="10.0.0.2:7010", id="G1 Old Gen"}'
+      - series: 'jvm_memory_max_bytes{area="heap", namespace="recsys", job="recsys-online-serving", instance="10.0.0.2:7010", id="G1 Old Gen"}'
         values: '1000000000x20'
     alert_rule_test:
       - eval_time: 15m
@@ -513,6 +513,31 @@ tests:
                 what was running at the crossing. The `> 0` filter on jvm_memory_max_bytes is
                 load-bearing: pools with no maximum report -1, and including them makes the
                 ratio meaningless.
+
+  # --- JvmHeapPressureHigh: a foreign JVM must never page recsys on-call ---
+  # jvm_memory_used_bytes / jvm_memory_max_bytes are generic Micrometer/JMX metric names, not
+  # unique to this repo -- any other workload the operator's Prometheus scrapes emits the same
+  # names. Without namespace="recsys" scoping this alert this series would fire with
+  # {{ $labels.job }} naming a service that isn't ours. Every other input series in this file
+  # already carries a recsys job label, so this is the only case that can catch the scoping
+  # being dropped: proven by removing `namespace="recsys"` from the alert expression and
+  # rerunning this file, which turns this case red.
+  - interval: 1m
+    input_series:
+      # 95% used, well above the threshold, but in a foreign namespace (and one series with no
+      # namespace label at all): must NOT fire.
+      - series: 'jvm_memory_used_bytes{area="heap", namespace="other-team", job="unrelated-service", instance="10.0.0.9:9090", id="G1 Old Gen"}'
+        values: '950000000x20'
+      - series: 'jvm_memory_max_bytes{area="heap", namespace="other-team", job="unrelated-service", instance="10.0.0.9:9090", id="G1 Old Gen"}'
+        values: '1000000000x20'
+      - series: 'jvm_memory_used_bytes{area="heap", job="no-namespace-service", instance="10.0.0.8:9090", id="G1 Old Gen"}'
+        values: '950000000x20'
+      - series: 'jvm_memory_max_bytes{area="heap", job="no-namespace-service", instance="10.0.0.8:9090", id="G1 Old Gen"}'
+        values: '1000000000x20'
+    alert_rule_test:
+      - eval_time: 15m
+        alertname: JvmHeapPressureHigh
+        exp_alerts: []
 
   # --- JvmHeapPressureHigh: the -1 sentinel must not poison the ratio ---
   # A pool with no maximum reports -1. Summed in naively alongside a real pool it drags the
@@ -533,13 +558,13 @@ tests:
   - interval: 1m
     input_series:
       # 50% used against the pool that HAS a max: must not fire.
-      - series: 'jvm_memory_used_bytes{area="heap", job="recsys-catalog-serving", instance="10.0.0.3:6010", id="G1 Old Gen"}'
+      - series: 'jvm_memory_used_bytes{area="heap", namespace="recsys", job="recsys-catalog-serving", instance="10.0.0.3:6010", id="G1 Old Gen"}'
         values: '1x20'
-      - series: 'jvm_memory_max_bytes{area="heap", job="recsys-catalog-serving", instance="10.0.0.3:6010", id="G1 Old Gen"}'
+      - series: 'jvm_memory_max_bytes{area="heap", namespace="recsys", job="recsys-catalog-serving", instance="10.0.0.3:6010", id="G1 Old Gen"}'
         values: '2x20'
-      - series: 'jvm_memory_used_bytes{area="heap", job="recsys-catalog-serving", instance="10.0.0.3:6010", id="G1 Eden Space"}'
+      - series: 'jvm_memory_used_bytes{area="heap", namespace="recsys", job="recsys-catalog-serving", instance="10.0.0.3:6010", id="G1 Eden Space"}'
         values: '0x20'
-      - series: 'jvm_memory_max_bytes{area="heap", job="recsys-catalog-serving", instance="10.0.0.3:6010", id="G1 Eden Space"}'
+      - series: 'jvm_memory_max_bytes{area="heap", namespace="recsys", job="recsys-catalog-serving", instance="10.0.0.3:6010", id="G1 Eden Space"}'
         values: '-1x20'
     alert_rule_test:
       - eval_time: 15m
@@ -550,10 +575,10 @@ tests:
   - interval: 1m
     input_series:
       # 0.2s of pause per second of wall time: must fire.
-      - series: 'jvm_gc_pause_seconds_sum{job="recsys-online-serving", instance="10.0.0.2:7010", action="end of minor GC", cause="G1 Evacuation Pause"}'
+      - series: 'jvm_gc_pause_seconds_sum{namespace="recsys", job="recsys-online-serving", instance="10.0.0.2:7010", action="end of minor GC", cause="G1 Evacuation Pause"}'
         values: '0+12x25'
       # 0.05s per second: near-miss, must NOT fire.
-      - series: 'jvm_gc_pause_seconds_sum{job="recsys-catalog-serving", instance="10.0.0.3:6010", action="end of minor GC", cause="G1 Evacuation Pause"}'
+      - series: 'jvm_gc_pause_seconds_sum{namespace="recsys", job="recsys-catalog-serving", instance="10.0.0.3:6010", action="end of minor GC", cause="G1 Evacuation Pause"}'
         values: '0+3x25'
     alert_rule_test:
       - eval_time: 20m
@@ -569,6 +594,21 @@ tests:
                 More than a tenth of elapsed time is stop-the-world pause, which shows up
                 directly as request latency. Check JvmHeapPressureHigh on the same instance
                 first — this is usually its consequence, not an independent fault.
+
+  # --- JvmGcTimeFractionHigh: a foreign JVM must never page recsys on-call ---
+  # jvm_gc_pause_seconds_sum is a generic Micrometer JVM metric name, same reasoning as the
+  # JvmHeapPressureHigh foreign-namespace case above. Proven by removing `namespace="recsys"`
+  # from the alert expression and rerunning this file, which turns this case red.
+  - interval: 1m
+    input_series:
+      # 0.2s of pause per second of wall time, well above the threshold, but in a foreign
+      # namespace: must NOT fire.
+      - series: 'jvm_gc_pause_seconds_sum{namespace="other-team", job="unrelated-service", instance="10.0.0.9:9090", action="end of minor GC", cause="G1 Evacuation Pause"}'
+        values: '0+12x25'
+    alert_rule_test:
+      - eval_time: 20m
+        alertname: JvmGcTimeFractionHigh
+        exp_alerts: []
 
   # --- JvmGcTimeFractionHigh: a short burst must NOT fire ---
   # for: (10m) deliberately exceeds the rate() range (5m) -- see the comment on the alert
@@ -592,7 +632,7 @@ tests:
   # have fired), to prove it never transiently fires either.
   - interval: 1m
     input_series:
-      - series: 'jvm_gc_pause_seconds_sum{job="recsys-catalog-serving", instance="10.0.0.4:6010", action="end of minor GC", cause="G1 Evacuation Pause"}'
+      - series: 'jvm_gc_pause_seconds_sum{namespace="recsys", job="recsys-catalog-serving", instance="10.0.0.4:6010", action="end of minor GC", cause="G1 Evacuation Pause"}'
         values: '0 12 24 36 36 36 36 36 36 36 36 36 36 36 36 36 36 36 36 36 36 36 36 36 36'
     alert_rule_test:
       - eval_time: 6m
