@@ -105,4 +105,14 @@ class GcEventLoggingTest {
                 1, true, 1 * GB, -1);
         assertThat(events()).isEmpty();
     }
+
+    @Test
+    void aZeroHeapMaxWouldDivideToInfinityButProducesNoPressureEvent() {
+        // heapMaxBytes = 0 divides to +Infinity, which satisfies "fraction >= threshold" and
+        // would emit a spurious WARN on a JVM that reported a zero max. Distinct from the -1
+        // sentinel above: -1 means "no maximum", 0 is the divide-to-infinity hazard.
+        tracker.evaluateForLogging("G1 Young Generation", "end of minor GC", "Allocation Failure",
+                1, true, 1 * GB, 0);
+        assertThat(events()).isEmpty();
+    }
 }

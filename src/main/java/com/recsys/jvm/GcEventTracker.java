@@ -210,9 +210,10 @@ public class GcEventTracker implements DisposableBean {
                     gcName, gcAction, gcCause, pauseMs, heapUsedBytes, heapMaxBytes);
         }
 
-        // -1 means the pool has no maximum, so a used/max fraction is meaningless. Guarding here
-        // matters for the same reason it does in the Prometheus alert: a bogus ratio silently
-        // defeats a threshold comparison.
+        // -1 means the pool has no maximum, so a used/max fraction is meaningless. A 0 max
+        // divides to +Infinity, which satisfies "fraction >= threshold" and would emit a
+        // spurious WARN. Guarding here matters for the same reason it does in the Prometheus
+        // alert: a bogus ratio silently defeats a threshold comparison.
         if (heapMaxBytes <= 0) {
             return;
         }
