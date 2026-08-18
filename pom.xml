@@ -387,6 +387,15 @@
                      JvmGcMetrics owns a JMX listener and a collected gauge state freezes
                      silently rather than erroring. Pure unit-level, no Redis, no timing. -->
                 <include>**/metrics/JvmMetricsBinderTest.java</include>
+                <!-- Pins the Histogram-vs-Summary shape a later alert depends on:
+                     MetricCollectingService's default DistributionStatisticConfig publishes
+                     client-side quantile= series only, no _bucket series, so
+                     histogram_quantile(...rate(..._bucket[5m])) matches nothing against it —
+                     it would sit in Prometheus looking like coverage and never fire. This is
+                     the only check that a Micrometer/Armeria upgrade, or an edit to the SLO
+                     boundary list, doesn't silently disarm that alert again. Pure unit-level,
+                     no Redis, no Docker, no timing. -->
+                <include>**/metrics/RequestDurationHistogramTest.java</include>
                 <include>**/metrics/ScrapeTargetManifestTest.java</include>
                 <!-- The egress counterpart to ScrapeTargetManifestTest's ingress checks. The
                      NetworkPolicy is the L3/L4 ACL the whole backend trust model rests on

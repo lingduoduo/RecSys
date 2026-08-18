@@ -14,6 +14,7 @@ import com.recsys.metrics.OnlineServingMetricsService;
 import com.recsys.metrics.ConsistencyMetrics;
 import com.recsys.metrics.RedisCacheMetrics;
 import com.recsys.metrics.JvmMetricsBinder;
+import com.recsys.metrics.RequestDurationHistogram;
 import com.recsys.metrics.SplunkHecMetrics;
 import com.recsys.infrastructure.redis.RedisCacheStatsProbe;
 import com.recsys.infrastructure.redis.RedisPersistentKeyProbe;
@@ -156,6 +157,10 @@ public final class OnlinePredictionServer {
             SplunkHecMetrics.register(registry);
             // Armeria's configureRegistry is a no-op, so nothing binds the JVM metrics for us.
             JvmMetricsBinder.bindTo(registry);
+            // Must run before the meterRegistry(registry).decorator(MetricCollectingService...)
+            // call below registers any request-duration timer, so the histogram buckets apply
+            // from the first request.
+            RequestDurationHistogram.configure(registry);
             RecommendationPaginationRuntime pagination =
                     RecommendationPaginationRuntime.fromEnvironment(
                             registry, Clock.systemUTC());

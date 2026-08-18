@@ -31,6 +31,7 @@ import com.linecorp.armeria.server.metric.MetricCollectingService;
 import com.linecorp.armeria.server.metric.PrometheusExpositionService;
 import com.recsys.metrics.GatewayRegistryMetrics;
 import com.recsys.metrics.JvmMetricsBinder;
+import com.recsys.metrics.RequestDurationHistogram;
 import com.recsys.metrics.SplunkHecMetrics;
 import io.micrometer.prometheus.PrometheusMeterRegistry;
 import org.slf4j.Logger;
@@ -88,6 +89,9 @@ public final class MicroserviceGatewayServer {
         PrometheusMeterRegistry meterRegistry = PrometheusMeterRegistries.defaultRegistry();
         // Armeria's configureRegistry is a no-op, so nothing binds the JVM metrics for us.
         JvmMetricsBinder.bindTo(meterRegistry);
+        // Must run before sb.decorator(MetricCollectingService...) below registers any
+        // request-duration timer, so the histogram buckets apply from the first request.
+        RequestDurationHistogram.configure(meterRegistry);
 
         // Same operator credential as 7010's AdminTokenGuard: one operator tier system-wide.
         AdminTokenGuard operatorGuard = new AdminTokenGuard(System.getenv("SHARD_ADMIN_TOKEN"));

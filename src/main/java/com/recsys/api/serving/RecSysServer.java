@@ -42,6 +42,7 @@ import com.recsys.application.retrieval.multichannel.RecallConfig;
 import com.recsys.application.retrieval.multichannel.RecallDegradationMetrics;
 import com.recsys.infrastructure.store.TrendingStore;
 import com.recsys.metrics.JvmMetricsBinder;
+import com.recsys.metrics.RequestDurationHistogram;
 import com.recsys.metrics.SplunkHecMetrics;
 import io.micrometer.core.instrument.MeterRegistry;
 import io.micrometer.prometheus.PrometheusMeterRegistry;
@@ -122,6 +123,10 @@ public class RecSysServer {
             SplunkHecMetrics.register(registry);
             // Armeria's configureRegistry is a no-op, so nothing binds the JVM metrics for us.
             JvmMetricsBinder.bindTo(registry);
+            // Must run before the meterRegistry(registry).decorator(MetricCollectingService...)
+            // call below registers any request-duration timer, so the histogram buckets apply
+            // from the first request.
+            RequestDurationHistogram.configure(registry);
             RecallDegradationMetrics recallMetrics = createRecallMetrics(registry);
 
             MultiChannelRecallService recallService = MultiChannelRecallService.from(
