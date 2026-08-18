@@ -271,4 +271,4 @@ No new numbered document. The content lands where its subject already lives:
 - **`docs/runbooks/splunk-hec-logging.md`** — searches under "Useful searches": slow requests by
   route and service, GC pauses by service, and correlating a slow request with a GC pause by
   timestamp, with the at-most-once caveat restated at the point of use.
-- **`.claude/CLAUDE.md`** — the five new environment variables.
+- **`.claude/CLAUDE.md`** — the four new environment variables.

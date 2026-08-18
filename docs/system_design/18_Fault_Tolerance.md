@@ -516,6 +516,15 @@ publishes the *appender's own* delivery counters, which is metrics about the log
 pipeline's mechanics, not metrics derived from log content. Operationally: **alerting reads
 Prometheus, investigation reads Splunk.** No alert here fires on "an ERROR log appeared".
 
+**Latency and memory appear in both tools, and that is not an exception to the rule.** Splunk
+carries edge-triggered *events* — a request that exceeded a threshold, a GC pause, a heap
+crossing — each a discrete occurrence with high-cardinality context attached. Prometheus carries
+continuous *series* over the same underlying runtime state, sampled independently by a Micrometer
+binder or an Armeria decorator. Neither reads the other: no alert parses a log line, and nothing
+emits a log line so that a metric can be computed from it. The property that keeps this honest is
+that **nothing ships to Splunk on a timer** — a periodic heap sample would be a metric wearing a
+log's clothes, and was considered and rejected when this was built.
+
 ### 8.1 What each service exposes, and what collects it
 
 | Service | Port | Metrics path | `ServiceMonitor` |
@@ -573,7 +582,7 @@ this table.**
 
 | Metric | Registered in |
 |---|---|
-| `online_serving_qps`, `_failure_rate`, `_rejected_rate`, `_p50_ms`, `_p95_ms`, `_p99_ms` | [`metrics/OnlineServingMetricsService.java`](../../src/main/java/com/recsys/metrics/OnlineServingMetricsService.java) |
+| `online_serving_qps`, `_failure_rate`, `_rejected_rate`, `_p50_ms`, `_p95_ms`, `_p99_ms` (hand-rolled gauges; the real request-duration histogram, `online_serving_request_duration_seconds`, is in the Runtime table below) | [`metrics/OnlineServingMetricsService.java`](../../src/main/java/com/recsys/metrics/OnlineServingMetricsService.java) |
 | `recsys.recall.degradation.outcomes` (dotted → `recsys_recall_degradation_outcomes_total`, tagged `outcome`) | [`application/retrieval/multichannel/RecallDegradationMetrics.java`](../../src/main/java/com/recsys/application/retrieval/multichannel/RecallDegradationMetrics.java) |
 | `recsys.pagination.cursor.rejected` (tagged `reason`), `.cursor.legacy.accepted`, `.cursor.previous_key.verified`, `.page.returned` (tagged `terminal`), `.budget.exhausted` | [`application/pagination/RecommendationPaginationMetrics.java`](../../src/main/java/com/recsys/application/pagination/RecommendationPaginationMetrics.java) |
 
@@ -661,9 +670,36 @@ Prometheus-native `snake_case`; a handful (`recsys.inference.*`, `recsys.load_sh
 the Prometheus registry converts to underscores on exposition. Both end up snake_case on the
 wire.
 
+**Runtime** — JVM and request-duration metrics. Nothing bound these before 2026-08-18: Armeria's
+`PrometheusMeterRegistries.configureRegistry` is a no-op, so heap usage, GC pause time and thread
+counts were unscrapeable on 6010, 7010 and 8010 while looking entirely present. Only the model
+service had them, from Actuator's auto-configuration.
+
+| Metric | Registered in |
+|---|---|
+| `jvm_memory_used_bytes`, `_committed_bytes`, `_max_bytes`, `jvm_gc_pause_seconds`, `jvm_threads_live_threads`, `system_cpu_count` (and the rest of Micrometer's JVM binder set) | [`metrics/JvmMetricsBinder.java`](../../src/main/java/com/recsys/metrics/JvmMetricsBinder.java) |
+| `online_serving_request_duration_seconds`, `catalog_serving_request_duration_seconds`, `api_gateway_request_duration_seconds` | Armeria `MetricCollectingService`, mounted in each service's main |
+
+`JvmMetricsBinder` is idempotent per registry because `PrometheusMeterRegistries.defaultRegistry()`
+is a JVM-wide singleton more than one caller may reasonably ask for the JVM metrics on, and
+`JvmGcMetrics` installs a JMX notification listener per bind — a second bind on the same registry
+would double-count every pause. A second bind on a genuinely different registry still gets its own
+listener.
+
+`RequestDurationHistogram` closes a gap the decorator alone leaves open:
+`MetricCollectingService`'s default `DistributionStatisticConfig` publishes only client-side
+`quantile=` series (`_count`/`_sum`/`_max` plus nine `quantile=` lines) for `*.request.duration`
+timers, not the `_bucket{le=}` series `histogram_quantile(...)` needs — an alert built against
+buckets that don't exist would sit in Prometheus looking like coverage and never fire.
+`RequestDurationHistogram.configure(registry)` installs a `MeterFilter` giving every
+`*.request.duration` meter explicit `serviceLevelObjectives` buckets (50ms, 100ms, 250ms, 400ms,
+500ms, 1s, 2s, 5s), and it must run before the first such meter is registered on that registry — a
+`MeterFilter` only affects meters registered after it is added — which is why it precedes both
+`SplunkHecMetrics.register` and `JvmMetricsBinder.bindTo` in all three Armeria mains.
+
 ### 8.4 Alerts
 
-Thirteen, all in [prometheus-rules.yaml](../../k8s/base/prometheus-rules.yaml). Every
+Sixteen, in five groups, all in [prometheus-rules.yaml](../../k8s/base/prometheus-rules.yaml). Every
 expression was checked against a real metric name in `src/main/java` first — an alert on a
 metric that is never emitted looks like coverage and can never fire.
 
@@ -701,7 +737,20 @@ counter increments per failed *attempt* and the relay retries, so a short burst 
 must not page; measured with `promtool`, a four-attempt burst under `[10m]`/`for: 10m` fires
 spuriously at t=11 m, while a 5 m window cannot span a 10 m hold.
 
-**Three traps this file fell into once, worth not repeating elsewhere:**
+**Runtime and request-latency alerts** — three more in the `recsys.runtime` group, watching the
+request path and the JVM underneath it rather than data at rest or the freshness boundary above.
+
+| Alert | Means | Likely cause | First response |
+|---|---|---|---|
+| `JvmHeapPressureHigh` | Heap `used / max` over the heap area only (non-heap pools excluded, and pools with no maximum, which report `-1`, are filtered before the division) `> 0.90` for 10 m | A leak, an undersized heap for real traffic, or a burst of unusually large responses | Cross-check the Splunk heap-pressure events for the same service and window — `GcEventTracker` logs the same crossing independently, so agreement between the two rules out a metric artifact. Expect GC pause time to follow. |
+| `JvmGcTimeFractionHigh` | `rate(jvm_gc_pause_seconds_sum[5m])` — stop-the-world seconds per second of wall time — `> 0.10` for 10 m | Usually heap pressure; check `JvmHeapPressureHigh` on the same instance first | If heap pressure isn't also firing, look at allocation rate and object lifetime rather than heap sizing. Measured detection latency on a sustained overshoot is roughly 13–15 m depending on how far past the threshold the true rate sits — see the comment in `prometheus-rules.yaml`, measured with `promtool`, not derived from a formula. |
+| `RequestLatencyP99High` | `histogram_quantile(0.99, ...)` over each service's own request-duration buckets, against a per-service threshold (0.4 s online serving, 1 s catalog serving, 2 s gateway) for 10 m | A slow downstream, a GC pause, or genuine load past capacity | Search Splunk with `outcome=slow` for the same window to see which routes and requests. Check `JvmGcTimeFractionHigh` on the same instance before assuming a downstream fault. Measured detection latency on a clean sustained step is roughly 11 m, essentially the `for:` window with no extra `rate()`-side delay — a different shape from the counter-rate alert above and not a number to generalize from. |
+
+The three thresholds differ per service rather than sharing one value because a threshold at or
+above an enforced request timeout can never fire — the reason this group pushes the trap list
+below to four entries.
+
+**Four traps this file fell into once, worth not repeating elsewhere:**
 
 - **`for:` cannot equal the `increase()`/`delta()` range window.** An isolated spike ages out
   of the range and flips the expression false *before* `for:` is satisfied, so the alert can
@@ -720,6 +769,13 @@ spuriously at t=11 m, while a 5 m window cannot span a 10 m hold.
   Note `GatewayRegistryStale` **cannot fire in any configuration this repo ships**:
   `SERVICE_REGISTRY_ENABLED` defaults false and appears nowhere under `k8s/`, so the gauge is
   never registered.
+- **A threshold above an enforced timeout can never fire, and `promtool` cannot see it.**
+  `RequestLatencyP99High` uses 0.4 s for online serving where the other two get 1 s and 2 s,
+  because `OnlinePredictionServer` sets `requestTimeoutMillis` from `ONLINE_REQUEST_TIMEOUT_MS`
+  (default 500 ms) — the histogram is bounded by the timeout, so a 1 s threshold there is
+  unreachable. An unreachable threshold passes a near-miss case perfectly and looks like
+  coverage, which makes this invisible to every mechanism in §8.6. If a service gains an
+  explicit request timeout, its latency threshold has to move with it.
 
 `prometheus-rules.test.yaml` (run by `promtool test rules` in
 [prometheus-rules.yml](../../.github/workflows/prometheus-rules.yml)) gives every alert both a
@@ -739,6 +795,11 @@ Read this before assuming any of it works.
   and there is no collector — no Jaeger, Zipkin or OTel — anywhere. **Do not assume
   distributed tracing works**: a `traceId` search surfaces model-service events only and
   cannot follow a request across the gateway → backend hop it actually took.
+  The slow-request events added in 2026-08 inherit this limit exactly: they carry `traceId`
+  where MDC has one, which is the model service only. A slow gateway request and the slow
+  backend request it caused **cannot be correlated by `traceId`** — only by timestamp, service
+  and route. The field being present on some events and absent on others invites precisely the
+  wrong inference, so do not read its absence as "this request had no trace".
 - **No Prometheus.** Every `ServiceMonitor` and the `PrometheusRule` are CRs a **Prometheus
   Operator** interprets, and nothing here installs one. `kubectl apply` succeeds, the objects
   exist, and nothing evaluates them. **A committed alert file is evidence that alerts are
