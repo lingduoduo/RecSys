@@ -20,6 +20,7 @@ import com.recsys.infrastructure.redis.RedisCacheStatsProbe;
 import com.recsys.infrastructure.redis.RedisPersistentKeyProbe;
 import com.recsys.infrastructure.redis.RedisReplicaLagProbe;
 import com.recsys.infrastructure.redis.RedisFeatureVersionSampler;
+import com.recsys.jvm.GcEventTracker;
 
 import com.linecorp.armeria.server.Route;
 import com.linecorp.armeria.server.Server;
@@ -155,12 +156,19 @@ public final class OnlinePredictionServer {
             // The Splunk appender was built by Logback long before this registry existed, so it
             // cannot register itself. No-op when SPLUNK_HEC_TOKEN is unset.
             SplunkHecMetrics.register(registry);
-            // Armeria's configureRegistry is a no-op, so nothing binds the JVM metrics for us.
-            JvmMetricsBinder.bindTo(registry);
             // Must run before the meterRegistry(registry).decorator(MetricCollectingService...)
             // call below registers any request-duration timer, so the histogram buckets apply
-            // from the first request.
+            // from the first request. Also run before JvmMetricsBinder.bindTo(...) below: a
+            // MeterFilter only applies to meters registered after it is installed, and binding
+            // the JVM gauges first triggers a "MeterFilter configured after a Meter registered"
+            // WARN on every startup.
             RequestDurationHistogram.configure(registry);
+            // Armeria's configureRegistry is a no-op, so nothing binds the JVM metrics for us.
+            JvmMetricsBinder.bindTo(registry);
+            // Spring constructs its own; the Armeria mains have no container to do it for them.
+            GcEventTracker gcEventTracker = new GcEventTracker();
+            gcEventTracker.start();
+            Runtime.getRuntime().addShutdownHook(new Thread(gcEventTracker::stop));
             RecommendationPaginationRuntime pagination =
                     RecommendationPaginationRuntime.fromEnvironment(
                             registry, Clock.systemUTC());

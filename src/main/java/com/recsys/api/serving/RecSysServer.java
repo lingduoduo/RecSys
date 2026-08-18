@@ -41,6 +41,7 @@ import com.recsys.application.retrieval.multichannel.MultiChannelRecallService;
 import com.recsys.application.retrieval.multichannel.RecallConfig;
 import com.recsys.application.retrieval.multichannel.RecallDegradationMetrics;
 import com.recsys.infrastructure.store.TrendingStore;
+import com.recsys.jvm.GcEventTracker;
 import com.recsys.metrics.JvmMetricsBinder;
 import com.recsys.metrics.RequestDurationHistogram;
 import com.recsys.metrics.SplunkHecMetrics;
@@ -121,12 +122,19 @@ public class RecSysServer {
             // The Splunk appender was built by Logback long before this registry existed, so it
             // cannot register itself. No-op when SPLUNK_HEC_TOKEN is unset.
             SplunkHecMetrics.register(registry);
-            // Armeria's configureRegistry is a no-op, so nothing binds the JVM metrics for us.
-            JvmMetricsBinder.bindTo(registry);
             // Must run before the meterRegistry(registry).decorator(MetricCollectingService...)
             // call below registers any request-duration timer, so the histogram buckets apply
-            // from the first request.
+            // from the first request. Also run before JvmMetricsBinder.bindTo(...) below: a
+            // MeterFilter only applies to meters registered after it is installed, and binding
+            // the JVM gauges first triggers a "MeterFilter configured after a Meter registered"
+            // WARN on every startup.
             RequestDurationHistogram.configure(registry);
+            // Armeria's configureRegistry is a no-op, so nothing binds the JVM metrics for us.
+            JvmMetricsBinder.bindTo(registry);
+            // Spring constructs its own; the Armeria mains have no container to do it for them.
+            GcEventTracker gcEventTracker = new GcEventTracker();
+            gcEventTracker.start();
+            Runtime.getRuntime().addShutdownHook(new Thread(gcEventTracker::stop));
             RecallDegradationMetrics recallMetrics = createRecallMetrics(registry);
 
             MultiChannelRecallService recallService = MultiChannelRecallService.from(

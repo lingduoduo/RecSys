@@ -15,7 +15,6 @@ import javax.management.openmbean.CompositeData;
 import java.lang.management.GarbageCollectorMXBean;
 import java.lang.management.ManagementFactory;
 import java.lang.management.MemoryUsage;
-import java.util.ArrayList;
 import java.util.Arrays;
 import java.util.LinkedHashMap;
 import java.util.List;
@@ -65,7 +64,7 @@ public class GcEventTracker implements DisposableBean {
     private final LongAdder allocationStalls   = new LongAdder();
 
     private record ListenerRegistration(NotificationEmitter emitter, NotificationListener listener) {}
-    private final List<ListenerRegistration> registrations = new ArrayList<>();
+    private final List<ListenerRegistration> registrations = new java.util.concurrent.CopyOnWriteArrayList<>();
 
     public GcEventTracker() {
         for (GcType t : GcType.values()) {
@@ -75,8 +74,16 @@ public class GcEventTracker implements DisposableBean {
         Arrays.setAll(histogramBuckets, i -> new LongAdder());
     }
 
+    /**
+     * Registers the JMX notification listeners. Spring calls this via {@link PostConstruct}; the
+     * three Armeria mains, which have no container, call it directly during boot. Idempotent —
+     * a second call would double-count every pause.
+     */
     @PostConstruct
-    void install() {
+    public synchronized void start() {
+        if (!registrations.isEmpty()) {
+            return;
+        }
         for (GarbageCollectorMXBean gc : ManagementFactory.getGarbageCollectorMXBeans()) {
             if (!(gc instanceof NotificationEmitter emitter)) continue;
             NotificationListener listener = this::onNotification;
@@ -86,8 +93,8 @@ public class GcEventTracker implements DisposableBean {
         }
     }
 
-    @Override
-    public void destroy() {
+    /** Removes the listeners. Idempotent. */
+    public synchronized void stop() {
         for (ListenerRegistration r : registrations) {
             try {
                 r.emitter().removeNotificationListener(r.listener());
@@ -96,6 +103,11 @@ public class GcEventTracker implements DisposableBean {
             }
         }
         registrations.clear();
+    }
+
+    @Override
+    public void destroy() {
+        stop();
     }
 
     // ── Notification handler ─────────────────────────────────────────────────

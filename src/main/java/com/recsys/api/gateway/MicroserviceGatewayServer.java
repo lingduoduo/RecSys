@@ -20,6 +20,7 @@ import com.recsys.infrastructure.redis.LettuceClientFactory;
 import com.recsys.infrastructure.redis.RedisExecutor;
 import com.recsys.infrastructure.registry.ServiceRegistryProvider;
 import com.recsys.infrastructure.registry.ServiceRegistryStore;
+import com.recsys.jvm.GcEventTracker;
 import com.recsys.loadshed.GracefulServers;
 
 import com.linecorp.armeria.client.ClientFactory;
@@ -87,11 +88,18 @@ public final class MicroserviceGatewayServer {
         // Created before the forwarder so it can register gateway_user_scope_rejected_total.
         // PrometheusMeterRegistries.defaultRegistry() is a JVM-wide singleton; order is free.
         PrometheusMeterRegistry meterRegistry = PrometheusMeterRegistries.defaultRegistry();
+        // Must run before sb.decorator(MetricCollectingService...) below registers any
+        // request-duration timer, so the histogram buckets apply from the first request. Also
+        // run before JvmMetricsBinder.bindTo(...) below: a MeterFilter only applies to meters
+        // registered after it is installed, and binding the JVM gauges first triggers a
+        // "MeterFilter configured after a Meter registered" WARN on every startup.
+        RequestDurationHistogram.configure(meterRegistry);
         // Armeria's configureRegistry is a no-op, so nothing binds the JVM metrics for us.
         JvmMetricsBinder.bindTo(meterRegistry);
-        // Must run before sb.decorator(MetricCollectingService...) below registers any
-        // request-duration timer, so the histogram buckets apply from the first request.
-        RequestDurationHistogram.configure(meterRegistry);
+        // Spring constructs its own; the Armeria mains have no container to do it for them.
+        GcEventTracker gcEventTracker = new GcEventTracker();
+        gcEventTracker.start();
+        Runtime.getRuntime().addShutdownHook(new Thread(gcEventTracker::stop));
 
         // Same operator credential as 7010's AdminTokenGuard: one operator tier system-wide.
         AdminTokenGuard operatorGuard = new AdminTokenGuard(System.getenv("SHARD_ADMIN_TOKEN"));
