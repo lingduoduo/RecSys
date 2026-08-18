@@ -7,6 +7,7 @@ import org.slf4j.LoggerFactory;
 import org.slf4j.MDC;
 
 import java.util.concurrent.TimeUnit;
+import java.util.concurrent.atomic.AtomicBoolean;
 import java.util.function.Function;
 
 /**
@@ -27,9 +28,28 @@ public final class SlowRequestLogger {
     public static Function<? super HttpService, ? extends HttpService> newDecorator(
             String serviceName, long thresholdMs) {
 
+        // Logged once, not per request: emitIfNoteworthy runs inside a whenComplete().thenAccept()
+        // callback, so any throw there is caught by the CompletableFuture and would otherwise be
+        // discarded with no trace anywhere -- an observability component failing invisibly. If a
+        // bug hits every slow/failed request, a per-request WARN would flood; one AtomicBoolean per
+        // decorator (i.e. per service) keeps the breadcrumb without the flood, matching
+        // GatewayOriginSecret's newDecorator.
+        AtomicBoolean warned = new AtomicBoolean();
+
         return delegate -> (ctx, req) -> {
-            ctx.log().whenComplete().thenAccept(requestLog -> emitIfNoteworthy(
-                    requestLog, ctx.config().route().patternString(), serviceName, thresholdMs));
+            ctx.log().whenComplete().thenAccept(requestLog -> {
+                try {
+                    emitIfNoteworthy(requestLog, ctx.config().route().patternString(), serviceName,
+                            thresholdMs);
+                } catch (RuntimeException e) {
+                    if (warned.compareAndSet(false, true)) {
+                        log.warn("Slow-request Splunk event emission failed for {} (first "
+                                        + "occurrence, further failures are not logged); the "
+                                        + "request itself was not affected.",
+                                serviceName, e);
+                    }
+                }
+            });
             return delegate.serve(ctx, req);
         };
     }
