@@ -23,9 +23,11 @@ import com.recsys.infrastructure.registry.ServiceRegistryStore;
 import com.recsys.loadshed.GracefulServers;
 
 import com.linecorp.armeria.client.ClientFactory;
+import com.linecorp.armeria.common.metric.MeterIdPrefixFunction;
 import com.linecorp.armeria.common.metric.PrometheusMeterRegistries;
 import com.linecorp.armeria.server.Server;
 import com.linecorp.armeria.server.ServerBuilder;
+import com.linecorp.armeria.server.metric.MetricCollectingService;
 import com.linecorp.armeria.server.metric.PrometheusExpositionService;
 import com.recsys.metrics.GatewayRegistryMetrics;
 import com.recsys.metrics.JvmMetricsBinder;
@@ -141,6 +143,20 @@ public final class MicroserviceGatewayServer {
         long llmMaxRetryWaitMs = EnvVars.readLong("LLM_MAX_RETRY_WAIT_MS", LlmProxyService.DEFAULT_MAX_RETRY_WAIT_MS);
 
         ServerBuilder sb = Server.builder().http(port);
+
+        // Request-duration histogram. Tagged by method/status/service only — the catch-all
+        // "prefix:/" data path does NOT produce a per-URL label (verified against
+        // DefaultMeterIdPrefixFunction in armeria-1.28.4).
+        //
+        // meterRegistry(meterRegistry) is required here: Armeria's decorator records into
+        // ctx.meterRegistry(), which falls back to Flags.meterRegistry() (Micrometer's global
+        // registry) unless the ServerBuilder is told otherwise. Without this call the decorator
+        // silently records into a registry that /metrics never exposes (verified empirically:
+        // requests succeeded but api_gateway_* series never appeared). RecSysServer and
+        // OnlinePredictionServer already bind this the same way.
+        sb.meterRegistry(meterRegistry);
+        sb.decorator(MetricCollectingService.newDecorator(
+                MeterIdPrefixFunction.ofDefault("api_gateway")));
 
         // Prometheus metrics endpoint (always present, matching the other services). Registry meters
         // are registered only when the registry consumer is active. The registry itself is created

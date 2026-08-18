@@ -4,10 +4,12 @@ import ch.qos.logback.classic.LoggerContext;
 import com.linecorp.armeria.common.HttpMethod;
 import com.linecorp.armeria.common.HttpResponse;
 import com.linecorp.armeria.common.HttpStatus;
+import com.linecorp.armeria.common.metric.MeterIdPrefixFunction;
 import com.linecorp.armeria.server.Route;
 import com.linecorp.armeria.server.Server;
 import com.linecorp.armeria.server.ServerBuilder;
 import com.linecorp.armeria.server.cors.CorsService;
+import com.linecorp.armeria.server.metric.MetricCollectingService;
 import com.linecorp.armeria.server.metric.PrometheusExpositionService;
 import com.linecorp.armeria.common.metric.PrometheusMeterRegistries;
 import com.recsys.config.EnvConfig;
@@ -280,6 +282,11 @@ public class RecSysServer {
             PrometheusMeterRegistry registry
     ) {
         builder.meterRegistry(registry)
+                // Matches OnlinePredictionServer's existing pattern. Yields
+                // catalog_serving_request_duration_seconds_*, tagged by method/status/service —
+                // no path tag, so cardinality is bounded.
+                .decorator(MetricCollectingService.newDecorator(
+                        MeterIdPrefixFunction.ofDefault("catalog_serving")))
                 .service(
                         "/metrics",
                         PrometheusExpositionService.of(registry.getPrometheusRegistry()));
