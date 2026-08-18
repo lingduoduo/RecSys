@@ -406,6 +406,13 @@
                      notification inside a sleep window, which is exactly the kind of timing
                      dependency issue #261 burned this profile on before. -->
                 <include>**/jvm/GcEventTrackerLifecycleTest.java</include>
+                <!-- The GC and heap-pressure events are the only memory signal that reaches
+                     Splunk, and their whole correctness is that they are edge-triggered: a
+                     regression to per-collection emission would flood a bounded, drop-on-full
+                     HEC queue and take the ERROR events with it. Also pins the unset-heap-max
+                     guard, the same -1 sentinel that defeats the Prometheus alert. No timing,
+                     no JVM dependence — the emission seam is called directly. -->
+                <include>**/jvm/GcEventLoggingTest.java</include>
                 <include>**/metrics/ScrapeTargetManifestTest.java</include>
                 <!-- The egress counterpart to ScrapeTargetManifestTest's ingress checks. The
                      NetworkPolicy is the L3/L4 ACL the whole backend trust model rests on
