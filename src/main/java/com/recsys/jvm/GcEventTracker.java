@@ -110,6 +110,17 @@ public class GcEventTracker implements DisposableBean {
         stop();
     }
 
+    /**
+     * Test-only view of how many JMX listeners are currently registered. Not for production
+     * use — it exists so a test can assert on the one thing the empty-check guard in
+     * {@link #start()} is load-bearing for: that a second {@code start()} call does not install
+     * a second listener per collector (which would double-count every GC pause), and that
+     * {@link #stop()} actually tears every one of them back down.
+     */
+    synchronized int registeredCollectorCount() {
+        return registrations.size();
+    }
+
     // ── Notification handler ─────────────────────────────────────────────────
 
     private void onNotification(Notification notification, Object handback) {

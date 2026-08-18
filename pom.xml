@@ -396,6 +396,16 @@
                      boundary list, doesn't silently disarm that alert again. Pure unit-level,
                      no Redis, no Docker, no timing. -->
                 <include>**/metrics/RequestDurationHistogramTest.java</include>
+                <!-- Task 4's GC/heap log emitter is built on GcEventTracker.start()/stop(); without
+                     this test, a regression to the old package-private install() — or a dropped
+                     idempotency guard that silently double-registers a JMX listener and
+                     double-counts every GC pause fleet-wide — merges green. Pure state assertions
+                     on registeredCollectorCount(): no System.gc(), no Thread.sleep, no Redis, no
+                     Docker. The GC-observation half of GcEventTracker's tests stays out of this
+                     profile deliberately — it waits on the JVM actually delivering a JMX
+                     notification inside a sleep window, which is exactly the kind of timing
+                     dependency issue #261 burned this profile on before. -->
+                <include>**/jvm/GcEventTrackerLifecycleTest.java</include>
                 <include>**/metrics/ScrapeTargetManifestTest.java</include>
                 <!-- The egress counterpart to ScrapeTargetManifestTest's ingress checks. The
                      NetworkPolicy is the L3/L4 ACL the whole backend trust model rests on

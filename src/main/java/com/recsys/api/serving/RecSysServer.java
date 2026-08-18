@@ -119,16 +119,18 @@ public class RecSysServer {
                     EnvConfig.readInt("RECALL_BULKHEAD_QUEUE_CAPACITY", recallPoolSize * 4));
             ExecutorService executor = recallBulkhead.asExecutorService();
             PrometheusMeterRegistry registry = PrometheusMeterRegistries.defaultRegistry();
+            // Must be the first thing that touches this registry: a MeterFilter only applies to
+            // meters registered after it is installed, and SplunkHecMetrics.register(...) below
+            // registers real meters (FunctionCounters/Gauge) immediately whenever a SPLUNK
+            // appender is present, regardless of whether SPLUNK_HEC_TOKEN is set. Also covers
+            // JvmMetricsBinder.bindTo(...) below and the meterRegistry(registry).decorator(
+            // MetricCollectingService...) call further down, both of which register meters too.
+            // Any of these running first triggers a "MeterFilter configured after a Meter
+            // registered" WARN on every startup.
+            RequestDurationHistogram.configure(registry);
             // The Splunk appender was built by Logback long before this registry existed, so it
             // cannot register itself. No-op when SPLUNK_HEC_TOKEN is unset.
             SplunkHecMetrics.register(registry);
-            // Must run before the meterRegistry(registry).decorator(MetricCollectingService...)
-            // call below registers any request-duration timer, so the histogram buckets apply
-            // from the first request. Also run before JvmMetricsBinder.bindTo(...) below: a
-            // MeterFilter only applies to meters registered after it is installed, and binding
-            // the JVM gauges first triggers a "MeterFilter configured after a Meter registered"
-            // WARN on every startup.
-            RequestDurationHistogram.configure(registry);
             // Armeria's configureRegistry is a no-op, so nothing binds the JVM metrics for us.
             JvmMetricsBinder.bindTo(registry);
             // Spring constructs its own; the Armeria mains have no container to do it for them.
