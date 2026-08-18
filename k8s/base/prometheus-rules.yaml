@@ -233,3 +233,66 @@ spec:
               and events that exhaust the retry policy are marked dead. Check relay logs for
               the failure class and Kafka reachability.
               See docs/runbooks/serving-data-freshness.md.
+
+        # --- JVM heap/GC pressure and request-latency SLOs ---
+        # jvm_memory_used_bytes / jvm_memory_max_bytes / jvm_gc_pause_seconds_sum come from
+        # JvmMetricsBinder (bound on all three Armeria mains: 6010, 7010, 8010). The three
+        # *_request_duration_seconds_bucket series come from RequestDurationHistogram, the
+        # MeterFilter that installs explicit SLO boundaries (50ms/100ms/250ms/400ms/500ms/1s/2s/5s)
+        # on Armeria's *.request.duration timers -- MetricCollectingService alone only publishes
+        # client-side quantile= series, not _bucket series, so histogram_quantile against those
+        # would match nothing. All four prefixes verified against a live /metrics exposition
+        # before this file was written.
+
+        - alert: JvmHeapPressureHigh
+          expr: >-
+            sum by (job, instance) (jvm_memory_used_bytes{area="heap"})
+            /
+            sum by (job, instance) (jvm_memory_max_bytes{area="heap"} > 0)
+            > 0.90
+          for: 10m
+          labels:
+            severity: warning
+          annotations:
+            summary: "{{ $labels.job }} heap is above 90% used"
+            description: >-
+              Sustained heap pressure. Expect longer GC pauses and, past this, allocation
+              stalls. Cross-check the Splunk heap-pressure events from the same service for
+              what was running at the crossing. The `> 0` filter on jvm_memory_max_bytes is
+              load-bearing: pools with no maximum report -1, and including them makes the
+              ratio meaningless.
+
+        - alert: JvmGcTimeFractionHigh
+          expr: sum by (job, instance) (rate(jvm_gc_pause_seconds_sum[5m])) > 0.10
+          for: 10m
+          labels:
+            severity: warning
+          annotations:
+            summary: "{{ $labels.job }} is spending over 10% of wall time in GC pause"
+            description: >-
+              More than a tenth of elapsed time is stop-the-world pause, which shows up
+              directly as request latency. Check JvmHeapPressureHigh on the same instance
+              first — this is usually its consequence, not an independent fault.
+
+        - alert: RequestLatencyP99High
+          expr: >-
+            histogram_quantile(0.99, sum by (le, job) (
+              rate(online_serving_request_duration_seconds_bucket[5m]))) > 0.4
+            or
+            histogram_quantile(0.99, sum by (le, job) (
+              rate(catalog_serving_request_duration_seconds_bucket[5m]))) > 1
+            or
+            histogram_quantile(0.99, sum by (le, job) (
+              rate(api_gateway_request_duration_seconds_bucket[5m]))) > 2
+          for: 10m
+          labels:
+            severity: warning
+          annotations:
+            summary: "{{ $labels.job }} p99 request latency is above its budget"
+            description: >-
+              Search Splunk for the same window with outcome=slow to see which routes and
+              which requests. Thresholds differ per service and are bound to each one's
+              enforced request timeout: online serving caps requests at 500ms
+              (ONLINE_REQUEST_TIMEOUT_MS), so a threshold at or above 0.5 there could never
+              fire. If a service gains or changes an explicit request timeout, its threshold
+              must move with it.
