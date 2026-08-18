@@ -12,7 +12,7 @@ class GcEventTrackerTest {
     @BeforeEach
     void setUp() {
         tracker = new GcEventTracker();
-        tracker.install();
+        tracker.start();
     }
 
     @Test
@@ -87,5 +87,28 @@ class GcEventTrackerTest {
         GcEventTracker.Snapshot snap = tracker.snapshot();
         assertThat(snap.stwEventCount()).isGreaterThanOrEqualTo(0);
         assertThat(snap.stwLongestPauseMs()).isGreaterThanOrEqualTo(0);
+    }
+
+    @Test
+    void startIsIdempotentAndStopRemovesListeners() {
+        GcEventTracker t = new GcEventTracker();
+        t.start();
+        t.start();   // second call must not double-register
+        long before = t.snapshot().stwEventCount();
+
+        System.gc();
+        try { Thread.sleep(300); } catch (InterruptedException e) { Thread.currentThread().interrupt(); }
+
+        long afterGc = t.snapshot().stwEventCount();
+        t.stop();
+        t.stop();    // must not throw
+
+        System.gc();
+        try { Thread.sleep(300); } catch (InterruptedException e) { Thread.currentThread().interrupt(); }
+
+        assertThat(t.snapshot().stwEventCount())
+                .as("no further events may be recorded after stop()")
+                .isEqualTo(afterGc);
+        assertThat(afterGc).isGreaterThanOrEqualTo(before);
     }
 }

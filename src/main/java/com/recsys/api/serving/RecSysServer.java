@@ -4,13 +4,16 @@ import ch.qos.logback.classic.LoggerContext;
 import com.linecorp.armeria.common.HttpMethod;
 import com.linecorp.armeria.common.HttpResponse;
 import com.linecorp.armeria.common.HttpStatus;
+import com.linecorp.armeria.common.metric.MeterIdPrefixFunction;
 import com.linecorp.armeria.server.Route;
 import com.linecorp.armeria.server.Server;
 import com.linecorp.armeria.server.ServerBuilder;
 import com.linecorp.armeria.server.cors.CorsService;
+import com.linecorp.armeria.server.metric.MetricCollectingService;
 import com.linecorp.armeria.server.metric.PrometheusExpositionService;
 import com.linecorp.armeria.common.metric.PrometheusMeterRegistries;
 import com.recsys.config.EnvConfig;
+import com.recsys.infrastructure.observability.SlowRequestLogger;
 import com.recsys.infrastructure.dataloading.DataLoader;
 import com.recsys.infrastructure.dataloading.DataManager;
 import com.recsys.application.model.PairPredictionService;
@@ -39,6 +42,9 @@ import com.recsys.application.retrieval.multichannel.MultiChannelRecallService;
 import com.recsys.application.retrieval.multichannel.RecallConfig;
 import com.recsys.application.retrieval.multichannel.RecallDegradationMetrics;
 import com.recsys.infrastructure.store.TrendingStore;
+import com.recsys.jvm.GcEventTracker;
+import com.recsys.metrics.JvmMetricsBinder;
+import com.recsys.metrics.RequestDurationHistogram;
 import com.recsys.metrics.SplunkHecMetrics;
 import io.micrometer.core.instrument.MeterRegistry;
 import io.micrometer.prometheus.PrometheusMeterRegistry;
@@ -114,9 +120,24 @@ public class RecSysServer {
                     EnvConfig.readInt("RECALL_BULKHEAD_QUEUE_CAPACITY", recallPoolSize * 4));
             ExecutorService executor = recallBulkhead.asExecutorService();
             PrometheusMeterRegistry registry = PrometheusMeterRegistries.defaultRegistry();
+            // Must be the first thing that touches this registry: a MeterFilter only applies to
+            // meters registered after it is installed, and SplunkHecMetrics.register(...) below
+            // registers real meters (FunctionCounters/Gauge) immediately whenever a SPLUNK
+            // appender is present, regardless of whether SPLUNK_HEC_TOKEN is set. Also covers
+            // JvmMetricsBinder.bindTo(...) below and the meterRegistry(registry).decorator(
+            // MetricCollectingService...) call further down, both of which register meters too.
+            // Any of these running first triggers a "MeterFilter configured after a Meter
+            // registered" WARN on every startup.
+            RequestDurationHistogram.configure(registry);
             // The Splunk appender was built by Logback long before this registry existed, so it
             // cannot register itself. No-op when SPLUNK_HEC_TOKEN is unset.
             SplunkHecMetrics.register(registry);
+            // Armeria's configureRegistry is a no-op, so nothing binds the JVM metrics for us.
+            JvmMetricsBinder.bindTo(registry);
+            // Spring constructs its own; the Armeria mains have no container to do it for them.
+            GcEventTracker gcEventTracker = new GcEventTracker();
+            gcEventTracker.start();
+            Runtime.getRuntime().addShutdownHook(new Thread(gcEventTracker::stop));
             RecallDegradationMetrics recallMetrics = createRecallMetrics(registry);
 
             MultiChannelRecallService recallService = MultiChannelRecallService.from(
@@ -277,6 +298,13 @@ public class RecSysServer {
             PrometheusMeterRegistry registry
     ) {
         builder.meterRegistry(registry)
+                // Matches OnlinePredictionServer's existing pattern. Yields
+                // catalog_serving_request_duration_seconds_*, tagged by method/status/service —
+                // no path tag, so cardinality is bounded.
+                .decorator(MetricCollectingService.newDecorator(
+                        MeterIdPrefixFunction.ofDefault("catalog_serving")))
+                .decorator(SlowRequestLogger.newDecorator("catalog-serving",
+                        EnvConfig.readLong("SLOW_REQUEST_LOG_THRESHOLD_MS", 500)))
                 .service(
                         "/metrics",
                         PrometheusExpositionService.of(registry.getPrometheusRegistry()));

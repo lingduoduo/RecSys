@@ -233,3 +233,120 @@ spec:
               and events that exhaust the retry policy are marked dead. Check relay logs for
               the failure class and Kafka reachability.
               See docs/runbooks/serving-data-freshness.md.
+
+    - name: recsys.runtime
+      rules:
+        # --- JVM heap/GC pressure and request-latency SLOs ---
+        # jvm_memory_used_bytes / jvm_memory_max_bytes / jvm_gc_pause_seconds_sum come from
+        # JvmMetricsBinder (bound on all three Armeria mains: 6010, 7010, 8010). The three
+        # *_request_duration_seconds_bucket series come from RequestDurationHistogram, the
+        # MeterFilter that installs explicit SLO boundaries (50ms/100ms/250ms/400ms/500ms/1s/2s/5s)
+        # on Armeria's *.request.duration timers -- MetricCollectingService alone only publishes
+        # client-side quantile= series, not _bucket series, so histogram_quantile against those
+        # would match nothing. All four prefixes verified against a live /metrics exposition
+        # before this file was written.
+        #
+        # These three watch the request path and the runtime underneath it (heap, GC, p99
+        # latency), not the data at rest or in flight -- recsys.data above is scoped to the
+        # freshness/consistency boundary (outbox, feature view, Redis replica lag); this group
+        # is scoped to whether a service is currently able to serve traffic well.
+
+        - alert: JvmHeapPressureHigh
+          # namespace="recsys" is load-bearing, not decoration: jvm_memory_used_bytes /
+          # jvm_memory_max_bytes are emitted by every Micrometer/JMX JVM Prometheus scrapes,
+          # not just ours -- see RecsysTargetDown's `up{namespace="recsys"}` for the same
+          # pattern. Unscoped, this pages on foreign workloads with {{ $labels.job }} naming
+          # a service that isn't recsys at all.
+          expr: >-
+            sum by (job, instance) (jvm_memory_used_bytes{area="heap", namespace="recsys"})
+            /
+            sum by (job, instance) (jvm_memory_max_bytes{area="heap", namespace="recsys"} > 0)
+            > 0.90
+          for: 10m
+          labels:
+            severity: warning
+          annotations:
+            summary: "{{ $labels.job }} heap is above 90% used"
+            description: >-
+              Sustained heap pressure. Expect longer GC pauses and, past this, allocation
+              stalls. Cross-check the Splunk heap-pressure events from the same service for
+              what was running at the crossing. The `> 0` filter on jvm_memory_max_bytes is
+              load-bearing: pools with no maximum report -1, and including them makes the
+              ratio meaningless.
+
+        - alert: JvmGcTimeFractionHigh
+          # for: (10m) deliberately exceeds the rate() range (5m). Unlike increase()/delta() on
+          # a counter -- where one isolated event holds the expression true for exactly the
+          # range window, so for: >= range can never be satisfied (see OutboxDeliveryFailuresSustained
+          # above) -- rate() over a SUSTAINED condition doesn't have a knife edge: if pause time
+          # stays above 10% of wall time, the rate crosses 0.10 a little after the first 5m
+          # window fills and then stays above it for as long as the pressure lasts. A burst
+          # shorter than roughly the range (a GC blip lasting a couple of minutes) pushes the
+          # rate over 0.10 only briefly and it drops back before the hold completes, so it
+          # correctly does NOT fire -- proven by the short-burst case in
+          # prometheus-rules.test.yaml.
+          #
+          # Detection latency on a sustained overshoot: MEASURED, not derived, with promtool's
+          # promql_expr_test against two sustained input series (a linear ramp that never stops,
+          # not a burst) -- a prior version of this comment stated "range/2 + for" from reasoning
+          # about rate() instead of measuring it, and it was wrong. A 2x overshoot (settles at
+          # 0.20/s) crosses 0.10 at t=3m and the alert fires at t=13m; a marginal overshoot
+          # (settles at 0.11/s) crosses at t=5m and fires at t=15m -- so real detection latency
+          # here is roughly 13-15m, slower for a marginal overshoot because rate()'s own
+          # boundary extrapolation takes longer to climb across the threshold when the true
+          # rate is barely above it. Not a false negative on sustained pressure, just latency.
+          # namespace="recsys" is load-bearing here too, same reasoning as JvmHeapPressureHigh
+          # immediately above: jvm_gc_pause_seconds_sum is a generic Micrometer JVM metric name,
+          # not one of ours.
+          expr: sum by (job, instance) (rate(jvm_gc_pause_seconds_sum{namespace="recsys"}[5m])) > 0.10
+          for: 10m
+          labels:
+            severity: warning
+          annotations:
+            summary: "{{ $labels.job }} is spending over 10% of wall time in GC pause"
+            description: >-
+              More than a tenth of elapsed time is stop-the-world pause, which shows up
+              directly as request latency. Check JvmHeapPressureHigh on the same instance
+              first — this is usually its consequence, not an independent fault.
+
+        - alert: RequestLatencyP99High
+          # Same for:-exceeds-range shape as JvmGcTimeFractionHigh immediately above: a 10m
+          # hold against a 5m rate() range is not the increase()/delta() knife-edge, it costs
+          # detection latency rather than a false negative, and a latency spike shorter than
+          # about the range window correctly does not page.
+          #
+          # The detection-latency NUMBER does not carry over, though, and was not assumed by
+          # analogy -- measured separately with promql_expr_test because this expression
+          # compares a RATIO between bucket rates (histogram_quantile), not an absolute rate
+          # against a threshold, and the two do not climb the same way. For a sustained input
+          # where all traffic lands in one bucket above the threshold (a clean step, not a
+          # marginal one), the quantile is already at its steady value from the very first
+          # evaluation -- rate()'s boundary-extrapolation bias affects the numerator and
+          # denominator bucket series identically here, so it cancels out of the ratio instead
+          # of delaying the crossing the way it does for JvmGcTimeFractionHigh's absolute
+          # comparison -- and the alert fires at t=11m, essentially just the for: window with no
+          # extra rate-side delay. That is one measured point, not a general formula: a
+          # marginal overshoot straddling a bucket boundary was not measured and could behave
+          # differently, so treat 13-15m as specific to the counter-rate alert above and not a
+          # number to reuse here.
+          expr: >-
+            histogram_quantile(0.99, sum by (le, job) (
+              rate(online_serving_request_duration_seconds_bucket[5m]))) > 0.4
+            or
+            histogram_quantile(0.99, sum by (le, job) (
+              rate(catalog_serving_request_duration_seconds_bucket[5m]))) > 1
+            or
+            histogram_quantile(0.99, sum by (le, job) (
+              rate(api_gateway_request_duration_seconds_bucket[5m]))) > 2
+          for: 10m
+          labels:
+            severity: warning
+          annotations:
+            summary: "{{ $labels.job }} p99 request latency is above its budget"
+            description: >-
+              Search Splunk for the same window with outcome=slow to see which routes and
+              which requests. Thresholds differ per service and are bound to each one's
+              enforced request timeout: online serving caps requests at 500ms
+              (ONLINE_REQUEST_TIMEOUT_MS), so a threshold at or above 0.5 there could never
+              fire. If a service gains or changes an explicit request timeout, its threshold
+              must move with it.

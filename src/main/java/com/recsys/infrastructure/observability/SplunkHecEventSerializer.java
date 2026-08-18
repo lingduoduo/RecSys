@@ -34,6 +34,11 @@ final class SplunkHecEventSerializer {
             Set.of("level", "logger", "thread", "message", "exception",
                     "host", "source", "sourcetype", "index", "time");
 
+    /** Package-private for the collision test in RequestOutcomeTest. */
+    static Set<String> reservedKeys() {
+        return RESERVED_KEYS;
+    }
+
     private static final ObjectMapper MAPPER = new ObjectMapper();
 
     private final String host;

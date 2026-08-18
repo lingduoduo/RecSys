@@ -745,6 +745,40 @@ Online Serving, API Gateway) never populate it, because there is no Spring conta
 to weave the aspect into. Do not expect cross-service trace correlation through
 `traceId` today; a search for one will only ever surface model-service events.
 
+Slow and failed requests, worst routes first. `outcome` is `slow` or `failed`; a 4xx appears only
+when it was also slow (see below) — status alone never triggers an event.
+
+```
+index=recsys sourcetype="recsys:app:log" outcome=* | stats count, avg(durationMs), max(durationMs) by source route outcome | sort -count
+```
+
+One service's slow requests over time:
+
+```
+index=recsys sourcetype="recsys:app:log" source="recsys-online-serving" outcome="slow" | timechart span=1m count
+```
+
+GC pauses and heap-pressure crossings:
+
+```
+index=recsys sourcetype="recsys:app:log" pauseMs=* | stats count, max(pauseMs), max(heapUsedFraction) by source gcCause
+```
+
+Whether a latency spike was GC. Run both over the same window and compare timestamps — there is
+no join key, deliberately: correlating them is the operator's judgement, not something the data
+asserts.
+
+```
+index=recsys sourcetype="recsys:app:log" (outcome="slow" OR pauseMs>200) | sort _time | table _time source route durationMs pauseMs heapUsedFraction
+```
+
+**Three limits on all of the above.** Delivery is at-most-once, so every count is a lower bound —
+and under load it is a lower bound precisely when load is what you are investigating. A fast
+successful request is never logged, so these searches cannot produce a latency distribution;
+that is Prometheus's `*_request_duration_seconds` histograms. And 4xx responses are deliberately
+excluded from `outcome` unless they were also slow, because a caller-controlled trigger on a
+bounded drop-on-full queue is a remote way to discard everything else in it.
+
 ## Tuning
 
 | Variable | Default | Effect |

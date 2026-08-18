@@ -128,9 +128,31 @@ compact constructor refuses to build otherwise, since Connector/J 8 otherwise de
 `mysql` and any RDS endpoint, is not. See `docs/system_design/20_AuthN_AuthZ.md`, "Data-tier
 authentication".
 
+`SLOW_REQUEST_LOG_THRESHOLD_MS` (per-service default: online serving 300, catalog serving 500,
+gateway 1000, model serving 500) is the duration above which a request gets one WARN log event
+carrying `route`/`statusCode`/`durationMs`/`outcome` in MDC, which the Splunk appender promotes to
+searchable fields. Fast successful requests are never logged, and a 4xx does not *by itself*
+trigger an event — status alone must not be a trigger, since 4xx is the one response class an
+external caller controls at will, and the HEC queue is bounded and drops indiscriminately when
+full. A slow 4xx still logs, as `outcome=slow`, same as any other slow request. Online serving's
+default is bound to its own enforced timeout — 300 because `ONLINE_REQUEST_TIMEOUT_MS` defaults
+to 500 — but catalog serving and the gateway set no incoming-request timeout at that layer (the
+gateway's `GATEWAY_TIMEOUT_MS` governs its outbound calls to upstreams, not the inbound request),
+so their defaults are chosen values, not derived from a timeout the way online serving's is.
+`GC_PAUSE_LOG_THRESHOLD_MS` (default 200) is the stop-the-world pause above which
+`GcEventTracker` logs an event; concurrent collectors are excluded, since a ZGC cycle's reported
+wall time includes concurrent phases. `HEAP_PRESSURE_THRESHOLD` (default 0.90) and
+`HEAP_PRESSURE_RECOVERY_THRESHOLD` (default 0.80) bound an edge-triggered heap-pressure event with
+hysteresis — it logs on crossing, never per collection. All four are shipping-only: none changes
+serving behaviour.
+
 All four services also expose Prometheus metrics — three Armeria mains on `/metrics`
 (6010, 7010, 8010), the Spring model service on `/actuator/prometheus` (8080) — scraped by
-the four `ServiceMonitor`s in `k8s/base/servicemonitor.yaml`. Alerts live in
+the four `ServiceMonitor`s in `k8s/base/servicemonitor.yaml`. The three Armeria services bind the
+JVM metric set (heap, GC, thread, processor) via `JvmMetricsBinder` — Armeria binds none of it
+itself, `PrometheusMeterRegistries.configureRegistry` is a no-op — and catalog serving and the
+gateway now mount `MetricCollectingService` alongside online serving's existing decorator, so all
+three publish a `*_request_duration_seconds` histogram. Alerts live in
 `k8s/base/prometheus-rules.yaml` and are unit-tested against synthetic series by `promtool`
 in CI (`.github/workflows/prometheus-rules.yml`); both files assume a Prometheus Operator is
 already running in the cluster — they do nothing on their own otherwise. The Splunk

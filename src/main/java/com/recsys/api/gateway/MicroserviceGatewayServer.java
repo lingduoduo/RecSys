@@ -11,6 +11,7 @@ import com.recsys.application.gateway.GatewayAuthenticator;
 import com.recsys.application.gateway.GatewayOriginSecret;
 import com.recsys.application.gateway.MicroserviceRoute;
 import com.recsys.application.gateway.RecommendationGatewayService;
+import com.recsys.config.EnvConfig;
 import com.recsys.config.EnvVars;
 import com.recsys.ratelimit.LlmTokenRateLimiter;
 import com.recsys.ratelimit.GatewayRateLimiter;
@@ -18,16 +19,22 @@ import com.recsys.resilience.RouteCircuitBreaker;
 import com.recsys.infrastructure.cache.LlmResponseCache;
 import com.recsys.infrastructure.redis.LettuceClientFactory;
 import com.recsys.infrastructure.redis.RedisExecutor;
+import com.recsys.infrastructure.observability.SlowRequestLogger;
 import com.recsys.infrastructure.registry.ServiceRegistryProvider;
 import com.recsys.infrastructure.registry.ServiceRegistryStore;
+import com.recsys.jvm.GcEventTracker;
 import com.recsys.loadshed.GracefulServers;
 
 import com.linecorp.armeria.client.ClientFactory;
+import com.linecorp.armeria.common.metric.MeterIdPrefixFunction;
 import com.linecorp.armeria.common.metric.PrometheusMeterRegistries;
 import com.linecorp.armeria.server.Server;
 import com.linecorp.armeria.server.ServerBuilder;
+import com.linecorp.armeria.server.metric.MetricCollectingService;
 import com.linecorp.armeria.server.metric.PrometheusExpositionService;
 import com.recsys.metrics.GatewayRegistryMetrics;
+import com.recsys.metrics.JvmMetricsBinder;
+import com.recsys.metrics.RequestDurationHistogram;
 import com.recsys.metrics.SplunkHecMetrics;
 import io.micrometer.prometheus.PrometheusMeterRegistry;
 import org.slf4j.Logger;
@@ -83,6 +90,18 @@ public final class MicroserviceGatewayServer {
         // Created before the forwarder so it can register gateway_user_scope_rejected_total.
         // PrometheusMeterRegistries.defaultRegistry() is a JVM-wide singleton; order is free.
         PrometheusMeterRegistry meterRegistry = PrometheusMeterRegistries.defaultRegistry();
+        // Must run before sb.decorator(MetricCollectingService...) below registers any
+        // request-duration timer, so the histogram buckets apply from the first request. Also
+        // run before JvmMetricsBinder.bindTo(...) below: a MeterFilter only applies to meters
+        // registered after it is installed, and binding the JVM gauges first triggers a
+        // "MeterFilter configured after a Meter registered" WARN on every startup.
+        RequestDurationHistogram.configure(meterRegistry);
+        // Armeria's configureRegistry is a no-op, so nothing binds the JVM metrics for us.
+        JvmMetricsBinder.bindTo(meterRegistry);
+        // Spring constructs its own; the Armeria mains have no container to do it for them.
+        GcEventTracker gcEventTracker = new GcEventTracker();
+        gcEventTracker.start();
+        Runtime.getRuntime().addShutdownHook(new Thread(gcEventTracker::stop));
 
         // Same operator credential as 7010's AdminTokenGuard: one operator tier system-wide.
         AdminTokenGuard operatorGuard = new AdminTokenGuard(System.getenv("SHARD_ADMIN_TOKEN"));
@@ -138,6 +157,22 @@ public final class MicroserviceGatewayServer {
         long llmMaxRetryWaitMs = EnvVars.readLong("LLM_MAX_RETRY_WAIT_MS", LlmProxyService.DEFAULT_MAX_RETRY_WAIT_MS);
 
         ServerBuilder sb = Server.builder().http(port);
+
+        // Request-duration histogram. Tagged by method/status/service only — the catch-all
+        // "prefix:/" data path does NOT produce a per-URL label (verified against
+        // DefaultMeterIdPrefixFunction in armeria-1.28.4).
+        //
+        // meterRegistry(meterRegistry) is required here: Armeria's decorator records into
+        // ctx.meterRegistry(), which falls back to Flags.meterRegistry() (Micrometer's global
+        // registry) unless the ServerBuilder is told otherwise. Without this call the decorator
+        // silently records into a registry that /metrics never exposes (verified empirically:
+        // requests succeeded but api_gateway_* series never appeared). RecSysServer and
+        // OnlinePredictionServer already bind this the same way.
+        sb.meterRegistry(meterRegistry);
+        sb.decorator(MetricCollectingService.newDecorator(
+                MeterIdPrefixFunction.ofDefault("api_gateway")));
+        sb.decorator(SlowRequestLogger.newDecorator("api-gateway",
+                EnvConfig.readLong("SLOW_REQUEST_LOG_THRESHOLD_MS", 1000)));
 
         // Prometheus metrics endpoint (always present, matching the other services). Registry meters
         // are registered only when the registry consumer is active. The registry itself is created

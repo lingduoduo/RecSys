@@ -13,11 +13,15 @@ import com.recsys.application.auth.AdminTokenGuard;
 import com.recsys.metrics.OnlineServingMetricsService;
 import com.recsys.metrics.ConsistencyMetrics;
 import com.recsys.metrics.RedisCacheMetrics;
+import com.recsys.metrics.JvmMetricsBinder;
+import com.recsys.metrics.RequestDurationHistogram;
 import com.recsys.metrics.SplunkHecMetrics;
 import com.recsys.infrastructure.redis.RedisCacheStatsProbe;
 import com.recsys.infrastructure.redis.RedisPersistentKeyProbe;
 import com.recsys.infrastructure.redis.RedisReplicaLagProbe;
 import com.recsys.infrastructure.redis.RedisFeatureVersionSampler;
+import com.recsys.jvm.GcEventTracker;
+import com.recsys.infrastructure.observability.SlowRequestLogger;
 
 import com.linecorp.armeria.server.Route;
 import com.linecorp.armeria.server.Server;
@@ -150,9 +154,24 @@ public final class OnlinePredictionServer {
             OnlineRecommendationService recommendationService = new OnlineRecommendationService(
                     dataManager, recallService, onlineFeatureStore, topkStore, onlineLearner);
             PrometheusMeterRegistry registry = PrometheusMeterRegistries.defaultRegistry();
+            // Must be the first thing that touches this registry: a MeterFilter only applies to
+            // meters registered after it is installed, and SplunkHecMetrics.register(...) below
+            // registers real meters (FunctionCounters/Gauge) immediately whenever a SPLUNK
+            // appender is present, regardless of whether SPLUNK_HEC_TOKEN is set. Also covers
+            // JvmMetricsBinder.bindTo(...) below and the meterRegistry(registry).decorator(
+            // MetricCollectingService...) call further down, both of which register meters too.
+            // Any of these running first triggers a "MeterFilter configured after a Meter
+            // registered" WARN on every startup.
+            RequestDurationHistogram.configure(registry);
             // The Splunk appender was built by Logback long before this registry existed, so it
             // cannot register itself. No-op when SPLUNK_HEC_TOKEN is unset.
             SplunkHecMetrics.register(registry);
+            // Armeria's configureRegistry is a no-op, so nothing binds the JVM metrics for us.
+            JvmMetricsBinder.bindTo(registry);
+            // Spring constructs its own; the Armeria mains have no container to do it for them.
+            GcEventTracker gcEventTracker = new GcEventTracker();
+            gcEventTracker.start();
+            Runtime.getRuntime().addShutdownHook(new Thread(gcEventTracker::stop));
             RecommendationPaginationRuntime pagination =
                     RecommendationPaginationRuntime.fromEnvironment(
                             registry, Clock.systemUTC());
@@ -222,6 +241,8 @@ public final class OnlinePredictionServer {
               .meterRegistry(registry)
               .decorator(MetricCollectingService.newDecorator(
                       MeterIdPrefixFunction.ofDefault("online_serving")))
+              .decorator(SlowRequestLogger.newDecorator("online-serving",
+                      EnvConfig.readLong("SLOW_REQUEST_LOG_THRESHOLD_MS", 300)))
               .service("/health/live", new OnlineServices.Live())
               .service("/health/ready",
                       new OnlineHealthService(metricsService, loadShedder))

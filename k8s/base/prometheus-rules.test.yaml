@@ -483,3 +483,280 @@ tests:
       - eval_time: 25m
         alertname: OutboxDeliveryFailuresSustained
         exp_alerts: []
+
+  # --- JvmHeapPressureHigh ---
+  - interval: 1m
+    input_series:
+      # 95% used: must fire.
+      - series: 'jvm_memory_used_bytes{area="heap", namespace="recsys", job="recsys-api-gateway", instance="10.0.0.1:8010", id="G1 Old Gen"}'
+        values: '950000000x20'
+      - series: 'jvm_memory_max_bytes{area="heap", namespace="recsys", job="recsys-api-gateway", instance="10.0.0.1:8010", id="G1 Old Gen"}'
+        values: '1000000000x20'
+      # 85% used: near-miss, must NOT fire.
+      - series: 'jvm_memory_used_bytes{area="heap", namespace="recsys", job="recsys-online-serving", instance="10.0.0.2:7010", id="G1 Old Gen"}'
+        values: '850000000x20'
+      - series: 'jvm_memory_max_bytes{area="heap", namespace="recsys", job="recsys-online-serving", instance="10.0.0.2:7010", id="G1 Old Gen"}'
+        values: '1000000000x20'
+    alert_rule_test:
+      - eval_time: 15m
+        alertname: JvmHeapPressureHigh
+        exp_alerts:
+          - exp_labels:
+              severity: warning
+              job: recsys-api-gateway
+              instance: 10.0.0.1:8010
+            exp_annotations:
+              summary: "recsys-api-gateway heap is above 90% used"
+              description: >-
+                Sustained heap pressure. Expect longer GC pauses and, past this, allocation
+                stalls. Cross-check the Splunk heap-pressure events from the same service for
+                what was running at the crossing. The `> 0` filter on jvm_memory_max_bytes is
+                load-bearing: pools with no maximum report -1, and including them makes the
+                ratio meaningless.
+
+  # --- JvmHeapPressureHigh: a foreign JVM must never page recsys on-call ---
+  # jvm_memory_used_bytes / jvm_memory_max_bytes are generic Micrometer/JMX metric names, not
+  # unique to this repo -- any other workload the operator's Prometheus scrapes emits the same
+  # names. Without namespace="recsys" scoping this alert this series would fire with
+  # {{ $labels.job }} naming a service that isn't ours. Every other input series in this file
+  # already carries a recsys job label, so this is the only case that can catch the scoping
+  # being dropped: proven by removing `namespace="recsys"` from the alert expression and
+  # rerunning this file, which turns this case red.
+  - interval: 1m
+    input_series:
+      # 95% used, well above the threshold, but in a foreign namespace (and one series with no
+      # namespace label at all): must NOT fire.
+      - series: 'jvm_memory_used_bytes{area="heap", namespace="other-team", job="unrelated-service", instance="10.0.0.9:9090", id="G1 Old Gen"}'
+        values: '950000000x20'
+      - series: 'jvm_memory_max_bytes{area="heap", namespace="other-team", job="unrelated-service", instance="10.0.0.9:9090", id="G1 Old Gen"}'
+        values: '1000000000x20'
+      - series: 'jvm_memory_used_bytes{area="heap", job="no-namespace-service", instance="10.0.0.8:9090", id="G1 Old Gen"}'
+        values: '950000000x20'
+      - series: 'jvm_memory_max_bytes{area="heap", job="no-namespace-service", instance="10.0.0.8:9090", id="G1 Old Gen"}'
+        values: '1000000000x20'
+    alert_rule_test:
+      - eval_time: 15m
+        alertname: JvmHeapPressureHigh
+        exp_alerts: []
+
+  # --- JvmHeapPressureHigh: the -1 sentinel must not poison the ratio ---
+  # A pool with no maximum reports -1. Summed in naively alongside a real pool it drags the
+  # denominator down and can make a healthy heap read as over 100% used, or produce a
+  # negative denominator and a comparison that silently never fires. Same class of trap as
+  # RedisReplicaLagHigh's NaN and GatewayRegistryStale's -1, both recorded in 18 section 8.4.
+  #
+  # Values are deliberately NOT byte-scale. At byte scale (1e9 max alongside a -1 pool) the
+  # sentinel is one part in a billion of the denominator, so dropping the `> 0` filter barely
+  # moves the ratio and this case cannot go red under mutation -- verified empirically: a first
+  # draft using 1000000000/-1 stayed green with the filter removed, which is exactly the
+  # "test that proves nothing" the brief warns about. Using max=2 makes -1 half the
+  # denominator, so the filter's absence is provable: WITH the filter (only the real-max pool
+  # counted) the ratio is 1/2 = 0.5, correctly no fire. WITHOUT it, sum(max) collapses to
+  # 2 + (-1) = 1 and the ratio becomes 1/1 = 1.0, spuriously > 0.90 -- a healthy 50%-used heap
+  # reading as maxed out. Confirmed by removing the `> 0` filter and rerunning: this case turns
+  # red (see task-7-report.md).
+  - interval: 1m
+    input_series:
+      # 50% used against the pool that HAS a max: must not fire.
+      - series: 'jvm_memory_used_bytes{area="heap", namespace="recsys", job="recsys-catalog-serving", instance="10.0.0.3:6010", id="G1 Old Gen"}'
+        values: '1x20'
+      - series: 'jvm_memory_max_bytes{area="heap", namespace="recsys", job="recsys-catalog-serving", instance="10.0.0.3:6010", id="G1 Old Gen"}'
+        values: '2x20'
+      - series: 'jvm_memory_used_bytes{area="heap", namespace="recsys", job="recsys-catalog-serving", instance="10.0.0.3:6010", id="G1 Eden Space"}'
+        values: '0x20'
+      - series: 'jvm_memory_max_bytes{area="heap", namespace="recsys", job="recsys-catalog-serving", instance="10.0.0.3:6010", id="G1 Eden Space"}'
+        values: '-1x20'
+    alert_rule_test:
+      - eval_time: 15m
+        alertname: JvmHeapPressureHigh
+        exp_alerts: []
+
+  # --- JvmGcTimeFractionHigh ---
+  - interval: 1m
+    input_series:
+      # 0.2s of pause per second of wall time: must fire.
+      - series: 'jvm_gc_pause_seconds_sum{namespace="recsys", job="recsys-online-serving", instance="10.0.0.2:7010", action="end of minor GC", cause="G1 Evacuation Pause"}'
+        values: '0+12x25'
+      # 0.05s per second: near-miss, must NOT fire.
+      - series: 'jvm_gc_pause_seconds_sum{namespace="recsys", job="recsys-catalog-serving", instance="10.0.0.3:6010", action="end of minor GC", cause="G1 Evacuation Pause"}'
+        values: '0+3x25'
+    alert_rule_test:
+      - eval_time: 20m
+        alertname: JvmGcTimeFractionHigh
+        exp_alerts:
+          - exp_labels:
+              severity: warning
+              job: recsys-online-serving
+              instance: 10.0.0.2:7010
+            exp_annotations:
+              summary: "recsys-online-serving is spending over 10% of wall time in GC pause"
+              description: >-
+                More than a tenth of elapsed time is stop-the-world pause, which shows up
+                directly as request latency. Check JvmHeapPressureHigh on the same instance
+                first — this is usually its consequence, not an independent fault.
+
+  # --- JvmGcTimeFractionHigh: a foreign JVM must never page recsys on-call ---
+  # jvm_gc_pause_seconds_sum is a generic Micrometer JVM metric name, same reasoning as the
+  # JvmHeapPressureHigh foreign-namespace case above. Proven by removing `namespace="recsys"`
+  # from the alert expression and rerunning this file, which turns this case red.
+  - interval: 1m
+    input_series:
+      # 0.2s of pause per second of wall time, well above the threshold, but in a foreign
+      # namespace: must NOT fire.
+      - series: 'jvm_gc_pause_seconds_sum{namespace="other-team", job="unrelated-service", instance="10.0.0.9:9090", action="end of minor GC", cause="G1 Evacuation Pause"}'
+        values: '0+12x25'
+    alert_rule_test:
+      - eval_time: 20m
+        alertname: JvmGcTimeFractionHigh
+        exp_alerts: []
+
+  # --- JvmGcTimeFractionHigh: a short burst must NOT fire ---
+  # for: (10m) deliberately exceeds the rate() range (5m) -- see the comment on the alert
+  # itself. That is only safe if a burst shorter than roughly the range genuinely fails to
+  # hold the expression true for the full 10m. The counter jumps +12/min for 3 steps (t=0..3)
+  # then goes flat.
+  #
+  # A first pass at this comment worked the rate() value out by hand from the raw counter
+  # slope and got it wrong -- naive slope math ignores Prometheus's actual extrapolation
+  # behavior at range-vector boundaries. The real values, pulled with promtool's
+  # `promql_expr_test` (which evaluates the bare expression instead of the alert, so the
+  # actual computed number can be read off directly) rather than guessed:
+  #   t=1m: 0.04/s   t=2m: 0.08/s   t=3m: 0.12/s   t=4m: 0.12/s
+  #   t=5m: 0.10/s (exactly the threshold -- `> 0.10` is false)   t=6m: 0.05/s   t=7m+: 0
+  # So the condition is only ever true at t=3m and t=4m -- a two-minute stretch, not five --
+  # nowhere near enough to satisfy a 10m hold. Confirmed both ways: mutating for: to 1m makes
+  # this exact series fire at t=4m (pending since t=3m, satisfied one minute later) and
+  # resolve again by t=6m once the rate drops back under 0.10, proving the profile above is
+  # real and this case is not vacuously green. With the real for: 10m, checked at multiple
+  # eval times including well past t=13m (when a sustained version of this same profile would
+  # have fired), to prove it never transiently fires either.
+  - interval: 1m
+    input_series:
+      - series: 'jvm_gc_pause_seconds_sum{namespace="recsys", job="recsys-catalog-serving", instance="10.0.0.4:6010", action="end of minor GC", cause="G1 Evacuation Pause"}'
+        values: '0 12 24 36 36 36 36 36 36 36 36 36 36 36 36 36 36 36 36 36 36 36 36 36 36'
+    alert_rule_test:
+      - eval_time: 6m
+        alertname: JvmGcTimeFractionHigh
+        exp_alerts: []
+      - eval_time: 10m
+        alertname: JvmGcTimeFractionHigh
+        exp_alerts: []
+      - eval_time: 13m
+        alertname: JvmGcTimeFractionHigh
+        exp_alerts: []
+      - eval_time: 15m
+        alertname: JvmGcTimeFractionHigh
+        exp_alerts: []
+      - eval_time: 20m
+        alertname: JvmGcTimeFractionHigh
+        exp_alerts: []
+
+  # --- RequestLatencyP99High: online serving fires at 0.4, not the 1s the others get ---
+  # Its requestTimeoutMillis default is 500ms, so a threshold at or above 0.5 there could
+  # never fire: the histogram is bounded by the timeout. promtool cannot detect an
+  # unreachable threshold — an alert that can never fire passes a near-miss case perfectly.
+  - interval: 1m
+    input_series:
+      # All observations in the 0.5s bucket: p99 lands at 0.5 > 0.4, must fire.
+      - series: 'online_serving_request_duration_seconds_bucket{le="0.1", job="recsys-online-serving"}'
+        values: '0+0x25'
+      - series: 'online_serving_request_duration_seconds_bucket{le="0.5", job="recsys-online-serving"}'
+        values: '0+100x25'
+      - series: 'online_serving_request_duration_seconds_bucket{le="+Inf", job="recsys-online-serving"}'
+        values: '0+100x25'
+    alert_rule_test:
+      - eval_time: 20m
+        alertname: RequestLatencyP99High
+        exp_alerts:
+          - exp_labels:
+              severity: warning
+              job: recsys-online-serving
+            exp_annotations:
+              summary: "recsys-online-serving p99 request latency is above its budget"
+              description: >-
+                Search Splunk for the same window with outcome=slow to see which routes and
+                which requests. Thresholds differ per service and are bound to each one's
+                enforced request timeout: online serving caps requests at 500ms
+                (ONLINE_REQUEST_TIMEOUT_MS), so a threshold at or above 0.5 there could never
+                fire. If a service gains or changes an explicit request timeout, its threshold
+                must move with it.
+
+  # --- RequestLatencyP99High: catalog-serving branch fire case ---
+  # Isolates the catalog-serving arm of the `or` expression. Without this, a typo'd metric
+  # name or an unreachable threshold on that branch would stay invisible: the suite would stay
+  # green purely because the online-serving branch's own fire case happens to pass.
+  - interval: 1m
+    input_series:
+      # All observations land in (1, 2]: p99 interpolates to ~1.99 > 1, must fire.
+      - series: 'catalog_serving_request_duration_seconds_bucket{le="1", job="recsys-catalog-serving"}'
+        values: '0+0x25'
+      - series: 'catalog_serving_request_duration_seconds_bucket{le="2", job="recsys-catalog-serving"}'
+        values: '0+100x25'
+      - series: 'catalog_serving_request_duration_seconds_bucket{le="+Inf", job="recsys-catalog-serving"}'
+        values: '0+100x25'
+    alert_rule_test:
+      - eval_time: 20m
+        alertname: RequestLatencyP99High
+        exp_alerts:
+          - exp_labels:
+              severity: warning
+              job: recsys-catalog-serving
+            exp_annotations:
+              summary: "recsys-catalog-serving p99 request latency is above its budget"
+              description: >-
+                Search Splunk for the same window with outcome=slow to see which routes and
+                which requests. Thresholds differ per service and are bound to each one's
+                enforced request timeout: online serving caps requests at 500ms
+                (ONLINE_REQUEST_TIMEOUT_MS), so a threshold at or above 0.5 there could never
+                fire. If a service gains or changes an explicit request timeout, its threshold
+                must move with it.
+
+  # --- RequestLatencyP99High: gateway branch fire case ---
+  # Isolates the api-gateway arm of the `or` expression, the same way the block above isolates
+  # catalog-serving. Together with the pre-existing online-serving fire case, all three branches
+  # now each have at least one input that proves they can independently fire.
+  - interval: 1m
+    input_series:
+      # All observations land in (2, 5]: p99 interpolates to ~4.97 > 2, must fire.
+      - series: 'api_gateway_request_duration_seconds_bucket{le="2", job="recsys-api-gateway"}'
+        values: '0+0x25'
+      - series: 'api_gateway_request_duration_seconds_bucket{le="5", job="recsys-api-gateway"}'
+        values: '0+100x25'
+      - series: 'api_gateway_request_duration_seconds_bucket{le="+Inf", job="recsys-api-gateway"}'
+        values: '0+100x25'
+    alert_rule_test:
+      - eval_time: 20m
+        alertname: RequestLatencyP99High
+        exp_alerts:
+          - exp_labels:
+              severity: warning
+              job: recsys-api-gateway
+            exp_annotations:
+              summary: "recsys-api-gateway p99 request latency is above its budget"
+              description: >-
+                Search Splunk for the same window with outcome=slow to see which routes and
+                which requests. Thresholds differ per service and are bound to each one's
+                enforced request timeout: online serving caps requests at 500ms
+                (ONLINE_REQUEST_TIMEOUT_MS), so a threshold at or above 0.5 there could never
+                fire. If a service gains or changes an explicit request timeout, its threshold
+                must move with it.
+
+  # --- RequestLatencyP99High near-miss: everything fast, must NOT fire ---
+  - interval: 1m
+    input_series:
+      - series: 'online_serving_request_duration_seconds_bucket{le="0.1", job="recsys-online-serving"}'
+        values: '0+100x25'
+      - series: 'online_serving_request_duration_seconds_bucket{le="0.5", job="recsys-online-serving"}'
+        values: '0+100x25'
+      - series: 'online_serving_request_duration_seconds_bucket{le="+Inf", job="recsys-online-serving"}'
+        values: '0+100x25'
+      - series: 'api_gateway_request_duration_seconds_bucket{le="1", job="recsys-api-gateway"}'
+        values: '0+100x25'
+      - series: 'api_gateway_request_duration_seconds_bucket{le="2", job="recsys-api-gateway"}'
+        values: '0+100x25'
+      - series: 'api_gateway_request_duration_seconds_bucket{le="+Inf", job="recsys-api-gateway"}'
+        values: '0+100x25'
+    alert_rule_test:
+      - eval_time: 20m
+        alertname: RequestLatencyP99High
+        exp_alerts: []
