@@ -600,6 +600,66 @@ tests:
                 fire. If a service gains or changes an explicit request timeout, its threshold
                 must move with it.
 
+  # --- RequestLatencyP99High: catalog-serving branch fire case ---
+  # Isolates the catalog-serving arm of the `or` expression. Without this, a typo'd metric
+  # name or an unreachable threshold on that branch would stay invisible: the suite would stay
+  # green purely because the online-serving branch's own fire case happens to pass.
+  - interval: 1m
+    input_series:
+      # All observations land in (1, 2]: p99 interpolates to ~1.99 > 1, must fire.
+      - series: 'catalog_serving_request_duration_seconds_bucket{le="1", job="recsys-catalog-serving"}'
+        values: '0+0x25'
+      - series: 'catalog_serving_request_duration_seconds_bucket{le="2", job="recsys-catalog-serving"}'
+        values: '0+100x25'
+      - series: 'catalog_serving_request_duration_seconds_bucket{le="+Inf", job="recsys-catalog-serving"}'
+        values: '0+100x25'
+    alert_rule_test:
+      - eval_time: 20m
+        alertname: RequestLatencyP99High
+        exp_alerts:
+          - exp_labels:
+              severity: warning
+              job: recsys-catalog-serving
+            exp_annotations:
+              summary: "recsys-catalog-serving p99 request latency is above its budget"
+              description: >-
+                Search Splunk for the same window with outcome=slow to see which routes and
+                which requests. Thresholds differ per service and are bound to each one's
+                enforced request timeout: online serving caps requests at 500ms
+                (ONLINE_REQUEST_TIMEOUT_MS), so a threshold at or above 0.5 there could never
+                fire. If a service gains or changes an explicit request timeout, its threshold
+                must move with it.
+
+  # --- RequestLatencyP99High: gateway branch fire case ---
+  # Isolates the api-gateway arm of the `or` expression, the same way the block above isolates
+  # catalog-serving. Together with the pre-existing online-serving fire case, all three branches
+  # now each have at least one input that proves they can independently fire.
+  - interval: 1m
+    input_series:
+      # All observations land in (2, 5]: p99 interpolates to ~4.97 > 2, must fire.
+      - series: 'api_gateway_request_duration_seconds_bucket{le="2", job="recsys-api-gateway"}'
+        values: '0+0x25'
+      - series: 'api_gateway_request_duration_seconds_bucket{le="5", job="recsys-api-gateway"}'
+        values: '0+100x25'
+      - series: 'api_gateway_request_duration_seconds_bucket{le="+Inf", job="recsys-api-gateway"}'
+        values: '0+100x25'
+    alert_rule_test:
+      - eval_time: 20m
+        alertname: RequestLatencyP99High
+        exp_alerts:
+          - exp_labels:
+              severity: warning
+              job: recsys-api-gateway
+            exp_annotations:
+              summary: "recsys-api-gateway p99 request latency is above its budget"
+              description: >-
+                Search Splunk for the same window with outcome=slow to see which routes and
+                which requests. Thresholds differ per service and are bound to each one's
+                enforced request timeout: online serving caps requests at 500ms
+                (ONLINE_REQUEST_TIMEOUT_MS), so a threshold at or above 0.5 there could never
+                fire. If a service gains or changes an explicit request timeout, its threshold
+                must move with it.
+
   # --- RequestLatencyP99High near-miss: everything fast, must NOT fire ---
   - interval: 1m
     input_series:
