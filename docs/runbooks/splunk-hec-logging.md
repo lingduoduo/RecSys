@@ -745,8 +745,8 @@ Online Serving, API Gateway) never populate it, because there is no Spring conta
 to weave the aspect into. Do not expect cross-service trace correlation through
 `traceId` today; a search for one will only ever surface model-service events.
 
-Slow and failed requests, worst routes first. `outcome` is `slow` or `failed`; 4xx never appears
-here (see below).
+Slow and failed requests, worst routes first. `outcome` is `slow` or `failed`; a 4xx appears only
+when it was also slow (see below) — status alone never triggers an event.
 
 ```
 index=recsys sourcetype="recsys:app:log" outcome=* | stats count, avg(durationMs), max(durationMs) by source route outcome | sort -count

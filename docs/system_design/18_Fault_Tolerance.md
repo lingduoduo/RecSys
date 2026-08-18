@@ -681,7 +681,7 @@ service had them, from Actuator's auto-configuration.
 | `online_serving_request_duration_seconds`, `catalog_serving_request_duration_seconds`, `api_gateway_request_duration_seconds` | Armeria `MetricCollectingService`, mounted in each service's main |
 
 `JvmMetricsBinder` is idempotent per registry because `PrometheusMeterRegistries.defaultRegistry()`
-is a JVM-wide singleton more than one caller may reasonably ask for the JVM metrics on, and
+is a JVM-wide singleton that more than one caller may reasonably ask for the JVM metrics on, and
 `JvmGcMetrics` installs a JMX notification listener per bind — a second bind on the same registry
 would double-count every pause. A second bind on a genuinely different registry still gets its own
 listener.

@@ -131,10 +131,15 @@ authentication".
 `SLOW_REQUEST_LOG_THRESHOLD_MS` (per-service default: online serving 300, catalog serving 500,
 gateway 1000, model serving 500) is the duration above which a request gets one WARN log event
 carrying `route`/`statusCode`/`durationMs`/`outcome` in MDC, which the Splunk appender promotes to
-searchable fields. Fast successful requests and all 4xx are deliberately never logged — the HEC
-queue is bounded and drops indiscriminately when full. Each default sits below its service's
-enforced request timeout; online serving's is 300 because `ONLINE_REQUEST_TIMEOUT_MS` defaults to
-500. `GC_PAUSE_LOG_THRESHOLD_MS` (default 200) is the stop-the-world pause above which
+searchable fields. Fast successful requests are never logged, and a 4xx does not *by itself*
+trigger an event — status alone must not be a trigger, since 4xx is the one response class an
+external caller controls at will, and the HEC queue is bounded and drops indiscriminately when
+full. A slow 4xx still logs, as `outcome=slow`, same as any other slow request. Online serving's
+default is bound to its own enforced timeout — 300 because `ONLINE_REQUEST_TIMEOUT_MS` defaults
+to 500 — but catalog serving and the gateway set no incoming-request timeout at that layer (the
+gateway's `GATEWAY_TIMEOUT_MS` governs its outbound calls to upstreams, not the inbound request),
+so their defaults are chosen values, not derived from a timeout the way online serving's is.
+`GC_PAUSE_LOG_THRESHOLD_MS` (default 200) is the stop-the-world pause above which
 `GcEventTracker` logs an event; concurrent collectors are excluded, since a ZGC cycle's reported
 wall time includes concurrent phases. `HEAP_PRESSURE_THRESHOLD` (default 0.90) and
 `HEAP_PRESSURE_RECOVERY_THRESHOLD` (default 0.80) bound an edge-triggered heap-pressure event with
