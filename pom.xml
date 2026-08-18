@@ -531,6 +531,13 @@
                      poisons exactly the searches this feature exists to enable. In-process
                      Armeria server, no Redis, no Docker. -->
                 <include>**/observability/SlowRequestLoggerTest.java</include>
+                <!-- The model service's half of the slow-request event. Separate from the
+                     Armeria decorator because it is a different mechanism (HandlerInterceptor,
+                     Tomcat threads) reaching the same contract, and it pins the one thing the
+                     Armeria side gets for free: route must be the matched pattern, not the raw
+                     URI, or every request with an id in the path becomes its own route value.
+                     MockHttpServletRequest only, no container. -->
+                <include>**/config/SlowRequestInterceptorTest.java</include>
               </includes>
               <excludedGroups>load,docker</excludedGroups>
             </configuration>
