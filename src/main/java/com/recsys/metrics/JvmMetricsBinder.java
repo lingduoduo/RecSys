@@ -47,6 +47,18 @@ public final class JvmMetricsBinder {
 
     private JvmMetricsBinder() {}
 
+    /**
+     * Test-only view of how many {@link JvmGcMetrics} instances have been retained across every
+     * registry ever bound in this JVM. Not for production use — it exists so a test can assert
+     * on the one thing the {@link #BOUND} guard is load-bearing for: that a second bind on the
+     * same registry does not install a second JMX notification listener (which would
+     * double-count every GC pause), while a bind on a genuinely different registry still gets
+     * its own listener.
+     */
+    static synchronized int retainedGcMetricsCount() {
+        return RETAINED.size();
+    }
+
     public static synchronized void bindTo(MeterRegistry registry) {
         if (registry == null || !BOUND.add(registry)) {
             return;
