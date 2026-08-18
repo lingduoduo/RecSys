@@ -275,13 +275,21 @@ spec:
           # range window, so for: >= range can never be satisfied (see OutboxDeliveryFailuresSustained
           # above) -- rate() over a SUSTAINED condition doesn't have a knife edge: if pause time
           # stays above 10% of wall time, the rate crosses 0.10 a little after the first 5m
-          # window fills and then stays above it for as long as the pressure lasts, so the 10m
-          # hold is satisfied around t=range+for. A burst shorter than roughly the range (a GC
-          # blip lasting a couple of minutes) pushes the rate over 0.10 only briefly and it
-          # drops back before the hold completes, so it correctly does NOT fire -- proven by the
-          # short-burst case in prometheus-rules.test.yaml. The cost of this is detection
-          # latency of roughly range/2 + for (~7-8m here), not a false negative on sustained
-          # pressure.
+          # window fills and then stays above it for as long as the pressure lasts. A burst
+          # shorter than roughly the range (a GC blip lasting a couple of minutes) pushes the
+          # rate over 0.10 only briefly and it drops back before the hold completes, so it
+          # correctly does NOT fire -- proven by the short-burst case in
+          # prometheus-rules.test.yaml.
+          #
+          # Detection latency on a sustained overshoot: MEASURED, not derived, with promtool's
+          # promql_expr_test against two sustained input series (a linear ramp that never stops,
+          # not a burst) -- a prior version of this comment stated "range/2 + for" from reasoning
+          # about rate() instead of measuring it, and it was wrong. A 2x overshoot (settles at
+          # 0.20/s) crosses 0.10 at t=3m and the alert fires at t=13m; a marginal overshoot
+          # (settles at 0.11/s) crosses at t=5m and fires at t=15m -- so real detection latency
+          # here is roughly 13-15m, slower for a marginal overshoot because rate()'s own
+          # boundary extrapolation takes longer to climb across the threshold when the true
+          # rate is barely above it. Not a false negative on sustained pressure, just latency.
           expr: sum by (job, instance) (rate(jvm_gc_pause_seconds_sum[5m])) > 0.10
           for: 10m
           labels:
@@ -294,12 +302,25 @@ spec:
               first — this is usually its consequence, not an independent fault.
 
         - alert: RequestLatencyP99High
-          # Same for:-exceeds-range shape as JvmGcTimeFractionHigh immediately above, and the
-          # same reasoning applies: rate() over each *_request_duration_seconds_bucket series
-          # reflects a sustained latency regime, not a one-off counter increment, so a 10m hold
-          # against a 5m range is not the increase()/delta() knife-edge -- it costs detection
-          # latency (roughly range/2 + for), not a false negative, and a latency spike shorter
-          # than about the range window correctly does not page.
+          # Same for:-exceeds-range shape as JvmGcTimeFractionHigh immediately above: a 10m
+          # hold against a 5m rate() range is not the increase()/delta() knife-edge, it costs
+          # detection latency rather than a false negative, and a latency spike shorter than
+          # about the range window correctly does not page.
+          #
+          # The detection-latency NUMBER does not carry over, though, and was not assumed by
+          # analogy -- measured separately with promql_expr_test because this expression
+          # compares a RATIO between bucket rates (histogram_quantile), not an absolute rate
+          # against a threshold, and the two do not climb the same way. For a sustained input
+          # where all traffic lands in one bucket above the threshold (a clean step, not a
+          # marginal one), the quantile is already at its steady value from the very first
+          # evaluation -- rate()'s boundary-extrapolation bias affects the numerator and
+          # denominator bucket series identically here, so it cancels out of the ratio instead
+          # of delaying the crossing the way it does for JvmGcTimeFractionHigh's absolute
+          # comparison -- and the alert fires at t=11m, essentially just the for: window with no
+          # extra rate-side delay. That is one measured point, not a general formula: a
+          # marginal overshoot straddling a bucket boundary was not measured and could behave
+          # differently, so treat 13-15m as specific to the counter-rate alert above and not a
+          # number to reuse here.
           expr: >-
             histogram_quantile(0.99, sum by (le, job) (
               rate(online_serving_request_duration_seconds_bucket[5m]))) > 0.4
