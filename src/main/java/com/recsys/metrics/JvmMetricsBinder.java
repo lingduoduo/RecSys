@@ -39,9 +39,27 @@ public final class JvmMetricsBinder {
 
     /**
      * Holds every {@link JvmGcMetrics} for the life of the JVM. Two reasons, both load-bearing:
-     * it is {@code Closeable} and owns a JMX listener that must outlive this method, and
-     * Micrometer's gauge state is held by WeakReference — the exact bug
-     * {@code SplunkHecMetrics.RETAINED} exists to prevent. Do not "clean up" this field.
+     * it makes the second-bind guard observable and testable — {@code
+     * JvmMetricsBinderTest.secondBindOnSameRegistryDoesNotRetainAnotherGcMetrics} reads this
+     * list's size directly — and {@link JvmGcMetrics} is {@code Closeable} and owns a JMX
+     * listener, so holding this reference is what would let anything ever call {@code close()}
+     * on it.
+     *
+     * <p><b>Not because of the Micrometer WeakReference trap.</b> That trap is real in general
+     * (§8.3, and demonstrably real for {@code SplunkHecMetrics.RETAINED}), but measurement
+     * disproved it for this field specifically:
+     * {@code JvmGcMetrics.bindTo} registers its listener with each {@code
+     * GarbageCollectorMXBean} via {@code NotificationEmitter.addNotificationListener}, which
+     * stores it in a strong-reference list owned by the broadcaster behind that MXBean — a JVM
+     * singleton reachable from a GC root for the life of the process. That listener is a
+     * non-static inner class, so it holds an implicit reference to the whole {@code
+     * JvmGcMetrics} instance, which stays strongly reachable regardless of whether this field
+     * holds it too. Established empirically (a {@code WeakReference} canary collects in the
+     * same run where an unretained {@code JvmGcMetrics} does not — see {@code
+     * JvmMetricsBinderTest.metersStillReportAfterGarbageCollection}'s javadoc) and corroborated
+     * by Micrometer's own design: {@code JvmGcMetrics.close()} calls {@code
+     * removeNotificationListener} precisely because retention is otherwise strong. Do not
+     * "clean up" this field regardless — the two reasons above still hold.
      */
     private static final List<JvmGcMetrics> RETAINED = new ArrayList<>();
 
