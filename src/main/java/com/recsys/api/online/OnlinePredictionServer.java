@@ -13,6 +13,7 @@ import com.recsys.application.auth.AdminTokenGuard;
 import com.recsys.metrics.OnlineServingMetricsService;
 import com.recsys.metrics.ConsistencyMetrics;
 import com.recsys.metrics.RedisCacheMetrics;
+import com.recsys.metrics.JvmMetricsBinder;
 import com.recsys.metrics.SplunkHecMetrics;
 import com.recsys.infrastructure.redis.RedisCacheStatsProbe;
 import com.recsys.infrastructure.redis.RedisPersistentKeyProbe;
@@ -153,6 +154,8 @@ public final class OnlinePredictionServer {
             // The Splunk appender was built by Logback long before this registry existed, so it
             // cannot register itself. No-op when SPLUNK_HEC_TOKEN is unset.
             SplunkHecMetrics.register(registry);
+            // Armeria's configureRegistry is a no-op, so nothing binds the JVM metrics for us.
+            JvmMetricsBinder.bindTo(registry);
             RecommendationPaginationRuntime pagination =
                     RecommendationPaginationRuntime.fromEnvironment(
                             registry, Clock.systemUTC());

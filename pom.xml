@@ -381,6 +381,12 @@
                 <include>**/redis/RedisReplicaLagProbeTest.java</include>
                 <include>**/metrics/RedisCacheMetricsTest.java</include>
                 <include>**/metrics/SplunkHecMetricsTest.java</include>
+                <!-- Armeria's configureRegistry is a no-op, so nothing binds the JVM metrics
+                     unless this class does; heap and GC were unscrapeable on three of four
+                     services until it existed. Also pins the Micrometer WeakReference trap:
+                     JvmGcMetrics owns a JMX listener and a collected gauge state freezes
+                     silently rather than erroring. Pure unit-level, no Redis, no timing. -->
+                <include>**/metrics/JvmMetricsBinderTest.java</include>
                 <include>**/metrics/ScrapeTargetManifestTest.java</include>
                 <!-- The egress counterpart to ScrapeTargetManifestTest's ingress checks. The
                      NetworkPolicy is the L3/L4 ACL the whole backend trust model rests on

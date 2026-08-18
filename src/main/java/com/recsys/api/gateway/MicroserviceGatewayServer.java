@@ -28,6 +28,7 @@ import com.linecorp.armeria.server.Server;
 import com.linecorp.armeria.server.ServerBuilder;
 import com.linecorp.armeria.server.metric.PrometheusExpositionService;
 import com.recsys.metrics.GatewayRegistryMetrics;
+import com.recsys.metrics.JvmMetricsBinder;
 import com.recsys.metrics.SplunkHecMetrics;
 import io.micrometer.prometheus.PrometheusMeterRegistry;
 import org.slf4j.Logger;
@@ -83,6 +84,8 @@ public final class MicroserviceGatewayServer {
         // Created before the forwarder so it can register gateway_user_scope_rejected_total.
         // PrometheusMeterRegistries.defaultRegistry() is a JVM-wide singleton; order is free.
         PrometheusMeterRegistry meterRegistry = PrometheusMeterRegistries.defaultRegistry();
+        // Armeria's configureRegistry is a no-op, so nothing binds the JVM metrics for us.
+        JvmMetricsBinder.bindTo(meterRegistry);
 
         // Same operator credential as 7010's AdminTokenGuard: one operator tier system-wide.
         AdminTokenGuard operatorGuard = new AdminTokenGuard(System.getenv("SHARD_ADMIN_TOKEN"));
