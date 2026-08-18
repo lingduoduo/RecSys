@@ -570,6 +570,47 @@ tests:
                 directly as request latency. Check JvmHeapPressureHigh on the same instance
                 first — this is usually its consequence, not an independent fault.
 
+  # --- JvmGcTimeFractionHigh: a short burst must NOT fire ---
+  # for: (10m) deliberately exceeds the rate() range (5m) -- see the comment on the alert
+  # itself. That is only safe if a burst shorter than roughly the range genuinely fails to
+  # hold the expression true for the full 10m. The counter jumps +12/min for 3 steps (t=0..3)
+  # then goes flat.
+  #
+  # A first pass at this comment worked the rate() value out by hand from the raw counter
+  # slope and got it wrong -- naive slope math ignores Prometheus's actual extrapolation
+  # behavior at range-vector boundaries. The real values, pulled with promtool's
+  # `promql_expr_test` (which evaluates the bare expression instead of the alert, so the
+  # actual computed number can be read off directly) rather than guessed:
+  #   t=1m: 0.04/s   t=2m: 0.08/s   t=3m: 0.12/s   t=4m: 0.12/s
+  #   t=5m: 0.10/s (exactly the threshold -- `> 0.10` is false)   t=6m: 0.05/s   t=7m+: 0
+  # So the condition is only ever true at t=3m and t=4m -- a two-minute stretch, not five --
+  # nowhere near enough to satisfy a 10m hold. Confirmed both ways: mutating for: to 1m makes
+  # this exact series fire at t=4m (pending since t=3m, satisfied one minute later) and
+  # resolve again by t=6m once the rate drops back under 0.10, proving the profile above is
+  # real and this case is not vacuously green. With the real for: 10m, checked at multiple
+  # eval times including well past t=13m (when a sustained version of this same profile would
+  # have fired), to prove it never transiently fires either.
+  - interval: 1m
+    input_series:
+      - series: 'jvm_gc_pause_seconds_sum{job="recsys-catalog-serving", instance="10.0.0.4:6010", action="end of minor GC", cause="G1 Evacuation Pause"}'
+        values: '0 12 24 36 36 36 36 36 36 36 36 36 36 36 36 36 36 36 36 36 36 36 36 36 36'
+    alert_rule_test:
+      - eval_time: 6m
+        alertname: JvmGcTimeFractionHigh
+        exp_alerts: []
+      - eval_time: 10m
+        alertname: JvmGcTimeFractionHigh
+        exp_alerts: []
+      - eval_time: 13m
+        alertname: JvmGcTimeFractionHigh
+        exp_alerts: []
+      - eval_time: 15m
+        alertname: JvmGcTimeFractionHigh
+        exp_alerts: []
+      - eval_time: 20m
+        alertname: JvmGcTimeFractionHigh
+        exp_alerts: []
+
   # --- RequestLatencyP99High: online serving fires at 0.4, not the 1s the others get ---
   # Its requestTimeoutMillis default is 500ms, so a threshold at or above 0.5 there could
   # never fire: the histogram is bounded by the timeout. promtool cannot detect an

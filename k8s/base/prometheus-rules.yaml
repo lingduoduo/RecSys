@@ -234,6 +234,8 @@ spec:
               the failure class and Kafka reachability.
               See docs/runbooks/serving-data-freshness.md.
 
+    - name: recsys.runtime
+      rules:
         # --- JVM heap/GC pressure and request-latency SLOs ---
         # jvm_memory_used_bytes / jvm_memory_max_bytes / jvm_gc_pause_seconds_sum come from
         # JvmMetricsBinder (bound on all three Armeria mains: 6010, 7010, 8010). The three
@@ -243,6 +245,11 @@ spec:
         # client-side quantile= series, not _bucket series, so histogram_quantile against those
         # would match nothing. All four prefixes verified against a live /metrics exposition
         # before this file was written.
+        #
+        # These three watch the request path and the runtime underneath it (heap, GC, p99
+        # latency), not the data at rest or in flight -- recsys.data above is scoped to the
+        # freshness/consistency boundary (outbox, feature view, Redis replica lag); this group
+        # is scoped to whether a service is currently able to serve traffic well.
 
         - alert: JvmHeapPressureHigh
           expr: >-
@@ -263,6 +270,18 @@ spec:
               ratio meaningless.
 
         - alert: JvmGcTimeFractionHigh
+          # for: (10m) deliberately exceeds the rate() range (5m). Unlike increase()/delta() on
+          # a counter -- where one isolated event holds the expression true for exactly the
+          # range window, so for: >= range can never be satisfied (see OutboxDeliveryFailuresSustained
+          # above) -- rate() over a SUSTAINED condition doesn't have a knife edge: if pause time
+          # stays above 10% of wall time, the rate crosses 0.10 a little after the first 5m
+          # window fills and then stays above it for as long as the pressure lasts, so the 10m
+          # hold is satisfied around t=range+for. A burst shorter than roughly the range (a GC
+          # blip lasting a couple of minutes) pushes the rate over 0.10 only briefly and it
+          # drops back before the hold completes, so it correctly does NOT fire -- proven by the
+          # short-burst case in prometheus-rules.test.yaml. The cost of this is detection
+          # latency of roughly range/2 + for (~7-8m here), not a false negative on sustained
+          # pressure.
           expr: sum by (job, instance) (rate(jvm_gc_pause_seconds_sum[5m])) > 0.10
           for: 10m
           labels:
@@ -275,6 +294,12 @@ spec:
               first — this is usually its consequence, not an independent fault.
 
         - alert: RequestLatencyP99High
+          # Same for:-exceeds-range shape as JvmGcTimeFractionHigh immediately above, and the
+          # same reasoning applies: rate() over each *_request_duration_seconds_bucket series
+          # reflects a sustained latency regime, not a one-off counter increment, so a 10m hold
+          # against a 5m range is not the increase()/delta() knife-edge -- it costs detection
+          # latency (roughly range/2 + for), not a false negative, and a latency spike shorter
+          # than about the range window correctly does not page.
           expr: >-
             histogram_quantile(0.99, sum by (le, job) (
               rate(online_serving_request_duration_seconds_bucket[5m]))) > 0.4
