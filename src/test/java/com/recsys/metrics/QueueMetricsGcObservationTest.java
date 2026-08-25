@@ -18,6 +18,22 @@ import static org.assertj.core.api.Assertions.assertThat;
  * and a collected one FREEZES at its last value reporting no error — indistinguishable from a
  * quiet queue. A liveness test covering only the gauges would pass while the one unprotected
  * meter was broken.
+ *
+ * <p><b>What this test does and does not prove.</b> It proves all four meters — the three
+ * strongReference(true) gauges and the one unprotected FunctionCounter — still report correctly
+ * after a real GC. It does <em>not</em> prove which of the two independent strong paths to the
+ * shared {@link QueueMetrics.Source} (the gauges' own {@code strongReference(true)}, or
+ * {@code QueueMetrics.REGISTERED}'s retention) is responsible: removing either one alone leaves
+ * the other holding, so this test stays green under either mutation in isolation. That was
+ * measured directly — commenting out {@code REGISTERED}'s {@code byName.put(queueName, source)}
+ * alone left this test green twice in a row. The discriminating mutation removes <em>both</em>
+ * at once: comment out {@code byName.put(queueName, source)} in {@code QueueMetrics.register}
+ * <em>and</em> change all three {@code .strongReference(true)} calls to
+ * {@code .strongReference(false)} (or delete the calls), force-delete
+ * {@code target/classes/com/recsys/metrics/QueueMetrics*.class} and
+ * {@code target/test-classes/com/recsys/metrics/QueueMetrics*.class}, then rerun this test. Only
+ * that combined mutation isolates the retention story; a re-verifier who wants to check the claim
+ * again should reach for that mutation, not the single-field one.
  */
 class QueueMetricsGcObservationTest {
 

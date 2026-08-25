@@ -35,17 +35,35 @@ import java.util.Objects;
  * default, and per §8.3 the two meter types then fail <em>differently</em>: a collected gauge
  * reports {@code NaN} — visibly wrong — while a {@code FunctionCounter} freezes at its last value
  * and reports no error, which is indistinguishable from a healthy quiet queue. The rejection
- * counter is therefore the one meter that cannot protect itself. It does not need to:
- * {@link #REGISTERED} holds every {@link Source} strongly for the JVM's life, so the retention
- * falls out of the duplicate-name guard rather than being a separate field whose rationale can
- * rot. <b>Do not "clean up" that map.</b>
+ * counter is therefore the one meter that cannot protect itself on its own.
+ *
+ * <p><b>Two independent strong paths keep the single {@link Source} shared by all four meters
+ * alive, and this class deliberately keeps both rather than picking one.</b> The three gauges
+ * pass {@code strongReference(true)}, which holds {@code source} strongly for as long as the
+ * gauge itself is reachable through the registry — a path that has nothing to do with
+ * {@link #REGISTERED}. Separately, {@link #REGISTERED} holds every {@link Source} strongly for
+ * the JVM's life, independent of whether any gauge does. Either path alone is sufficient; the
+ * unprotected {@code FunctionCounter} rides on whichever one currently holds. <b>Because the two
+ * paths are redundant, no test run against this class can attribute liveness to one of them in
+ * isolation</b> — removing {@code REGISTERED}'s retention while the gauges still hold strongly
+ * changes nothing observable, and the reverse is equally true. Proving the map's contribution
+ * specifically requires removing both {@code strongReference(true)} and the map's retention
+ * together and confirming the meters break; see the discriminating mutation documented on
+ * {@code QueueMetricsGcObservationTest}. <b>Do not "clean up" that map</b> — its primary job is
+ * rejecting a duplicate queue name (see above), and it also contributes to keeping every
+ * {@link Source} reachable, even though that contribution cannot be isolated by a test while the
+ * gauges' own strong references still stand.
  *
  * <p>Deliberately <em>not</em> relied on: that a live {@code WorkerBulkhead} or
  * {@code AsyncEventPublisher} is reachable through the Armeria service graph or its own drain
  * thread. Both are true today and neither is a mechanism — the drain-thread path evaporates at
  * {@code close()}, and the service-graph path is an argument a refactor could invalidate with no
- * test failing. That is the mistake {@code JvmMetricsBinder.RETAINED}'s javadoc made before it
- * was disproved.
+ * test failing. That is the same category of mistake {@code JvmMetricsBinder.RETAINED}'s javadoc
+ * made before it was disproved, and this class's own retention story was caught making a
+ * narrower version of it: an earlier draft of this javadoc claimed {@link #REGISTERED} alone
+ * "closes" the weak-reference failure mode, which a mutation run showed is not attributable —
+ * removing only the map's {@code byName.put} left {@code QueueMetricsGcObservationTest} green,
+ * because the gauges' {@code strongReference(true)} already covered the same object.
  */
 public final class QueueMetrics {
 
@@ -85,9 +103,14 @@ public final class QueueMetrics {
     }
 
     /**
-     * Registered sources, keyed by registry identity then queue name. Serves two purposes at once:
-     * it rejects duplicate queue names, and by holding each {@link Source} strongly it keeps every
-     * meter's state alive. Identity-keyed because {@code MeterRegistry} does not define equality.
+     * Registered sources, keyed by registry identity then queue name. Its primary job is
+     * rejecting duplicate queue names (see the class javadoc); holding each {@link Source}
+     * strongly also contributes to keeping every meter's state alive, redundantly with the three
+     * gauges' own {@code strongReference(true)}. Because that second contribution cannot be
+     * isolated from the gauges' own strong references (see the class javadoc's discriminating
+     * mutation), do not read "also contributes to retention" as a claim this map is what makes
+     * any specific meter survive GC on its own. Identity-keyed because {@code MeterRegistry}
+     * does not define equality.
      */
     private static final Map<MeterRegistry, Map<String, Source>> REGISTERED = new IdentityHashMap<>();
 
