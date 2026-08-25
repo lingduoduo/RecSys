@@ -69,7 +69,7 @@ the table is wrong.
 | `recsys_queue_depth{queue}` | gauge | entries | Entries currently enqueued and not yet taken. Always ≥ 0 and ≤ `capacity`. Sampled at scrape time — see the limitation section. |
 | `recsys_queue_capacity{queue}` | gauge | entries | The configured bound. **Strictly positive** — see below. Constant for a process's life; published so utilization is independently checkable and a capacity change is visible across a deploy. |
 | `recsys_queue_utilization{queue}` | gauge | ratio 0–1 | `depth / capacity`, **defined only when `capacity > 0`**, which registration guarantees. Computed in-process from one paired read, never derived in PromQL. Never `NaN`. |
-| `recsys_queue_rejected_total{queue,reason}` | counter | events | Monotonically increasing count of work refused. `reason` is `full` or `shutdown` — see below. Resets only on process restart. |
+| `recsys_queue_rejected_total{queue,reason}` | counter | events | Monotonically increasing count of work refused. `reason` is `full`, `shutdown` or `invalid_key` — see below. Resets only on process restart. |
 
 ### Who guarantees each clause
 
@@ -157,17 +157,31 @@ deploy, late submissions on both paths increment the rejection counter, and an a
 `increase(...) > 0` would fire on **every routine deploy**. A page that fires on normal operations
 is how an alert gets muted and then stops being trusted for the case it was written for.
 
+**There is a third cause, and it is not a capacity condition at all.**
+`KafkaAsyncEventPublisher.publish` extracts a partition key and, when the extractor yields none,
+calls `rejectInvalidKey()` → `recordRejectedEvent()`. That is a data or configuration fault — a
+malformed event, or a key extractor that does not match the payload shape. Folded into one
+counter it would present as queue saturation and send an operator hunting a capacity problem that
+does not exist, while the real bug (every event of some shape being silently discarded) stays
+invisible.
+
 So the counter is tagged by reason:
 
 - `reason="full"` — the bound was reached; work was lost to saturation. **This is the backpressure
   signal**, and the alert scopes to it.
 - `reason="shutdown"` — the queue was closed and refused late work. Expected during drain; useful
   for confirming a clean shutdown, never a page.
+- `reason="invalid_key"` — the event could not be assigned a partition key. Never a capacity
+  signal; a persistent nonzero rate here is a data or configuration bug worth its own
+  investigation, and it is deliberately *not* wired to an alert in this change because nothing
+  establishes a normal rate for it yet.
 
-Both classes need a small change to distinguish the branches they already take: `publish` knows
-which of its two `recordRejectedEvent()` call sites it is on, and `WorkerBulkhead` can consult
-`executor.isShutdown()` in its catch block. No new failure mode is introduced — the information
-exists and is currently discarded.
+The information already exists at every call site and is currently discarded. `publish` knows
+which of its two `recordRejectedEvent()` branches it is on; `KafkaAsyncEventPublisher` knows its
+own key-extraction branch; and `WorkerBulkhead` can consult `executor.isShutdown()` in its catch.
+`recordRejectedEvent()` is `protected` and called by a subclass, so it gains a reason-taking
+overload while the no-arg form is kept — removing it would break `KafkaAsyncEventPublisher` and
+any out-of-tree subclass.
 
 **This also means `async_events_dropped_total` is, today, quietly inaccurate** for the same
 reason: it counts shutdown refusals as drops. That counter is not changed here — it is tagged by
