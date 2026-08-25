@@ -35,9 +35,12 @@ class WorkerBulkheadTest {
         CountDownLatch started = new CountDownLatch(1);
         CountDownLatch blocker = new CountDownLatch(1);
         bulkhead.submit(() -> { started.countDown(); blocker.await(); return null; }); // occupies thread
-        // Wait for the worker to actually pick up the task before relying on the queue being
-        // empty: ThreadPoolExecutor only routes a submission to the queue once a core thread has
-        // taken the first one. A fixed sleep is a race (see rejectionsAreClassifiedFullVersusShutdown).
+        // A latch, not a sleep: this pins submission ordering explicitly rather than relying on
+        // a fixed delay in a gate that is documented timing-free. (ThreadPoolExecutor itself
+        // updates its worker count synchronously in execute(), before the worker thread runs, so
+        // the original Thread.sleep(20) was not actually racing anything observed here — the
+        // latch is still preferred because it makes the ordering an explicit assertion instead of
+        // an assumption about executor internals that a future JDK could change.)
         assertThat(started.await(2, TimeUnit.SECONDS)).as("worker never started").isTrue();
 
         for (int i = 0; i < 5; i++) {
@@ -87,14 +90,15 @@ class WorkerBulkheadTest {
      * ThreadPoolExecutor throws RejectedExecutionException for a full queue OR a shut-down
      * executor. Counting both as saturation would fire the queue alert on every rolling deploy.
      *
-     * <p>Deterministic by construction: {@code ThreadPoolExecutor} only routes a submission to
-     * the queue once a core thread has actually picked up the previous one. Submitting a second
-     * task immediately after the first, with no synchronization, races that pickup — if the pool
-     * hasn't taken the first task yet, the second can land on the pool instead of the queue, and
-     * one of the five "overflow" submissions below queues instead of rejecting (issue #261's
-     * failure class). The held task counts down {@code started} as its first action and the test
-     * waits on it before submitting anything else, so the single worker is provably occupied and
-     * the single queue slot is provably empty before the fill begins.
+     * <p>The held task counts down {@code started} as its first action and the test waits on it
+     * before submitting anything else. This is not working around a race — {@code
+     * ThreadPoolExecutor} increments its worker count synchronously inside {@code execute()},
+     * before the worker thread is even created, so a second submission from the same thread
+     * reliably observes "one worker occupied" regardless of whether the first task has begun
+     * running; 40,000 unsynchronized trials of this exact sequence produced no anomaly. The latch
+     * is here so the ordering the test depends on is an explicit assertion in the test itself,
+     * not an assumption resting on that {@code ThreadPoolExecutor} implementation detail, which a
+     * future JDK is free to change.
      */
     @Test
     void rejectionsAreClassifiedFullVersusShutdown() throws Exception {

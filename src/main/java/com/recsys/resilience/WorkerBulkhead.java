@@ -74,6 +74,18 @@ public final class WorkerBulkhead implements QueueMetrics.Source {
         } catch (RejectedExecutionException e) {
             // ThreadPoolExecutor throws this for a full queue OR a shut-down executor. Counting
             // both as saturation would fire the queue alert on every rolling deploy.
+            //
+            // isShutdown() is read here, after the throw, not atomically with it -- there is no
+            // race-free discriminator available: a custom RejectedExecutionHandler would perform
+            // the same after-the-fact read, and telling the two apart for certain would need
+            // ThreadPoolExecutor internals we don't have. So this has a known TOCTOU window: if
+            // close() lands between the throw and this check, a genuine queue-full rejection can
+            // be misattributed to SHUTDOWN. The error only runs one direction -- FULL can be
+            // undercounted as SHUTDOWN, never the reverse -- which is the safe direction for what
+            // this split exists to prevent: it can only suppress a page, never manufacture a
+            // spurious one. The cost is that saturation gets under-reported during a deploy that
+            // happens under load, which is exactly when that signal matters most; cross-check
+            // with recsys_queue_utilization there rather than trusting the reason breakdown alone.
             if (executor.isShutdown()) {
                 shutdownRejectedCount.incrementAndGet();
             } else {
