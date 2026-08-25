@@ -214,9 +214,13 @@ class AsyncEventPublisherTest {
 
     /**
      * droppedCount is the pre-existing all-reasons total (async_events_dropped_total reads it
-     * unchanged); FULL is derived by subtracting the other two reasons from it rather than
-     * counted on its own. This is the one place a future fourth reason would silently corrupt
-     * the FULL figure without this arithmetic check catching it.
+     * unchanged); each reason also keeps its own dedicated, monotonic AtomicLong incremented
+     * alongside it in recordRejectedEvent(...) -- deliberately not derived by subtracting the
+     * other two from droppedCount, since that arithmetic reads three independent counters as an
+     * untorn triple, which they are not, and a transiently negative FULL reads to Prometheus as
+     * a counter reset (a spurious increase() spike on the next scrape). This pins the resulting
+     * equality as an invariant: it is the one place a future fourth reason that bumps
+     * droppedCount without its own counter would show up.
      */
     @Test
     void theThreeRejectionReasonsSumToDroppedCount() {
@@ -243,5 +247,36 @@ class AsyncEventPublisherTest {
         long shutdown = publisher.rejected(com.recsys.metrics.QueueMetrics.RejectionReason.SHUTDOWN);
         long invalidKey = publisher.rejected(com.recsys.metrics.QueueMetrics.RejectionReason.INVALID_KEY);
         assertThat(full + shutdown + invalidKey).isEqualTo(publisher.snapshot().dropped());
+    }
+
+    /**
+     * INVALID_KEY lives in KafkaAsyncEventPublisher, a different class from the FULL/SHUTDOWN
+     * cases above, and was previously verified only by inspection. Misattributing it is the
+     * costliest mistake of the three: it would send an operator hunting a capacity problem
+     * (FULL) that doesn't exist, while the actual fault -- a key extractor silently rejecting
+     * every event of some shape -- stays invisible. Uses the package-private
+     * KafkaAsyncEventPublisher(Producer, topic, capacity, batchSize, keyExtractor) constructor
+     * with a MockProducer; no drain-thread dependency, since rejectInvalidKey() returns before
+     * the event ever reaches the queue.
+     */
+    @Test
+    void kafkaPublisherClassifiesAMissingPartitionKeyAsInvalidKeyOnly() {
+        org.apache.kafka.clients.producer.MockProducer<String, String> producer =
+                new org.apache.kafka.clients.producer.MockProducer<>(true,
+                        new org.apache.kafka.common.serialization.StringSerializer(),
+                        new org.apache.kafka.common.serialization.StringSerializer());
+        KafkaAsyncEventPublisher publisher = new KafkaAsyncEventPublisher(
+                producer, "movie_events", 100, 10, event -> java.util.Optional.empty());
+
+        try {
+            assertThat(publisher.publish("{\"eventId\":\"e-1\"}")).isFalse();
+
+            assertThat(publisher.rejected(com.recsys.metrics.QueueMetrics.RejectionReason.INVALID_KEY))
+                    .isEqualTo(1L);
+            assertThat(publisher.rejected(com.recsys.metrics.QueueMetrics.RejectionReason.FULL)).isZero();
+            assertThat(publisher.rejected(com.recsys.metrics.QueueMetrics.RejectionReason.SHUTDOWN)).isZero();
+        } finally {
+            publisher.close();
+        }
     }
 }

@@ -51,6 +51,7 @@ public class AsyncEventPublisher implements AutoCloseable, QueueMetrics.Source {
      * immutable for the object's life anyway.
      */
     private final int queueCapacity;
+    private final AtomicLong fullRejectedCount = new AtomicLong();
     private final AtomicLong shutdownRejectedCount = new AtomicLong();
     private final AtomicLong invalidKeyRejectedCount = new AtomicLong();
 
@@ -177,9 +178,9 @@ public class AsyncEventPublisher implements AutoCloseable, QueueMetrics.Source {
     protected boolean recordRejectedEvent(QueueMetrics.RejectionReason reason) {
         long dropped = droppedCount.incrementAndGet();
         switch (reason) {
+            case FULL -> fullRejectedCount.incrementAndGet();
             case SHUTDOWN -> shutdownRejectedCount.incrementAndGet();
             case INVALID_KEY -> invalidKeyRejectedCount.incrementAndGet();
-            case FULL -> { /* droppedCount is the FULL counter; see rejected(...) */ }
         }
         if (consistencyMetrics != null) consistencyMetrics.recordAsyncDrop(metricEventType);
         log.warn("AsyncEventPublisher event rejected, reason={} (total dropped: {})",
@@ -203,9 +204,15 @@ public class AsyncEventPublisher implements AutoCloseable, QueueMetrics.Source {
 
     @Override
     public long rejected(QueueMetrics.RejectionReason reason) {
+        // Each reason is its own monotonic AtomicLong, incremented alongside droppedCount in
+        // recordRejectedEvent(...). Deliberately not derived by subtracting from droppedCount:
+        // that arithmetic reads three independent AtomicLongs as an untorn triple, which they
+        // are not, so a concurrent reader could observe a transiently negative FULL -- and a
+        // Prometheus FunctionCounter interprets any decrease as a counter reset, producing a
+        // spurious increase() spike on the very next scrape. A dedicated counter per reason is
+        // monotonic by construction; there is nothing to race.
         return switch (reason) {
-            // droppedCount is the total; FULL is what remains after the other two are removed.
-            case FULL -> droppedCount.get() - shutdownRejectedCount.get() - invalidKeyRejectedCount.get();
+            case FULL -> fullRejectedCount.get();
             case SHUTDOWN -> shutdownRejectedCount.get();
             case INVALID_KEY -> invalidKeyRejectedCount.get();
         };
