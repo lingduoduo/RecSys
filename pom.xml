@@ -412,6 +412,13 @@
                      the GC-liveness half lives in QueueMetricsGcObservationTest, out of this
                      profile on purpose. -->
                 <include>**/metrics/QueueMetricsTest.java</include>
+                <!-- Three distinct causes flowed through one drop counter here: a full queue, a
+                     closed publisher, and (in the Kafka subclass) an event with no usable
+                     partition key. Un-separated, a malformed-key bug reads as saturation and the
+                     queue-full alert fires on every rolling deploy. This pins the split. No
+                     Redis, no timing — the publisher is constructed directly with a stub
+                     sendBatch. -->
+                <include>**/messaging/AsyncEventPublisherTest.java</include>
                 <!-- Task 4's GC/heap log emitter is built on GcEventTracker.start()/stop(); without
                      this test, a regression to the old package-private install() — or a dropped
                      idempotency guard that silently double-registers a JMX listener and

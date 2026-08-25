@@ -7,6 +7,7 @@ import org.apache.kafka.clients.producer.ProducerRecord;
 import org.apache.kafka.common.serialization.StringSerializer;
 import org.slf4j.Logger;
 import org.slf4j.LoggerFactory;
+import com.recsys.metrics.QueueMetrics;
 
 import java.time.Duration;
 import java.util.List;
@@ -79,7 +80,7 @@ public class KafkaAsyncEventPublisher extends AsyncEventPublisher {
     }
 
     private boolean rejectInvalidKey() {
-        return recordRejectedEvent();
+        return recordRejectedEvent(QueueMetrics.RejectionReason.INVALID_KEY);
     }
 
     @Override
