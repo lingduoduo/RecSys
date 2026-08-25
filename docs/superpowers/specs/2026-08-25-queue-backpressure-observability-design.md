@@ -68,8 +68,31 @@ the table is wrong.
 |---|---|---|---|
 | `recsys_queue_depth{queue}` | gauge | entries | Entries currently enqueued and not yet taken. Always ≥ 0 and ≤ `capacity`. Sampled at scrape time — see the limitation section. |
 | `recsys_queue_capacity{queue}` | gauge | entries | The configured bound. **Strictly positive** — see below. Constant for a process's life; published so utilization is independently checkable and a capacity change is visible across a deploy. |
-| `recsys_queue_utilization{queue}` | gauge | ratio 0–1 | `depth / capacity`, **defined only when `capacity > 0`**. Never negative, never > 1, never `NaN`. |
+| `recsys_queue_utilization{queue}` | gauge | ratio 0–1 | `depth / capacity`, **defined only when `capacity > 0`**, which registration guarantees. Computed in-process from one paired read, never derived in PromQL. Never `NaN`. |
 | `recsys_queue_rejected_total{queue,reason}` | counter | events | Monotonically increasing count of work refused. `reason` is `full` or `shutdown` — see below. Resets only on process restart. |
+
+### Who guarantees each clause
+
+The table above mixes two kinds of obligation, and conflating them is how a contract stops being
+enforceable:
+
+| Clause | Enforced by | How |
+|---|---|---|
+| `capacity > 0` | **`QueueMetrics`** | Validated at registration; throws, registers nothing |
+| unique `queue` tag per registry | **`QueueMetrics`** | Validated at registration; throws (see ownership section — silent aliasing otherwise) |
+| `0 ≤ depth ≤ capacity` | **the `Source`** | Structural for both current sources: `ArrayBlockingQueue` cannot exceed its bound |
+| `utilization ∈ [0,1]` | follows from the two above | Not clamped — see below |
+
+**Utilization is deliberately not clamped.** Clamping `depth/capacity` into `[0,1]` would hide a
+`Source` whose depth exceeds its own capacity, which is a bug worth seeing rather than smoothing.
+Both current sources make it structurally impossible, and a test asserts it for each. If a future
+source violates it the metric should look wrong, because it is.
+
+**Utilization is computed in-process, not derived in PromQL.** It is its own gauge that reads
+`depth()` and `capacity()` in a single paired call, so the two can never be sampled at different
+instants. Deriving `recsys_queue_depth / recsys_queue_capacity` in an alert expression would
+reintroduce that skew for no benefit, and would also break the moment a scrape caught one series
+and missed the other.
 
 ### Capacity is a positive invariant, not a runtime state
 
@@ -97,10 +120,27 @@ future `Source` implementation**. The contract follows from that:
 This makes the question moot by construction rather than answering it with a magic value. Neither
 `0` nor `NaN` is ever published, because a queue that could produce either never gets registered.
 
-An unbounded queue is deliberately **out of scope**: this design describes *bounded* queues, and
-an unbounded one has no meaningful utilization. If one is ever instrumented, it needs its own
-metric shape (depth and growth rate, no utilization), not a sentinel capacity smuggled through
-this one.
+**`capacity()` reports the effective bound, not the configured one, and they can differ.** Both
+constructors clamp: an operator setting `RECALL_BULKHEAD_QUEUE_CAPACITY=0` — plausibly meaning
+"no queueing, reject immediately" — gets a **one-entry queue**, and the metric will truthfully
+report `1`. That is the right reading: the metric describes the queue that exists, not the one
+that was asked for.
+
+But it means the metric cannot surface an operator/implementation mismatch, and nothing else
+does either today — the clamp is silent. Since these tasks are touching both constructors anyway,
+each should log a WARN when it clamps, naming the requested and effective values. That is where
+intent divergence belongs; a metric reporting the *requested* capacity would make utilization
+arithmetically wrong.
+
+**Capacity is immutable for a process's life.** Neither `ArrayBlockingQueue` nor
+`ThreadPoolExecutor`'s work queue is resizable, so the gauge is constant per process and only
+changes across a deploy — which is exactly why it is worth publishing.
+
+**Unbounded queues are out of scope**, and capacity `0` must never be repurposed as a sentinel for
+one. An unbounded queue has no meaningful utilization; instrumenting one needs a different metric
+shape — depth and growth rate, no utilization, and a different alert — not this contract with a
+magic value threaded through it. Stated because "0 means unbounded" is the obvious shortcut and it
+would silently turn the utilization alert into a no-op for the queue that most needs watching.
 
 ### The rejection counter separates saturation from shutdown
 
@@ -143,33 +183,66 @@ That is accepted rather than resolved: the existing one is tagged by `event_type
 was hit and why*. Removing either loses a dimension; removing the older one breaks existing
 consumers.
 
-### Gauge lifetime and ownership
+### Metric ownership and lifetime
 
-The weak-reference failure mode is not merely documented against — it is made **impossible by
-construction**, which the review correctly asked for.
+**The state object every meter reads from is the queue-owning object itself** — the
+`WorkerBulkhead` or `AsyncEventPublisher` instance, passed as the `Source`. Nothing derived,
+nothing copied, so there is no second object whose lifetime could diverge from the queue's.
 
-Micrometer's `Gauge.builder(name, state, fn)` holds `state` weakly. The failure only matters if
-the state object's *only* strong reference is the registration itself. So the gauges read directly
-from the live queue object — the `WorkerBulkhead` or `AsyncEventPublisher` instance — and those
-objects are strongly reachable for the process's life through paths that have nothing to do with
-metrics:
+The question is what keeps that object alive from Micrometer's point of view, and the answer must
+be structural, because the failure is silent.
 
-- A `WorkerBulkhead` is held by the Armeria `Server`'s service graph: `RecSysServer` passes it to
-  `CatalogLoadService`, which is registered as a service on the built `Server`.
-- An `AsyncEventPublisher` is held by **its own running drain thread**, whose `Runnable` is a
-  method reference on the instance. A live thread is a GC root, so the publisher cannot be
-  collected while it is draining — the same argument that makes `JvmGcMetrics` reachable through
-  the JMX listener chain.
+**Two measured facts decide this design.** Both were probed against `micrometer-core` 1.13.6
+rather than assumed:
 
-Therefore no `RETAINED`-style holder list is needed, and the plan should **not** add one.
+1. `Gauge.Builder` exposes `strongReference(boolean)`. **`FunctionCounter.Builder` does not.** So
+   the one meter that *cannot* opt out of weak state is the rejection counter — and per §8.3 a
+   `FunctionCounter` whose state is collected **freezes at its last value and reports no error**,
+   which is indistinguishable from a healthy quiet queue. The visible-NaN failure would have been
+   the lucky case.
+2. Registering a second meter with an identical name and tags **silently returns the first meter
+   and discards the second's state object**. Probed directly: two gauges built over different
+   `AtomicInteger`s under `queue="same"` produced one meter, `g1 == g2`, and both read the *first*
+   object's value. A second queue registering under a name already taken would therefore report
+   the first queue's depth forever, with no error anywhere.
 
-**But this reasoning must be verified, not trusted.** An identical-shaped argument about
-`JvmMetricsBinder.RETAINED` was asserted in PR #293 and later *disproved* — the javadoc claimed a
-protection that did not hold, and correcting it needed its own PR. So the implementation carries a
-test that forces a real GC (canary `WeakReference` confirming collection actually occurred) and
-asserts every gauge still reports. If any source turns out not to be reachable as argued here,
-the fix is an explicit strong reference in `QueueMetrics` — and the argument above gets corrected
-rather than left standing.
+**One mechanism resolves both, and it is not a `RETAINED` list.** `QueueMetrics` keeps a map of
+registered `(MeterRegistry, queueName) → Source`. It exists **primarily to reject duplicate queue
+names** — registration throws `IllegalStateException` naming the queue rather than allowing the
+silent aliasing in (2). Because that map holds each `Source` strongly for the process's life, the
+weak-reference mode in (1) is closed as a side effect, for the `FunctionCounter` as well as the
+gauges. One structure, one purpose, and the retention is a consequence of it rather than a
+separate field whose rationale can rot.
+
+The gauges additionally pass `.strongReference(true)`, matching what `InferenceMetricsService` and
+`LoadShedder` already do in this repo. Free, and it makes each gauge independently safe rather
+than dependent on the map.
+
+**What this design deliberately does not rely on.** Both queue objects *are* reachable through the
+Armeria `Server`'s service graph, and an `AsyncEventPublisher` is additionally held by its running
+drain thread. Neither fact is load-bearing here, and the plan must not lean on either:
+
+- The drain-thread path **evaporates at `close()`**, which sets `running = false` and lets the
+  thread exit.
+- The service-graph path is real today but is an argument about wiring that a refactor could
+  invalidate silently, with no test failing.
+
+This is the specific mistake made in PR #293: `JvmMetricsBinder.RETAINED`'s javadoc asserted a
+weak-reference protection that a later investigation **disproved**, and correcting the claim
+needed its own commit. A reachability argument is evidence, not a mechanism. The map is the
+mechanism.
+
+**Verification is still required**, because the mechanism above is itself a claim: a forced-GC
+test with a canary `WeakReference` confirming a real collection occurred, asserting every meter —
+gauges *and* the rejection counter — still reports afterwards. The counter matters most, since its
+failure is the invisible one.
+
+**Meters are not removed when a queue closes.** A closed `AsyncEventPublisher` keeps reporting
+depth 0 and utilization 0, which reads as healthy. Accepted deliberately: `close()` happens during
+shutdown, when the process is going away and `RecsysTargetDown` covers a target that stops
+answering. Removing meters mid-scrape would create its own gaps, and de-registration is a larger
+lifecycle question than this change should open. Recorded so a flat post-shutdown line is not
+mistaken for a live healthy queue.
 
 `QueueMetrics.register(MeterRegistry, String queueName, QueueMetrics.Source)` where `Source` is a
 three-method interface — `int depth()`, `int capacity()`, `long rejected()`. `WorkerBulkhead` and
@@ -188,7 +261,7 @@ Registered instances: `recall-catalog` (6010), `recall-online` (7010), and the
 `KafkaAsyncEventPublisher` and `SqsAsyncEventPublisher` subclasses, which inherit the same bounded
 queue and so are covered by registering the base class's source.
 
-## Two traps this design is built against
+## Three traps this design is built against
 
 Both have already bitten this repo, and both are resolved above by construction rather than by
 convention. Restated here only as an index, because the detail belongs with the contract:
@@ -199,9 +272,14 @@ convention. Restated here only as an index, because the detail belongs with the 
   the division cannot occur: see *Capacity is a positive invariant*.
 - **The Micrometer WeakReference trap** — a collected gauge reports `NaN` while a
   `FunctionCounter` freezes at its last value and reports nothing, which is indistinguishable from
-  a quiet system (§8.3). Resolved by having the gauges read from objects that are already strongly
-  reachable for the process's life: see *Gauge lifetime and ownership*, including why that argument
-  must be tested rather than trusted.
+  a quiet system (§8.3). `FunctionCounter.Builder` has no `strongReference` option, so the
+  rejection counter is the meter that cannot opt out. Resolved by the registration map that
+  `QueueMetrics` needs anyway for duplicate detection, which holds every `Source` strongly: see
+  *Metric ownership and lifetime*.
+- **Silent meter aliasing** — registering a duplicate name+tags returns the *first* meter and
+  discards the second's state, measured directly. A second queue under a taken name would report
+  the first one's depth forever, with no error. Resolved by rejecting duplicate queue names at
+  registration.
 
 ## The alerts, and what each one means
 
@@ -304,10 +382,17 @@ Each item below maps to a clause of the contract above; a contract clause with n
   and assert the opposite. Same for `AsyncEventPublisher` — fill the queue, then `close()` and
   publish. **This is the test that protects against paging on every rolling deploy**, and the
   behaviour it pins does not exist in either class today.
-- **Gauge liveness after GC.** Meters still report after a forced collection, with a canary
-  `WeakReference` confirming a real GC occurred — the proof shape from
-  `SplunkHecMetricsTest#metersSurviveGarbageCollectionOfTheirBackingState`. This is what verifies
-  the reachability argument in the ownership section rather than trusting it.
+- **Duplicate queue names are rejected.** Registering two sources under the same queue name on
+  one registry throws, naming the queue. **Prove the alternative first**: without the guard,
+  Micrometer returns the first meter and the second queue silently reports the first's depth — a
+  probe against micrometer-core 1.13.6 confirmed `g1 == g2` and both reading the first state
+  object. The test must fail when the guard is removed, or it is not testing the guard.
+- **Meter liveness after GC, including the counter.** Every meter still reports after a forced
+  collection, with a canary `WeakReference` confirming a real GC occurred — the proof shape from
+  `SplunkHecMetricsTest#metersSurviveGarbageCollectionOfTheirBackingState`. **The rejection
+  `FunctionCounter` is the meter that matters here**: it has no `strongReference` option and its
+  failure is to freeze silently rather than report `NaN`, so a test that only checks the gauges
+  would pass while the one unprotected meter was broken.
 - **Capacity is reported.** `WorkerBulkhead` and `AsyncEventPublisher` each report the bound they
   were constructed with, including that the `Math.max(1, …)` clamp is reflected — a caller passing
   `0` gets a reported capacity of `1`, matching the queue that was actually built.
