@@ -728,6 +728,13 @@ hardware, not the figure. `async-events` defaults to `ASYNC_EVENT_QUEUE_CAPACITY
   counter looks tempting.
 - Registration throws on a duplicate queue name because Micrometer would otherwise return the
   first meter and silently discard the second source — measured, not assumed.
+- `QueueMetrics.register` also throws `IllegalArgumentException` if `source.capacity()` is not
+  strictly positive, but that guard is **unreachable from both production `Source`s** —
+  `WorkerBulkhead` and `AsyncEventPublisher` each clamp their constructor argument with
+  `Math.max(1, n)` before `capacity()` can ever report anything but a positive number (see the
+  clamping bullet above). Don't read the guard's presence as meaning a bad
+  `RECALL_BULKHEAD_QUEUE_CAPACITY`/`ASYNC_EVENT_QUEUE_CAPACITY` env var fails the boot — it
+  doesn't; it silently becomes a one-entry queue instead, logged at WARN.
 
 ### 8.4 Alerts
 

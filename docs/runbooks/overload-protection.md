@@ -77,6 +77,12 @@ the full metric contract and the two alerts (`RecsysQueueFillingUp`, `RecsysQueu
   capacity problem, even though it lands in the same all-reasons `async_events_dropped_total`.
   Reading either of the other two as saturation sends you hunting a capacity problem that isn't
   there.
+- **`depth()` — and therefore `recsys_queue_depth`/`_utilization` — is queue-only on both
+  implementations, never in-flight work.** A `WorkerBulkhead` with every worker busy and an
+  empty queue reports `utilization = 0`, the same as an idle one; `depth()` reads
+  `executor.getQueue().size()`, not active-task count. Read `utilization` as "how much
+  backlog is waiting to run," not "how loaded is this component" — a bulkhead can be fully
+  busy and still show zero utilization here.
 - **`recsys_queue_capacity` is the effective bound, not the configured one.** Both constructors
   clamp `Math.max(1, n)`, so `RECALL_BULKHEAD_QUEUE_CAPACITY=0` or
   `ASYNC_EVENT_QUEUE_CAPACITY=0` — plausibly meant as "no queueing" — instead yields a one-entry
