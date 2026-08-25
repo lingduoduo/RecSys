@@ -697,9 +697,41 @@ buckets that don't exist would sit in Prometheus looking like coverage and never
 `MeterFilter` only affects meters registered after it is added — which is why it precedes both
 `SplunkHecMetrics.register` and `JvmMetricsBinder.bindTo` in all three Armeria mains.
 
+**Queues** — the bounded queues on the message path. Before 2026-08-25 neither published
+anything: `AsyncEventPublisher` computed `queue.size()` into a `Snapshot` that reached no
+registry, and `WorkerBulkhead` had no metrics at all, its depth served as JSON by
+`CatalogLoadService` and read by no collector. Drops were visible only after the fact, so a queue
+filling up was invisible until it overflowed.
+
+| Metric | Registered in |
+|---|---|
+| `recsys_queue_depth`, `_capacity`, `_utilization` (all tagged `queue`), `recsys_queue_rejected_total` (tagged `queue`, `reason`) | [`metrics/QueueMetrics.java`](../../src/main/java/com/recsys/metrics/QueueMetrics.java) |
+
+Registered queues: `recall-catalog` (6010), `recall-online` and `async-events` (7010). The two
+recall bulkheads don't size from a fixed constant: `RECALL_BULKHEAD_QUEUE_CAPACITY` defaults to
+`poolSize * 4`, and `poolSize` is itself `availableProcessors() * 2` — so the 64 you'll see on an
+8-core instance is a derived number, not a repo-wide default; read the formula on different
+hardware, not the figure. `async-events` defaults to `ASYNC_EVENT_QUEUE_CAPACITY`'s 10 000.
+
+- `capacity` is the **effective** bound, not the configured one — both constructors clamp
+  `Math.max(1, n)`, so a requested `0` yields a one-entry queue and the metric says `1`; both now
+  log a WARN when the clamp engages, naming the requested and effective values.
+- `reason` separates `full` from `shutdown` and `invalid_key` — only `full` is a saturation
+  signal, and `async_events_dropped_total` remains the all-reasons total, so it is **not** a pure
+  saturation signal.
+- Each reason is counted by its own monotonic `AtomicLong`, not derived as
+  `dropped - shutdown - invalid_key`. An earlier draft of this branch did the subtraction; reading
+  three independent counters as if they were one untorn triple let a concurrent reader observe a
+  transiently negative `full`, and a Prometheus `FunctionCounter` reads any decrease as a
+  **reset**, so the next `increase()` comes out spuriously large. The subtraction looked harmless
+  and was the shape that shipped first — worth remembering next time a "just subtract the others"
+  counter looks tempting.
+- Registration throws on a duplicate queue name because Micrometer would otherwise return the
+  first meter and silently discard the second source — measured, not assumed.
+
 ### 8.4 Alerts
 
-Sixteen, in five groups, all in [prometheus-rules.yaml](../../k8s/base/prometheus-rules.yaml). Every
+Eighteen, in five groups, all in [prometheus-rules.yaml](../../k8s/base/prometheus-rules.yaml). Every
 expression was checked against a real metric name in `src/main/java` first — an alert on a
 metric that is never emitted looks like coverage and can never fire.
 
@@ -737,7 +769,7 @@ counter increments per failed *attempt* and the relay retries, so a short burst 
 must not page; measured with `promtool`, a four-attempt burst under `[10m]`/`for: 10m` fires
 spuriously at t=11 m, while a 5 m window cannot span a 10 m hold.
 
-**Runtime and request-latency alerts** — three more in the `recsys.runtime` group, watching the
+**Runtime and request-latency alerts** — five more in the `recsys.runtime` group, watching the
 request path and the JVM underneath it rather than data at rest or the freshness boundary above.
 
 | Alert | Means | Likely cause | First response |
@@ -745,14 +777,26 @@ request path and the JVM underneath it rather than data at rest or the freshness
 | `JvmHeapPressureHigh` | Heap `used / max` over the heap area only (non-heap pools excluded, and pools with no maximum, which report `-1`, are filtered before the division) `> 0.90` for 10 m | A leak, an undersized heap for real traffic, or a burst of unusually large responses | Cross-check the Splunk heap-pressure events for the same service and window — `GcEventTracker` logs the same crossing independently, so agreement between the two rules out a metric artifact. Expect GC pause time to follow. |
 | `JvmGcTimeFractionHigh` | `rate(jvm_gc_pause_seconds_sum[5m])` — stop-the-world seconds per second of wall time — `> 0.10` for 10 m | Usually heap pressure; check `JvmHeapPressureHigh` on the same instance first | If heap pressure isn't also firing, look at allocation rate and object lifetime rather than heap sizing. Measured detection latency on a sustained overshoot is roughly 13–15 m depending on how far past the threshold the true rate sits — see the comment in `prometheus-rules.yaml`, measured with `promtool`, not derived from a formula. |
 | `RequestLatencyP99High` | `histogram_quantile(0.99, ...)` over each service's own request-duration buckets, against a per-service threshold (0.4 s online serving, 1 s catalog serving, 2 s gateway, 1 s model service) for 10 m. **All four services now have a branch.** The first three name `online_serving_request_duration_seconds_bucket`, `catalog_serving_request_duration_seconds_bucket`, and `api_gateway_request_duration_seconds_bucket` — all three come from `MetricCollectingService`/`RequestDurationHistogram` on the Armeria mains. The fourth queries the Spring model service's (8080) own `http_server_requests_seconds_bucket` — `application.yml` sets `management.metrics.distribution.percentiles-histogram.http.server.requests: true`, so `/actuator/prometheus` exposes it (confirmed by running the service and inspecting the scrape: 207 series, on Micrometer's own exponential bucket boundaries, not the other three's explicit 0.05/0.1/.../5 SLO set). That metric name is generic — every Spring Boot app emits it — so this branch is scoped with `namespace="recsys"` the same way `JvmHeapPressureHigh`/`JvmGcTimeFractionHigh` are scoped below, and additionally excludes Actuator's own `/actuator/prometheus` scrape traffic with `uri!~"/actuator.*"` so that fast self-scrapes (every 15 s) don't dilute the p99 of real serving traffic. | A slow downstream, a GC pause, or genuine load past capacity | Search Splunk with `outcome=slow` for the same window to see which routes and requests — except on the gateway, where `route` is the catch-all pattern for every proxied request (see the Splunk runbook), so group by `service` there instead, or correlate with the backend's own event. Check `JvmGcTimeFractionHigh` on the same instance before assuming a downstream fault. Measured detection latency on a clean sustained step is roughly 11 m, essentially the `for:` window with no extra `rate()`-side delay — a different shape from the counter-rate alert above and not a number to generalize from. |
+| `RecsysQueueFillingUp` | `recsys_queue_utilization > 0.7` for 10 m — a bounded queue (`recall-catalog`, `recall-online`, or `async-events`) is sustained above 70% full | The consumer is draining slower than the queue fills: the recall workers for a bulkhead, the drain thread for `async-events` | Check whether the consumer has actually slowed before raising `RECALL_BULKHEAD_QUEUE_CAPACITY` or `ASYNC_EVENT_QUEUE_CAPACITY` — a larger queue buys latency, not throughput, and just delays the same rejection if the consumer is the real problem. Nothing has been lost yet; this is early warning, not evidence of loss. |
+| `RecsysQueueRejecting` | `increase(recsys_queue_rejected_total{reason="full"}[10m]) > 0` for 3 m — a queue is discarding work now | Genuine saturation, or a burst that outran the queue's bound | The `reason="full"` label match is deliberate and load-bearing: `reason="shutdown"` is excluded on purpose, since both queue implementations count late-arriving submissions during a clean drain under that reason, and seeing it during a rolling deploy is expected, not a page. Cross-check `recsys_queue_utilization` for how long pressure had been building. |
 
-The four thresholds differ per service rather than sharing one value because a threshold at or
+The four latency thresholds differ per service rather than sharing one value because a threshold at or
 above an enforced request timeout can never fire — the reason this group pushes the trap list
 below to four entries. The model service's 1 s is the odd one out even among the four: unlike
 the other three, it isn't derived from any enforced request timeout — `application.yml` sets none
 for inbound requests (`timeout-per-shutdown-phase` governs graceful shutdown, not per-request
 processing) — so 1 s is a chosen value, picked to match catalog serving's since both share the
 same 500 ms `SLOW_REQUEST_LOG_THRESHOLD_MS` default.
+
+**A 15 s scrape cannot see a queue that fills and drains between samples.** `recsys_queue_depth`
+and `_utilization` catch sustained pressure; `recsys_queue_rejected_total` catches the bursty case,
+because a counter records an event a sampled gauge can miss entirely. A flat depth graph is
+therefore half the picture, and the two alerts are complementary rather than redundant. The
+remaining gap is a queue that repeatedly reaches ~95% and drains without ever rejecting: invisible
+to both. Closing it needs a peak-depth metric, which was deliberately deferred — see
+[the design doc](../superpowers/specs/2026-08-25-queue-backpressure-observability-design.md) for
+why, including the hot-path cost and the decaying-max sharp edge already documented for
+`OutboxDeliveryLatencyHigh`.
 
 **Four traps this file fell into once, worth not repeating elsewhere:**
 
