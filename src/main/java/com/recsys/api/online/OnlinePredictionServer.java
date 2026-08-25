@@ -14,6 +14,7 @@ import com.recsys.metrics.OnlineServingMetricsService;
 import com.recsys.metrics.ConsistencyMetrics;
 import com.recsys.metrics.RedisCacheMetrics;
 import com.recsys.metrics.JvmMetricsBinder;
+import com.recsys.metrics.QueueMetrics;
 import com.recsys.metrics.RequestDurationHistogram;
 import com.recsys.metrics.SplunkHecMetrics;
 import com.recsys.infrastructure.redis.RedisCacheStatsProbe;
@@ -168,6 +169,10 @@ public final class OnlinePredictionServer {
             SplunkHecMetrics.register(registry);
             // Armeria's configureRegistry is a no-op, so nothing binds the JVM metrics for us.
             JvmMetricsBinder.bindTo(registry);
+            QueueMetrics.register(registry, "recall-online", recallBulkhead);
+            if (asyncEventPublisher != null) {
+                QueueMetrics.register(registry, "async-events", asyncEventPublisher);
+            }
             // Spring constructs its own; the Armeria mains have no container to do it for them.
             GcEventTracker gcEventTracker = new GcEventTracker();
             gcEventTracker.start();

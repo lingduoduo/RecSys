@@ -391,3 +391,46 @@ spec:
               must move with it. The model service branch is the exception: it has no enforced
               request timeout to bind a threshold to, so its 1s is a chosen value like catalog
               serving's, not a derived one.
+
+        - alert: RecsysQueueFillingUp
+          # Early warning, deliberately distinct from RecsysQueueRejecting below: this fires while
+          # a queue is under pressure but has lost nothing. A queue can sit at 90% indefinitely and
+          # be fine; what this catches is one that has stopped draining as fast as it fills, which
+          # is the state that precedes loss and is invisible without this metric.
+          #
+          # for: 10m is the substance, not decoration -- at a 15s scrape that is ~40 consecutive
+          # samples above the line. A queue that touches 0.8 for one scrape and drains is working
+          # as designed and must not page.
+          expr: recsys_queue_utilization > 0.7
+          for: 10m
+          labels:
+            severity: warning
+          annotations:
+            summary: "Queue {{ $labels.queue }} on {{ $labels.job }} is sustained above 70% full"
+            description: >-
+              Sustained pressure with nothing lost yet. Check whether the consumer has slowed
+              (the drain thread for async-events, the recall workers for a bulkhead) before
+              raising the bound -- a larger queue buys latency, not throughput. See
+              docs/runbooks/overload-protection.md.
+
+        - alert: RecsysQueueRejecting
+          # Evidence of actual loss, not early warning. Scoped to reason="full" ON PURPOSE:
+          # both implementations also count shutdown refusals, so an unscoped expression fires on
+          # every rolling deploy. Dropping this matcher while "simplifying" the expression would
+          # reintroduce deploy-time paging silently -- there is a promtool case pinning it.
+          #
+          # for: 3m sits well below the 10m increase() range per 18_Fault_Tolerance section 8.4:
+          # an isolated burst ages out of the range and flips the expression false before a longer
+          # for: is satisfied, which would defeat alerting on exactly the burst this is for.
+          expr: increase(recsys_queue_rejected_total{reason="full"}[10m]) > 0
+          for: 3m
+          labels:
+            severity: warning
+          annotations:
+            summary: "Queue {{ $labels.queue }} on {{ $labels.job }} is rejecting work"
+            description: >-
+              This queue is full and discarding work now. For async-events that is lost
+              interaction events; for a recall bulkhead it is degraded recommendations. Check
+              recsys_queue_utilization for how long pressure had been building, and note that
+              reason="shutdown" and reason="invalid_key" are deliberately excluded -- the latter
+              is a data fault, not saturation.

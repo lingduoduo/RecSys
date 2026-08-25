@@ -14,9 +14,13 @@ import java.util.Objects;
 /**
  * GET /health/load — catalog serving (6010) load snapshot: live recall-bulkhead
  * pressure plus cumulative silent-degradation counters. Read-only; normal gateway
- * auth. Note: the bulkhead's own {@code rejected} counter is always 0 on this path
- * (recall runs via asExecutorService()+supplyAsync, not submit()), so it is omitted;
- * the authoritative rejection count is channelDegraded[*].rejected.
+ * auth. Note: {@code bulkhead.rejected} is intentionally omitted from this endpoint's
+ * response, not because it can't fire on this path -- {@code WorkerBulkhead}'s
+ * {@code RejectedExecutionHandler} counts a rejection regardless of whether it came
+ * through {@code submit()} or (as recall does) {@code asExecutorService()}+{@code
+ * supplyAsync} -- but because {@code channelDegraded[*].rejected} is the
+ * per-channel breakdown an operator actually wants here; the raw bulkhead count is
+ * still available via {@code recsys_queue_rejected_total{queue="recall-catalog"}}.
  */
 public final class CatalogLoadService extends BaseApiService {
 
@@ -38,6 +42,7 @@ public final class CatalogLoadService extends BaseApiService {
         bulkhead.put("poolSize", b.poolSize());
         bulkhead.put("active", b.active());
         bulkhead.put("queued", b.queued());
+        bulkhead.put("queueCapacity", b.queueCapacity());
 
         Map<String, Object> channelDegraded = new LinkedHashMap<>();
         d.byChannel().forEach((channel, reasons) -> {

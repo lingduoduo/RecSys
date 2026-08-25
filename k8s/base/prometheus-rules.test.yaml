@@ -895,3 +895,89 @@ tests:
                 must move with it. The model service branch is the exception: it has no enforced
                 request timeout to bind a threshold to, so its 1s is a chosen value like catalog
                 serving's, not a derived one.
+
+  # --- RecsysQueueFillingUp ---
+  - interval: 1m
+    input_series:
+      # 90% full and staying there: must fire.
+      - series: 'recsys_queue_utilization{queue="async-events", job="recsys-online-serving"}'
+        values: '0.9x20'
+      # 60% and staying there: near-miss, must NOT fire.
+      - series: 'recsys_queue_utilization{queue="recall-online", job="recsys-online-serving"}'
+        values: '0.6x20'
+    alert_rule_test:
+      - eval_time: 15m
+        alertname: RecsysQueueFillingUp
+        exp_alerts:
+          - exp_labels:
+              severity: warning
+              queue: async-events
+              job: recsys-online-serving
+            exp_annotations:
+              summary: "Queue async-events on recsys-online-serving is sustained above 70% full"
+              description: >-
+                Sustained pressure with nothing lost yet. Check whether the consumer has slowed
+                (the drain thread for async-events, the recall workers for a bulkhead) before
+                raising the bound -- a larger queue buys latency, not throughput. See
+                docs/runbooks/overload-protection.md.
+
+  # --- RecsysQueueFillingUp: a brief excursion must NOT fire ---
+  # This is what separates an early-warning signal from noise. A queue that spikes above the
+  # line for two scrapes and drains is working as designed.
+  #
+  # Two assertions, not one: t=3m is mid-excursion -- the series has been >0.7 continuously
+  # since t=2m, one full minute, which is enough to satisfy a for:1m rule but not this rule's
+  # for:10m. Without this earlier point, a for: shortened all the way down to 1m is invisible
+  # to this case: it fires transiently at t=3m and auto-resolves at t=4m (no keep_firing_for),
+  # so a check only at t=14m -- ten minutes after the excursion ended -- sees nothing firing
+  # either way and cannot tell for:10m from for:1m apart. t=14m alone previously passed under a
+  # for:1m mutation for exactly this reason (see task-5-report.md, mutation 3, round 1). t=14m
+  # is kept as the second assertion: not during the spike, and not after it either.
+  - interval: 1m
+    input_series:
+      - series: 'recsys_queue_utilization{queue="recall-catalog", job="recsys-catalog-serving"}'
+        values: '0.1 0.1 0.9 0.9 0.1 0.1 0.1 0.1 0.1 0.1 0.1 0.1 0.1 0.1 0.1'
+    alert_rule_test:
+      - eval_time: 3m
+        alertname: RecsysQueueFillingUp
+        exp_alerts: []
+      - eval_time: 14m
+        alertname: RecsysQueueFillingUp
+        exp_alerts: []
+
+  # --- RecsysQueueRejecting ---
+  - interval: 1m
+    input_series:
+      - series: 'recsys_queue_rejected_total{queue="async-events", job="recsys-online-serving", reason="full"}'
+        values: '0+5x25'
+    alert_rule_test:
+      - eval_time: 20m
+        alertname: RecsysQueueRejecting
+        exp_alerts:
+          - exp_labels:
+              severity: warning
+              queue: async-events
+              job: recsys-online-serving
+              reason: full
+            exp_annotations:
+              summary: "Queue async-events on recsys-online-serving is rejecting work"
+              description: >-
+                This queue is full and discarding work now. For async-events that is lost
+                interaction events; for a recall bulkhead it is degraded recommendations. Check
+                recsys_queue_utilization for how long pressure had been building, and note that
+                reason="shutdown" and reason="invalid_key" are deliberately excluded -- the latter
+                is a data fault, not saturation.
+
+  # --- RecsysQueueRejecting: shutdown and invalid_key must NOT fire ---
+  # THE case that protects against paging on every rolling deploy. Both implementations count
+  # shutdown refusals; without the reason="full" matcher this input fires.
+  - interval: 1m
+    input_series:
+      - series: 'recsys_queue_rejected_total{queue="async-events", job="recsys-online-serving", reason="shutdown"}'
+        values: '0+20x25'
+      - series: 'recsys_queue_rejected_total{queue="async-events", job="recsys-online-serving", reason="invalid_key"}'
+        values: '0+20x25'
+    alert_rule_test:
+      - eval_time: 20m
+        alertname: RecsysQueueRejecting
+        exp_alerts: []

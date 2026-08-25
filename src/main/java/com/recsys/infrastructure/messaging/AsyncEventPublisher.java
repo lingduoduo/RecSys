@@ -10,6 +10,7 @@ import java.util.concurrent.ArrayBlockingQueue;
 import java.util.concurrent.TimeUnit;
 import java.util.concurrent.atomic.AtomicLong;
 import com.recsys.metrics.ConsistencyMetrics;
+import com.recsys.metrics.QueueMetrics;
 
 /**
  * Async, bounded event publisher for the online serving → MQ path.
@@ -28,7 +29,7 @@ import com.recsys.metrics.ConsistencyMetrics;
  *                   the transport can be swapped (Kafka, Pulsar, log, …)
  *                   without touching the HTTP service code.
  */
-public class AsyncEventPublisher implements AutoCloseable {
+public class AsyncEventPublisher implements AutoCloseable, QueueMetrics.Source {
     private static final Logger log = LoggerFactory.getLogger(AsyncEventPublisher.class);
     private static final int DEFAULT_QUEUE_CAPACITY = 10_000;
     private static final int DEFAULT_BATCH_SIZE = 100;
@@ -43,6 +44,16 @@ public class AsyncEventPublisher implements AutoCloseable {
     private final AtomicLong deliveryFailureCount = new AtomicLong();
     private volatile ConsistencyMetrics consistencyMetrics;
     private final ConsistencyMetrics.EventType metricEventType;
+
+    /**
+     * The effective bound, captured here rather than read back from the queue: the queue's own
+     * size accessors don't expose the capacity it was constructed with, and this value is
+     * immutable for the object's life anyway.
+     */
+    private final int queueCapacity;
+    private final AtomicLong fullRejectedCount = new AtomicLong();
+    private final AtomicLong shutdownRejectedCount = new AtomicLong();
+    private final AtomicLong invalidKeyRejectedCount = new AtomicLong();
 
     public AsyncEventPublisher() {
         this(
@@ -61,7 +72,13 @@ public class AsyncEventPublisher implements AutoCloseable {
 
     public AsyncEventPublisher(int queueCapacity, int batchSize, ConsistencyMetrics consistencyMetrics,
                                ConsistencyMetrics.EventType metricEventType) {
-        this.queue      = new ArrayBlockingQueue<>(Math.max(1, queueCapacity));
+        int effectiveCapacity = Math.max(1, queueCapacity);
+        if (effectiveCapacity != queueCapacity) {
+            log.warn("AsyncEventPublisher requested queue capacity {} but the effective bound is {};"
+                    + " metrics report the effective value.", queueCapacity, effectiveCapacity);
+        }
+        this.queueCapacity = effectiveCapacity;
+        this.queue      = new ArrayBlockingQueue<>(effectiveCapacity);
         this.batchSize  = Math.max(1, batchSize);
         this.consistencyMetrics = consistencyMetrics;
         this.metricEventType = Objects.requireNonNull(metricEventType, "metricEventType");
@@ -80,12 +97,12 @@ public class AsyncEventPublisher implements AutoCloseable {
 
     public boolean publish(String key, String event) {
         if (event == null) return false;
-        if (!running) return recordRejectedEvent();
+        if (!running) return recordRejectedEvent(QueueMetrics.RejectionReason.SHUTDOWN);
         if (queue.offer(new EventEnvelope(key, event))) {
             publishedCount.incrementAndGet();
             return true;
         }
-        return recordRejectedEvent();
+        return recordRejectedEvent(QueueMetrics.RejectionReason.FULL);
     }
 
     public boolean publish(LogCollector.KafkaEvent event) {
@@ -93,8 +110,8 @@ public class AsyncEventPublisher implements AutoCloseable {
     }
 
     public Snapshot snapshot() {
-        return new Snapshot(queue.size(), publishedCount.get(), droppedCount.get(), drainedCount.get(),
-                deliveryFailureCount.get());
+        return new Snapshot(queue.size(), queueCapacity, publishedCount.get(), droppedCount.get(),
+                drainedCount.get(), deliveryFailureCount.get());
     }
 
     public void bindConsistencyMetrics(ConsistencyMetrics metrics) {
@@ -150,15 +167,55 @@ public class AsyncEventPublisher implements AutoCloseable {
         sendBatch(events.stream().map(EventEnvelope::value).toList());
     }
 
+    /**
+     * Retained so subclasses compiled against the old shape keep working; FULL is the historical
+     * meaning of a bare rejection here.
+     */
     protected boolean recordRejectedEvent() {
+        return recordRejectedEvent(QueueMetrics.RejectionReason.FULL);
+    }
+
+    protected boolean recordRejectedEvent(QueueMetrics.RejectionReason reason) {
         long dropped = droppedCount.incrementAndGet();
+        switch (reason) {
+            case FULL -> fullRejectedCount.incrementAndGet();
+            case SHUTDOWN -> shutdownRejectedCount.incrementAndGet();
+            case INVALID_KEY -> invalidKeyRejectedCount.incrementAndGet();
+        }
         if (consistencyMetrics != null) consistencyMetrics.recordAsyncDrop(metricEventType);
-        log.warn("AsyncEventPublisher event rejected (total dropped: {})", dropped);
+        log.warn("AsyncEventPublisher event rejected, reason={} (total dropped: {})",
+                reason.tag(), dropped);
         return false;
     }
 
     protected void recordDeliveryFailure() {
         deliveryFailureCount.incrementAndGet();
+    }
+
+    @Override
+    public int depth() {
+        return queue.size();
+    }
+
+    @Override
+    public int capacity() {
+        return queueCapacity;
+    }
+
+    @Override
+    public long rejected(QueueMetrics.RejectionReason reason) {
+        // Each reason is its own monotonic AtomicLong, incremented alongside droppedCount in
+        // recordRejectedEvent(...). Deliberately not derived by subtracting from droppedCount:
+        // that arithmetic reads three independent AtomicLongs as an untorn triple, which they
+        // are not, so a concurrent reader could observe a transiently negative FULL -- and a
+        // Prometheus FunctionCounter interprets any decrease as a counter reset, producing a
+        // spurious increase() spike on the very next scrape. A dedicated counter per reason is
+        // monotonic by construction; there is nothing to race.
+        return switch (reason) {
+            case FULL -> fullRejectedCount.get();
+            case SHUTDOWN -> shutdownRejectedCount.get();
+            case INVALID_KEY -> invalidKeyRejectedCount.get();
+        };
     }
 
     private static int readIntEnv(String envName, int defaultValue) {
@@ -171,9 +228,18 @@ public class AsyncEventPublisher implements AutoCloseable {
         }
     }
 
-    public record Snapshot(int queueSize, long published, long dropped, long drained, long deliveryFailures) {
+    public record Snapshot(int queueSize, int queueCapacity, long published, long dropped,
+                           long drained, long deliveryFailures) {
+        /**
+         * Convenience overload for callers with no real queue to report against -- today, only
+         * {@code OnlineOpsService}'s "no publisher configured" case. {@code queueCapacity} is
+         * {@code 0} here, not the {@code Math.max(1, n)}-clamped floor a real publisher would
+         * report: {@code 1} would read as "someone configured a capacity of 0 and it got
+         * clamped," which is a different, misleading story for a queue that was never
+         * constructed at all.
+         */
         public Snapshot(int queueSize, long published, long dropped, long drained) {
-            this(queueSize, published, dropped, drained, 0L);
+            this(queueSize, 0, published, dropped, drained, 0L);
         }
     }
 
