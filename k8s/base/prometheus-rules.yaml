@@ -329,6 +329,42 @@ spec:
           # marginal overshoot straddling a bucket boundary was not measured and could behave
           # differently, so treat 13-15m as specific to the counter-rate alert above and not a
           # number to reuse here.
+          #
+          # Fourth branch: the Spring model service (8080). Its histogram is a different
+          # metric entirely -- http_server_requests_seconds_bucket, from Micrometer's
+          # percentiles-histogram (management.metrics.distribution.percentiles-histogram.
+          # http.server.requests: true in application.yml), not RequestDurationHistogram's
+          # explicit SLO boundaries -- confirmed empirically by booting the service and
+          # scraping /actuator/prometheus (207 series; bucket boundaries are Micrometer's own
+          # exponential set, e.g. ...0.894784851, 0.984263336, 1.073741824, 1.431655765...,
+          # not the Armeria services' 0.05/0.1/0.25/0.4/0.5/1/2/5).
+          #
+          # That metric name is a generic Spring Boot / Actuator name, emitted by every Spring
+          # Boot application, unlike the three repo-unique prefixes above -- so namespace="recsys"
+          # scoping here is load-bearing, not decoration, same reasoning as JvmHeapPressureHigh
+          # and JvmGcTimeFractionHigh above (PR #293 review caught exactly this class of bug on
+          # those two). No job="..." filter is added on top of it: the expression already groups
+          # by (le, job), and every one of this repo's ServiceMonitors scrapes only within the
+          # recsys namespace, so namespace scoping alone already excludes any foreign job a
+          # shared Prometheus might also be scraping.
+          #
+          # uri!~"/actuator.*" excludes Actuator's own endpoint: Actuator instruments itself, and
+          # Prometheus scrapes /actuator/prometheus every 15s -- confirmed by inspecting a live
+          # scrape, where the self-scrape series carries uri="/actuator/prometheus" exactly, not
+          # some other prefix. Uninstrumented out, those fast self-requests would dilute the p99
+          # of real serving traffic downward -- proven by the actuator-dilution case in
+          # prometheus-rules.test.yaml, where the same input fires when scoped to real traffic
+          # but would not clear the threshold if Actuator's own requests were folded in unscoped.
+          #
+          # Threshold is 1s, matching catalog serving -- but CHOSEN, not derived, and that
+          # distinction matters here more than for the other three: unlike online serving, whose
+          # 0.4 is bound to ONLINE_REQUEST_TIMEOUT_MS, the model service enforces NO inbound
+          # request timeout at all (application.yml's timeout-per-shutdown-phase governs
+          # graceful shutdown, not per-request processing) -- so there is no timeout value this
+          # threshold could be derived from, and none to become silently
+          # unreachable if a timeout is added later the way the fourth trap in section 8.4
+          # describes. 1s was picked because the model service shares catalog serving's 500ms
+          # SLOW_REQUEST_LOG_THRESHOLD_MS default, not because of any enforced ceiling.
           expr: >-
             histogram_quantile(0.99, sum by (le, job) (
               rate(online_serving_request_duration_seconds_bucket[5m]))) > 0.4
@@ -338,6 +374,9 @@ spec:
             or
             histogram_quantile(0.99, sum by (le, job) (
               rate(api_gateway_request_duration_seconds_bucket[5m]))) > 2
+            or
+            histogram_quantile(0.99, sum by (le, job) (
+              rate(http_server_requests_seconds_bucket{namespace="recsys", uri!~"/actuator.*"}[5m]))) > 1
           for: 10m
           labels:
             severity: warning
@@ -349,4 +388,6 @@ spec:
               enforced request timeout: online serving caps requests at 500ms
               (ONLINE_REQUEST_TIMEOUT_MS), so a threshold at or above 0.5 there could never
               fire. If a service gains or changes an explicit request timeout, its threshold
-              must move with it.
+              must move with it. The model service branch is the exception: it has no enforced
+              request timeout to bind a threshold to, so its 1s is a chosen value like catalog
+              serving's, not a derived one.
