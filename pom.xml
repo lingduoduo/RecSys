@@ -383,9 +383,16 @@
                 <include>**/metrics/SplunkHecMetricsTest.java</include>
                 <!-- Armeria's configureRegistry is a no-op, so nothing binds the JVM metrics
                      unless this class does; heap and GC were unscrapeable on three of four
-                     services until it existed. Also pins the Micrometer WeakReference trap:
-                     JvmGcMetrics owns a JMX listener and a collected gauge state freezes
-                     silently rather than erroring. Pure unit-level, no Redis, no timing. -->
+                     services until it existed. Also pins the guard against installing a second
+                     JvmGcMetrics (and therefore a second JMX listener that would double-count
+                     every GC pause) on a repeat bind of the same registry. Pure unit-level, no
+                     Redis, no timing. The GC-observation test
+                     (metersStillReportAfterGarbageCollection, System.gc() plus a polling loop
+                     for an asynchronously-delivered JMX notification) is split into
+                     JvmMetricsBinderGcObservationTest and stays out of this profile
+                     deliberately — the same timing dependency issue #261 burned this profile on
+                     before, and the same split already applied to GcEventTrackerTest /
+                     GcEventTrackerLifecycleTest. -->
                 <include>**/metrics/JvmMetricsBinderTest.java</include>
                 <!-- Pins the Histogram-vs-Summary shape a later alert depends on:
                      MetricCollectingService's default DistributionStatisticConfig publishes
