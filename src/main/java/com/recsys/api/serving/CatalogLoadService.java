@@ -38,6 +38,7 @@ public final class CatalogLoadService extends BaseApiService {
         bulkhead.put("poolSize", b.poolSize());
         bulkhead.put("active", b.active());
         bulkhead.put("queued", b.queued());
+        bulkhead.put("queueCapacity", b.queueCapacity());
 
         Map<String, Object> channelDegraded = new LinkedHashMap<>();
         d.byChannel().forEach((channel, reasons) -> {
