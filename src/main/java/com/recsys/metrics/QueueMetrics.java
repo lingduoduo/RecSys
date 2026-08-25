@@ -172,10 +172,4 @@ public final class QueueMetrics {
         byName.put(queueName, source);
         log.info("Registered queue metrics for '{}' (capacity {})", queueName, capacity);
     }
-
-    /** Package-private for tests. */
-    static synchronized int registeredCount(MeterRegistry registry) {
-        Map<String, Source> byName = REGISTERED.get(registry);
-        return byName == null ? 0 : byName.size();
-    }
 }

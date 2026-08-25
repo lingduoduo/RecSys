@@ -10,6 +10,7 @@ import java.util.concurrent.CountDownLatch;
 import java.util.concurrent.TimeUnit;
 
 import static org.assertj.core.api.Assertions.assertThat;
+import static org.assertj.core.api.Assertions.assertThatThrownBy;
 
 class WorkerBulkheadTest {
 
@@ -129,6 +130,53 @@ class WorkerBulkheadTest {
         assertThat(bulkhead.rejected(QueueMetrics.RejectionReason.FULL))
                 .as("a shutdown rejection must not inflate the saturation counter")
                 .isEqualTo(5L);
+    }
+
+    /**
+     * Drives rejection through {@code asExecutorService()} -- the route production recall
+     * actually uses ({@code CompletableFuture.supplyAsync(..., bulkhead.asExecutorService())} in
+     * {@code MultiChannelRecallService}), not through {@code submit(Callable)}, which has zero
+     * production callers. Before the {@code RejectedExecutionHandler} was added, the counters
+     * only ever advanced from inside {@code submit}'s catch block, so
+     * {@code recsys_queue_rejected_total} was structurally 0 forever on the production path even
+     * though the metric was "registered" and looked like coverage.
+     */
+    @Test
+    void rejectionThroughAsExecutorServiceAdvancesTheFullCounter() throws Exception {
+        WorkerBulkhead bulkhead = new WorkerBulkhead("prod-route", 1, 1);
+        CountDownLatch started = new CountDownLatch(1);
+        CountDownLatch release = new CountDownLatch(1);
+        java.util.concurrent.ExecutorService executorService = bulkhead.asExecutorService();
+        try {
+            // Occupy the single worker via the production entry point.
+            CompletableFuture.supplyAsync(() -> {
+                started.countDown();
+                try {
+                    release.await();
+                } catch (InterruptedException e) {
+                    Thread.currentThread().interrupt();
+                }
+                return "held";
+            }, executorService);
+            assertThat(started.await(2, TimeUnit.SECONDS)).as("worker never started").isTrue();
+
+            // Fill the single queue slot, also via the production entry point.
+            CompletableFuture.supplyAsync(() -> "queued", executorService);
+
+            // Nowhere left to go: this must be rejected, and MultiChannelRecallService's own
+            // catch around supplyAsync is exactly what observes the resulting
+            // RejectedExecutionException in production.
+            assertThatThrownBy(() -> CompletableFuture.supplyAsync(() -> "overflow", executorService))
+                    .isInstanceOf(java.util.concurrent.RejectedExecutionException.class);
+
+            assertThat(bulkhead.rejected(QueueMetrics.RejectionReason.FULL))
+                    .as("a rejection routed through asExecutorService() -- the production path --"
+                            + " must be counted, not just one routed through submit()")
+                    .isEqualTo(1L);
+        } finally {
+            release.countDown();
+            bulkhead.close();
+        }
     }
 
     @Test

@@ -230,8 +230,16 @@ public class AsyncEventPublisher implements AutoCloseable, QueueMetrics.Source {
 
     public record Snapshot(int queueSize, int queueCapacity, long published, long dropped,
                            long drained, long deliveryFailures) {
+        /**
+         * Convenience overload for callers with no real queue to report against -- today, only
+         * {@code OnlineOpsService}'s "no publisher configured" case. {@code queueCapacity} is
+         * {@code 0} here, not the {@code Math.max(1, n)}-clamped floor a real publisher would
+         * report: {@code 1} would read as "someone configured a capacity of 0 and it got
+         * clamped," which is a different, misleading story for a queue that was never
+         * constructed at all.
+         */
         public Snapshot(int queueSize, long published, long dropped, long drained) {
-            this(queueSize, 1, published, dropped, drained, 0L);
+            this(queueSize, 0, published, dropped, drained, 0L);
         }
     }
 

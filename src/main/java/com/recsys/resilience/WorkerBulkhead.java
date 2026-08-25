@@ -55,8 +55,43 @@ public final class WorkerBulkhead implements QueueMetrics.Source {
                     Thread t = new Thread(r, name + "-worker-" + threadCounter.incrementAndGet());
                     t.setDaemon(true);
                     return t;
+                },
+                // A custom RejectedExecutionHandler, not the default AbortPolicy, so that both
+                // production callers are counted -- not just submit() below. asExecutorService()
+                // is what production recall actually goes through (via
+                // CompletableFuture.supplyAsync), and it never calls submit(), so a handler
+                // installed here is the only place that sees every rejection regardless of which
+                // entry point produced it.
+                //
+                // isShutdown() is read here, inside the handler ThreadPoolExecutor itself invokes
+                // at the point it decides to reject -- not, as before, after the exception has
+                // already propagated out through execute() and back to a caller. That is tighter
+                // than the previous catch-block read, but it is still not atomic with the
+                // rejection decision: there is no race-free discriminator available, and telling
+                // the two apart for certain would need ThreadPoolExecutor internals this handler
+                // doesn't have either. So the same known TOCTOU window remains, just narrower: if
+                // close() lands between the internal reject() call and this read, a genuine
+                // queue-full rejection can still be misattributed to SHUTDOWN. The error only runs
+                // one direction -- FULL can be undercounted as SHUTDOWN, never the reverse -- which
+                // is the safe direction for what this split exists to prevent: it can only
+                // suppress a page, never manufacture a spurious one. The cost is that saturation
+                // gets under-reported during a deploy that happens under load, which is exactly
+                // when that signal matters most; cross-check with recsys_queue_utilization there
+                // rather than trusting the reason breakdown alone.
+                (r, e) -> {
+                    if (e.isShutdown()) {
+                        shutdownRejectedCount.incrementAndGet();
+                    } else {
+                        rejectedCount.incrementAndGet();
+                    }
+                    // Must throw: this replaces AbortPolicy, and every existing caller --
+                    // submit()'s catch below and MultiChannelRecallService's catch around its
+                    // asExecutorService() usage -- depends on RejectedExecutionException
+                    // propagating out of execute()/supplyAsync(). A handler that returns
+                    // normally instead of throwing would silently turn every rejection into a
+                    // no-op: the task is simply dropped, no exception, no future completion.
+                    throw new RejectedExecutionException("Task " + r + " rejected from " + e);
                 }
-                // No custom RejectedExecutionHandler — let it throw RejectedExecutionException
         );
     }
 
@@ -72,25 +107,10 @@ public final class WorkerBulkhead implements QueueMetrics.Source {
                 }
             });
         } catch (RejectedExecutionException e) {
-            // ThreadPoolExecutor throws this for a full queue OR a shut-down executor. Counting
-            // both as saturation would fire the queue alert on every rolling deploy.
-            //
-            // isShutdown() is read here, after the throw, not atomically with it -- there is no
-            // race-free discriminator available: a custom RejectedExecutionHandler would perform
-            // the same after-the-fact read, and telling the two apart for certain would need
-            // ThreadPoolExecutor internals we don't have. So this has a known TOCTOU window: if
-            // close() lands between the throw and this check, a genuine queue-full rejection can
-            // be misattributed to SHUTDOWN. The error only runs one direction -- FULL can be
-            // undercounted as SHUTDOWN, never the reverse -- which is the safe direction for what
-            // this split exists to prevent: it can only suppress a page, never manufacture a
-            // spurious one. The cost is that saturation gets under-reported during a deploy that
-            // happens under load, which is exactly when that signal matters most; cross-check
-            // with recsys_queue_utilization there rather than trusting the reason breakdown alone.
-            if (executor.isShutdown()) {
-                shutdownRejectedCount.incrementAndGet();
-            } else {
-                rejectedCount.incrementAndGet();
-            }
+            // Classification and counting already happened in the RejectedExecutionHandler
+            // installed on the executor above -- that handler runs for every rejection,
+            // regardless of entry point, so counting again here would double-count every
+            // rejection submit() observes.
             future.completeExceptionally(e);
         }
         return future;
@@ -133,6 +153,16 @@ public final class WorkerBulkhead implements QueueMetrics.Source {
                 executor.getCorePoolSize(), queueCapacity, rejectedCount.get());
     }
 
+    /**
+     * @param rejected count of rejections classified {@link QueueMetrics.RejectionReason#FULL}
+     *                 only -- i.e. queue-full saturation. It excludes
+     *                 {@link QueueMetrics.RejectionReason#SHUTDOWN} rejections (routine during a
+     *                 clean drain), which used to be folded into this same count before the two
+     *                 reasons were split apart. No consumer of this record depended on the old,
+     *                 unsplit meaning as of this note, but it is public API, so callers written
+     *                 against an earlier version of this class should not assume {@code rejected}
+     *                 still reports every rejection.
+     */
     public record Snapshot(String name, int active, int queued, int poolSize, int queueCapacity,
                            long rejected) {}
 }
