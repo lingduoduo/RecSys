@@ -139,6 +139,9 @@ default is bound to its own enforced timeout — 300 because `ONLINE_REQUEST_TIM
 to 500 — but catalog serving and the gateway set no incoming-request timeout at that layer (the
 gateway's `GATEWAY_TIMEOUT_MS` governs its outbound calls to upstreams, not the inbound request),
 so their defaults are chosen values, not derived from a timeout the way online serving's is.
+It is one env var read by all four services, so setting it at all flattens every one of these
+deliberate per-service defaults — including online serving's timeout-derived 300 — to the single
+value given; no manifest sets it today, so this is a trap for a future override, not a live one.
 `GC_PAUSE_LOG_THRESHOLD_MS` (default 200) is the stop-the-world pause above which
 `GcEventTracker` logs an event; concurrent collectors are excluded, since a ZGC cycle's reported
 wall time includes concurrent phases. `HEAP_PRESSURE_THRESHOLD` (default 0.90) and

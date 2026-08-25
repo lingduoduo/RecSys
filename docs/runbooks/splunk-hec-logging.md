@@ -752,6 +752,16 @@ when it was also slow (see below) — status alone never triggers an event.
 index=recsys sourcetype="recsys:app:log" outcome=* | stats count, avg(durationMs), max(durationMs) by source route outcome | sort -count
 ```
 
+**On the gateway (`source="recsys-gateway"`), `route` collapses to one bucket.** The gateway
+serves all proxied traffic through a single catch-all `sb.service("prefix:/", ...)`, so
+`ctx.config().route().patternString()` is that same catch-all pattern for every proxied
+request — grouping by `route` cannot distinguish `/api/recommend` from `/api/catalog/item` there.
+On the other three services `route` is the matched Armeria/Spring pattern and the grouping above
+works as written. On the gateway, group by `service`/`source` instead (both are the gateway's own
+name — the useful signal there is the gateway's aggregate slow/failed rate, not a route
+breakdown), or correlate a slow gateway event with the backend request it proxied to by timestamp
+and read the *backend's* own event for the real route.
+
 One service's slow requests over time:
 
 ```
