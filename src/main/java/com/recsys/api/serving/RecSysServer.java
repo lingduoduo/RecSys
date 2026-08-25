@@ -44,6 +44,7 @@ import com.recsys.application.retrieval.multichannel.RecallDegradationMetrics;
 import com.recsys.infrastructure.store.TrendingStore;
 import com.recsys.jvm.GcEventTracker;
 import com.recsys.metrics.JvmMetricsBinder;
+import com.recsys.metrics.QueueMetrics;
 import com.recsys.metrics.RequestDurationHistogram;
 import com.recsys.metrics.SplunkHecMetrics;
 import io.micrometer.core.instrument.MeterRegistry;
@@ -134,6 +135,7 @@ public class RecSysServer {
             SplunkHecMetrics.register(registry);
             // Armeria's configureRegistry is a no-op, so nothing binds the JVM metrics for us.
             JvmMetricsBinder.bindTo(registry);
+            QueueMetrics.register(registry, "recall-catalog", recallBulkhead);
             // Spring constructs its own; the Armeria mains have no container to do it for them.
             GcEventTracker gcEventTracker = new GcEventTracker();
             gcEventTracker.start();
