@@ -744,11 +744,15 @@ request path and the JVM underneath it rather than data at rest or the freshness
 |---|---|---|---|
 | `JvmHeapPressureHigh` | Heap `used / max` over the heap area only (non-heap pools excluded, and pools with no maximum, which report `-1`, are filtered before the division) `> 0.90` for 10 m | A leak, an undersized heap for real traffic, or a burst of unusually large responses | Cross-check the Splunk heap-pressure events for the same service and window — `GcEventTracker` logs the same crossing independently, so agreement between the two rules out a metric artifact. Expect GC pause time to follow. |
 | `JvmGcTimeFractionHigh` | `rate(jvm_gc_pause_seconds_sum[5m])` — stop-the-world seconds per second of wall time — `> 0.10` for 10 m | Usually heap pressure; check `JvmHeapPressureHigh` on the same instance first | If heap pressure isn't also firing, look at allocation rate and object lifetime rather than heap sizing. Measured detection latency on a sustained overshoot is roughly 13–15 m depending on how far past the threshold the true rate sits — see the comment in `prometheus-rules.yaml`, measured with `promtool`, not derived from a formula. |
-| `RequestLatencyP99High` | `histogram_quantile(0.99, ...)` over each service's own request-duration buckets, against a per-service threshold (0.4 s online serving, 1 s catalog serving, 2 s gateway) for 10 m. **Only three of the four services have a branch.** The expression names `online_serving_request_duration_seconds_bucket`, `catalog_serving_request_duration_seconds_bucket`, and `api_gateway_request_duration_seconds_bucket` — all three come from `MetricCollectingService`/`RequestDurationHistogram` on the Armeria mains. The Spring model service (8080) is **not covered by this alert**, though it is not blind to Micrometer: `application.yml` sets `management.metrics.distribution.percentiles-histogram.http.server.requests: true`, so `/actuator/prometheus` does expose its own `http_server_requests_seconds_bucket` histogram (confirmed by running the service and inspecting the scrape) — it is simply a different metric name that no branch of this expression queries. | A slow downstream, a GC pause, or genuine load past capacity | Search Splunk with `outcome=slow` for the same window to see which routes and requests — except on the gateway, where `route` is the catch-all pattern for every proxied request (see the Splunk runbook), so group by `service` there instead, or correlate with the backend's own event. Check `JvmGcTimeFractionHigh` on the same instance before assuming a downstream fault. Measured detection latency on a clean sustained step is roughly 11 m, essentially the `for:` window with no extra `rate()`-side delay — a different shape from the counter-rate alert above and not a number to generalize from. For the model service, `histogram_quantile(0.99, sum by (le) (rate(http_server_requests_seconds_bucket{application="recsys-model-serving"}[5m])))` gives the equivalent p99 manually; nothing pages on it today. |
+| `RequestLatencyP99High` | `histogram_quantile(0.99, ...)` over each service's own request-duration buckets, against a per-service threshold (0.4 s online serving, 1 s catalog serving, 2 s gateway, 1 s model service) for 10 m. **All four services now have a branch.** The first three name `online_serving_request_duration_seconds_bucket`, `catalog_serving_request_duration_seconds_bucket`, and `api_gateway_request_duration_seconds_bucket` — all three come from `MetricCollectingService`/`RequestDurationHistogram` on the Armeria mains. The fourth queries the Spring model service's (8080) own `http_server_requests_seconds_bucket` — `application.yml` sets `management.metrics.distribution.percentiles-histogram.http.server.requests: true`, so `/actuator/prometheus` exposes it (confirmed by running the service and inspecting the scrape: 207 series, on Micrometer's own exponential bucket boundaries, not the other three's explicit 0.05/0.1/.../5 SLO set). That metric name is generic — every Spring Boot app emits it — so this branch is scoped with `namespace="recsys"` the same way `JvmHeapPressureHigh`/`JvmGcTimeFractionHigh` are scoped below, and additionally excludes Actuator's own `/actuator/prometheus` scrape traffic with `uri!~"/actuator.*"` so that fast self-scrapes (every 15 s) don't dilute the p99 of real serving traffic. | A slow downstream, a GC pause, or genuine load past capacity | Search Splunk with `outcome=slow` for the same window to see which routes and requests — except on the gateway, where `route` is the catch-all pattern for every proxied request (see the Splunk runbook), so group by `service` there instead, or correlate with the backend's own event. Check `JvmGcTimeFractionHigh` on the same instance before assuming a downstream fault. Measured detection latency on a clean sustained step is roughly 11 m, essentially the `for:` window with no extra `rate()`-side delay — a different shape from the counter-rate alert above and not a number to generalize from. |
 
-The three thresholds differ per service rather than sharing one value because a threshold at or
+The four thresholds differ per service rather than sharing one value because a threshold at or
 above an enforced request timeout can never fire — the reason this group pushes the trap list
-below to four entries.
+below to four entries. The model service's 1 s is the odd one out even among the four: unlike
+the other three, it isn't derived from any enforced request timeout — `application.yml` sets none
+for inbound requests (`timeout-per-shutdown-phase` governs graceful shutdown, not per-request
+processing) — so 1 s is a chosen value, picked to match catalog serving's since both share the
+same 500 ms `SLOW_REQUEST_LOG_THRESHOLD_MS` default.
 
 **Four traps this file fell into once, worth not repeating elsewhere:**
 
@@ -770,12 +774,17 @@ below to four entries.
   `SERVICE_REGISTRY_ENABLED` defaults false and appears nowhere under `k8s/`, so the gauge is
   never registered.
 - **A threshold above an enforced timeout can never fire, and `promtool` cannot see it.**
-  `RequestLatencyP99High` uses 0.4 s for online serving where the other two get 1 s and 2 s,
-  because `OnlinePredictionServer` sets `requestTimeoutMillis` from `ONLINE_REQUEST_TIMEOUT_MS`
-  (default 500 ms) — the histogram is bounded by the timeout, so a 1 s threshold there is
-  unreachable. An unreachable threshold passes a near-miss case perfectly and looks like
-  coverage, which makes this invisible to every mechanism in §8.6. If a service gains an
-  explicit request timeout, its latency threshold has to move with it.
+  `RequestLatencyP99High` uses 0.4 s for online serving where catalog serving, the gateway, and
+  the model service get 1 s, 2 s, and 1 s, because `OnlinePredictionServer` sets
+  `requestTimeoutMillis` from `ONLINE_REQUEST_TIMEOUT_MS` (default 500 ms) — the histogram is
+  bounded by the timeout, so a 1 s threshold there is unreachable. An unreachable threshold
+  passes a near-miss case perfectly and looks like coverage, which makes this invisible to every
+  mechanism in §8.6. If a service gains an explicit request timeout, its latency threshold has
+  to move with it. The model service is the mirror case, and worth naming explicitly: it has no
+  enforced request timeout at all, so its 1 s threshold cannot become unreachable this way — but
+  it also cannot be *derived* the way the other three can, which is why its value is justified
+  differently (matching catalog serving's `SLOW_REQUEST_LOG_THRESHOLD_MS`) rather than tied to a
+  timeout.
 
 `prometheus-rules.test.yaml` (run by `promtool test rules` in
 [prometheus-rules.yml](../../.github/workflows/prometheus-rules.yml)) gives every alert both a

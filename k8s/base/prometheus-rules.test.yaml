@@ -679,7 +679,9 @@ tests:
                 enforced request timeout: online serving caps requests at 500ms
                 (ONLINE_REQUEST_TIMEOUT_MS), so a threshold at or above 0.5 there could never
                 fire. If a service gains or changes an explicit request timeout, its threshold
-                must move with it.
+                must move with it. The model service branch is the exception: it has no enforced
+                request timeout to bind a threshold to, so its 1s is a chosen value like catalog
+                serving's, not a derived one.
 
   # --- RequestLatencyP99High: catalog-serving branch fire case ---
   # Isolates the catalog-serving arm of the `or` expression. Without this, a typo'd metric
@@ -709,7 +711,9 @@ tests:
                 enforced request timeout: online serving caps requests at 500ms
                 (ONLINE_REQUEST_TIMEOUT_MS), so a threshold at or above 0.5 there could never
                 fire. If a service gains or changes an explicit request timeout, its threshold
-                must move with it.
+                must move with it. The model service branch is the exception: it has no enforced
+                request timeout to bind a threshold to, so its 1s is a chosen value like catalog
+                serving's, not a derived one.
 
   # --- RequestLatencyP99High: gateway branch fire case ---
   # Isolates the api-gateway arm of the `or` expression, the same way the block above isolates
@@ -739,7 +743,9 @@ tests:
                 enforced request timeout: online serving caps requests at 500ms
                 (ONLINE_REQUEST_TIMEOUT_MS), so a threshold at or above 0.5 there could never
                 fire. If a service gains or changes an explicit request timeout, its threshold
-                must move with it.
+                must move with it. The model service branch is the exception: it has no enforced
+                request timeout to bind a threshold to, so its 1s is a chosen value like catalog
+                serving's, not a derived one.
 
   # --- RequestLatencyP99High near-miss: everything fast, must NOT fire ---
   - interval: 1m
@@ -760,3 +766,132 @@ tests:
       - eval_time: 20m
         alertname: RequestLatencyP99High
         exp_alerts: []
+
+  # --- RequestLatencyP99High: model-service branch fire case ---
+  # Isolates the model-service arm of the `or` expression, the same way the catalog-serving and
+  # gateway blocks above isolate theirs. le boundaries are NOT the 0.05/0.1/.../5 SLO set the
+  # other three branches use -- http_server_requests_seconds_bucket comes from Micrometer's
+  # percentiles-histogram, which generates its own exponential bucket set. 0.984263336 and
+  # 1.073741824 are real boundaries, confirmed by booting the model service locally and scraping
+  # a live /actuator/prometheus (207 http_server_requests_seconds_bucket series); a boundary that
+  # doesn't exist would produce no series and a case that proves nothing.
+  - interval: 1m
+    input_series:
+      # All observations land in (0.984263336, 1.073741824]: p99 interpolates to ~1.073 > 1,
+      # must fire.
+      - series: 'http_server_requests_seconds_bucket{le="0.984263336", job="recsys-model-serving", namespace="recsys", uri="/api/v1/recommend"}'
+        values: '0+0x25'
+      - series: 'http_server_requests_seconds_bucket{le="1.073741824", job="recsys-model-serving", namespace="recsys", uri="/api/v1/recommend"}'
+        values: '0+100x25'
+      - series: 'http_server_requests_seconds_bucket{le="+Inf", job="recsys-model-serving", namespace="recsys", uri="/api/v1/recommend"}'
+        values: '0+100x25'
+    alert_rule_test:
+      - eval_time: 20m
+        alertname: RequestLatencyP99High
+        exp_alerts:
+          - exp_labels:
+              severity: warning
+              job: recsys-model-serving
+            exp_annotations:
+              summary: "recsys-model-serving p99 request latency is above its budget"
+              description: >-
+                Search Splunk for the same window with outcome=slow to see which routes and
+                which requests. Thresholds differ per service and are bound to each one's
+                enforced request timeout: online serving caps requests at 500ms
+                (ONLINE_REQUEST_TIMEOUT_MS), so a threshold at or above 0.5 there could never
+                fire. If a service gains or changes an explicit request timeout, its threshold
+                must move with it. The model service branch is the exception: it has no enforced
+                request timeout to bind a threshold to, so its 1s is a chosen value like catalog
+                serving's, not a derived one.
+
+  # --- RequestLatencyP99High: model-service branch near-miss, must NOT fire ---
+  # All observations one bucket lower than the fire case (0.894784851, 0.984263336]: p99
+  # interpolates to ~0.983, just under the 1s threshold.
+  - interval: 1m
+    input_series:
+      - series: 'http_server_requests_seconds_bucket{le="0.894784851", job="recsys-model-serving", namespace="recsys", uri="/api/v1/recommend"}'
+        values: '0+0x25'
+      - series: 'http_server_requests_seconds_bucket{le="0.984263336", job="recsys-model-serving", namespace="recsys", uri="/api/v1/recommend"}'
+        values: '0+100x25'
+      - series: 'http_server_requests_seconds_bucket{le="+Inf", job="recsys-model-serving", namespace="recsys", uri="/api/v1/recommend"}'
+        values: '0+100x25'
+    alert_rule_test:
+      - eval_time: 20m
+        alertname: RequestLatencyP99High
+        exp_alerts: []
+
+  # --- RequestLatencyP99High: model-service branch, foreign namespace must never page recsys ---
+  # http_server_requests_seconds_bucket is a generic Spring Boot / Actuator metric name, emitted
+  # by every Spring Boot application Prometheus might scrape -- unlike the other three branches'
+  # repo-unique prefixes. Without namespace="recsys" scoping, this input (well above threshold)
+  # would fire with {{ $labels.job }} naming a service that isn't recsys at all. Proven by
+  # removing namespace="recsys" from the model-service arm of the expression and rerunning this
+  # file, which turns this case red. Includes a series with no namespace label at all, the same
+  # shape as JvmHeapPressureHigh's foreign-namespace case above.
+  - interval: 1m
+    input_series:
+      - series: 'http_server_requests_seconds_bucket{le="0.984263336", job="unrelated-spring-service", namespace="other-team", uri="/some/endpoint"}'
+        values: '0+0x25'
+      - series: 'http_server_requests_seconds_bucket{le="1.073741824", job="unrelated-spring-service", namespace="other-team", uri="/some/endpoint"}'
+        values: '0+100x25'
+      - series: 'http_server_requests_seconds_bucket{le="+Inf", job="unrelated-spring-service", namespace="other-team", uri="/some/endpoint"}'
+        values: '0+100x25'
+      - series: 'http_server_requests_seconds_bucket{le="0.984263336", job="no-namespace-service", uri="/some/endpoint"}'
+        values: '0+0x25'
+      - series: 'http_server_requests_seconds_bucket{le="1.073741824", job="no-namespace-service", uri="/some/endpoint"}'
+        values: '0+100x25'
+      - series: 'http_server_requests_seconds_bucket{le="+Inf", job="no-namespace-service", uri="/some/endpoint"}'
+        values: '0+100x25'
+    alert_rule_test:
+      - eval_time: 20m
+        alertname: RequestLatencyP99High
+        exp_alerts: []
+
+  # --- RequestLatencyP99High: model-service branch, Actuator's own scrape must not dilute p99 ---
+  # Actuator instruments its own /actuator/prometheus endpoint, scraped every 15s -- confirmed
+  # live: the self-scrape series carries uri="/actuator/prometheus" exactly. Here it fires
+  # 10000 fast requests (all landing at or below 0.984263336, i.e. under the near-miss case's own
+  # bucket) alongside only 100 slow real-traffic requests landing in (0.984263336, 1.073741824],
+  # same as the fire case above.
+  #
+  # Unscoped by uri, summing both series together: total = 10100, and rank 0.99*10100 = 9999
+  # falls entirely inside the FIRST bucket (cumulative 10000 at le=0.984263336, all from
+  # Actuator), interpolating to ~0.984 -- just UNDER the 1s threshold, so the real traffic's
+  # slowness would be invisible, diluted by 100x its own volume in fast self-scrapes. WITH the
+  # uri!~"/actuator.*" filter the alert expression actually has, only the real-traffic series
+  # counts and the math matches the fire case exactly (~1.073 > 1): this case's exp_alerts below
+  # must still show the alert firing. Confirmed by temporarily removing uri!~"/actuator.*" from
+  # the model-service arm of the expression and rerunning this file, which turns this case red
+  # (see model-alert-report.md) -- proving the exclusion is not a no-op.
+  - interval: 1m
+    input_series:
+      - series: 'http_server_requests_seconds_bucket{le="0.984263336", job="recsys-model-serving", namespace="recsys", uri="/actuator/prometheus"}'
+        values: '0+10000x25'
+      - series: 'http_server_requests_seconds_bucket{le="1.073741824", job="recsys-model-serving", namespace="recsys", uri="/actuator/prometheus"}'
+        values: '0+10000x25'
+      - series: 'http_server_requests_seconds_bucket{le="+Inf", job="recsys-model-serving", namespace="recsys", uri="/actuator/prometheus"}'
+        values: '0+10000x25'
+      - series: 'http_server_requests_seconds_bucket{le="0.984263336", job="recsys-model-serving", namespace="recsys", uri="/api/v1/recommend"}'
+        values: '0+0x25'
+      - series: 'http_server_requests_seconds_bucket{le="1.073741824", job="recsys-model-serving", namespace="recsys", uri="/api/v1/recommend"}'
+        values: '0+100x25'
+      - series: 'http_server_requests_seconds_bucket{le="+Inf", job="recsys-model-serving", namespace="recsys", uri="/api/v1/recommend"}'
+        values: '0+100x25'
+    alert_rule_test:
+      - eval_time: 20m
+        alertname: RequestLatencyP99High
+        exp_alerts:
+          - exp_labels:
+              severity: warning
+              job: recsys-model-serving
+            exp_annotations:
+              summary: "recsys-model-serving p99 request latency is above its budget"
+              description: >-
+                Search Splunk for the same window with outcome=slow to see which routes and
+                which requests. Thresholds differ per service and are bound to each one's
+                enforced request timeout: online serving caps requests at 500ms
+                (ONLINE_REQUEST_TIMEOUT_MS), so a threshold at or above 0.5 there could never
+                fire. If a service gains or changes an explicit request timeout, its threshold
+                must move with it. The model service branch is the exception: it has no enforced
+                request timeout to bind a threshold to, so its 1s is a chosen value like catalog
+                serving's, not a derived one.
