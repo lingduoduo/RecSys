@@ -54,10 +54,14 @@ The base class is the whole fire-and-forget machine:
   `{queueSize, published, dropped, drained, deliveryFailures}` (four `AtomicLong`s).
   On 7010 these surface at `/online/ops` under `events`, where `deliveryFailures`
   (broker-side send errors) is counted *separately* from `dropped` (queue-full or
-  invalid-key rejections). The 7010 instance is also what `QueueMetrics` registers as
-  `async-events` (18_Fault_Tolerance §8.3), but nothing on 7010 calls `publish()` on it today
-  (see §4) — so every number below, and every `recsys_queue_*{queue="async-events"}` series, is
-  permanently zero on this service, not evidence of a queue running quietly within bounds:
+  invalid-key rejections). `QueueMetrics` no longer registers this 7010 instance — it once did,
+  as `async-events` — because nothing on 7010 calls `publish()` on it today (see §4): a queue with
+  no producer only ever reads as a permanently-zero `recsys_queue_*` series, indistinguishable
+  from a healthy idle one. The registration moved instead to the model service's
+  `abExposurePublisher` bean (§4, 18_Fault_Tolerance §8.3), which `AbExposureLogger` genuinely
+  publishes through, under the name `ab-exposures`. `/online/ops` still surfaces this 7010
+  instance's own `snapshot()` numbers directly — unaffected by the metrics change — and they stay
+  permanently zero for the same reason:
 
 ```bash
 curl "http://localhost:7010/online/ops" | jq '.events'
@@ -141,17 +145,28 @@ and no event is ever published unkeyed.
 (Note: `ExperienceCollector` groups joined samples for the `OnlineLearner`'s training
 join — it's part of online learning, not a message-queue transport.)
 
-**The feature-view row is a wiring gap, not a design intent.** `afterSuccess`'s call to
-`asyncEventPublisher.publish(...)` is guarded by `if (asyncEventPublisher != null)`, so the code
-path exists in `OnlineServices.Features`. But `OnlinePredictionServer` never passes the
-`async-events` publisher it constructs (§3) into that field: both branches that build
-`OnlineServices.Features` pass either `durableEventPublisher` (the *outbox* publisher — a
-different object, see §5) or `null`. The `async-events` `AsyncEventPublisher` instead goes to
-exactly one place, `OnlineOpsService`, which only reads its `snapshot()` for `/online/ops` and
-never calls `publish()`. So the guard can never see a non-null `asyncEventPublisher` for online
-events, and this producer cannot fire in the deployed topology today — not because feature-view
-events are unimportant, but because the constructor call that would feed the queue was never
-made.
+**Queue metrics now live on the A/B exposure producer, not the dormant online one.**
+[`QueueMetricsConfig`](../../src/main/java/com/recsys/config/QueueMetricsConfig.java) registers
+this `AsyncEventPublisher` (the `abExposurePublisher` bean above) with `QueueMetrics` under the
+name `ab-exposures` — see 18_Fault_Tolerance §8.3. It replaces an earlier registration of the
+7010 instance below as `async-events`, which read as a healthy idle queue precisely because
+nothing fed it; `ab-exposures` is registered in its place because `AbExposureLogger` genuinely
+calls `publish()` on it.
+
+**The feature-view row is a wiring gap, not a design intent — and it is unchanged by the metrics
+move above.** `afterSuccess`'s call to `asyncEventPublisher.publish(...)` is guarded by
+`if (asyncEventPublisher != null)`, so the code path exists in `OnlineServices.Features`. But
+`OnlinePredictionServer` never passes the 7010 `AsyncEventPublisher` it constructs (§3, formerly
+registered as `async-events`) into that field: both branches that build `OnlineServices.Features`
+pass either `durableEventPublisher` (the *outbox* publisher — a different object, see §5) or
+`null`. That `AsyncEventPublisher` instead goes to exactly one place, `OnlineOpsService`, which
+only reads its `snapshot()` for `/online/ops` and never calls `publish()`. So the guard can never
+see a non-null `asyncEventPublisher` for online events, and this producer cannot fire in the
+deployed topology today — not because feature-view events are unimportant, but because the
+constructor call that would feed the queue was never made. Whether `/online/features` should
+emit events again is a separate product decision, deliberately deferred; removing the now-dormant
+`async-events` metrics registration (18_Fault_Tolerance §8.3) does not touch this wiring gap
+either way.
 
 ## 5. At-most-once vs. durable at-least-once
 
