@@ -910,8 +910,11 @@ matches code.
 
 None proves the whole chain: a Prometheus Operator that silently stopped evaluating rules, or
 a cluster whose `serviceMonitorSelector` uses a different `release` label, slips past all
-four. That gap is inherent to testing manifests that assume infrastructure this repo does not
-provision.
+six. Neither of the two newer tests narrows that gap — `PromtoolJobLabelManifestTest` checks a
+`ServiceMonitor`'s `job`-label consequences against other manifests in this repo, not the
+`release` label a live Prometheus CR matches against, and `QueueMetricWireNamesTest` scrapes an
+in-process `PrometheusMeterRegistry`, not a cluster. That gap is inherent to testing manifests
+that assume infrastructure this repo does not provision.
 
 ## Sharp edges — status
 
