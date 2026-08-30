@@ -711,7 +711,13 @@ Registered queues: `recall-catalog` (6010), `recall-online` and `async-events` (
 recall bulkheads don't size from a fixed constant: `RECALL_BULKHEAD_QUEUE_CAPACITY` defaults to
 `poolSize * 4`, and `poolSize` is itself `availableProcessors() * 2` — so the 64 you'll see on an
 8-core instance is a derived number, not a repo-wide default; read the formula on different
-hardware, not the figure. `async-events` defaults to `ASYNC_EVENT_QUEUE_CAPACITY`'s 10 000.
+hardware, not the figure. `async-events` defaults to `ASYNC_EVENT_QUEUE_CAPACITY`'s 10 000 — but
+**registered is not the same as fed**: nothing on 7010 ever calls `publish()` on the instance
+registered under that name (`OnlineOpsService` only reads its `snapshot()`; the online serving
+path that was meant to publish to it is wired to a different object or to `null` instead — see
+[07_Message_Queue §4](07_Message_Queue.md#4-producers-and-event-envelopes)). So every
+`recsys_queue_*{queue="async-events"}` series is structurally zero, which is indistinguishable on
+its own from a healthy, idle queue.
 
 - `capacity` is the **effective** bound, not the configured one — both constructors clamp
   `Math.max(1, n)`, so a requested `0` yields a one-entry queue and the metric says `1`; both now
@@ -726,8 +732,17 @@ hardware, not the figure. `async-events` defaults to `ASYNC_EVENT_QUEUE_CAPACITY
   **reset**, so the next `increase()` comes out spuriously large. The subtraction looked harmless
   and was the shape that shipped first — worth remembering next time a "just subtract the others"
   counter looks tempting.
-- Registration throws on a duplicate queue name because Micrometer would otherwise return the
-  first meter and silently discard the second source — measured, not assumed.
+- Registration's duplicate-name handling is three-way, not a plain throw. Re-registering the
+  **same `Source` instance** under a name already claimed is a no-op — same object, same
+  readings, so a defensive double-call costs nothing. A **different** `Source` under that name
+  still throws `IllegalStateException`, because Micrometer would otherwise silently return the
+  first meter and discard the second source — measured, not assumed. Making registration
+  idempotent across the board (any duplicate name accepted) was rejected: it would reproduce, in
+  `QueueMetrics`'s own layer, exactly the silent aliasing Micrometer already does one level down.
+  `QueueMetrics.unregister(registry, queueName)` is the explicit way to replace a registration —
+  it removes the four meters from `registry` **before** removing the name from the internal map,
+  so a failure partway through leaves the name still claimed and the next `register()` call fails
+  loudly instead of aliasing onto stale meters.
 - `QueueMetrics.register` also throws `IllegalArgumentException` if `source.capacity()` is not
   strictly positive, but that guard is **unreachable from both production `Source`s** —
   `WorkerBulkhead` and `AsyncEventPublisher` each clamp their constructor argument with
@@ -784,7 +799,7 @@ request path and the JVM underneath it rather than data at rest or the freshness
 | `JvmHeapPressureHigh` | Heap `used / max` over the heap area only (non-heap pools excluded, and pools with no maximum, which report `-1`, are filtered before the division) `> 0.90` for 10 m | A leak, an undersized heap for real traffic, or a burst of unusually large responses | Cross-check the Splunk heap-pressure events for the same service and window — `GcEventTracker` logs the same crossing independently, so agreement between the two rules out a metric artifact. Expect GC pause time to follow. |
 | `JvmGcTimeFractionHigh` | `rate(jvm_gc_pause_seconds_sum[5m])` — stop-the-world seconds per second of wall time — `> 0.10` for 10 m | Usually heap pressure; check `JvmHeapPressureHigh` on the same instance first | If heap pressure isn't also firing, look at allocation rate and object lifetime rather than heap sizing. Measured detection latency on a sustained overshoot is roughly 13–15 m depending on how far past the threshold the true rate sits — see the comment in `prometheus-rules.yaml`, measured with `promtool`, not derived from a formula. |
 | `RequestLatencyP99High` | `histogram_quantile(0.99, ...)` over each service's own request-duration buckets, against a per-service threshold (0.4 s online serving, 1 s catalog serving, 2 s gateway, 1 s model service) for 10 m. **All four services now have a branch.** The first three name `online_serving_request_duration_seconds_bucket`, `catalog_serving_request_duration_seconds_bucket`, and `api_gateway_request_duration_seconds_bucket` — all three come from `MetricCollectingService`/`RequestDurationHistogram` on the Armeria mains. The fourth queries the Spring model service's (8080) own `http_server_requests_seconds_bucket` — `application.yml` sets `management.metrics.distribution.percentiles-histogram.http.server.requests: true`, so `/actuator/prometheus` exposes it (confirmed by running the service and inspecting the scrape: 207 series, on Micrometer's own exponential bucket boundaries, not the other three's explicit 0.05/0.1/.../5 SLO set). That metric name is generic — every Spring Boot app emits it — so this branch is scoped with `namespace="recsys"` the same way `JvmHeapPressureHigh`/`JvmGcTimeFractionHigh` are scoped below, and additionally excludes Actuator's own `/actuator/prometheus` scrape traffic with `uri!~"/actuator.*"` so that fast self-scrapes (every 15 s) don't dilute the p99 of real serving traffic. | A slow downstream, a GC pause, or genuine load past capacity | Search Splunk with `outcome=slow` for the same window to see which routes and requests — except on the gateway, where `route` is the catch-all pattern for every proxied request (see the Splunk runbook), so group by `service` there instead, or correlate with the backend's own event. Check `JvmGcTimeFractionHigh` on the same instance before assuming a downstream fault. Measured detection latency on a clean sustained step is roughly 11 m, essentially the `for:` window with no extra `rate()`-side delay — a different shape from the counter-rate alert above and not a number to generalize from. |
-| `RecsysQueueFillingUp` | `recsys_queue_utilization > 0.7` for 10 m — a bounded queue (`recall-catalog`, `recall-online`, or `async-events`) is sustained above 70% full | The consumer is draining slower than the queue fills: the recall workers for a bulkhead, the drain thread for `async-events` | Check whether the consumer has actually slowed before raising `RECALL_BULKHEAD_QUEUE_CAPACITY` or `ASYNC_EVENT_QUEUE_CAPACITY` — a larger queue buys latency, not throughput, and just delays the same rejection if the consumer is the real problem. Nothing has been lost yet; this is early warning, not evidence of loss. |
+| `RecsysQueueFillingUp` | `recsys_queue_utilization > 0.7` for 10 m — a bounded queue (`recall-catalog`, `recall-online`, or `async-events`) is sustained above 70% full | The consumer is draining slower than the queue fills: the recall workers for a bulkhead. `async-events` has no producer on 7010 today (07_Message_Queue §4), so its utilization is structurally 0 and this branch cannot fire for it | Check whether the consumer has actually slowed before raising `RECALL_BULKHEAD_QUEUE_CAPACITY` or `ASYNC_EVENT_QUEUE_CAPACITY` — a larger queue buys latency, not throughput, and just delays the same rejection if the consumer is the real problem. Nothing has been lost yet; this is early warning, not evidence of loss. For `async-events` there is no drain thread to check — the queue is registered but unfed, so this alert's permanent silence for that queue proves nothing about its health, only that nothing publishes to it. |
 | `RecsysQueueRejecting` | `increase(recsys_queue_rejected_total{reason="full"}[10m]) > 0` for 3 m — a queue is discarding work now | Genuine saturation, or a burst that outran the queue's bound | The `reason="full"` label match is deliberate and load-bearing: `reason="shutdown"` is excluded on purpose, since both queue implementations count late-arriving submissions during a clean drain under that reason, and seeing it during a rolling deploy is expected, not a page. Cross-check `recsys_queue_utilization` for how long pressure had been building. |
 
 The four latency thresholds differ per service rather than sharing one value because a threshold at or
@@ -873,13 +888,25 @@ Read this before assuming any of it works.
 
 ### 8.6 How this stays honest
 
-Four mechanisms, each closing a gap the others cannot see. `RecsysTargetDown` catches a target
+Six mechanisms, each closing a gap the others cannot see. `RecsysTargetDown` catches a target
 that existed and went silent — blind to one that never existed, since `up{}` has no series for
 a `ServiceMonitor` never created. **`ScrapeTargetManifestTest`** closes exactly that blind
 spot statically for all three layers of §8.2, in the `-Presilience` gate. **`promtool`**
 actually executes the alert expressions against synthetic series — the only mechanism proving
-an expression behaves as its prose claims. **`DocumentationIndexTest`** keeps the docs indexed,
-though it cannot check that content still matches code.
+an expression behaves as its prose claims — but it takes both the metric names inside those
+expressions and the fixtures' `job` labels on faith. **`QueueMetricWireNamesTest`** closes the
+first of those gaps: it scrapes a real `PrometheusMeterRegistry` after `QueueMetrics.register`
+and asserts the exact Prometheus wire names, including the `_total` suffix Micrometer's client
+appends to the `recsys.queue.rejected` `FunctionCounter`, then asserts every `recsys_queue_*`
+identifier named in an alert `expr:` is one the code actually emits — the §8.4 first-trap failure
+shape (a metric that looks emitted and is emitted by nothing) closed for this file's own alerts
+rather than assumed away. **`PromtoolJobLabelManifestTest`** closes the second: it pins every
+`recsys-`-prefixed `job` label in the promtool fixtures to a Service some `ServiceMonitor` in
+`k8s/base` actually selects, and separately asserts no `ServiceMonitor` declares `jobLabel` — the
+fact that lets the Operator default `job` to the Service name in the first place, and the one a
+future manifest change could silently invalidate without failing the first assertion.
+**`DocumentationIndexTest`** keeps the docs indexed, though it cannot check that content still
+matches code.
 
 None proves the whole chain: a Prometheus Operator that silently stopped evaluating rules, or
 a cluster whose `serviceMonitorSelector` uses a different `release` label, slips past all

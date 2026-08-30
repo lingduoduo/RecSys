@@ -119,7 +119,13 @@ class DocumentedMechanismTest {
             // changes what k8s/base/redis-users.acl.template has to grant, so if a caller ever
             // appears, re-derive that user's rules rather than just deleting the entry here.
             "getFeatures", "documented as callerless — see redis-consumer-inventory §3",
-            "loadFromRedis", "documented as callerless — see redis-consumer-inventory §3");
+            "loadFromRedis", "documented as callerless — see redis-consumer-inventory §3",
+            // 18_Fault_Tolerance §8.3 documents this as the explicit teardown affordance for
+            // replacing a queue registration. QueueMetrics's own javadoc says it is deliberately
+            // NOT wired into any Source's close() — meters survive close() on purpose — so no
+            // production call site is the intended shape, not a gap. Its only callers today are
+            // QueueMetricsTest.
+            "unregister", "documented as callerless by design — see 18_Fault_Tolerance §8.3");
 
     // ── Invariant 1: doc → source links resolve ──────────────────────────────────────
 
