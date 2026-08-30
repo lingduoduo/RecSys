@@ -170,9 +170,6 @@ public final class OnlinePredictionServer {
             // Armeria's configureRegistry is a no-op, so nothing binds the JVM metrics for us.
             JvmMetricsBinder.bindTo(registry);
             QueueMetrics.register(registry, "recall-online", recallBulkhead);
-            if (asyncEventPublisher != null) {
-                QueueMetrics.register(registry, "async-events", asyncEventPublisher);
-            }
             // Spring constructs its own; the Armeria mains have no container to do it for them.
             GcEventTracker gcEventTracker = new GcEventTracker();
             gcEventTracker.start();

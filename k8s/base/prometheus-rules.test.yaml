@@ -900,7 +900,7 @@ tests:
   - interval: 1m
     input_series:
       # 90% full and staying there: must fire.
-      - series: 'recsys_queue_utilization{queue="async-events", job="recsys-online-serving"}'
+      - series: 'recsys_queue_utilization{queue="ab-exposures", job="recsys-model-serving"}'
         values: '0.9x20'
       # 60% and staying there: near-miss, must NOT fire.
       - series: 'recsys_queue_utilization{queue="recall-online", job="recsys-online-serving"}'
@@ -911,15 +911,15 @@ tests:
         exp_alerts:
           - exp_labels:
               severity: warning
-              queue: async-events
-              job: recsys-online-serving
+              queue: ab-exposures
+              job: recsys-model-serving
             exp_annotations:
-              summary: "Queue async-events on recsys-online-serving is sustained above 70% full"
+              summary: "Queue ab-exposures on recsys-model-serving is sustained above 70% full"
               description: >-
                 Sustained pressure with nothing lost yet. Check whether the consumer has slowed
-                (the drain thread for async-events, the recall workers for a bulkhead) before
-                raising the bound -- a larger queue buys latency, not throughput. See
-                docs/runbooks/overload-protection.md.
+                (the recall workers for recall-catalog/recall-online, the drain thread for
+                ab-exposures) before raising the bound -- a larger queue buys latency, not
+                throughput. See docs/runbooks/overload-protection.md.
 
   # --- RecsysQueueFillingUp: a brief excursion must NOT fire ---
   # This is what separates an early-warning signal from noise. A queue that spikes above the
@@ -948,7 +948,7 @@ tests:
   # --- RecsysQueueRejecting ---
   - interval: 1m
     input_series:
-      - series: 'recsys_queue_rejected_total{queue="async-events", job="recsys-online-serving", reason="full"}'
+      - series: 'recsys_queue_rejected_total{queue="ab-exposures", job="recsys-model-serving", reason="full"}'
         values: '0+5x25'
     alert_rule_test:
       - eval_time: 20m
@@ -956,26 +956,26 @@ tests:
         exp_alerts:
           - exp_labels:
               severity: warning
-              queue: async-events
-              job: recsys-online-serving
+              queue: ab-exposures
+              job: recsys-model-serving
               reason: full
             exp_annotations:
-              summary: "Queue async-events on recsys-online-serving is rejecting work"
+              summary: "Queue ab-exposures on recsys-model-serving is rejecting work"
               description: >-
-                This queue is full and discarding work now. For async-events that is lost
-                interaction events; for a recall bulkhead it is degraded recommendations. Check
-                recsys_queue_utilization for how long pressure had been building, and note that
-                reason="shutdown" and reason="invalid_key" are deliberately excluded -- the latter
-                is a data fault, not saturation.
+                This queue is full and discarding work now. For ab-exposures that is lost A/B
+                exposure events; for a recall bulkhead (recall-catalog/recall-online) it is
+                degraded recommendations. Check recsys_queue_utilization for how long pressure
+                had been building, and note that reason="shutdown" and reason="invalid_key" are
+                deliberately excluded -- the latter is a data fault, not saturation.
 
   # --- RecsysQueueRejecting: shutdown and invalid_key must NOT fire ---
   # THE case that protects against paging on every rolling deploy. Both implementations count
   # shutdown refusals; without the reason="full" matcher this input fires.
   - interval: 1m
     input_series:
-      - series: 'recsys_queue_rejected_total{queue="async-events", job="recsys-online-serving", reason="shutdown"}'
+      - series: 'recsys_queue_rejected_total{queue="ab-exposures", job="recsys-model-serving", reason="shutdown"}'
         values: '0+20x25'
-      - series: 'recsys_queue_rejected_total{queue="async-events", job="recsys-online-serving", reason="invalid_key"}'
+      - series: 'recsys_queue_rejected_total{queue="ab-exposures", job="recsys-model-serving", reason="invalid_key"}'
         values: '0+20x25'
     alert_rule_test:
       - eval_time: 20m

@@ -66,23 +66,27 @@ and how to tune it. Design: `docs/superpowers/specs/2026-07-08-overload-protecti
 `recsys_queue_depth`, `_capacity`, `_utilization` (tagged `queue`) and
 `recsys_queue_rejected_total` (tagged `queue`, `reason`) — registered by
 [`QueueMetrics`](../../src/main/java/com/recsys/metrics/QueueMetrics.java) — cover the
-`recall-catalog` (6010), `recall-online`, and `async-events` (both 7010) queues this runbook
-already discusses. See [18_Fault_Tolerance §8.3/§8.4](../system_design/18_Fault_Tolerance.md) for
-the full metric contract and the two alerts (`RecsysQueueFillingUp`, `RecsysQueueRejecting`).
-**`async-events` is registered but currently unfed** — nothing on 7010 calls `publish()` on the
-instance registered under that name (see [07_Message_Queue §4](../system_design/07_Message_Queue.md#4-producers-and-event-envelopes))
-— so its four series read zero regardless of load. That is not evidence of a healthy idle queue;
-it is what an unused queue looks like too.
+`recall-catalog` (6010) and `recall-online` (7010) queues this runbook already discusses, plus
+`ab-exposures` (8080) — the model service's A/B exposure event queue, registered by
+[`QueueMetricsConfig`](../../src/main/java/com/recsys/config/QueueMetricsConfig.java). See
+[18_Fault_Tolerance §8.3/§8.4](../system_design/18_Fault_Tolerance.md) for the full metric
+contract and the two alerts (`RecsysQueueFillingUp`, `RecsysQueueRejecting`).
+**`async-events` — the equivalent queue on 7010 — is no longer registered here.** Nothing on
+7010 calls `publish()` on that instance (see
+[07_Message_Queue §4](../system_design/07_Message_Queue.md#4-producers-and-event-envelopes)), so
+registering it produced four series that read zero regardless of load — indistinguishable from a
+healthy idle queue rather than an unfed one. `ab-exposures` replaces it precisely because
+`AbExposureLogger` genuinely calls `publish()` on that instance, so its series move with real
+traffic.
 
 - **`reason="full"` is the only saturation signal — filter to it first.** `reason="shutdown"` is
   a queue refusing late work during a clean drain, expected on every rolling deploy, never
-  evidence of overload. `reason="invalid_key"` (`async-events` only) is a data or configuration
-  fault — a malformed event or a key extractor that doesn't match the payload shape — not a
-  capacity problem, even though it lands in the same all-reasons `async_events_dropped_total`.
-  Reading either of the other two as saturation sends you hunting a capacity problem that isn't
-  there. In today's deployment `async-events` never sees `reason="invalid_key"` (or any reason)
-  fire at all, since nothing publishes to it on 7010 (see below) — an absence of these counters
-  says nothing about whether the check-key logic works, only that it is never exercised.
+  evidence of overload. `reason="invalid_key"` (`ab-exposures` only, and only when its Kafka
+  transport is enabled — the recall bulkheads never use key extraction) is a data or
+  configuration fault — a malformed event or a key extractor that doesn't match the payload
+  shape — not a capacity problem, even though it lands in the same all-reasons
+  `async_events_dropped_total`. Reading either of the other two as saturation sends you hunting a
+  capacity problem that isn't there.
 - **`depth()` — and therefore `recsys_queue_depth`/`_utilization` — is queue-only on both
   implementations, never in-flight work.** A `WorkerBulkhead` with every worker busy and an
   empty queue reports `utilization = 0`, the same as an idle one; `depth()` reads
@@ -106,12 +110,13 @@ it is what an unused queue looks like too.
   `reason="full"` alone in that window.
 - **Check the consumer before raising a bound.** `recsys_queue_utilization` sustained above 0.7
   (`RecsysQueueFillingUp`) means the queue is filling faster than its consumer drains it — the
-  recall workers for a bulkhead. Confirm the consumer has actually slowed before reaching for
-  `RECALL_BULKHEAD_QUEUE_CAPACITY`: a larger queue buys latency headroom, not more throughput,
-  and just delays the same rejection if the consumer is the real problem. `async-events` has no
-  drain thread to check by this route today — it is registered but unfed on 7010 (see above), so
-  its utilization is structurally 0 and `ASYNC_EVENT_QUEUE_CAPACITY` is not a lever this alert
-  would ever motivate raising.
+  recall workers for a bulkhead, or the `async-event-publisher` drain thread and its configured
+  transport (log-only/Kafka/SQS) for `ab-exposures`. Confirm the consumer has actually slowed
+  before reaching for `RECALL_BULKHEAD_QUEUE_CAPACITY`/`ASYNC_EVENT_QUEUE_CAPACITY`: a larger
+  queue buys latency headroom, not more throughput, and just delays the same rejection if the
+  consumer is the real problem. For `ab-exposures` specifically, check whether the broker (Kafka
+  or SQS, if configured) is reachable and keeping pace before raising the capacity — unlike
+  `async-events` on 7010, this queue is genuinely fed, so sustained pressure here is real signal.
 - **Why the queue drops instead of blocking.** `AsyncEventPublisher.publish()` never blocks the
   caller, and the recall bulkhead never blocks a caller either — both refuse immediately when
   full. A serving request runs inside a bounded deadline (500 ms for online serving), and

@@ -409,9 +409,9 @@ spec:
             summary: "Queue {{ $labels.queue }} on {{ $labels.job }} is sustained above 70% full"
             description: >-
               Sustained pressure with nothing lost yet. Check whether the consumer has slowed
-              (the drain thread for async-events, the recall workers for a bulkhead) before
-              raising the bound -- a larger queue buys latency, not throughput. See
-              docs/runbooks/overload-protection.md.
+              (the recall workers for recall-catalog/recall-online, the drain thread for
+              ab-exposures) before raising the bound -- a larger queue buys latency, not
+              throughput. See docs/runbooks/overload-protection.md.
 
         - alert: RecsysQueueRejecting
           # Evidence of actual loss, not early warning. Scoped to reason="full" ON PURPOSE:
@@ -429,8 +429,8 @@ spec:
           annotations:
             summary: "Queue {{ $labels.queue }} on {{ $labels.job }} is rejecting work"
             description: >-
-              This queue is full and discarding work now. For async-events that is lost
-              interaction events; for a recall bulkhead it is degraded recommendations. Check
-              recsys_queue_utilization for how long pressure had been building, and note that
-              reason="shutdown" and reason="invalid_key" are deliberately excluded -- the latter
-              is a data fault, not saturation.
+              This queue is full and discarding work now. For ab-exposures that is lost A/B
+              exposure events; for a recall bulkhead (recall-catalog/recall-online) it is
+              degraded recommendations. Check recsys_queue_utilization for how long pressure
+              had been building, and note that reason="shutdown" and reason="invalid_key" are
+              deliberately excluded -- the latter is a data fault, not saturation.
