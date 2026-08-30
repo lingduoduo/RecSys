@@ -69,6 +69,10 @@ and how to tune it. Design: `docs/superpowers/specs/2026-07-08-overload-protecti
 `recall-catalog` (6010), `recall-online`, and `async-events` (both 7010) queues this runbook
 already discusses. See [18_Fault_Tolerance §8.3/§8.4](../system_design/18_Fault_Tolerance.md) for
 the full metric contract and the two alerts (`RecsysQueueFillingUp`, `RecsysQueueRejecting`).
+**`async-events` is registered but currently unfed** — nothing on 7010 calls `publish()` on the
+instance registered under that name (see [07_Message_Queue §4](../system_design/07_Message_Queue.md#4-producers-and-event-envelopes))
+— so its four series read zero regardless of load. That is not evidence of a healthy idle queue;
+it is what an unused queue looks like too.
 
 - **`reason="full"` is the only saturation signal — filter to it first.** `reason="shutdown"` is
   a queue refusing late work during a clean drain, expected on every rolling deploy, never
@@ -76,7 +80,9 @@ the full metric contract and the two alerts (`RecsysQueueFillingUp`, `RecsysQueu
   fault — a malformed event or a key extractor that doesn't match the payload shape — not a
   capacity problem, even though it lands in the same all-reasons `async_events_dropped_total`.
   Reading either of the other two as saturation sends you hunting a capacity problem that isn't
-  there.
+  there. In today's deployment `async-events` never sees `reason="invalid_key"` (or any reason)
+  fire at all, since nothing publishes to it on 7010 (see below) — an absence of these counters
+  says nothing about whether the check-key logic works, only that it is never exercised.
 - **`depth()` — and therefore `recsys_queue_depth`/`_utilization` — is queue-only on both
   implementations, never in-flight work.** A `WorkerBulkhead` with every worker busy and an
   empty queue reports `utilization = 0`, the same as an idle one; `depth()` reads
@@ -100,10 +106,12 @@ the full metric contract and the two alerts (`RecsysQueueFillingUp`, `RecsysQueu
   `reason="full"` alone in that window.
 - **Check the consumer before raising a bound.** `recsys_queue_utilization` sustained above 0.7
   (`RecsysQueueFillingUp`) means the queue is filling faster than its consumer drains it — the
-  recall workers for a bulkhead, the drain thread for `async-events`. Confirm the consumer has
-  actually slowed before reaching for `RECALL_BULKHEAD_QUEUE_CAPACITY` or
-  `ASYNC_EVENT_QUEUE_CAPACITY`: a larger queue buys latency headroom, not more throughput, and
-  just delays the same rejection if the consumer is the real problem.
+  recall workers for a bulkhead. Confirm the consumer has actually slowed before reaching for
+  `RECALL_BULKHEAD_QUEUE_CAPACITY`: a larger queue buys latency headroom, not more throughput,
+  and just delays the same rejection if the consumer is the real problem. `async-events` has no
+  drain thread to check by this route today — it is registered but unfed on 7010 (see above), so
+  its utilization is structurally 0 and `ASYNC_EVENT_QUEUE_CAPACITY` is not a lever this alert
+  would ever motivate raising.
 - **Why the queue drops instead of blocking.** `AsyncEventPublisher.publish()` never blocks the
   caller, and the recall bulkhead never blocks a caller either — both refuse immediately when
   full. A serving request runs inside a bounded deadline (500 ms for online serving), and

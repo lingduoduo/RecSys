@@ -54,11 +54,14 @@ The base class is the whole fire-and-forget machine:
   `{queueSize, published, dropped, drained, deliveryFailures}` (four `AtomicLong`s).
   On 7010 these surface at `/online/ops` under `events`, where `deliveryFailures`
   (broker-side send errors) is counted *separately* from `dropped` (queue-full or
-  invalid-key rejections):
+  invalid-key rejections). The 7010 instance is also what `QueueMetrics` registers as
+  `async-events` (18_Fault_Tolerance §8.3), but nothing on 7010 calls `publish()` on it today
+  (see §4) — so every number below, and every `recsys_queue_*{queue="async-events"}` series, is
+  permanently zero on this service, not evidence of a queue running quietly within bounds:
 
 ```bash
 curl "http://localhost:7010/online/ops" | jq '.events'
-# {"queueSize":0,"published":128,"dropped":0,"drained":128,"deliveryFailures":0}
+# {"queueSize":0,"published":0,"dropped":0,"drained":0,"deliveryFailures":0}
 ```
 
 ## 2. The three transports
@@ -131,12 +134,24 @@ and no event is ever published unkeyed.
 
 | Producer | What it publishes |
 |---|---|
-| **Online feature-view events** — `OnlineServices.afterSuccess` | `{eventId, userId, eventType:"feature_view", window, source}` after a successful `/online/features` read |
+| **Online feature-view events** — `OnlineServices.Features.afterSuccess` (wired but dormant on 7010 — see below) | `{eventId, userId, eventType:"feature_view", window, source}` after a successful `/online/features` read, when the instance's `asyncEventPublisher` field is non-null |
 | **A/B exposure events** — `AbExposureLogger` | `{userId, assignedVariant, servedVariant, fellBackFrom, layer, slot, inExperiment, modelVersion, eventId, timestampMs}` on topic `ab_exposures`; no-op when A/B is off |
 | **Saga lifecycle** — `SagaEventPublishers` | saga state transitions (a separate durable `SagaEventPublisher`, not `AsyncEventPublisher`) |
 
 (Note: `ExperienceCollector` groups joined samples for the `OnlineLearner`'s training
 join — it's part of online learning, not a message-queue transport.)
+
+**The feature-view row is a wiring gap, not a design intent.** `afterSuccess`'s call to
+`asyncEventPublisher.publish(...)` is guarded by `if (asyncEventPublisher != null)`, so the code
+path exists in `OnlineServices.Features`. But `OnlinePredictionServer` never passes the
+`async-events` publisher it constructs (§3) into that field: both branches that build
+`OnlineServices.Features` pass either `durableEventPublisher` (the *outbox* publisher — a
+different object, see §5) or `null`. The `async-events` `AsyncEventPublisher` instead goes to
+exactly one place, `OnlineOpsService`, which only reads its `snapshot()` for `/online/ops` and
+never calls `publish()`. So the guard can never see a non-null `asyncEventPublisher` for online
+events, and this producer cannot fire in the deployed topology today — not because feature-view
+events are unimportant, but because the constructor call that would feed the queue was never
+made.
 
 ## 5. At-most-once vs. durable at-least-once
 
@@ -150,9 +165,11 @@ For events that must not be lost, the transactional outbox is used instead:
 | Acked when | before delivery (nanoseconds) | committed to the outbox **before** the API acks |
 | On failure | dropped / logged | retried by the relay until delivered |
 
-The online feature-view path actually uses **both**: it durably enqueues to the outbox
+The online feature-view path is designed to use **both**: durably enqueue to the outbox
 (`DurableEventPublisher.publishOnline`) for read-your-writes consistency, *and*
-fire-and-forgets via `asyncEventPublisher.publish` for best-effort streaming emission.
+fire-and-forget via `asyncEventPublisher.publish` for best-effort streaming emission. Only the
+first half is wired up today — see §4's note on the feature-view producer row for why the
+fire-and-forget call never runs on 7010.
 The at-least-once relay (`OutboxRelay`) and read-your-writes are covered in
 [15_Eventual_Consistency](15_Eventual_Consistency.md). The Kafka `movie_events_v2`
 topic these publishers write is consumed by the Flink job (`OnlineFeatureStreamingJob`)
