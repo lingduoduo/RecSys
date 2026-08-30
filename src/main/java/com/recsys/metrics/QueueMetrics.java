@@ -221,10 +221,16 @@ public final class QueueMetrics {
         Objects.requireNonNull(queueName, "queueName");
 
         Map<String, Source> byName = REGISTERED.get(registry);
-        if (byName == null || byName.remove(queueName) == null) {
+        if (byName == null || !byName.containsKey(queueName)) {
             return;
         }
 
+        // Remove the meters before the REGISTERED entry, not after: if registry.remove()
+        // threw partway through this sequence, removing the map entry first would leave the
+        // guard thinking queueName is free while stale meters are still registered, so the
+        // next register() call would hit Micrometer's silent-aliasing behaviour on those
+        // leftovers (see the class javadoc). Doing it in this order means a partial failure
+        // instead leaves the name still claimed, which fails the next register() loudly.
         removeMeter(registry, "recsys.queue.depth", queueName);
         removeMeter(registry, "recsys.queue.capacity", queueName);
         removeMeter(registry, "recsys.queue.utilization", queueName);
@@ -238,6 +244,7 @@ public final class QueueMetrics {
             }
         }
 
+        byName.remove(queueName);
         log.info("Unregistered queue metrics for '{}'", queueName);
     }
 
