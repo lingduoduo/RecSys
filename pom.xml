@@ -412,6 +412,17 @@
                      the GC-liveness half lives in QueueMetricsGcObservationTest, out of this
                      profile on purpose. -->
                 <include>**/metrics/QueueMetricsTest.java</include>
+                <!-- QueueMetricsTest above never scrapes a real Prometheus registry, so nothing
+                     pinned that the four meters actually reach the wire under the names
+                     RecsysQueueFillingUp/RecsysQueueRejecting query — in particular that
+                     recsys.queue.rejected, a FunctionCounter, gets the _total suffix Micrometer's
+                     Prometheus client appends to counters. A Micrometer upgrade that changes that
+                     naming convention would disarm RecsysQueueRejecting with nothing failing.
+                     Also parses prometheus-rules.yaml and asserts every recsys_queue_* identifier
+                     named in an expr: is one of the names actually scraped, so a future alert on a
+                     misspelled or renamed queue metric fails here instead of sitting in Prometheus
+                     looking like coverage. Pure unit-level, no timing. -->
+                <include>**/metrics/QueueMetricWireNamesTest.java</include>
                 <!-- Three distinct causes flowed through one drop counter here: a full queue, a
                      closed publisher, and (in the Kafka subclass) an event with no usable
                      partition key. Un-separated, a malformed-key bug reads as saturation and the
