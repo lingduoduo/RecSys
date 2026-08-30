@@ -166,4 +166,94 @@ class QueueMetricsTest {
         assertThatThrownBy(() -> QueueMetrics.register(registry, "x", null))
                 .isInstanceOf(NullPointerException.class);
     }
+
+    /**
+     * A defensive double-call with the exact same Source instance is provably not the aliasing
+     * bug the guard exists to prevent (same object, same readings), so it must be a no-op rather
+     * than a boot failure.
+     */
+    @Test
+    void reRegisteringTheSameSourceInstanceIsANoOp() {
+        SimpleMeterRegistry registry = new SimpleMeterRegistry();
+        FakeQueue q = new FakeQueue(10);
+        QueueMetrics.register(registry, "same-instance", q);
+
+        QueueMetrics.register(registry, "same-instance", q);
+
+        assertThat(registry.find("recsys.queue.depth").tag("queue", "same-instance").gauges())
+                .hasSize(1);
+        assertThat(registry.find("recsys.queue.capacity").tag("queue", "same-instance").gauges())
+                .hasSize(1);
+        assertThat(registry.find("recsys.queue.utilization").tag("queue", "same-instance").gauges())
+                .hasSize(1);
+        for (QueueMetrics.RejectionReason reason : QueueMetrics.RejectionReason.values()) {
+            assertThat(registry.find("recsys.queue.rejected")
+                    .tag("queue", "same-instance").tag("reason", reason.tag()).functionCounters())
+                    .hasSize(1);
+        }
+    }
+
+    /**
+     * A *different* Source under an existing name is the real aliasing bug: Micrometer would
+     * silently keep serving the first Source's readings under the new object's name. This must
+     * keep throwing even after same-instance re-registration became a no-op.
+     */
+    @Test
+    void differentSourceUnderAnExistingNameStillThrows() {
+        SimpleMeterRegistry registry = new SimpleMeterRegistry();
+        QueueMetrics.register(registry, "existing", new FakeQueue(10));
+
+        assertThatThrownBy(() -> QueueMetrics.register(registry, "existing", new FakeQueue(20)))
+                .isInstanceOf(IllegalStateException.class)
+                .hasMessageContaining("existing");
+    }
+
+    /**
+     * The important assertion in this test suite: after unregister + re-register with a new
+     * Source, the gauges must read the NEW source's values, not the old one's. Reading stale
+     * values here would be exactly the silent aliasing failure this whole guard exists to
+     * prevent, just triggered through the teardown path instead of a raw duplicate name.
+     */
+    @Test
+    void unregisterThenReRegisterWithDifferentSourceReadsTheNewValues() {
+        SimpleMeterRegistry registry = new SimpleMeterRegistry();
+        FakeQueue oldQueue = new FakeQueue(10);
+        oldQueue.setDepth(3);
+        QueueMetrics.register(registry, "epsilon", oldQueue);
+
+        QueueMetrics.unregister(registry, "epsilon");
+
+        FakeQueue newQueue = new FakeQueue(999);
+        newQueue.setDepth(42);
+        QueueMetrics.register(registry, "epsilon", newQueue);
+
+        assertThat(gauge(registry, "recsys.queue.depth", "epsilon")).isEqualTo(42.0);
+        assertThat(gauge(registry, "recsys.queue.capacity", "epsilon")).isEqualTo(999.0);
+        assertThat(gauge(registry, "recsys.queue.utilization", "epsilon")).isEqualTo(42.0 / 999.0);
+    }
+
+    @Test
+    void unregisterOnAnUnregisteredNameIsANoOp() {
+        SimpleMeterRegistry registry = new SimpleMeterRegistry();
+        QueueMetrics.unregister(registry, "never-registered");
+        // Must not throw, and must not disturb an unrelated registered queue.
+        QueueMetrics.register(registry, "zeta", new FakeQueue(5));
+        assertThat(gauge(registry, "recsys.queue.capacity", "zeta")).isEqualTo(5.0);
+    }
+
+    @Test
+    void unregisterRemovesAllFourMeterFamiliesFromTheRegistry() {
+        SimpleMeterRegistry registry = new SimpleMeterRegistry();
+        QueueMetrics.register(registry, "eta", new FakeQueue(10));
+
+        QueueMetrics.unregister(registry, "eta");
+
+        assertThat(registry.find("recsys.queue.depth").tag("queue", "eta").gauge()).isNull();
+        assertThat(registry.find("recsys.queue.capacity").tag("queue", "eta").gauge()).isNull();
+        assertThat(registry.find("recsys.queue.utilization").tag("queue", "eta").gauge()).isNull();
+        for (QueueMetrics.RejectionReason reason : QueueMetrics.RejectionReason.values()) {
+            assertThat(registry.find("recsys.queue.rejected")
+                    .tag("queue", "eta").tag("reason", reason.tag()).functionCounter()).isNull();
+        }
+    }
 }

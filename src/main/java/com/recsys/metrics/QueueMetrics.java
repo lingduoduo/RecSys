@@ -2,6 +2,7 @@ package com.recsys.metrics;
 
 import io.micrometer.core.instrument.FunctionCounter;
 import io.micrometer.core.instrument.Gauge;
+import io.micrometer.core.instrument.Meter;
 import io.micrometer.core.instrument.MeterRegistry;
 import org.slf4j.Logger;
 import org.slf4j.LoggerFactory;
@@ -29,6 +30,26 @@ import java.util.Objects;
  * registering under a name already taken would therefore report the first queue's depth forever,
  * with no error anywhere. {@link #REGISTERED} exists to make that impossible: a duplicate
  * {@code (registry, queueName)} throws instead.
+ *
+ * <p><b>That throw is three-way, not binary, and the distinction is load-bearing.</b>
+ * {@link #register(MeterRegistry, String, Source)} compares the incoming {@link Source} to
+ * whatever is already registered under that name by <em>identity</em> ({@code ==}, not
+ * {@code equals}): the same object re-registered under the same name is a no-op, while a
+ * <em>different</em> object under that name still throws {@link IllegalStateException}. Collapsing
+ * this to "any duplicate name is fine" — making registration idempotent across the board — would
+ * reproduce, in this class's own layer, exactly the silent-aliasing failure described above: a
+ * caller that constructs a fresh {@code Source} and registers it under a name still in use would
+ * succeed quietly and read the first object's numbers forever, which is the one outcome this class
+ * exists to make impossible. A same-instance double-call is provably not that bug — same object,
+ * same readings — so treating it as harmless costs nothing, but a different-instance collision is
+ * always either a real second queue (a bug elsewhere) or a caller that meant to replace the first
+ * registration and forgot to say so; either way it must throw, not merge silently.
+ * {@link #unregister(MeterRegistry, String)} is the explicit way to say "replace it": it removes
+ * both the {@link #REGISTERED} entry and the four meters from {@code registry}, after which
+ * {@link #register} can be called again — for a new {@link Source} or the same one — as a normal
+ * first registration. It is not wired into any {@code Source}'s {@code close()}; PR #296
+ * deliberately decided meters survive {@code close()} so a drained queue's last readings stay
+ * visible, and this method must not quietly reverse that.
  *
  * <p>Second, {@link Gauge.Builder} offers {@code strongReference(boolean)} but
  * {@link FunctionCounter.Builder} <b>does not</b>. Micrometer holds meter state weakly by
@@ -110,7 +131,9 @@ public final class QueueMetrics {
      * isolated from the gauges' own strong references (see the class javadoc's discriminating
      * mutation), do not read "also contributes to retention" as a claim this map is what makes
      * any specific meter survive GC on its own. Identity-keyed because {@code MeterRegistry}
-     * does not define equality.
+     * does not define equality. {@link #unregister(MeterRegistry, String)} is the only path that
+     * removes an entry — a normal {@link #register} call never does, whether it succeeds, no-ops
+     * on a same-instance re-registration, or throws on a different-instance one.
      */
     private static final Map<MeterRegistry, Map<String, Source>> REGISTERED = new IdentityHashMap<>();
 
@@ -125,20 +148,27 @@ public final class QueueMetrics {
         Objects.requireNonNull(queueName, "queueName");
         Objects.requireNonNull(source, "source");
 
+        Map<String, Source> byName = REGISTERED.computeIfAbsent(registry, r -> new HashMap<>());
+        Source existing = byName.get(queueName);
+        if (existing != null) {
+            if (existing == source) {
+                // Same object, same readings: provably not the aliasing bug below, so a
+                // defensive double-call (e.g. idempotent startup code) is harmless.
+                log.debug("Queue '{}' re-registered with the same Source instance; no-op.", queueName);
+                return;
+            }
+            throw new IllegalStateException(
+                    "Queue '" + queueName + "' is already registered on this MeterRegistry. "
+                            + "Micrometer would silently return the first meter and discard this "
+                            + "source, so the second queue would report the first one's depth.");
+        }
+
         int capacity = source.capacity();
         if (capacity <= 0) {
             throw new IllegalArgumentException(
                     "Queue '" + queueName + "' reported a non-positive capacity (" + capacity
                             + "). Capacity is a positive invariant: an unbounded queue needs its own "
                             + "metric shape, not a sentinel capacity threaded through this one.");
-        }
-
-        Map<String, Source> byName = REGISTERED.computeIfAbsent(registry, r -> new HashMap<>());
-        if (byName.containsKey(queueName)) {
-            throw new IllegalStateException(
-                    "Queue '" + queueName + "' is already registered on this MeterRegistry. "
-                            + "Micrometer would silently return the first meter and discard this "
-                            + "source, so the second queue would report the first one's depth.");
         }
 
         Gauge.builder("recsys.queue.depth", source, Source::depth)
@@ -171,5 +201,50 @@ public final class QueueMetrics {
 
         byName.put(queueName, source);
         log.info("Registered queue metrics for '{}' (capacity {})", queueName, capacity);
+    }
+
+    /**
+     * Explicit teardown: removes {@code queueName}'s entry from {@link #REGISTERED} and its four
+     * meter families from {@code registry}, so a second boot in the same JVM (a re-run against
+     * {@code PrometheusMeterRegistries.defaultRegistry()}, or in-process co-hosting of two mains)
+     * can {@link #register} again afterward. A no-op, not an error, when {@code queueName} was
+     * never registered on {@code registry} — teardown code should not have to know whether
+     * registration happened.
+     *
+     * <p>Not called automatically from a queue's {@code close()}: PR #296 deliberately decided
+     * meters survive {@code close()} so a drained queue's last readings stay visible rather than
+     * vanishing from the registry. This method is an explicit affordance for the narrower case
+     * that decision didn't cover — replacing a registration outright — not a reversal of it.
+     */
+    public static synchronized void unregister(MeterRegistry registry, String queueName) {
+        Objects.requireNonNull(registry, "registry");
+        Objects.requireNonNull(queueName, "queueName");
+
+        Map<String, Source> byName = REGISTERED.get(registry);
+        if (byName == null || byName.remove(queueName) == null) {
+            return;
+        }
+
+        removeMeter(registry, "recsys.queue.depth", queueName);
+        removeMeter(registry, "recsys.queue.capacity", queueName);
+        removeMeter(registry, "recsys.queue.utilization", queueName);
+        for (RejectionReason reason : RejectionReason.values()) {
+            Meter meter = registry.find("recsys.queue.rejected")
+                    .tag("queue", queueName)
+                    .tag("reason", reason.tag())
+                    .meter();
+            if (meter != null) {
+                registry.remove(meter);
+            }
+        }
+
+        log.info("Unregistered queue metrics for '{}'", queueName);
+    }
+
+    private static void removeMeter(MeterRegistry registry, String meterName, String queueName) {
+        Meter meter = registry.find(meterName).tag("queue", queueName).meter();
+        if (meter != null) {
+            registry.remove(meter);
+        }
     }
 }
