@@ -448,6 +448,15 @@
                      no JVM dependence — the emission seam is called directly. -->
                 <include>**/jvm/GcEventLoggingTest.java</include>
                 <include>**/metrics/ScrapeTargetManifestTest.java</include>
+                <!-- ScrapeTargetManifestTest proves a series is collected at all; this proves the
+                     collected series carries the job label its promtool fixtures assume. Nothing
+                     but Prometheus Operator's own jobLabel default ties a fixture's job="recsys-*"
+                     to the Service it claims to be, and only the annotation text depends on it —
+                     a drift would still let the alert fire, just naming the wrong service in the
+                     page. The second assertion pins the jobLabel-absent assumption itself, not
+                     today's values, so a future ServiceMonitor adding jobLabel fails loudly
+                     instead of quietly invalidating every fixture. Pure file parsing. -->
+                <include>**/metrics/PromtoolJobLabelManifestTest.java</include>
                 <!-- The egress counterpart to ScrapeTargetManifestTest's ingress checks. The
                      NetworkPolicy is the L3/L4 ACL the whole backend trust model rests on
                      (20_AuthN_AuthZ), and its failure mode is silence: a dropped egress rule
