@@ -41,6 +41,7 @@ import java.util.concurrent.CompletableFuture;
 import java.util.concurrent.ConcurrentHashMap;
 import java.util.concurrent.ExecutorService;
 import java.util.concurrent.Executors;
+import java.util.concurrent.atomic.AtomicInteger;
 import java.util.stream.Collectors;
 
 @Service
@@ -106,13 +107,30 @@ public class ModelRuntimeProvider implements SmartInitializingSingleton {
             variants.add(ModelVariants.normalizeOrDefault(abTestConfig.getBucketAVariant()));
             variants.add(ModelVariants.normalizeOrDefault(abTestConfig.getBucketBVariant()));
         }
-        List<CompletableFuture<Void>> futures = variants.stream()
-                .map(variant -> CompletableFuture.runAsync(() -> {
-                    log.info("Pre-warming model runtime for variant '{}'", variant);
-                    getRuntime(variant);
-                }))
-                .toList();
-        CompletableFuture.allOf(futures.toArray(CompletableFuture[]::new)).join();
+        // Own executor rather than CompletableFuture's default. That default is not stable:
+        // ASYNC_POOL is ForkJoinPool.commonPool() only while getCommonPoolParallelism() > 1, and
+        // a thread-per-task executor otherwise -- so the same code borrows a JVM-wide shared pool
+        // on a multi-core host and spawns a thread per variant on a single-CPU one. Measured, not
+        // assumed. Neither is wrong for a startup preload, but both are accidental, and blocking
+        // the common pool means blocking a pool nothing else here owns.
+        AtomicInteger threadIndex = new AtomicInteger();
+        ExecutorService warmUpPool = Executors.newFixedThreadPool(variants.size(), r -> {
+            Thread t = new Thread(r, "model-warmup-" + threadIndex.incrementAndGet());
+            t.setDaemon(true);
+            return t;
+        });
+        try {
+            List<CompletableFuture<Void>> futures = variants.stream()
+                    .map(variant -> CompletableFuture.runAsync(() -> {
+                        log.info("Pre-warming model runtime for variant '{}'", variant);
+                        getRuntime(variant);
+                    }, warmUpPool))
+                    .toList();
+            CompletableFuture.allOf(futures.toArray(CompletableFuture[]::new)).join();
+        } finally {
+            // Startup-only pool: shut it down so a preload failure cannot leave threads behind.
+            warmUpPool.shutdown();
+        }
     }
 
     public ModelRuntime getRuntime(String variant) {
