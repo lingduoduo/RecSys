@@ -8,9 +8,9 @@ import org.slf4j.Logger;
 import org.slf4j.LoggerFactory;
 
 import java.util.HashMap;
-import java.util.IdentityHashMap;
 import java.util.Map;
 import java.util.Objects;
+import java.util.WeakHashMap;
 
 /**
  * Publishes depth, capacity, utilization and reasoned rejection counts for a bounded queue.
@@ -131,11 +131,27 @@ public final class QueueMetrics {
      * isolated from the gauges' own strong references (see the class javadoc's discriminating
      * mutation), do not read "also contributes to retention" as a claim this map is what makes
      * any specific meter survive GC on its own. Identity-keyed because {@code MeterRegistry}
-     * does not define equality. {@link #unregister(MeterRegistry, String)} is the only path that
-     * removes an entry — a normal {@link #register} call never does, whether it succeeds, no-ops
-     * on a same-instance re-registration, or throws on a different-instance one.
+     * does not define equality — and a {@link WeakHashMap} keyed by a type that does not
+     * override {@code equals} is identity-keyed for the same reason, so weak keys cost nothing
+     * here. {@link #unregister(MeterRegistry, String)} is the only path that removes an entry
+     * explicitly — a normal {@link #register} call never does, whether it succeeds, no-ops on a
+     * same-instance re-registration, or throws on a different-instance one.
+     *
+     * <p><b>Weak keys, matching {@code ConsistencyMetrics.STATES}.</b> A registry that becomes
+     * unreachable takes its entry with it. In production this never fires — the registry is
+     * {@code PrometheusMeterRegistries.defaultRegistry()}, a JVM-wide singleton that outlives
+     * everything — so retention there is unchanged. It matters for tests, which construct a
+     * {@code SimpleMeterRegistry} per case: with strong keys every one of those registries, and
+     * every {@code Source} registered against it, stayed reachable for the life of the test JVM.
+     * The retention that matters is still exact: while a registry is alive its sources are held
+     * strongly as map values, so nothing a live registry publishes can have its state collected.
      */
-    private static final Map<MeterRegistry, Map<String, Source>> REGISTERED = new IdentityHashMap<>();
+    private static final Map<MeterRegistry, Map<String, Source>> REGISTERED = new WeakHashMap<>();
+
+    /** Package-private for {@code QueueMetricsGcObservationTest}: how many registries are held. */
+    static synchronized int registeredRegistryCount() {
+        return REGISTERED.size();
+    }
 
     private QueueMetrics() {}
 
