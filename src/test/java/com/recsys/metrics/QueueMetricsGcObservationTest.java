@@ -69,4 +69,45 @@ class QueueMetricsGcObservationTest {
                 .as("FunctionCounter state must survive GC — it freezes silently if collected")
                 .isEqualTo(3.0);
     }
+
+    /**
+     * The registry map holds its keys weakly, so a registry nobody references any more takes its
+     * entry — and its sources — with it. Production never exercises this: the registry there is
+     * a JVM-wide singleton. Tests do, one {@code SimpleMeterRegistry} per case, and with strong
+     * keys every one of them leaked for the life of the test JVM.
+     *
+     * <p>The second assertion is the load-bearing one. Weak *keys* must not weaken the retention
+     * of a *live* registry's sources: those are held strongly as map values, and that is what
+     * keeps a {@code FunctionCounter} — which has no {@code strongReference} option of its own —
+     * from silently freezing.
+     */
+    @Test
+    void aCollectedRegistryReleasesItsEntryWhileALiveOneKeepsIts() {
+        SimpleMeterRegistry survivor = new SimpleMeterRegistry();
+        QueueMetrics.register(survivor, "survivor", new CountingSource());
+
+        SimpleMeterRegistry doomed = new SimpleMeterRegistry();
+        QueueMetrics.register(doomed, "doomed", new CountingSource());
+        int withBoth = QueueMetrics.registeredRegistryCount();
+        assertThat(withBoth).isGreaterThanOrEqualTo(2);
+
+        WeakReference<SimpleMeterRegistry> ref = new WeakReference<>(doomed);
+        doomed = null;
+        for (int i = 0; i < 20 && ref.get() != null; i++) {
+            System.gc();
+            byte[] pressure = new byte[8 * 1024 * 1024];
+            assertThat(pressure).isNotNull();
+        }
+        assertThat(ref.get()).as("a real GC must have run for this test to mean anything").isNull();
+
+        // WeakHashMap clears entries lazily, on access.
+        assertThat(QueueMetrics.registeredRegistryCount())
+                .as("the collected registry's entry must be gone")
+                .isLessThan(withBoth);
+
+        assertThat(survivor.find("recsys.queue.rejected").tag("queue", "survivor")
+                .tag("reason", "full").functionCounter().count())
+                .as("a LIVE registry's FunctionCounter must still read its source after GC")
+                .isEqualTo(3.0);
+    }
 }

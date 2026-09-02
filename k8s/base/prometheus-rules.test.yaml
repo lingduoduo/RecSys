@@ -968,6 +968,41 @@ tests:
                 had been building, and note that reason="shutdown" and reason="invalid_key" are
                 deliberately excluded -- the latter is a data fault, not saturation.
 
+  # --- RecsysQueueRejecting: for: 3m is load-bearing, not decoration ---
+  # The fire case above evaluates at 20m, long past every candidate hold, so it would pass with
+  # for: 1m, 3m or 9m alike -- it pins the threshold, not the hold. These two evaluations pin the
+  # hold itself: increase() goes positive at t=1m, so a 3m hold is unsatisfied at t=2m and
+  # satisfied by t=4m. Shortening for: reddens the first assertion; lengthening it past ~3m
+  # reddens the second.
+  #
+  # Why a hold at all, when a rejection is already evidence of loss: a single scrape blip should
+  # not page, and 3m sits well below the 10m increase() range so a genuine burst still fires --
+  # the trap recorded in 18_Fault_Tolerance section 8.4 is a for: that meets or exceeds its range.
+  - interval: 1m
+    input_series:
+      - series: 'recsys_queue_rejected_total{queue="recall-online", job="recsys-online-serving", reason="full"}'
+        values: '0 5 5 5 5 5 5 5'
+    alert_rule_test:
+      - eval_time: 2m
+        alertname: RecsysQueueRejecting
+        exp_alerts: []
+      - eval_time: 4m
+        alertname: RecsysQueueRejecting
+        exp_alerts:
+          - exp_labels:
+              severity: warning
+              queue: recall-online
+              job: recsys-online-serving
+              reason: full
+            exp_annotations:
+              summary: "Queue recall-online on recsys-online-serving is rejecting work"
+              description: >-
+                This queue is full and discarding work now. For ab-exposures that is lost A/B
+                exposure events; for a recall bulkhead (recall-catalog/recall-online) it is
+                degraded recommendations. Check recsys_queue_utilization for how long pressure
+                had been building, and note that reason="shutdown" and reason="invalid_key" are
+                deliberately excluded -- the latter is a data fault, not saturation.
+
   # --- RecsysQueueRejecting: shutdown and invalid_key must NOT fire ---
   # THE case that protects against paging on every rolling deploy. Both implementations count
   # shutdown refusals; without the reason="full" matcher this input fires.

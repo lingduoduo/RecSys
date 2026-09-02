@@ -438,6 +438,14 @@
                      Redis, no timing — the publisher is constructed directly with a stub
                      sendBatch. -->
                 <include>**/messaging/AsyncEventPublisherTest.java</include>
+                <!-- The Kafka subclass is the only publisher that rejects for a reason unrelated
+                     to capacity — a missing partition key — and the only one whose producer
+                     config decides delivery semantics (idempotence, bounded retries). Neither is
+                     covered by AsyncEventPublisherTest above. The three tests that wait on the
+                     drain thread live in KafkaAsyncEventPublisherDeliveryTest and stay OUT of
+                     this profile; what remains here is MockProducer and property assertions with
+                     no wait. -->
+                <include>**/messaging/KafkaAsyncEventPublisherTest.java</include>
                 <!-- Task 4's GC/heap log emitter is built on GcEventTracker.start()/stop(); without
                      this test, a regression to the old package-private install() — or a dropped
                      idempotency guard that silently double-registers a JMX listener and
