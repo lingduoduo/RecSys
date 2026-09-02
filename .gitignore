@@ -86,3 +86,9 @@ replay_pid*
 # on demand via `yq '.spec' prometheus-rules.yaml`. Never hand-edit or commit it — see
 # k8s/base/prometheus-rules.test.yaml for the regeneration command.
 k8s/base/prometheus-rules.rules.yaml
+
+# Redis snapshot written into the repo root by a locally-booted redis-server. Every
+# service verification here starts one (see docs/runbooks/overload-protection.md and the
+# local-run notes in the README), so it reappears after any smoke check. Regenerable and
+# machine-local; committing it would put a binary keyspace dump in the history.
+dump.rdb
