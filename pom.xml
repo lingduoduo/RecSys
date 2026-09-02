@@ -412,6 +412,14 @@
                      the GC-liveness half lives in QueueMetricsGcObservationTest, out of this
                      profile on purpose. -->
                 <include>**/metrics/QueueMetricsTest.java</include>
+                <!-- warmUp() dispatches the model preload itself, and without an explicit
+                     executor CompletableFuture picks one that varies with core count: the
+                     JVM-wide common pool where parallelism > 1, a thread-per-task executor
+                     otherwise. Neither is wrong for a preload, but blocking the common pool
+                     blocks a pool nothing else here owns, and the choice being accidental is
+                     what makes it worth pinning. Overrides getRuntime, so no ONNX session is
+                     built — pure dispatch, no timing, ~30ms. -->
+                <include>**/model/ModelRuntimeProviderWarmUpTest.java</include>
                 <!-- QueueMetricsTest above never scrapes a real Prometheus registry, so nothing
                      pinned that the four meters actually reach the wire under the names
                      RecsysQueueFillingUp/RecsysQueueRejecting query — in particular that
