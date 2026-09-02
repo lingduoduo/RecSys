@@ -164,6 +164,43 @@ The model 8080 path is uniquely graceful: on a full shedder it first tries
 degraded-cache`) and only throws `ServiceOverloadedException` (latency-derived
 `Retry-After`) on a cache miss.
 
+### The concurrency model — parallelism, not asynchrony
+
+Everything below assumes a thread is held for the duration of a serving request, so it is worth
+saying plainly what the async machinery is and is not.
+
+There is **no `async`/`await`** — this is Java 17 — and no Spring `@Async`, no reactive library,
+and no virtual threads. Every asynchronous path is hand-rolled `CompletableFuture` over Armeria's
+async HTTP model, in **two idioms that behave differently under load**:
+
+| Idiom | Where | Thread held while waiting? |
+|---|---|---|
+| `HttpResponse.of(future.thenApply(...))` | gateway proxy, `GatewayHealthService` | **No** — Armeria completes the response when the future does |
+| `HttpResponse.of(supplyAsync(..., ctx.blockingTaskExecutor()))` | every serving path (6010, 7010, and the sharded-record and catalog services) | **Yes**, for the whole request |
+
+The second idiom wraps *synchronous* code. Inside it,
+[`MultiChannelRecallService`](../../src/main/java/com/recsys/application/retrieval/multichannel/MultiChannelRecallService.java)
+fans channels out onto the recall bulkhead and then `allOf(...).join()`s. So on a serving path
+`CompletableFuture` buys **parallelism** — channels run concurrently — and not **asynchrony**: a
+blocking-executor thread is occupied from admission to response.
+
+That is the reason the arithmetic in the next three subsections is load-bearing rather than
+academic. **Concurrency here is bounded by threads, not by outstanding futures**, so a gate
+expressed in requests (admission: 64) and a pool expressed in threads (bulkhead: 10 task slots)
+are the same currency, and the smaller one wins.
+
+`GatewayHealthService`'s `futures.get(i).join()` inside `thenApply` is not a counter-example: it
+runs only after `allOf` has completed, so it never waits. **Nothing blocks an Armeria event
+loop** — every request-path `supplyAsync` passes `ctx.blockingTaskExecutor()`, which is what that
+executor exists for.
+
+One site takes no explicit executor: `ModelRuntimeProvider.warmUp()`. It is startup-only, and the
+obvious reading — that it degrades to serial on a one-CPU container because the common pool's
+parallelism is `cores - 1` — is **wrong, and was measured**: `CompletableFuture`'s `ASYNC_POOL`
+falls back to a thread-per-task executor whenever `ForkJoinPool.getCommonPoolParallelism()` is not
+greater than 1, so the constrained case is the one where it parallelises best. Recorded because it
+invites a fix it does not need.
+
 ### The request time budget, end to end
 
 The gates above each bound one layer. Read outside-in they form a **budget chain**, and the
