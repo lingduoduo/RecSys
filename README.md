@@ -116,17 +116,19 @@ Colima is not required on Linux. Start your Docker provider before Compose.
 
 Run all commands from the repository root.
 
-## Five-minute quick start
+## Five-minute quick start for running the catalog/recommendation service
 
 Start only the Redis service needed by catalog serving:
 
 ```bash
+colima start
 docker compose -f docker-compose.streaming.yml up -d redis-primary
 ```
 
 Build the application without running tests:
 
 ```bash
+export JAVA_HOME=$(/usr/libexec/java_home -v 17)
 mvn package -DskipTests
 ```
 
@@ -134,6 +136,7 @@ Generate a local recommendation cursor signing key:
 
 ```bash
 export RECOMMENDATION_CURSOR_SIGNING_KEY="$(openssl rand -hex 32)"
+export REDIS_ALLOW_NO_AUTH=true
 ```
 
 Start catalog/recommendation serving:
