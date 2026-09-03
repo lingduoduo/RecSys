@@ -434,3 +434,117 @@ spec:
               degraded recommendations. Check recsys_queue_utilization for how long pressure
               had been building, and note that reason="shutdown" and reason="invalid_key" are
               deliberately excluded -- the latter is a data fault, not saturation.
+
+    - name: recsys.model
+      rules:
+        # --- ONNX model serving (Spring, 8080) ---
+        # Four signals from the 2026-09-03 onnx-serving-hardening design: nothing ready,
+        # shedding, slow inference, and a variant that failed to load. All four are scoped to the
+        # model job explicitly: recsys_load_shedder_requests_total is also emitted by catalog
+        # serving's admission control, and http_server_requests_seconds_bucket by every Spring
+        # Boot application a shared Prometheus might scrape.
+
+        - alert: ModelServingUnavailable
+          # Two branches because "no ready replica" is invisible to `up == 0`: Prometheus
+          # Operator discovers targets through the Service's Endpoints, and Endpoints exclude
+          # pods that are not Ready, so a fleet with no ready pod has no `up` series at all.
+          # absent(up) expresses that and needs nothing but our own ServiceMonitor; the
+          # kube_deployment_status_replicas_ready branch is the direct statement of the same
+          # fact and additionally distinguishes "Deployment scaled to zero" -- but it depends on
+          # kube-state-metrics (shipped by kube-prometheus-stack, not by this repo), so it is
+          # never the only branch.
+          expr: >-
+            kube_deployment_status_replicas_ready{namespace="recsys", deployment="recsys-model-serving"} == 0
+            or
+            absent(up{namespace="recsys", job="recsys-model-serving"})
+          for: 5m
+          labels:
+            severity: critical
+          annotations:
+            summary: "No ready model-serving replica for 5 minutes"
+            description: >-
+              Every recsys-model-serving pod is failing readiness (or the Deployment has no
+              pods), so the gateway's model routes fast-fail with 503 and every A/B variant
+              is offline together. Check pod status and the first startup log lines: a
+              control-variant artifact that fails manifest/checksum/contract validation or
+              the smoke inference makes readiness impossible by design, and the pod log names
+              the exact file and check that failed. See docs/runbooks/model-artifact-rollout.md.
+
+        - alert: ModelServingShedding
+          # Ratio of two rate()s over the same 10m window; a zero denominator yields NaN, and
+          # NaN > 0.05 is false, so an idle instance never fires. The `and` branch is the
+          # volume guard: at least 100 admission decisions in the window before the ratio is
+          # believed -- two requests a minute with one rejected is 50% and is noise. `sum by
+          # (job)` on every operand so the two sides of `and` match on the same label set.
+          expr: >-
+            (
+              sum by (job) (rate(recsys_load_shedder_requests_total{job="recsys-model-serving", result="rejected"}[10m]))
+              /
+              sum by (job) (rate(recsys_load_shedder_requests_total{job="recsys-model-serving"}[10m]))
+            ) > 0.05
+            and
+            sum by (job) (increase(recsys_load_shedder_requests_total{job="recsys-model-serving"}[10m])) >= 100
+          for: 10m
+          labels:
+            severity: warning
+          annotations:
+            summary: "Model serving is shedding more than 5% of requests"
+            description: >-
+              The per-instance admission semaphore (RECSYS_HEALTH_MAX_CONCURRENT_REQUESTS,
+              8 per two-CPU pod) has been rejecting a sustained share of traffic. Rejected
+              requests are served from the degraded cache when one exists and 503 otherwise.
+              Either genuine overload — scale out, the HPA reacts to CPU not to this — or a
+              cap set below what the pod can actually run; raise it only with
+              InferenceLoadTest numbers from the same CPU shape.
+
+        - alert: ModelInferenceLatencyHigh
+          # Same Micrometer percentiles-histogram as RequestLatencyP99High's fourth branch
+          # (http_server_requests_seconds_bucket -- generic Spring name, hence namespace= AND
+          # job= scoping), but p95 rather than p99, restricted to the two recommendation routes,
+          # and thresholded at the 500ms readiness budget (RECSYS_HEALTH_MAX_AVG_LATENCY_MS) so
+          # it pages before instances start draining themselves. The uri matcher is load-bearing
+          # both ways: Actuator's self-scrape would dilute the quantile downward, and a slow
+          # /api/v1/token is not inference. Bucket edges are Micrometer's exponential set, so the
+          # interpolated quantile is approximate -- fine for a 2x-over-budget threshold.
+          expr: >-
+            histogram_quantile(0.95, sum by (le, job) (
+              rate(http_server_requests_seconds_bucket{namespace="recsys", job="recsys-model-serving",
+                                                       uri=~"/api/v1/recommend|/v2/recommend"}[5m]))) > 0.5
+          for: 10m
+          labels:
+            severity: warning
+          annotations:
+            summary: "{{ $labels.job }} p95 recommendation latency is above 500ms"
+            description: >-
+              The 95th percentile of /api/v1/recommend and /v2/recommend has been above the
+              500ms readiness budget (RECSYS_HEALTH_MAX_AVG_LATENCY_MS) for ten minutes, so
+              instances are close to draining themselves. ONNX runs one intra-op thread per
+              request by design (RECSYS_MODEL_ONNX_*); check recsys_model_onnx_runs_total
+              against request rate to confirm inference is actually running rather than
+              caches, then recsys_model_recall_tasks_total for recall timeouts feeding the
+              ranking stage late.
+
+        - alert: ModelRuntimeLoadFailure
+          # 15m increase() under a 5m hold, deliberately the other way round from
+          # OutboxDeliveryFailuresSustained: there, one retry blip is routine and only continuing
+          # failure should page; here, ONE failed variant load is the event -- it happens at
+          # warm-up or once per cooldown, never continuously -- so the hold must be shorter than
+          # the range or a single increment ages out before it is ever satisfied (the knife-edge
+          # 18_Fault_Tolerance section 8.4 describes). The alert then clears itself when the
+          # window slides past the increment.
+          expr: >-
+            sum by (job, variant, phase) (
+              increase(recsys_model_runtime_load_failures_total{job="recsys-model-serving"}[15m])) > 0
+          for: 5m
+          labels:
+            severity: warning
+          annotations:
+            summary: "Model variant {{ $labels.variant }} failed to load ({{ $labels.phase }})"
+            description: >-
+              A runtime for variant {{ $labels.variant }} could not be built during {{ $labels.phase }}. For a non-default
+              variant the pod stays ready and its bucket is served by control (see
+              recsys_abtest_variant_fallback_total) until the retry after cooldown succeeds;
+              a default-variant failure never reaches this alert because it fails startup
+              instead (ModelServingUnavailable). The pod log names the artifact and the check
+              — manifest schema, checksum, ONNX input/output contract, or smoke inference —
+              that rejected it. See docs/runbooks/model-artifact-rollout.md.

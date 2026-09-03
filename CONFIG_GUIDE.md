@@ -140,7 +140,7 @@ corresponding Service, probe, and gateway upstream configuration.
 | `RECSYS_AB_BUCKET_A_PERCENT` / `RECSYS_AB_BUCKET_B_PERCENT` | `20` / `20` | Model A/B allocation percentages. Each is non-negative and their sum must be at most `100`, otherwise Spring startup fails. |
 | Spring `recsys.ab-test.enabled`, `layer-name`, `bucket-a-variant`, `bucket-b-variant`, `default-variant` | `false` / `default` / `test` / `training` / `training` | Controls assignment and loaded variants. Layer and variant names must be nonblank. The named percentage environment aliases are in the preceding row. |
 | `RECSYS_MODEL_RATE_LIMIT_RPS` / `RECSYS_MODEL_RATE_LIMIT_BURST` / `RECSYS_MODEL_RATE_LIMIT_MAX_USERS` | `0.0` / `0` / `10000` | Per-user, per-model-replica token bucket. Positive rate and burst are both required to enable it; tracked-user capacity clamps to at least `1`. Malformed Spring numeric binding fails startup. |
-| `RECSYS_HEALTH_MAX_CONCURRENT_REQUESTS` | `64` | Model per-instance in-flight cap. Base ConfigMap sets `64`. |
+| `RECSYS_HEALTH_MAX_CONCURRENT_REQUESTS` | `64` | Model per-instance in-flight cap. Base ConfigMap sets `8` (one batched ONNX run per admitted request on one intra-op thread; 64 against a 2-CPU limit is oversubscription, not throughput). |
 | `RECSYS_HEALTH_MAX_IN_FLIGHT_UTILIZATION` | `0.95` | Model readiness drain threshold. Base ConfigMap sets `0.95`. |
 | `RECSYS_EVENTS_SQS_ENABLED` / `RECSYS_EVENTS_SQS_QUEUE_URL` / `RECSYS_EVENTS_SQS_REGION` | `false` / unset / `AWS_REGION` or `us-east-1` | Model A/B exposure SQS publishing; needs a queue URL. |
 | `RECSYS_EVENTS_KAFKA_ENABLED` / `RECSYS_EVENTS_KAFKA_BOOTSTRAP_SERVERS` / `RECSYS_EVENTS_KAFKA_EXPOSURE_TOPIC` | `false` / unset / `ab_exposures` | Model A/B exposure Kafka publishing; needs bootstrap servers. |
@@ -209,7 +209,7 @@ positive `Retry-After`); this setting is not a cluster-wide limit.
 | `ONLINE_METRICS_WINDOW_SECONDS` | `60` | Rolling online-serving metrics window. |
 | `ONLINE_TARGET_DAU` / `ONLINE_PEAK_QPS` / `ONLINE_PEAK_TPS` | `2000000` / `8000` / `20000` | Online capacity-planning inputs used by the operations surface. |
 | Spring `recsys.health.window-seconds` / `recsys.health.min-sample-size` | `60` / `5` | Positive model-serving readiness metrics window and minimum sample count. |
-| `RECSYS_HEALTH_MAX_FAILURE_RATE` / `RECSYS_HEALTH_MAX_AVG_LATENCY_MS` | `0.5` / `2000` ms | Model readiness thresholds; failure rate must be `0..1` and latency positive. |
+| `RECSYS_HEALTH_MAX_FAILURE_RATE` / `RECSYS_HEALTH_MAX_AVG_LATENCY_MS` | `0.5` / `2000` ms | Model readiness thresholds; failure rate must be `0..1` and latency positive. Demo defaults — `k8s/base/model-serving.yaml` sets `0.05` / `500`. |
 | `SPRING_APPLICATION_NAME` | `recsys-model-serving` | Spring application/metrics identity for model serving. |
 | `RECSYS_SHUTDOWN_TIMEOUT` | `30s` | Spring graceful-shutdown phase timeout; must be a valid duration. |
 | `MANAGEMENT_ENDPOINTS_EXPOSURE` | `health,info,prometheus` | Comma-separated Spring Actuator web exposure list. Do not expose sensitive endpoints without access controls. |

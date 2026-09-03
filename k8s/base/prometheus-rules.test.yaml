@@ -1016,3 +1016,241 @@ tests:
       - eval_time: 20m
         alertname: RecsysQueueRejecting
         exp_alerts: []
+
+  # =====================================================================================
+  # recsys.model — ONNX model-serving alerts (see 18_Fault_Tolerance section 8 and the
+  # 2026-09-03 onnx-serving-hardening design). Every alert has a fire case and a near-miss.
+  # =====================================================================================
+
+  # --- ModelServingUnavailable: KSM branch — deployment reports zero ready replicas ---
+  - interval: 1m
+    input_series:
+      - series: 'kube_deployment_status_replicas_ready{namespace="recsys", deployment="recsys-model-serving"}'
+        values: '2x5 0x10'
+      # A scrape target is still present, so the absent(up) branch stays silent and this case
+      # isolates the kube-state-metrics arm.
+      - series: 'up{namespace="recsys", job="recsys-model-serving", instance="10.0.0.9:8080"}'
+        values: '1x16'
+    alert_rule_test:
+      - eval_time: 4m
+        alertname: ModelServingUnavailable
+        exp_alerts: []          # still 2 ready at 4m
+      - eval_time: 12m
+        alertname: ModelServingUnavailable
+        exp_alerts:
+          - exp_labels:
+              severity: critical
+              namespace: recsys
+              deployment: recsys-model-serving
+            exp_annotations:
+              summary: "No ready model-serving replica for 5 minutes"
+              description: >-
+                Every recsys-model-serving pod is failing readiness (or the Deployment has no
+                pods), so the gateway's model routes fast-fail with 503 and every A/B variant
+                is offline together. Check pod status and the first startup log lines: a
+                control-variant artifact that fails manifest/checksum/contract validation or
+                the smoke inference makes readiness impossible by design, and the pod log names
+                the exact file and check that failed. See docs/runbooks/model-artifact-rollout.md.
+
+  # --- ModelServingUnavailable: scrape branch — no target at all ---
+  # Prometheus Operator discovers targets through the Service's Endpoints, which exclude pods
+  # that are not Ready, so a fleet with no ready pod has no `up` series to be 0. `up == 0`
+  # can never express that; absent() can. Also covers a cluster without kube-state-metrics.
+  - interval: 1m
+    input_series:
+      - series: 'up{namespace="recsys", job="recsys-online-serving", instance="10.0.0.2:7010"}'
+        values: '1x16'
+    alert_rule_test:
+      - eval_time: 12m
+        alertname: ModelServingUnavailable
+        exp_alerts:
+          - exp_labels:
+              severity: critical
+              namespace: recsys
+              job: recsys-model-serving
+            exp_annotations:
+              summary: "No ready model-serving replica for 5 minutes"
+              description: >-
+                Every recsys-model-serving pod is failing readiness (or the Deployment has no
+                pods), so the gateway's model routes fast-fail with 503 and every A/B variant
+                is offline together. Check pod status and the first startup log lines: a
+                control-variant artifact that fails manifest/checksum/contract validation or
+                the smoke inference makes readiness impossible by design, and the pod log names
+                the exact file and check that failed. See docs/runbooks/model-artifact-rollout.md.
+
+  # --- ModelServingUnavailable: healthy fleet must NOT fire ---
+  - interval: 1m
+    input_series:
+      - series: 'kube_deployment_status_replicas_ready{namespace="recsys", deployment="recsys-model-serving"}'
+        values: '3x16'
+      - series: 'up{namespace="recsys", job="recsys-model-serving", instance="10.0.0.9:8080"}'
+        values: '1x16'
+    alert_rule_test:
+      - eval_time: 12m
+        alertname: ModelServingUnavailable
+        exp_alerts: []
+
+  # --- ModelServingShedding: sustained 10% rejection with enough traffic fires ---
+  - interval: 1m
+    input_series:
+      - series: 'recsys_load_shedder_requests_total{job="recsys-model-serving", result="accepted"}'
+        values: '0+90x30'
+      - series: 'recsys_load_shedder_requests_total{job="recsys-model-serving", result="rejected"}'
+        values: '0+10x30'
+    alert_rule_test:
+      - eval_time: 25m
+        alertname: ModelServingShedding
+        exp_alerts:
+          - exp_labels:
+              severity: warning
+              job: recsys-model-serving
+            exp_annotations:
+              summary: "Model serving is shedding more than 5% of requests"
+              description: >-
+                The per-instance admission semaphore (RECSYS_HEALTH_MAX_CONCURRENT_REQUESTS,
+                8 per two-CPU pod) has been rejecting a sustained share of traffic. Rejected
+                requests are served from the degraded cache when one exists and 503 otherwise.
+                Either genuine overload — scale out, the HPA reacts to CPU not to this — or a
+                cap set below what the pod can actually run; raise it only with
+                InferenceLoadTest numbers from the same CPU shape.
+
+  # --- ModelServingShedding: 4% rejection is below the threshold, must NOT fire ---
+  # Written as 4% rather than exactly 5%: the ratio is a float division of two rate()s, and an
+  # input engineered to land exactly on 0.05 tests the rounding of that division, not the rule.
+  - interval: 1m
+    input_series:
+      - series: 'recsys_load_shedder_requests_total{job="recsys-model-serving", result="accepted"}'
+        values: '0+96x30'
+      - series: 'recsys_load_shedder_requests_total{job="recsys-model-serving", result="rejected"}'
+        values: '0+4x30'
+    alert_rule_test:
+      - eval_time: 25m
+        alertname: ModelServingShedding
+        exp_alerts: []
+
+  # --- ModelServingShedding: 50% rejection on a trickle must NOT fire ---
+  # THE volume guard. Two requests a minute, one rejected, is 50% -- and noise. The `and`
+  # branch requires at least 100 decisions in the ten-minute window before the ratio counts.
+  - interval: 1m
+    input_series:
+      - series: 'recsys_load_shedder_requests_total{job="recsys-model-serving", result="accepted"}'
+        values: '0+1x30'
+      - series: 'recsys_load_shedder_requests_total{job="recsys-model-serving", result="rejected"}'
+        values: '0+1x30'
+    alert_rule_test:
+      - eval_time: 25m
+        alertname: ModelServingShedding
+        exp_alerts: []
+
+  # --- ModelServingShedding: rejections on another job's shedder must NOT fire here ---
+  - interval: 1m
+    input_series:
+      - series: 'recsys_load_shedder_requests_total{job="recsys-catalog-serving", result="accepted"}'
+        values: '0+50x30'
+      - series: 'recsys_load_shedder_requests_total{job="recsys-catalog-serving", result="rejected"}'
+        values: '0+50x30'
+    alert_rule_test:
+      - eval_time: 25m
+        alertname: ModelServingShedding
+        exp_alerts: []
+
+  # --- ModelInferenceLatencyHigh: p95 of the recommend routes above 500ms fires ---
+  - interval: 1m
+    input_series:
+      # Everything lands in (0.5, 1]: p95 interpolates to ~0.975 > 0.5.
+      - series: 'http_server_requests_seconds_bucket{namespace="recsys", job="recsys-model-serving", uri="/api/v1/recommend", le="0.5"}'
+        values: '0+0x25'
+      - series: 'http_server_requests_seconds_bucket{namespace="recsys", job="recsys-model-serving", uri="/api/v1/recommend", le="1.0"}'
+        values: '0+100x25'
+      - series: 'http_server_requests_seconds_bucket{namespace="recsys", job="recsys-model-serving", uri="/api/v1/recommend", le="+Inf"}'
+        values: '0+100x25'
+    alert_rule_test:
+      - eval_time: 20m
+        alertname: ModelInferenceLatencyHigh
+        exp_alerts:
+          - exp_labels:
+              severity: warning
+              job: recsys-model-serving
+            exp_annotations:
+              summary: "recsys-model-serving p95 recommendation latency is above 500ms"
+              description: >-
+                The 95th percentile of /api/v1/recommend and /v2/recommend has been above the
+                500ms readiness budget (RECSYS_HEALTH_MAX_AVG_LATENCY_MS) for ten minutes, so
+                instances are close to draining themselves. ONNX runs one intra-op thread per
+                request by design (RECSYS_MODEL_ONNX_*); check recsys_model_onnx_runs_total
+                against request rate to confirm inference is actually running rather than
+                caches, then recsys_model_recall_tasks_total for recall timeouts feeding the
+                ranking stage late.
+
+  # --- ModelInferenceLatencyHigh: fast recommend traffic must NOT fire ---
+  - interval: 1m
+    input_series:
+      - series: 'http_server_requests_seconds_bucket{namespace="recsys", job="recsys-model-serving", uri="/v2/recommend", le="0.25"}'
+        values: '0+100x25'
+      - series: 'http_server_requests_seconds_bucket{namespace="recsys", job="recsys-model-serving", uri="/v2/recommend", le="0.5"}'
+        values: '0+100x25'
+      - series: 'http_server_requests_seconds_bucket{namespace="recsys", job="recsys-model-serving", uri="/v2/recommend", le="+Inf"}'
+        values: '0+100x25'
+    alert_rule_test:
+      - eval_time: 20m
+        alertname: ModelInferenceLatencyHigh
+        exp_alerts: []
+
+  # --- ModelInferenceLatencyHigh: slow NON-recommend routes must NOT fire ---
+  # The uri matcher is load-bearing: a slow /actuator/prometheus scrape or a slow token
+  # endpoint is not inference latency and must not page as if it were.
+  - interval: 1m
+    input_series:
+      - series: 'http_server_requests_seconds_bucket{namespace="recsys", job="recsys-model-serving", uri="/actuator/prometheus", le="0.5"}'
+        values: '0+0x25'
+      - series: 'http_server_requests_seconds_bucket{namespace="recsys", job="recsys-model-serving", uri="/actuator/prometheus", le="+Inf"}'
+        values: '0+100x25'
+      - series: 'http_server_requests_seconds_bucket{namespace="recsys", job="recsys-model-serving", uri="/api/v1/token", le="0.5"}'
+        values: '0+0x25'
+      - series: 'http_server_requests_seconds_bucket{namespace="recsys", job="recsys-model-serving", uri="/api/v1/token", le="+Inf"}'
+        values: '0+100x25'
+    alert_rule_test:
+      - eval_time: 20m
+        alertname: ModelInferenceLatencyHigh
+        exp_alerts: []
+
+  # --- ModelRuntimeLoadFailure: one failure fires within the 15m window, then clears ---
+  # increase() over 15m under a 5m hold: a single increment holds the expression true for
+  # roughly the range window, comfortably longer than the hold, so one failed load pages once
+  # and the alert resolves on its own when the window slides past it.
+  - interval: 1m
+    input_series:
+      - series: 'recsys_model_runtime_load_failures_total{job="recsys-model-serving", variant="test", phase="warmup"}'
+        values: '0 0 0 1 1 1 1 1 1 1 1 1 1 1 1 1 1 1 1 1 1 1 1 1 1 1 1 1 1 1 1 1 1 1 1 1'
+    alert_rule_test:
+      - eval_time: 10m
+        alertname: ModelRuntimeLoadFailure
+        exp_alerts:
+          - exp_labels:
+              severity: warning
+              job: recsys-model-serving
+              variant: test
+              phase: warmup
+            exp_annotations:
+              summary: "Model variant test failed to load (warmup)"
+              description: >-
+                A runtime for variant test could not be built during warmup. For a non-default
+                variant the pod stays ready and its bucket is served by control (see
+                recsys_abtest_variant_fallback_total) until the retry after cooldown succeeds;
+                a default-variant failure never reaches this alert because it fails startup
+                instead (ModelServingUnavailable). The pod log names the artifact and the check
+                — manifest schema, checksum, ONNX input/output contract, or smoke inference —
+                that rejected it. See docs/runbooks/model-artifact-rollout.md.
+      - eval_time: 30m
+        alertname: ModelRuntimeLoadFailure
+        exp_alerts: []          # window slid past the single increment
+
+  # --- ModelRuntimeLoadFailure: a flat historical count must NOT fire ---
+  - interval: 1m
+    input_series:
+      - series: 'recsys_model_runtime_load_failures_total{job="recsys-model-serving", variant="test", phase="request"}'
+        values: '4+0x30'
+    alert_rule_test:
+      - eval_time: 20m
+        alertname: ModelRuntimeLoadFailure
+        exp_alerts: []
