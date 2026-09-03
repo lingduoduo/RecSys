@@ -125,9 +125,9 @@ corresponding Service, probe, and gateway upstream configuration.
 | `MYSQL_POOL_CONNECTION_TIMEOUT_MS` / `MYSQL_POOL_IDLE_TIMEOUT_MS` / `MYSQL_POOL_MAX_LIFETIME_MS` | `10000` / `60000` / `1800000` | Hikari connection, idle, and lifetime timeouts. |
 | `ONLINE_DURABLE_EVENTS_ENABLED` | `false` | Enables durable online feature-event acceptance; requires `MYSQL_ENABLED=true` and the consistency-token secret in the next row. |
 | `ONLINE_CONSISTENCY_TOKEN_SECRET` | unset | At least 32 UTF-8 bytes for durable consistency tokens; use a Secret. |
-| `RECSYS_MODEL_ARTIFACTS_DIR` | classpath artifacts | External model-variant artifact root. |
+| `RECSYS_MODEL_ARTIFACTS_DIR` | classpath artifacts | External model-variant artifact root; may be a symlink to an immutable generation directory. A `<variant>/model_manifest.json`, when present, is strict: checksums, `model_version` agreement with `feature_config.json`, and the ONNX input/output contract are verified before readiness, and a malformed manifest never falls back to legacy loading. See `docs/runbooks/model-artifact-rollout.md`. |
 | `RECSYS_SPARK_ARTIFACTS_DIR` | classpath artifacts | External PySpark artifact root, including `als_model_metadata.json`; set it when a packaged JAR needs a filesystem path for Spark artifacts. |
-| `RECSYS_MODEL_FILE` | `dssm_model.onnx` | Model artifact filename. |
+| `RECSYS_MODEL_FILE` | `dssm_model.onnx` | Model artifact filename for **legacy** (manifest-less) bundles only; a manifest's `model_file` is authoritative. |
 | `RECSYS_MODEL_ITEM_EMBEDDINGS_SOURCE` | `classpath` | `classpath` or `redis`. |
 | `RECSYS_MODEL_REDIS_ITEM_EMBEDDING_PREFIX` | `i2vEmb` | Redis key prefix when model item embeddings use Redis. |
 | `RECSYS_MODEL_ONNX_INTRA_OP_THREADS` / `RECSYS_MODEL_ONNX_INTER_OP_THREADS` | `1` / `1` | ONNX Runtime intra- and inter-operation thread counts. Both must be positive. |

@@ -120,6 +120,22 @@ real Splunk by `SplunkHecIntegrationTest` (`@Tag("docker")`) on x86_64 CI only; 
 on arm64, where `splunkd` segfaults under emulation. See
 `docs/runbooks/splunk-hec-logging.md`.
 
+`RECSYS_MODEL_ONNX_INTRA_OP_THREADS` / `_INTER_OP_THREADS` / `_EXECUTION_MODE` (defaults `1` / `1` /
+`SEQUENTIAL`; `k8s/base` sets the same values explicitly) tune each ONNX session's native
+parallelism, and `RECSYS_MODEL_RECALL_CORE_THREADS` / `_QUEUE_CAPACITY` / `_TIMEOUT_MS` (defaults
+`2×CPUs` / `256` / `200`) size the model service's bounded recall executor — `RECALL_CHANNEL_TIMEOUT_MS`
+governs 6010/7010, not 8080. Model bundles under `RECSYS_MODEL_ARTIFACTS_DIR` may carry a
+`model_manifest.json`; when present it is **strict** (SHA-256 of every listed file, `model_version`
+agreement with `feature_config.json`, ONNX input/output contract, one smoke inference) and never
+falls back to legacy loading, while a manifest-less bundle still loads with one WARN per variant.
+The default variant failing to load is fatal; a treatment failing degrades that bucket to control
+(`recsys_model_runtime_load_failures_total`). `recsys_model_onnx_runs_total{variant}` counts real
+`OrtSession.run` calls and is what `InferenceLoadTest` and the k6 script assert on — a rising
+request rate with a flat counter means caches, not inference. `RECSYS_HEALTH_MAX_FAILURE_RATE` and
+`RECSYS_HEALTH_MAX_AVG_LATENCY_MS` are `${...}` placeholders in `application.yml` **on purpose**:
+Spring relaxed binding does not map those underscore names to `max-failure-rate` /
+`max-avg-latency-ms` by itself. See `docs/runbooks/model-artifact-rollout.md`.
+
 `MYSQL_ENABLED` (default `"false"`) gates the durable relational path (outbox, catalog reads);
 when it is `true`, `MYSQL_URL` must carry `sslMode=VERIFY_IDENTITY` — `MySqlConnectionSettings`'s
 compact constructor refuses to build otherwise, since Connector/J 8 otherwise defaults to
