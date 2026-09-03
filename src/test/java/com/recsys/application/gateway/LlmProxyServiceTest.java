@@ -122,11 +122,16 @@ class LlmProxyServiceTest {
                 1_000L);
         HttpResponseWriter upstream = HttpResponse.streaming();
         var method = LlmProxyService.class.getDeclaredMethod(
-                "forwardStreaming", HttpResponse.class, RouteCircuitBreaker.Permit.class, int.class);
+                "forwardStreaming", ServiceRequestContext.class, HttpResponse.class,
+                RouteCircuitBreaker.Permit.class, int.class);
         method.setAccessible(true);
-        // The declared token estimate only matters to the budget settle-up, which a disabled
-        // LlmTokenRateLimiter ignores; this test is about circuit-breaker state.
-        HttpResponse forwarded = (HttpResponse) method.invoke(service, upstream, probe, 1_000);
+        // The context only carries the event loop the SSE keepalive schedules on, and the declared
+        // token estimate only matters to the budget settle-up that a disabled LlmTokenRateLimiter
+        // ignores; this test is about circuit-breaker state.
+        ServiceRequestContext streamCtx = ServiceRequestContext.of(
+                HttpRequest.of(HttpMethod.POST, "/api/llm/v1/chat"));
+        HttpResponse forwarded =
+                (HttpResponse) method.invoke(service, streamCtx, upstream, probe, 1_000);
 
         upstream.write(ResponseHeaders.of(HttpStatus.OK));
         assertThat(circuit.state()).isEqualTo(HALF_OPEN);

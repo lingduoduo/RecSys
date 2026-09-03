@@ -553,6 +553,7 @@
                 <include>**/gateway/LlmProxyStreamTimeoutTest.java</include>
                 <include>**/gateway/LlmTokenBudgetReconciliationTest.java</include>
                 <include>**/gateway/LlmTokenUsageScannerTest.java</include>
+                <include>**/gateway/LlmSseKeepaliveTest.java</include>
                 <include>**/auth/AdminTokenGuardTest.java</include>
                 <include>**/serving/EmbeddingSeedRepairTest.java</include>
                 <include>**/serving/CacheKeyParamTest.java</include>
