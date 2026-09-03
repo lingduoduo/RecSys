@@ -19,6 +19,7 @@ import com.linecorp.armeria.common.MediaType;
 import com.linecorp.armeria.common.RequestHeaders;
 import com.linecorp.armeria.common.RequestHeadersBuilder;
 import com.linecorp.armeria.common.ResponseHeaders;
+import com.linecorp.armeria.common.util.TimeoutMode;
 import com.linecorp.armeria.server.HttpService;
 import com.linecorp.armeria.server.ServiceRequestContext;
 
@@ -77,6 +78,7 @@ public final class LlmProxyService implements HttpService {
     private final int defaultTokenEstimate;
     private final long maxRetryWaitMs;
     private final GatewayAuthenticator authenticator;
+    private final Duration timeout;
 
     public LlmProxyService(MicroserviceRoute route,
                     Duration timeout,
@@ -141,6 +143,7 @@ public final class LlmProxyService implements HttpService {
         this.defaultTokenEstimate = defaultTokenEstimate;
         this.maxRetryWaitMs = maxRetryWaitMs;
         this.authenticator = authenticator == null ? GatewayAuthenticator.disabled() : authenticator;
+        this.timeout = timeout;
 
         this.webClient = WebClient.builder(route.baseUri().toString())
                 .factory(clientFactory == null ? ClientFactory.ofDefault() : clientFactory)
@@ -158,6 +161,16 @@ public final class LlmProxyService implements HttpService {
                     HttpStatus.BAD_REQUEST, apiVersion.unsupportedMessage());
         }
         String path = apiVersion.path();
+
+        // Armeria's *server* request timeout covers response completion, not time-to-first-byte,
+        // and the gateway builds its server with a bare Server.builder().http(port) — so without
+        // this line the untouched 10 s default, not the configured LLM_TIMEOUT_MS, is the real
+        // ceiling on every LLM call: a token stream is reset mid-generation after the client
+        // already has 200 + text/event-stream (a *silent* truncation an EventSource retries,
+        // re-paying for the whole prompt), and a buffered call returns Armeria's bare 503.
+        // Bind it to the same budget the upstream client uses rather than clearing it outright,
+        // so a stuck request still has a backstop instead of pinning a connection forever.
+        ctx.setRequestTimeout(TimeoutMode.SET_FROM_NOW, timeout);
 
         GatewayAuthResult auth = authenticator.check(req.headers(), path);
         if (auth.rejected()) return auth.rejection();

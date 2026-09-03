@@ -128,7 +128,7 @@ is what keeps a long, slow token stream healthy:
 
 | Env var | Default | Purpose |
 |---|---|---|
-| `LLM_TIMEOUT_MS` | 120 000 (120 s) | WebClient `responseTimeoutMillis` — LLM inference is slow |
+| `LLM_TIMEOUT_MS` | 120 000 (120 s) | The whole LLM budget — WebClient `responseTimeoutMillis` **and** the per-request server timeout `LlmProxyService.serve` sets on itself. Before that second binding the untuned 10 s server default cut first (sharp edge 1) |
 | `LLM_CONNECT_TIMEOUT_MS` | 2 000 | Upstream connect timeout |
 | `LLM_IDLE_TIMEOUT_MS` | 60 000 | Idle-connection reaper |
 | `LLM_PING_INTERVAL_MS` | 20 000 | HTTP/2 keepalive PING — must stay **below** the idle timeout so a quiet stream isn't reaped |
@@ -140,15 +140,59 @@ the connection open across gaps between token frames.
 
 ## 7. Sharp edges worth flagging
 
-1. **Server-side request timeout is not cleared for streaming responses.** The
-   gateway builds its server with `Server.builder().http(port)` and never
-   overrides the Armeria server request timeout (default **10 s**) nor calls
-   `ctx.clearRequestTimeout()` on the streaming path. Only the *client-side*
-   `responseTimeoutMillis` (120 s) and idle timeout are tuned. If Armeria's
-   request timeout applies to stream *completion* (time from request start until
-   `writer.close()`), an LLM stream that runs longer than 10 s could be
-   truncated. **Worth verifying with an integration test** — current tests cover
-   only header handling, not stream lifetime.
+1. **The 10 s server request timeout used to cap every LLM call — measured, and
+   now fixed.** The gateway builds its server with `Server.builder().http(port)`
+   ([MicroserviceGatewayServer.java:159](../../src/main/java/com/recsys/api/gateway/MicroserviceGatewayServer.java#L159))
+   and never overrides Armeria's server request timeout. That timeout covers
+   response **completion**, not time-to-first-byte, so before the fix below the
+   configured `LLM_TIMEOUT_MS` of 120 s was unreachable on both paths — the
+   effective ceiling was 10 s, whatever the env var said.
+
+   Measured against the exact production wiring (`LlmProxyService` mounted on a
+   `Server.builder().http(port)` server, Armeria 1.28.4, upstream held open):
+
+   | Probe | Result |
+   |---|---|
+   | `ServiceConfig.requestTimeoutMillis()` for `/api/llm/*` | **10000** (the default, never overridden) |
+   | Streaming, 24 frames over 12 s | **19/24 frames**, then `ClosedStreamException` (RST_STREAM `INTERNAL_ERROR`) at **10 021 ms** |
+   | Streaming, same upstream, timeout disabled | 24/24 frames, clean `onComplete` |
+   | Buffered, single response after 12 s | **503** at ~11.4 s, body `Status: 503 / Description: Service Unavailable` |
+
+   Two distinct failure modes fell out of that:
+   - **Streaming truncated silently.** The client already received `200` and
+     `text/event-stream` headers, so there is no error status to observe — the
+     token stream just stops mid-generation. A browser `EventSource` treats that
+     as a dropped connection and *auto-reconnects*, re-issuing the whole prompt
+     and paying for the tokens a second time.
+   - **Buffered returned Armeria's built-in 503**, in plain text, not the
+     gateway's JSON error envelope — so a client parsing `{"error": ...}` off the
+     LLM route gets a parse failure instead of a readable message. Note this is
+     Armeria's own timeout response, not the circuit breaker's 503, though the
+     two are indistinguishable to the caller.
+
+   This was **not dormant**: `k8s/base/configmap.yaml:20-21` sets both
+   `LLM_SERVICE_URL` and `LLM_EXPLANATION_SERVICE_URL` to `http://ollama:11434`
+   and the gateway `envFrom`s that ConfigMap
+   ([api-gateway.yaml:40-42](../../k8s/base/api-gateway.yaml#L40-L42)), so the LLM
+   routes are registered in every deployed gateway. No manifest sets
+   `LLM_TIMEOUT_MS`, so the intended budget is the 120 s default — 12× the
+   ceiling actually enforced. Local generation on Ollama routinely exceeds 10 s.
+
+   The non-LLM routes are unaffected by construction, not by luck:
+   `GATEWAY_TIMEOUT_MS` is 3 000 and the catch-all proxy's own outbound timeout
+   fires first. Only the LLM path is configured to outlive the server timeout.
+
+   **The fix.** `LlmProxyService.serve` now opens with
+   `ctx.setRequestTimeout(TimeoutMode.SET_FROM_NOW, timeout)`, binding the server
+   timeout to the same `LLM_TIMEOUT_MS` budget the upstream `WebClient` already
+   uses — so one env var means one ceiling on both sides. It *sets* rather than
+   clears deliberately: `clearRequestTimeout()` would fix the streaming
+   truncation but leave a stuck request pinning a connection with no backstop but
+   the client-side timeout, and it would not have fixed the buffered path at all.
+   Both failure modes are covered by
+   [LlmProxyStreamTimeoutTest.java](../../src/test/java/com/recsys/application/gateway/LlmProxyStreamTimeoutTest.java),
+   which is in the `resilience` PR-gate profile. Raising an LLM call's ceiling is
+   now what it looks like: raise `LLM_TIMEOUT_MS`.
 2. **Streaming has no retry and no cache.** A `429` or `5xx` that arrives after
    the upstream headers are written is surfaced mid-stream; the client must
    handle a partial/failed stream itself. This is intentional but asymmetric
@@ -167,5 +211,11 @@ SSE streaming is a thin, well-factored reverse-proxy passthrough scoped entirely
 to the LLM gateway. It reuses the gateway's auth, token-budget, circuit-breaker,
 and header-sanitization machinery, and gets its own long-timeout HTTP/2 client so
 slow inference streams stay alive — while deliberately opting out of caching and
-retry that only make sense for buffered responses. The main thing to validate is
-that the server-side request timeout does not cap long streams.
+retry that only make sense for buffered responses.
+
+The one thing that did *not* hold was the timeout budget: a tuned 120 s
+client-side timeout defeated by an untuned 10 s server-side request timeout that
+covers response completion, capping every LLM call — streamed or buffered — at
+10 s. Streams truncated silently mid-token; buffered calls returned a bare 503.
+Both were measured, both were live in `k8s/base`, and both are now fixed by
+binding the server timeout to `LLM_TIMEOUT_MS`. See sharp edge 1.
