@@ -49,6 +49,14 @@ recsys:
     item-embeddings-source: ${RECSYS_MODEL_ITEM_EMBEDDINGS_SOURCE:classpath}
     redis:
       item-embedding-prefix: ${RECSYS_MODEL_REDIS_ITEM_EMBEDDING_PREFIX:i2vEmb}
+    onnx:
+      intra-op-threads: ${RECSYS_MODEL_ONNX_INTRA_OP_THREADS:1}
+      inter-op-threads: ${RECSYS_MODEL_ONNX_INTER_OP_THREADS:1}
+      execution-mode: ${RECSYS_MODEL_ONNX_EXECUTION_MODE:SEQUENTIAL}
+    recall:
+      core-threads: ${RECSYS_MODEL_RECALL_CORE_THREADS:0}
+      queue-capacity: ${RECSYS_MODEL_RECALL_QUEUE_CAPACITY:256}
+      timeout-ms: ${RECSYS_MODEL_RECALL_TIMEOUT_MS:200}
   spark:
     # PySpark model artifacts output by the training pipeline (classpath:artifacts/pyspark/)
     artifacts-dir: ${RECSYS_SPARK_ARTIFACTS_DIR:}

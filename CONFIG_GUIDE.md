@@ -130,6 +130,10 @@ corresponding Service, probe, and gateway upstream configuration.
 | `RECSYS_MODEL_FILE` | `dssm_model.onnx` | Model artifact filename. |
 | `RECSYS_MODEL_ITEM_EMBEDDINGS_SOURCE` | `classpath` | `classpath` or `redis`. |
 | `RECSYS_MODEL_REDIS_ITEM_EMBEDDING_PREFIX` | `i2vEmb` | Redis key prefix when model item embeddings use Redis. |
+| `RECSYS_MODEL_ONNX_INTRA_OP_THREADS` / `RECSYS_MODEL_ONNX_INTER_OP_THREADS` | `1` / `1` | ONNX Runtime intra- and inter-operation thread counts. Both must be positive. |
+| `RECSYS_MODEL_ONNX_EXECUTION_MODE` | `SEQUENTIAL` | ONNX Runtime execution mode: `SEQUENTIAL` (conservative default) or `PARALLEL`. |
+| `RECSYS_MODEL_RECALL_CORE_THREADS` | computed | Recall executor core thread count. `0` selects `max(1, availableProcessors * 2)`; negative values fail startup. |
+| `RECSYS_MODEL_RECALL_QUEUE_CAPACITY` / `RECSYS_MODEL_RECALL_TIMEOUT_MS` | `256` / `200` ms | Bounded recall queue capacity and task timeout. Both must be positive. |
 | `RECSYS_RECOMMENDATION_CACHE_ENABLED` / `RECSYS_RECOMMENDATION_CACHE_TTL_SECONDS` / `RECSYS_RECOMMENDATION_CACHE_MAX_ENTRIES` | `true` / `300` / `10000` | Model-serving response cache switch, positive TTL, and positive capacity (maximum `100000`). Invalid bound values fail Spring startup. |
 | `RECSYS_RECOMMENDATION_CACHE_COLD_START_ENABLED` / `RECSYS_RECOMMENDATION_CACHE_COLD_START_TTL_SECONDS` / `RECSYS_RECOMMENDATION_CACHE_COLD_START_MAX_K` | `true` / `3600` / `100` | Shared cold-start cache switch, positive TTL, and maximum result size in `1..100`. |
 | `RECSYS_RECOMMENDATION_CACHE_COMPUTE_WAIT_TIMEOUT_MILLIS` | `2000` ms | Maximum wait for an in-flight duplicate cache computation; valid range `1..60000`. |
