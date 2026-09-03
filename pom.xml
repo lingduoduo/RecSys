@@ -601,7 +601,23 @@
                      URI, or every request with an id in the path becomes its own route value.
                      MockHttpServletRequest only, no container. -->
                 <include>**/config/SlowRequestInterceptorTest.java</include>
-              </includes>
+                              <!-- ONNX serving hardening (PR #309). Five tests that pin the properties an
+                     unverified model bundle or a mis-wired variant would break, chosen for the
+                     profile because none touches ONNX Runtime, Redis, Docker, or the clock:
+                     the contract tests run against a Mockito session adapter, not a real model;
+                     the manifest/path-safety tests use @TempDir files (the one symlink case
+                     aborts via Assumptions where links are unsupported); the manifest test is
+                     pure YAML/text parsing; the two metric/resolver tests use a fixed LongSupplier
+                     clock. MultiChannelRecallServiceTest is deliberately NOT here — its
+                     cancellation cases wait on real 100-150ms deadlines, the timing dependency
+                     issue #261 burned this profile on — and UserTowerInferenceServiceTest loads
+                     the real ONNX model, so it stays in the default suite only. -->
+                <include>**/model/ModelArtifactManifestTest.java</include>
+                <include>**/retrieval/UserTowerInferenceContractTest.java</include>
+                <include>**/experiment/VariantRuntimeResolverTest.java</include>
+                <include>**/retrieval/multichannel/RecallTaskMetricsTest.java</include>
+                <include>**/k8s/ModelServingManifestTest.java</include>
+</includes>
               <excludedGroups>load,docker</excludedGroups>
             </configuration>
           </plugin>
