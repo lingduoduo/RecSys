@@ -11,6 +11,7 @@ import com.recsys.infrastructure.redis.RedisEmbeddingStore;
 import com.recsys.infrastructure.redis.RedisExecutor;
 import com.recsys.loadshed.GracefulExecutors;
 import com.recsys.config.ABTestConfig;
+import com.recsys.config.ModelServingProperties;
 import com.recsys.infrastructure.dataloading.DataManager;
 import com.recsys.infrastructure.vectordb.CandidateGenerator;
 import com.recsys.resilience.FaultInjector;
@@ -24,6 +25,8 @@ import com.recsys.application.retrieval.coldstart.QuotaPolicy;
 import com.recsys.application.retrieval.multichannel.ChannelHealthMonitor;
 import com.recsys.application.retrieval.multichannel.MultiChannelRecallService;
 import com.recsys.application.retrieval.multichannel.RecallConfig;
+import io.micrometer.core.instrument.MeterRegistry;
+import io.micrometer.core.instrument.simple.SimpleMeterRegistry;
 import jakarta.annotation.PreDestroy;
 import org.springframework.beans.factory.SmartInitializingSingleton;
 import org.springframework.beans.factory.annotation.Autowired;
@@ -61,6 +64,8 @@ public class ModelRuntimeProvider implements SmartInitializingSingleton {
     private final String modelFile;
     private final String itemEmbeddingsSource;
     private final String redisItemEmbeddingPrefix;
+    private final ModelServingProperties servingProperties;
+    private final MeterRegistry meterRegistry;
     private final Map<String, ModelRuntime> runtimes = new ConcurrentHashMap<>();
     private final Set<String> legacyWarningVariants = ConcurrentHashMap.newKeySet();
     private RedisExecutor redisItemEmbeddingPool;
@@ -77,17 +82,30 @@ public class ModelRuntimeProvider implements SmartInitializingSingleton {
         this(artifactLocator, abTestConfig, "dssm_model.onnx", "classpath", "i2vEmb");
     }
 
+    public ModelRuntimeProvider(ModelArtifactLocator artifactLocator,
+                                ABTestConfig abTestConfig,
+                                String modelFile,
+                                String itemEmbeddingsSource,
+                                String redisItemEmbeddingPrefix) {
+        this(artifactLocator, abTestConfig, modelFile, itemEmbeddingsSource, redisItemEmbeddingPrefix,
+                new ModelServingProperties(), new SimpleMeterRegistry());
+    }
+
     @Autowired
     public ModelRuntimeProvider(ModelArtifactLocator artifactLocator,
                                 ABTestConfig abTestConfig,
                                 @Value("${recsys.model.file:dssm_model.onnx}") String modelFile,
                                 @Value("${recsys.model.item-embeddings-source:classpath}") String itemEmbeddingsSource,
-                                @Value("${recsys.model.redis.item-embedding-prefix:i2vEmb}") String redisItemEmbeddingPrefix) {
+                                @Value("${recsys.model.redis.item-embedding-prefix:i2vEmb}") String redisItemEmbeddingPrefix,
+                                ModelServingProperties servingProperties,
+                                MeterRegistry meterRegistry) {
         this.artifactLocator = artifactLocator;
         this.abTestConfig = abTestConfig;
         this.modelFile = Strings.orDefault(modelFile, "dssm_model.onnx");
         this.itemEmbeddingsSource = itemEmbeddingsSource == null ? "classpath" : itemEmbeddingsSource.trim();
         this.redisItemEmbeddingPrefix = Strings.orDefault(redisItemEmbeddingPrefix, "i2vEmb");
+        this.servingProperties = servingProperties == null ? new ModelServingProperties() : servingProperties;
+        this.meterRegistry = meterRegistry == null ? new SimpleMeterRegistry() : meterRegistry;
     }
 
     /**
@@ -221,7 +239,14 @@ public class ModelRuntimeProvider implements SmartInitializingSingleton {
                         + "artifact consistency and checksums are not verified", variant);
             }
 
-            UserTowerInferenceService inferenceService = new UserTowerInferenceService(artifactLocator, variant, modelFile);
+            // The bytes and contract come from the artifact service, so a manifest bundle's
+            // checksummed model is exactly what the session opens — never a second, unchecked read.
+            UserTowerInferenceService inferenceService = new UserTowerInferenceService(
+                    artifactService.modelBytes(),
+                    artifactService.modelContract(),
+                    servingProperties.getOnnx(),
+                    variant,
+                    meterRegistry);
             inferenceService.init();
 
             FeatureEncoder featureEncoder = new FeatureEncoder(artifactService);

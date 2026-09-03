@@ -12,6 +12,7 @@ import java.util.Map;
 import java.util.Set;
 
 import static org.assertj.core.api.Assertions.assertThat;
+import static org.assertj.core.api.Assertions.assertThatThrownBy;
 
 class UserTowerInferenceServiceTest {
 
@@ -31,6 +32,31 @@ class UserTowerInferenceServiceTest {
     @Test
     void init_loadsOnnxSession_withoutException() {
         assertThat(service).isNotNull();
+    }
+
+    @Test
+    void initValidatesMetadataAndRunsSmokeInference() {
+        // The bundled demo model satisfies the legacy contract; init must have already paid
+        // exactly one native run (the smoke inference) before reporting ready.
+        assertThat(service.isReady()).isTrue();
+        assertThat(service.runCount()).isEqualTo(1);
+    }
+
+    @Test
+    void everyNativeRunIsCounted() {
+        long before = service.runCount();
+        service.score(new FeatureEncoder.EncodedFeatures(1L), 1L);
+        service.score(new FeatureEncoder.EncodedFeatures(1L), 2L);
+        assertThat(service.runCount()).isEqualTo(before + 2);
+    }
+
+    @Test
+    void closeClearsReadinessAndIsIdempotent() throws Exception {
+        service.close();
+        service.close();
+        assertThat(service.isReady()).isFalse();
+        assertThatThrownBy(() -> service.score(new FeatureEncoder.EncodedFeatures(1L), 1L))
+                .isInstanceOf(IllegalStateException.class);
     }
 
     @Test
