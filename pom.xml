@@ -550,6 +550,7 @@
                      forwarding path. -->
                 <include>**/gateway/GatewayAuthenticatorTest.java</include>
                 <include>**/gateway/LlmProxyServiceTest.java</include>
+                <include>**/gateway/LlmProxyStreamTimeoutTest.java</include>
                 <include>**/auth/AdminTokenGuardTest.java</include>
                 <include>**/serving/EmbeddingSeedRepairTest.java</include>
                 <include>**/serving/CacheKeyParamTest.java</include>
