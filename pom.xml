@@ -334,6 +334,8 @@
               <includes>
                 <include>**/resilience/*Test.java</include>
                 <include>**/loadshed/*Test.java</include>
+                <include>**/gateway/UpstreamEndpointGroupsTest.java</include>
+                <include>**/gateway/GatewayUpstreamHealthCheckIntegrationTest.java</include>
                 <include>**/ratelimit/RedisRateLimiterTest.java</include>
                 <include>**/retrieval/multichannel/*DegradationTest.java</include>
                 <include>**/retrieval/multichannel/*BulkheadTest.java</include>

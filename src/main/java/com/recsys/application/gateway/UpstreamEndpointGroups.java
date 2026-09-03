@@ -123,8 +123,13 @@ final class UpstreamEndpointGroups implements java.io.Closeable {
         // immediately with EmptyEndpointGroupException instead of waiting out the selection timeout,
         // so the gateway fast-fails with 503 rather than hanging. The selection timeout still bounds any
         // brief resolution window to no more than a normal request would take.
+        // useGet(true): Armeria probes with HEAD by default, but the catalog and online health handlers
+        // are GET-only (BaseApiService subclasses override doGet alone) and answer 405 to HEAD, which
+        // the checker treats as unhealthy — so both Armeria upstreams were never selectable while the
+        // gateway's own GET-based /health aggregation reported them UP. GET matches that aggregation.
         return HealthCheckedEndpointGroup.builder(endpoint, healthPath)
                 .protocol(protocol)
+                .useGet(true)
                 .retryIntervalMillis(config.healthCheckIntervalMs())
                 .selectionTimeoutMillis(responseTimeout.toMillis())
                 .allowEmptyEndpoints(false)

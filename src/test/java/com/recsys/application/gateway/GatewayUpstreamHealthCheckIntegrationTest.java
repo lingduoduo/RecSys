@@ -9,6 +9,7 @@ import com.linecorp.armeria.common.HttpRequest;
 import com.linecorp.armeria.common.HttpResponse;
 import com.linecorp.armeria.common.HttpStatus;
 import com.linecorp.armeria.common.MediaType;
+import com.linecorp.armeria.server.AbstractHttpService;
 import com.linecorp.armeria.server.ServerBuilder;
 import com.linecorp.armeria.server.ServiceRequestContext;
 import com.linecorp.armeria.testing.junit5.server.ServerExtension;
@@ -35,7 +36,15 @@ class GatewayUpstreamHealthCheckIntegrationTest {
     static final ServerExtension healthyUpstream = new ServerExtension() {
         @Override
         protected void configure(ServerBuilder sb) {
-            sb.service("/health", (ctx, req) -> HttpResponse.of(HttpStatus.OK));
+            // GET-only, exactly like the production health handlers (BaseApiService subclasses override
+            // doGet alone), so a HEAD probe gets 405 here as it does from the catalog and online services.
+            // A lambda HttpService would accept any method and hide a probe-method mismatch.
+            sb.service("/health", new AbstractHttpService() {
+                @Override
+                protected HttpResponse doGet(ServiceRequestContext ctx, HttpRequest req) {
+                    return HttpResponse.of(HttpStatus.OK);
+                }
+            });
             sb.service("prefix:/api", (ctx, req) ->
                     HttpResponse.of(HttpStatus.OK, MediaType.JSON_UTF_8, "{\"ok\":true}"));
         }
