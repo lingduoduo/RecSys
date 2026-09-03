@@ -133,10 +133,14 @@ is what keeps a long, slow token stream healthy:
 | `LLM_IDLE_TIMEOUT_MS` | 60 000 | Idle-connection reaper |
 | `LLM_PING_INTERVAL_MS` | 20 000 | HTTP/2 keepalive PING — must stay **below** the idle timeout so a quiet stream isn't reaped |
 | `LLM_MAX_RETRY_WAIT_MS` | 30 000 | Cap on honored `Retry-After` (buffered only) |
+| `LLM_SSE_KEEPALIVE_MS` | 15 000 | Gap between `: keep-alive` SSE comment frames on a quiet stream; 0 disables. Must stay well under the ALB's 60 s idle timeout (sharp edge 4) |
 | `LLM_DEFAULT_TOKEN_ESTIMATE` | 1 000 | Token budget when `max_tokens` is absent |
 
-The HTTP/2 PING (`pingIntervalMillis`) — **not** a WebSocket ping — is what holds
-the connection open across gaps between token frames.
+The HTTP/2 PING (`pingIntervalMillis`) — **not** a WebSocket ping — holds the
+gateway→upstream connection open across gaps between token frames. It does
+nothing for the client-facing leg, whose own liveness comes from the SSE
+keepalive above; see sharp edge 4 for why that distinction was measured rather
+than assumed.
 
 ## 7. Sharp edges worth flagging
 
@@ -225,9 +229,41 @@ the connection open across gaps between token frames.
    caller-controlled one — the upstream is fixed by `LLM_SERVICE_URL`, so a caller
    cannot select a silent one to evade the budget. A mid-stream failure is charged
    for whatever it had produced before dying.
-4. **No SSE-specific keepalive/heartbeat frame.** Liveness relies on the HTTP/2
-   PING interval, not on SSE comment frames (`: keep-alive\n\n`); intermediaries
-   that don't honor HTTP/2 PING could still idle-close a very slow stream.
+4. **No SSE keepalive frame — added, and the original reasoning was wrong.**
+   This edge claimed liveness rested on the HTTP/2 PING interval. Measured, it
+   did not, in two ways:
+   - `LLM_PING_INTERVAL_MS` is set on the LLM **`ClientFactory`**
+     ([MicroserviceGatewayServer.java:291-292](../../src/main/java/com/recsys/api/gateway/MicroserviceGatewayServer.java#L291-L292)),
+     so it governs the gateway→upstream leg, not the client-facing one.
+   - On the client-facing leg the gateway's own defaults are
+     `idleTimeoutMillis=15000` and `pingIntervalMillis=0` — **PING is disabled** —
+     and it does not matter: a 25 s silent gap mid-stream survives cleanly on both
+     h1c and h2c, because Armeria does not count a connection with an in-flight
+     response as idle. The gateway will not cut a slow stream.
+
+   The real exposure is the hop in front. No ingress sets
+   `alb.ingress.kubernetes.io/load-balancer-attributes:
+   idle_timeout.timeout_seconds`, so the ALB's **60 s default** applies, and
+   unlike Armeria it counts a silent streaming connection as idle — while
+   `LLM_TIMEOUT_MS` is willing to wait 120 s. A model that thinks for longer than
+   60 s between tokens therefore loses the connection at the load balancer, and
+   the client sees the same silent truncation as sharp edge 1.
+
+   `LlmProxyService` now emits `: keep-alive\n\n` every `LLM_SSE_KEEPALIVE_MS`
+   (default 15 000; 0 disables) while a stream is quiet. A leading `:` is the SSE
+   spec's own comment syntax, ignored by `EventSource`, so a conforming client
+   never sees it. Two guards keep the heartbeat from corrupting what it is
+   protecting, and both are mutation-tested:
+   - **Only for `text/event-stream`.** The passthrough is content-type agnostic;
+     a comment line injected into native Ollama NDJSON would hand the client a
+     line that is not JSON.
+   - **Only at a frame boundary** (the bytes so far end `\n\n`). A chunk boundary
+     is a network artifact, not a frame boundary, so writing while a frame is
+     half-delivered would splice a comment through the middle of it.
+
+   Setting the ALB's `idle_timeout.timeout_seconds` above `LLM_TIMEOUT_MS` is a
+   complementary infra-side knob, not a substitute: the heartbeat also covers
+   CloudFront and any other intermediary.
 
 ## Summary
 

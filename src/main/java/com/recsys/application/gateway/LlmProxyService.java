@@ -1,4 +1,5 @@
 package com.recsys.application.gateway;
+import com.recsys.config.EnvVars;
 import com.recsys.ratelimit.TokenBucket;
 import com.recsys.ratelimit.LlmTokenRateLimiter;
 import com.recsys.resilience.RouteCircuitBreaker;
@@ -57,6 +58,12 @@ public final class LlmProxyService implements HttpService {
     public static final int DEFAULT_TIMEOUT_MS = 120_000;
     public static final int DEFAULT_MAX_RETRY_WAIT_MS = 30_000;
     public static final int DEFAULT_TOKEN_ESTIMATE = 1_000;
+    /**
+     * Interval between SSE keepalive comment frames. Must stay well below the ALB's idle timeout
+     * (60 s by default, and no ingress overrides it), which counts a silent streaming connection
+     * as idle even though Armeria itself does not. 0 disables the heartbeat.
+     */
+    public static final long DEFAULT_SSE_KEEPALIVE_MS = 15_000;
 
     private static final int SC_TOO_MANY_REQUESTS = 429;
     private static final ObjectMapper MAPPER = new ObjectMapper();
@@ -79,6 +86,7 @@ public final class LlmProxyService implements HttpService {
     private final long maxRetryWaitMs;
     private final GatewayAuthenticator authenticator;
     private final Duration timeout;
+    private final long sseKeepaliveMs;
 
     public LlmProxyService(MicroserviceRoute route,
                     Duration timeout,
@@ -113,6 +121,21 @@ public final class LlmProxyService implements HttpService {
                     long maxRetryWaitMs,
                     GatewayAuthenticator authenticator,
                     ClientFactory clientFactory) {
+        this(route, timeout, circuitBreaker, tokenRateLimiter, responseCache, defaultTokenEstimate,
+                maxRetryWaitMs, authenticator, clientFactory,
+                EnvVars.readLong("LLM_SSE_KEEPALIVE_MS", DEFAULT_SSE_KEEPALIVE_MS));
+    }
+
+    public LlmProxyService(MicroserviceRoute route,
+                    Duration timeout,
+                    RouteCircuitBreaker circuitBreaker,
+                    LlmTokenRateLimiter tokenRateLimiter,
+                    LlmResponseCache responseCache,
+                    int defaultTokenEstimate,
+                    long maxRetryWaitMs,
+                    GatewayAuthenticator authenticator,
+                    ClientFactory clientFactory,
+                    long sseKeepaliveMs) {
         // This class is a second forwarding path: it duplicates the credential stripping and
         // identity injection of GatewayRequestForwarder, but it never consults BackendRoutePolicy
         // for the request path at all — no user-scope check, no operator-token check, nothing.
@@ -144,6 +167,7 @@ public final class LlmProxyService implements HttpService {
         this.maxRetryWaitMs = maxRetryWaitMs;
         this.authenticator = authenticator == null ? GatewayAuthenticator.disabled() : authenticator;
         this.timeout = timeout;
+        this.sseKeepaliveMs = sseKeepaliveMs;
 
         this.webClient = WebClient.builder(route.baseUri().toString())
                 .factory(clientFactory == null ? ClientFactory.ofDefault() : clientFactory)
@@ -241,7 +265,7 @@ public final class LlmProxyService implements HttpService {
                         // Return the streaming response directly without wrapping in a future.
                         // We complete the CompletableFuture immediately with the streaming writer.
                         return CompletableFuture.completedFuture(
-                                forwardStreaming(webClient.execute(upstreamReq), circuitPermit,
+                                forwardStreaming(ctx, webClient.execute(upstreamReq), circuitPermit,
                                         meta.maxTokens()));
                     } else {
                         return CompletableFuture.completedFuture(
@@ -254,6 +278,7 @@ public final class LlmProxyService implements HttpService {
     // ── Streaming path ──────────────────────────────────────────────────────────────────────────
 
     private HttpResponse forwardStreaming(
+            ServiceRequestContext ctx,
             HttpResponse upstream,
             RouteCircuitBreaker.Permit circuitPermit,
             int declaredTokens) {
@@ -263,6 +288,12 @@ public final class LlmProxyService implements HttpService {
             private final AtomicBoolean budgetSettled = new AtomicBoolean();
             private final LlmTokenUsageScanner usageScanner = new LlmTokenUsageScanner(MAPPER);
             private volatile HttpStatus responseStatus;
+            /** Non-null only while a keepalive heartbeat is running for this response. */
+            private volatile java.util.concurrent.ScheduledFuture<?> keepalive;
+            private volatile long lastWriteNanos = System.nanoTime();
+            /** The last two bytes forwarded — an SSE frame ends on "\n\n". */
+            private volatile char lastByte;
+            private volatile char secondLastByte;
 
             @Override
             public void onSubscribe(org.reactivestreams.Subscription s) {
@@ -279,16 +310,20 @@ public final class LlmProxyService implements HttpService {
                     // Strip hop-by-hop headers and forward downstream
                     ResponseHeaders filtered = filterResponseHeaders(h);
                     writer.write(filtered);
+                    startKeepaliveIfSse(h);
                 } else if (obj instanceof HttpData d) {
                     // Scanned, then forwarded unchanged — the client's copy is never delayed by
                     // this and the stream is never buffered.
                     usageScanner.accept(d.array());
+                    trackFrameBoundary(d.array());
+                    lastWriteNanos = System.nanoTime();
                     writer.write(d);
                 }
             }
 
             @Override
             public void onError(Throwable t) {
+                stopKeepalive();
                 recordFailureOnce();
                 // A stream that died mid-generation still consumed whatever it had produced.
                 settleBudgetOnce();
@@ -297,6 +332,7 @@ public final class LlmProxyService implements HttpService {
 
             @Override
             public void onComplete() {
+                stopKeepalive();
                 if (responseStatus != null && !responseStatus.isServerError()) {
                     recordSuccessOnce();
                 } else {
@@ -307,6 +343,55 @@ public final class LlmProxyService implements HttpService {
                 usageScanner.finish();
                 settleBudgetOnce();
                 writer.close();
+            }
+
+            /**
+             * SSE comment frames keep a hop in front of the gateway from treating a stream that is
+             * merely thinking as a dead connection. Armeria holds such a stream open itself, but
+             * the ALB's 60 s idle timeout (unset in every ingress, so the default applies) does
+             * not — and LLM_TIMEOUT_MS allows twice that.
+             *
+             * <p>Started only for {@code text/event-stream}: the passthrough forwards whatever the
+             * upstream sends, and a comment line injected into native Ollama NDJSON would hand the
+             * client a line that is not JSON.
+             */
+            private void startKeepaliveIfSse(ResponseHeaders headers) {
+                if (sseKeepaliveMs <= 0) return;
+                MediaType contentType = headers.contentType();
+                if (contentType == null || !contentType.is(MediaType.EVENT_STREAM)) return;
+                keepalive = ctx.eventLoop().scheduleAtFixedRate(
+                        this::writeKeepaliveIfIdle, sseKeepaliveMs, sseKeepaliveMs,
+                        TimeUnit.MILLISECONDS);
+            }
+
+            private void writeKeepaliveIfIdle() {
+                long idleMs = TimeUnit.NANOSECONDS.toMillis(System.nanoTime() - lastWriteNanos);
+                if (idleMs < sseKeepaliveMs) return;
+                // Only ever between frames. A chunk boundary is a network artifact, not a frame
+                // boundary, so writing while a frame is half-delivered would splice a comment
+                // through the middle of it.
+                if (!(secondLastByte == '\n' && lastByte == '\n')) return;
+                if (!writer.tryWrite(HttpData.ofUtf8(": keep-alive\n\n"))) {
+                    stopKeepalive();
+                }
+            }
+
+            private void trackFrameBoundary(byte[] chunk) {
+                if (chunk.length >= 2) {
+                    secondLastByte = (char) chunk[chunk.length - 2];
+                    lastByte = (char) chunk[chunk.length - 1];
+                } else if (chunk.length == 1) {
+                    secondLastByte = lastByte;
+                    lastByte = (char) chunk[0];
+                }
+            }
+
+            private void stopKeepalive() {
+                java.util.concurrent.ScheduledFuture<?> k = keepalive;
+                if (k != null) {
+                    k.cancel(false);
+                    keepalive = null;
+                }
             }
 
             private void settleBudgetOnce() {
