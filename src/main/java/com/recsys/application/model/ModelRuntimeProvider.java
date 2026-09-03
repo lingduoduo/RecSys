@@ -316,7 +316,8 @@ public class ModelRuntimeProvider implements SmartInitializingSingleton {
                     artifactService.modelContract(),
                     servingProperties.getOnnx(),
                     variant,
-                    meterRegistry);
+                    meterRegistry,
+                    UserTowerInferenceService.SmokeInputs.from(artifactService));
             inferenceService.init();
             artifactService.releaseModelBytes();   // the session holds the only copy from here on
 

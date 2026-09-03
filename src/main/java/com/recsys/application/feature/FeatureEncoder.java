@@ -6,12 +6,15 @@ import java.util.Map;
 
 public class FeatureEncoder {
 
+    /** The user-vocab key every bundle uses for the unknown-user row. */
+    public static final String UNKNOWN_USER = "__UNK__";
+
     private final ModelArtifactService artifactService;
     private final int unkIndex;
 
     public FeatureEncoder(ModelArtifactService artifactService) {
         this.artifactService = artifactService;
-        this.unkIndex = artifactService.getUserVocab().getOrDefault("__UNK__", 0);
+        this.unkIndex = artifactService.getUserVocab().getOrDefault(UNKNOWN_USER, 0);
     }
 
     public EncodedFeatures encode(RecommendRequest request) {

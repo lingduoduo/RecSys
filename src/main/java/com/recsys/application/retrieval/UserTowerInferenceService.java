@@ -35,8 +35,29 @@ import com.recsys.domain.prediction.ScoredItem;
 public class UserTowerInferenceService {
 
     private static final String DEFAULT_MODEL_FILE = "dssm_model.onnx";
-    /** Encoded index shared by unknown users and unknown items in every bundled feature config. */
-    private static final long UNKNOWN_INDEX = 0L;
+
+    /**
+     * The one-row batch the smoke inference submits. Derived from the bundle's own feature
+     * config, because "row 0" is a fact about the bundled demo vocabularies, not a contract: a
+     * production bundle whose {@code __UNK__} row is not 0 must be smoked on its own unknown row.
+     * Items have no unknown row (out-of-vocab items are never scored), so the smallest item index
+     * is used — it is valid for any non-empty vocabulary.
+     */
+    public record SmokeInputs(long userIndex, long itemIndex) {
+        /** Row 0 / row 0 — what the legacy locator constructors use when no feature config is in hand. */
+        public static final SmokeInputs DEFAULT = new SmokeInputs(0L, 0L);
+
+        public static SmokeInputs from(com.recsys.application.model.ModelArtifactService artifactService) {
+            Map<String, Integer> users = artifactService.getUserVocab();
+            Integer unknown = users.get(FeatureEncoder.UNKNOWN_USER);
+            long user = unknown != null ? unknown : smallest(users);
+            return new SmokeInputs(user, smallest(artifactService.getItemVocab()));
+        }
+
+        private static long smallest(Map<String, Integer> vocab) {
+            return vocab.values().stream().mapToLong(Integer::longValue).min().orElse(0L);
+        }
+    }
 
     private final ModelArtifactLocator artifactLocator;
     private final String variant;
@@ -46,6 +67,7 @@ public class UserTowerInferenceService {
     private final ModelContract contract;
     private final ModelServingProperties.Onnx onnx;
     private final OnnxSessionFactory sessionFactory;
+    private final SmokeInputs smokeInputs;
     private final Counter runCounter;
     private final AtomicLong runCount = new AtomicLong();
     private volatile OnnxSessionHandle session;
@@ -65,7 +87,8 @@ public class UserTowerInferenceService {
                 ModelContract.legacy(),
                 new ModelServingProperties.Onnx(),
                 new SimpleMeterRegistry(),
-                OrtSessionHandle::open);
+                OrtSessionHandle::open,
+                SmokeInputs.DEFAULT);
     }
 
     /**
@@ -77,7 +100,17 @@ public class UserTowerInferenceService {
                                      ModelServingProperties.Onnx onnx,
                                      String variant,
                                      MeterRegistry registry) {
-        this(modelBytes, contract, onnx, variant, registry, OrtSessionHandle::open);
+        this(modelBytes, contract, onnx, variant, registry, SmokeInputs.DEFAULT);
+    }
+
+    /** As above, smoking the bundle's own unknown/first rows ({@link SmokeInputs#from}). */
+    public UserTowerInferenceService(byte[] modelBytes,
+                                     ModelContract contract,
+                                     ModelServingProperties.Onnx onnx,
+                                     String variant,
+                                     MeterRegistry registry,
+                                     SmokeInputs smokeInputs) {
+        this(modelBytes, contract, onnx, variant, registry, OrtSessionHandle::open, smokeInputs);
     }
 
     UserTowerInferenceService(byte[] modelBytes,
@@ -86,9 +119,19 @@ public class UserTowerInferenceService {
                               String variant,
                               MeterRegistry registry,
                               OnnxSessionFactory sessionFactory) {
+        this(modelBytes, contract, onnx, variant, registry, sessionFactory, SmokeInputs.DEFAULT);
+    }
+
+    UserTowerInferenceService(byte[] modelBytes,
+                              ModelContract contract,
+                              ModelServingProperties.Onnx onnx,
+                              String variant,
+                              MeterRegistry registry,
+                              OnnxSessionFactory sessionFactory,
+                              SmokeInputs smokeInputs) {
         this(null, ModelVariants.trimOrEmpty(variant), DEFAULT_MODEL_FILE,
                 Objects.requireNonNull(modelBytes, "modelBytes").clone(),
-                contract, onnx, registry, sessionFactory);
+                contract, onnx, registry, sessionFactory, smokeInputs);
     }
 
     private UserTowerInferenceService(ModelArtifactLocator artifactLocator,
@@ -98,8 +141,10 @@ public class UserTowerInferenceService {
                                       ModelContract contract,
                                       ModelServingProperties.Onnx onnx,
                                       MeterRegistry registry,
-                                      OnnxSessionFactory sessionFactory) {
+                                      OnnxSessionFactory sessionFactory,
+                                      SmokeInputs smokeInputs) {
         this.artifactLocator = artifactLocator;
+        this.smokeInputs = Objects.requireNonNull(smokeInputs, "smokeInputs");
         this.variant = variant;
         this.modelFile = modelFile;
         this.modelBytes = modelBytes;
@@ -185,7 +230,7 @@ public class UserTowerInferenceService {
     }
 
     private void smokeTest(OnnxSessionHandle handle) throws OrtException {
-        float[] scores = run(handle, new long[]{UNKNOWN_INDEX}, new long[]{UNKNOWN_INDEX});
+        float[] scores = run(handle, new long[]{smokeInputs.userIndex()}, new long[]{smokeInputs.itemIndex()});
         if (scores.length != 1) {
             throw new IllegalStateException("ONNX smoke inference returned " + scores.length
                     + " scores for a single-row batch");

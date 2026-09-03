@@ -132,6 +132,7 @@ class ModelRuntimeProviderWarmUpTest {
         SimpleMeterRegistry shared = new SimpleMeterRegistry();
         ScriptedProvider provider = new ScriptedProvider(abTestEnabledWithTwoBuckets(), shared, Set.of("test"));
         VariantRuntimeResolver resolver = new VariantRuntimeResolver(provider, shared);
+        resolver.listenForWarmUpFailures();   // what @PostConstruct does in Spring
         try {
             provider.warmUp();
 
