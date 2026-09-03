@@ -110,6 +110,36 @@ class VariantRuntimeResolverTest {
     }
 
     @Test
+    void constructionHasNoSideEffectOnTheProvider_registrationIsExplicit() {
+        ModelRuntimeProvider provider = mock(ModelRuntimeProvider.class);
+        VariantRuntimeResolver r = resolver(provider, new AtomicLong(0));
+        verify(provider, never()).setLoadFailureListener(org.mockito.ArgumentMatchers.any());
+
+        r.listenForWarmUpFailures();   // Spring calls this via @PostConstruct
+
+        verify(provider, times(1)).setLoadFailureListener(org.mockito.ArgumentMatchers.any());
+    }
+
+    @Test
+    void registeredListenerStartsTheCooldownWithoutCounting() {
+        ModelRuntimeProvider provider = mock(ModelRuntimeProvider.class);
+        when(provider.getRuntime("training")).thenReturn(controlRuntime);
+        SimpleMeterRegistry registry = new SimpleMeterRegistry();
+        VariantRuntimeResolver r = new VariantRuntimeResolver(provider, registry, 60_000L, () -> 0L);
+        r.listenForWarmUpFailures();
+        org.mockito.ArgumentCaptor<com.recsys.application.model.VariantLoadFailureListener> listener =
+                org.mockito.ArgumentCaptor.forClass(com.recsys.application.model.VariantLoadFailureListener.class);
+        verify(provider).setLoadFailureListener(listener.capture());
+
+        listener.getValue().onLoadFailure("test", new IllegalStateException("bad"), "warmup");
+
+        assertThat(r.resolve("test", "training").fellBack()).isTrue();
+        verify(provider, never()).getRuntime("test");
+        assertThat(registry.find("recsys.model.runtime_load_failures").counter())
+                .as("the provider owns the warmup count; the listener must not add a second one").isNull();
+    }
+
+    @Test
     void recordedWarmupFailureStartsCooldownWithoutABuildAttempt() {
         ModelRuntimeProvider provider = mock(ModelRuntimeProvider.class);
         when(provider.getRuntime("training")).thenReturn(controlRuntime);

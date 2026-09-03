@@ -74,7 +74,14 @@ public class RecommendationService {
             RecommendationConverter converter
     ) {
         this(modelRuntimeProvider, abTestService, cacheProperties, featureFlagService, converter,
-                new VariantRuntimeResolver(modelRuntimeProvider, new SimpleMeterRegistry()));
+                standaloneResolver(modelRuntimeProvider));
+    }
+
+    /** Non-Spring wiring: what {@code @PostConstruct} does for the resolver bean. */
+    private static VariantRuntimeResolver standaloneResolver(ModelRuntimeProvider provider) {
+        VariantRuntimeResolver resolver = new VariantRuntimeResolver(provider, new SimpleMeterRegistry());
+        resolver.listenForWarmUpFailures();
+        return resolver;
     }
 
     @Autowired

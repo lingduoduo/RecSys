@@ -3,6 +3,7 @@ import com.recsys.application.model.ModelRuntime;
 import com.recsys.application.model.ModelRuntimeProvider;
 
 import io.micrometer.core.instrument.MeterRegistry;
+import jakarta.annotation.PostConstruct;
 import org.slf4j.Logger;
 import org.slf4j.LoggerFactory;
 import org.springframework.beans.factory.annotation.Autowired;
@@ -40,8 +41,19 @@ public class VariantRuntimeResolver {
         this.registry = registry;
         this.cooldownMs = cooldownMs;
         this.clock = clock;
-        // Warm-up failures land here so the first live request for a broken treatment does not
-        // re-pay a build already known to fail. A mock provider makes this a no-op.
+    }
+
+    /**
+     * Subscribes to the provider's warm-up failures so the first live request for a broken
+     * treatment does not re-pay a build already known to fail. Spring calls this once the bean is
+     * built (and before {@code ModelRuntimeProvider.afterSingletonsInstantiated} runs warm-up);
+     * non-Spring constructions ({@code RecommendationService}'s convenience constructors, tests)
+     * call it explicitly. Kept out of the constructor so constructing a resolver has no side
+     * effect on its collaborator — there is no constructor injection in either direction because
+     * that would be a bean cycle.
+     */
+    @PostConstruct
+    public void listenForWarmUpFailures() {
         provider.setLoadFailureListener(this::startCooldown);
     }
 

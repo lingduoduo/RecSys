@@ -68,6 +68,48 @@ class UserTowerInferenceContractTest {
     }
 
     @Test
+    void smokeInferenceUsesTheBundleUnknownIndicesNotAConstant() throws Exception {
+        // A production bundle whose __UNK__ row is not 0 must be smoked on ITS unknown row;
+        // smoking row 0 of a table that starts at 1 would be an out-of-range read on every start.
+        stubValidMetadata();
+        when(handle.run(anyString(), anyString(), anyString(), any(), any())).thenReturn(new float[]{0.1f});
+        when(factory.open(any(), any())).thenReturn(handle);
+        UserTowerInferenceService service = new UserTowerInferenceService(
+                MODEL, ModelContract.legacy(), new ModelServingProperties.Onnx(), "training", registry, factory,
+                new UserTowerInferenceService.SmokeInputs(7L, 3L));
+
+        service.init();
+
+        verify(handle).run(eq("user_id"), eq("item_id"), eq("score"), eq(new long[]{7L}), eq(new long[]{3L}));
+    }
+
+    @Test
+    void smokeInputsComeFromTheUnknownUserAndSmallestItemIndex() {
+        UserTowerInferenceService.SmokeInputs inputs = UserTowerInferenceService.SmokeInputs.from(
+                artifactService(Map.of("__UNK__", 5, "42", 0, "43", 1), Map.of("a", 9, "b", 4, "c", 11)));
+        assertThat(inputs.userIndex()).isEqualTo(5L);
+        assertThat(inputs.itemIndex()).as("items have no __UNK__ row; the smallest index is always valid").isEqualTo(4L);
+    }
+
+    @Test
+    void smokeInputsFallBackToTheSmallestUserIndexWithoutAnUnknownRowAndToZeroForEmptyVocabs() {
+        assertThat(UserTowerInferenceService.SmokeInputs.from(artifactService(Map.of("42", 2, "43", 6), Map.of("a", 1)))
+                .userIndex()).isEqualTo(2L);
+        UserTowerInferenceService.SmokeInputs empty = UserTowerInferenceService.SmokeInputs.from(artifactService(Map.of(), Map.of()));
+        assertThat(empty.userIndex()).isZero();
+        assertThat(empty.itemIndex()).isZero();
+    }
+
+    private static com.recsys.application.model.ModelArtifactService artifactService(
+            Map<String, Integer> users, Map<String, Integer> items) {
+        return new com.recsys.application.model.ModelArtifactService(
+                new com.recsys.application.model.ModelArtifactLocator("", ""), null) {
+            @Override public Map<String, Integer> getUserVocab() { return users; }
+            @Override public Map<String, Integer> getItemVocab() { return items; }
+        };
+    }
+
+    @Test
     void missingRequiredInputRejectsAndClosesSession() throws Exception {
         when(handle.inputInfo()).thenReturn(inputs("user_id", int64Rank1()));
         when(handle.outputInfo()).thenReturn(Map.of("score", node("score", floatRank1())));
