@@ -44,6 +44,6 @@ public class ModelRecommendationPipelineConfig {
         // belong here rather than in the controller. /v2/sequential/recommend is deliberately
         // NOT wrapped — see the spec.
         return new ProtectedRecommendationPipeline(
-                onnx, rateLimiter, loadShedder, metrics, abTestService, exposureLogger);
+                onnx, rateLimiter, loadShedder, metrics, abTestService, exposureLogger, recommendationService);
     }
 }

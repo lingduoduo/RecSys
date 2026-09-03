@@ -2,6 +2,7 @@ package com.recsys.api.rest;
 
 import com.recsys.domain.recommendation.RecommendationQuery;
 import com.recsys.domain.recommendation.RecommendationResult;
+import com.recsys.application.recommendation.ProtectedRecommendationPipeline;
 import com.recsys.application.recommendation.RecommendationPipeline;
 import com.recsys.application.recommendation.SequentialRecommendationPipeline;
 import org.springframework.beans.factory.annotation.Qualifier;
@@ -29,7 +30,15 @@ public class RecommendationV2Controller {
             produces = MediaType.APPLICATION_JSON_VALUE
     )
     public ResponseEntity<RecommendationResult> recommend(@RequestBody RecommendationQuery query) {
-        return ResponseEntity.ok(onnxPipeline.recommend(query));
+        RecommendationResult result = onnxPipeline.recommend(query);
+        // Same header V1 sets on its degraded path, so clients and dashboards see one signal.
+        if (ProtectedRecommendationPipeline.SERVED_FROM_DEGRADED_CACHE.equals(
+                result.trace().get(ProtectedRecommendationPipeline.TRACE_SERVED_FROM))) {
+            return ResponseEntity.ok()
+                    .header("X-Served-From", ProtectedRecommendationPipeline.SERVED_FROM_DEGRADED_CACHE)
+                    .body(result);
+        }
+        return ResponseEntity.ok(result);
     }
 
     @PostMapping(

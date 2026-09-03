@@ -2,6 +2,9 @@ package com.recsys.application.recommendation;
 
 import com.recsys.application.experiment.ABTestService;
 import com.recsys.application.experiment.AbExposureLogger;
+import com.recsys.api.request.RecommendRequest;
+import com.recsys.api.response.RecommendResponse;
+import com.recsys.domain.prediction.ScoredItem;
 import com.recsys.config.ABTestConfig;
 import com.recsys.config.HealthProperties;
 import com.recsys.domain.recommendation.RecommendationQuery;
@@ -18,6 +21,7 @@ import java.time.Duration;
 import java.util.List;
 import java.util.Map;
 import java.util.Set;
+import java.util.Optional;
 import java.util.concurrent.atomic.AtomicBoolean;
 
 import static org.assertj.core.api.Assertions.assertThat;
@@ -104,6 +108,93 @@ class ProtectedRecommendationPipelineTest {
         assertThatThrownBy(() -> pipeline.recommend(QUERY))
                 .isInstanceOf(ServiceOverloadedException.class);
         assertThat(metrics.snapshot().failureCount()).isEqualTo(1);
+    }
+
+    /** Hands back one canned degraded response; never touches a runtime. */
+    private static final class CachedOnlyService extends RecommendationService {
+        final RecommendResponse cached;
+        int calls;
+        CachedOnlyService(RecommendResponse cached) {
+            super(org.mockito.Mockito.mock(com.recsys.application.model.ModelRuntimeProvider.class),
+                    new ABTestService(new ABTestConfig()));
+            this.cached = cached;
+        }
+        @Override
+        public Optional<RecommendResponse> tryServeFromCache(RecommendRequest request,
+                                                             ABTestService.Assignment assignment,
+                                                             String defaultVariant) {
+            calls++;
+            return Optional.ofNullable(cached);
+        }
+    }
+
+    @Test
+    void shedWithACachedWindowServesItDegradedInsteadOfThrowing() {
+        // Parity with RecommendationController's V1 path: under overload, a cached window for
+        // the served variant is returned before failing, flagged so the controller can add
+        // X-Served-From: degraded-cache. No inference metric is recorded — nothing was inferred.
+        LoadShedder shedder = shedder(1);
+        assertThat(shedder.tryAcquire()).isTrue();   // saturate it
+        InferenceMetricsService metrics = metrics();
+        RecordingExposureLogger exposure = new RecordingExposureLogger();
+        CachedOnlyService cache = new CachedOnlyService(new RecommendResponse("u1", "cached-v1", "training",
+                List.of(new ScoredItem("7", 0.81), new ScoredItem("9", 0.93))));
+        ABTestService assignsTreatment = new ABTestService(new ABTestConfig()) {
+            @Override
+            public Assignment getAssignmentForUser(String userId) {
+                return new Assignment("test", 3, "default", true);
+            }
+        };
+        ProtectedRecommendationPipeline pipeline = new ProtectedRecommendationPipeline(
+                q -> { throw new AssertionError("delegate must not run under shed"); },
+                disabledLimiter(), shedder, metrics, assignsTreatment, exposure, cache);
+
+        RecommendationResult result = pipeline.recommend(QUERY);
+
+        assertThat(cache.calls).isEqualTo(1);
+        assertThat(result.items()).extracting(item -> item.itemId()).containsExactly("9", "7");
+        assertThat(result.items().get(0).rank()).isEqualTo(1);
+        assertThat(result.hasMore()).isFalse();
+        assertThat(result.trace())
+                .containsEntry("servedFrom", "degraded-cache")
+                .containsEntry("abTestVariant", "training")
+                .containsEntry("modelVersion", "cached-v1");
+        assertThat(exposure.servedVariant).isEqualTo("training");
+        assertThat(exposure.fellBack).isTrue();
+        assertThat(metrics.snapshot().successCount()).isZero();
+        assertThat(metrics.snapshot().failureCount()).isZero();
+        assertThat(shedder.tryAcquire()).as("degraded path never held a permit").isFalse();
+    }
+
+    @Test
+    void shedWithoutACachedWindowStillThrowsOverloadedWithRetryAfter() {
+        LoadShedder shedder = shedder(1);
+        assertThat(shedder.tryAcquire()).isTrue();
+        InferenceMetricsService metrics = metrics();
+        ProtectedRecommendationPipeline pipeline = new ProtectedRecommendationPipeline(
+                q -> resultWithTrace("A", "v1"), disabledLimiter(), shedder, metrics,
+                new ABTestService(new ABTestConfig()), new RecordingExposureLogger(), new CachedOnlyService(null));
+
+        assertThatThrownBy(() -> pipeline.recommend(QUERY))
+                .isInstanceOf(ServiceOverloadedException.class)
+                .satisfies(e -> assertThat(((ServiceOverloadedException) e).getRetryAfterSeconds()).isPositive());
+        assertThat(metrics.snapshot().failureCount()).isEqualTo(1);
+    }
+
+    @Test
+    void cursorContinuationsAreNeverServedFromTheDegradedCache() {
+        // The cached window is page one of an uncursored request; handing it to a cursor
+        // continuation would replay page one under a page-two cursor.
+        LoadShedder shedder = shedder(1);
+        assertThat(shedder.tryAcquire()).isTrue();
+        CachedOnlyService cache = new CachedOnlyService(new RecommendResponse("u1", "v1", "training", List.of()));
+        ProtectedRecommendationPipeline pipeline = new ProtectedRecommendationPipeline(
+                q -> resultWithTrace("A", "v1"), disabledLimiter(), shedder, metrics(),
+                new ABTestService(new ABTestConfig()), new RecordingExposureLogger(), cache);
+
+        assertThatThrownBy(() -> pipeline.recommend(new RecommendationQuery("u1", 5, Set.of(), "some-cursor")))
+                .isInstanceOf(ServiceOverloadedException.class);
+        assertThat(cache.calls).isZero();
     }
 
     @Test

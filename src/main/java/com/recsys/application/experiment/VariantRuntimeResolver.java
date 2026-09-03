@@ -58,6 +58,12 @@ public class VariantRuntimeResolver {
                 variant, phase, failedUntilMs.get(variant), failure);
     }
 
+    /** True while {@code variant} is held in its post-failure cooldown and would resolve to control. */
+    public boolean isInCooldown(String variant) {
+        Long until = failedUntilMs.get(variant);
+        return until != null && clock.getAsLong() < until;
+    }
+
     public Resolved resolve(String assignedVariant, String defaultVariant) {
         if (assignedVariant.equals(defaultVariant)) {
             return new Resolved(provider.getRuntime(defaultVariant), defaultVariant, false);
