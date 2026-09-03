@@ -200,37 +200,68 @@ public class RecommendationService {
     }
 
     /**
-     * Degradation path with a pre-computed assignment. Uses {@link ModelRuntimeProvider#getLoadedRuntime}
-     * so a cold variant never triggers an ONNX load while the instance is already overloaded.
+     * Degradation path with a pre-computed assignment; resolves the control variant itself so the
+     * V1 controller keeps the fallback below without knowing about it.
      */
     public Optional<RecommendResponse> tryServeFromCache(RecommendRequest request, ABTestService.Assignment assignment) {
-        if (!cache.isEnabled()) return Optional.empty();
-        ModelRuntime runtime = modelRuntimeProvider.getLoadedRuntime(assignment.variant());
-        if (runtime == null) return Optional.empty();
-        String modelVersion = runtime.modelVersion();
-        List<String> excludedItemIds = converter.normalizedExcludeItemIds(request);
+        return tryServeFromCache(request, assignment, abTestService.defaultVariant());
+    }
 
-        // Degraded path keys on the ASSIGNED variant (not served): getLoadedRuntime never builds or
-        // falls back here, so there is no served-variant distinction. Do NOT change to servedVariant —
-        // the normal path keys on servedVariant, and these two must stay consistent per their own runtime.
+    /**
+     * Degradation path. Mirrors normal resolution without any cold work: the assigned variant's
+     * cache is used when that runtime is already loaded and not in failure cooldown; otherwise the
+     * loaded control runtime's cache is used, keyed and attributed as control. Only
+     * {@link ModelRuntimeProvider#getLoadedRuntime} is ever consulted — an overloaded instance
+     * must never pay an ONNX build on the path that exists to shed load.
+     */
+    public Optional<RecommendResponse> tryServeFromCache(RecommendRequest request,
+                                                         ABTestService.Assignment assignment,
+                                                         String defaultVariant) {
+        if (!cache.isEnabled()) return Optional.empty();
+        List<String> excludedItemIds = converter.normalizedExcludeItemIds(request);
+        String assigned = assignment.variant();
+
+        ModelRuntime assignedRuntime = variantRuntimeResolver.isInCooldown(assigned)
+                ? null
+                : modelRuntimeProvider.getLoadedRuntime(assigned);
+        if (assignedRuntime != null) {
+            return cachedResponseForRuntime(request, assignedRuntime, assigned, excludedItemIds);
+        }
+        if (assigned.equals(defaultVariant)) {
+            return Optional.empty();
+        }
+        ModelRuntime control = modelRuntimeProvider.getLoadedRuntime(defaultVariant);
+        if (control == null) {
+            return Optional.empty();
+        }
+        return cachedResponseForRuntime(request, control, defaultVariant, excludedItemIds);
+    }
+
+    /**
+     * Cache lookup for one runtime. Keyed on {@code servedVariant} exactly as the normal path keys
+     * on {@code resolved.servedVariant()} — the assignment string when the assigned runtime serves,
+     * the configured default string when control does — so both paths hit the same entries.
+     */
+    private Optional<RecommendResponse> cachedResponseForRuntime(RecommendRequest request,
+                                                                 ModelRuntime runtime,
+                                                                 String servedVariant,
+                                                                 List<String> excludedItemIds) {
+        String modelVersion = runtime.modelVersion();
         var cacheKey = new RecommendationCache.RecommendationKey(
-                request.getUserId(), request.getK(), excludedItemIds, assignment.variant(), modelVersion);
+                request.getUserId(), request.getK(), excludedItemIds, servedVariant, modelVersion);
         RecommendationCache.RankedWindow rankedWindow = cache.get(cacheKey);
         if (rankedWindow != null) {
-            return Optional.of(converter.toResponse(
-                    request, modelVersion, assignment.variant(), rankedWindow.items()));
+            return Optional.of(converter.toResponse(request, modelVersion, servedVariant, rankedWindow.items()));
         }
 
         if (cache.isColdStartEnabled()) {
             int candidateBudget =
                     Math.min(Math.max(request.getK() * RECALL_MULTIPLIER, MIN_RECALL_SIZE), MAX_RECALL_LIMIT);
             int poolBudget = Math.max(cache.coldStartMaxK(), candidateBudget);
-            var coldStartKey =
-                    new RecommendationCache.ColdStartKey(
-                            assignment.variant(), modelVersion, poolBudget);
+            var coldStartKey = new RecommendationCache.ColdStartKey(servedVariant, modelVersion, poolBudget);
             RecommendationCache.RankedWindow pool = cache.getColdStart(coldStartKey);
             if (pool != null) {
-                return Optional.of(converter.toResponse(request, modelVersion, assignment.variant(),
+                return Optional.of(converter.toResponse(request, modelVersion, servedVariant,
                         limitAndExclude(pool.items(), excludedItemIds, request.getK())));
             }
         }

@@ -49,6 +49,14 @@ recsys:
     item-embeddings-source: ${RECSYS_MODEL_ITEM_EMBEDDINGS_SOURCE:classpath}
     redis:
       item-embedding-prefix: ${RECSYS_MODEL_REDIS_ITEM_EMBEDDING_PREFIX:i2vEmb}
+    onnx:
+      intra-op-threads: ${RECSYS_MODEL_ONNX_INTRA_OP_THREADS:1}
+      inter-op-threads: ${RECSYS_MODEL_ONNX_INTER_OP_THREADS:1}
+      execution-mode: ${RECSYS_MODEL_ONNX_EXECUTION_MODE:SEQUENTIAL}
+    recall:
+      core-threads: ${RECSYS_MODEL_RECALL_CORE_THREADS:0}
+      queue-capacity: ${RECSYS_MODEL_RECALL_QUEUE_CAPACITY:256}
+      timeout-ms: ${RECSYS_MODEL_RECALL_TIMEOUT_MS:200}
   spark:
     # PySpark model artifacts output by the training pipeline (classpath:artifacts/pyspark/)
     artifacts-dir: ${RECSYS_SPARK_ARTIFACTS_DIR:}
@@ -81,11 +89,15 @@ recsys:
     window-seconds: 60
     # Minimum requests in the window before the readiness probe applies thresholds
     min-sample-size: 5
-    # Fraction of requests that may fail before the instance is pulled from rotation
-    # DEMO ONLY: lower to 0.05 for production deployments
-    max-failure-rate: 0.5
-    # Average inference latency (ms) above which the instance is pulled from rotation
-    max-avg-latency-ms: 2000
+    # Fraction of requests that may fail before the instance is pulled from rotation.
+    # DEMO default; k8s/base/model-serving.yaml sets 0.05. The ${...} placeholder is required,
+    # not cosmetic: Spring relaxed binding maps RECSYS_HEALTH_MAX_FAILURE_RATE to
+    # recsys.health.max.failure.rate, which is not this property, so without the placeholder
+    # the env var binds to nothing and this demo value silently wins.
+    max-failure-rate: ${RECSYS_HEALTH_MAX_FAILURE_RATE:0.5}
+    # Average inference latency (ms) above which the instance is pulled from rotation.
+    # DEMO default; k8s/base/model-serving.yaml sets 500. Same placeholder rule as above.
+    max-avg-latency-ms: ${RECSYS_HEALTH_MAX_AVG_LATENCY_MS:2000}
     # Per-instance overload protection. Excess requests fail fast with 503 + Retry-After.
     max-concurrent-requests: ${RECSYS_HEALTH_MAX_CONCURRENT_REQUESTS:64}
     # Above this in-flight utilization, /health/ready returns 503 so balancers drain this node.

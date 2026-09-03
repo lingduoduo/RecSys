@@ -15,7 +15,7 @@ and how to tune it. Design: `docs/superpowers/specs/2026-07-08-overload-protecti
 | Gateway 8010 | per-route circuit breaker | per instance | `GATEWAY_CB_FAILURE_THRESHOLD`=5 / `_COOLDOWN_MS`=10000 | 503 |
 | Online 7010 | concurrency admission | per instance | `ONLINE_MAX_CONCURRENT_REQUESTS`=64 / `ONLINE_DRAIN_UTILIZATION`=0.90 | 429 |
 | Online 7010 | Redis sliding-window QPS | **cluster-wide (global)** | `ONLINE_REDIS_RATE_LIMIT_QPS`=200 / `_WINDOW_SECONDS`=1 | 429 |
-| Model 8080 | per-user token bucket + semaphore | per instance | `recsys.model.rate-limit.*`, `RECSYS_HEALTH_MAX_CONCURRENT_REQUESTS`=64 | 429 / 503 (degrade-to-cache first) |
+| Model 8080 | per-user token bucket + semaphore | per instance | `recsys.model.rate-limit.*`, `RECSYS_HEALTH_MAX_CONCURRENT_REQUESTS`=8 | 429 / 503 (degrade-to-cache first) |
 | RecSys 6010 | concurrency admission | per instance | `CATALOG_MAX_CONCURRENT_REQUESTS`=64 / `CATALOG_DRAIN_UTILIZATION`=0.90 | 429 |
 | 6010 & 7010 | recall WorkerBulkhead (bounded queue) | per instance | `RECALL_BULKHEAD_QUEUE_CAPACITY` (default poolSize×4) | per-channel empty result |
 | all serving | request/recall timeouts | per request | `ONLINE_REQUEST_TIMEOUT_MS`=500, `RECALL_CHANNEL_TIMEOUT_MS`=200 | bounded work |

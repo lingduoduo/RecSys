@@ -61,6 +61,29 @@ spec:
               value: "-Xms1g -Xmx2g -XX:MaxDirectMemorySize=512m"
             - name: MANAGEMENT_ENDPOINTS_EXPOSURE
               value: "health,info,prometheus"
+            # ONNX Runtime native parallelism, stated explicitly rather than inherited. One
+            # intra-op thread, one inter-op thread, sequential graph execution: the pod's CPU
+            # limit is 2 and the request path already parallelises ACROSS requests (the
+            # RECSYS_HEALTH_MAX_CONCURRENT_REQUESTS admission cap in the ConfigMap), so letting
+            # each OrtSession.run spin up its own thread pool oversubscribes the limit and
+            # shows up as throttling, not throughput. Safety defaults, not capacity claims —
+            # change only with InferenceLoadTest numbers from the same CPU shape. Pinned by
+            # ModelServingManifestTest.
+            - name: RECSYS_MODEL_ONNX_INTRA_OP_THREADS
+              value: "1"
+            - name: RECSYS_MODEL_ONNX_INTER_OP_THREADS
+              value: "1"
+            - name: RECSYS_MODEL_ONNX_EXECUTION_MODE
+              value: "SEQUENTIAL"
+            # Readiness thresholds. application.yml ships demo values (0.5 failure rate, 2000ms
+            # average latency) that would keep a badly degraded instance in rotation; these are
+            # the production numbers. Both are ${...} placeholders in application.yml on
+            # purpose — Spring relaxed binding does NOT map RECSYS_HEALTH_MAX_FAILURE_RATE to
+            # max-failure-rate on its own.
+            - name: RECSYS_HEALTH_MAX_FAILURE_RATE
+              value: "0.05"
+            - name: RECSYS_HEALTH_MAX_AVG_LATENCY_MS
+              value: "500"
             - name: RECOMMENDATION_CURSOR_SIGNING_KEY
               valueFrom:
                 secretKeyRef:

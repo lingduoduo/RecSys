@@ -82,7 +82,102 @@ class RecommendationServiceTest {
                 inferenceService
         );
         when(modelRuntimeProvider.getRuntime(any())).thenReturn(runtime);
+        when(abTestService.defaultVariant()).thenReturn("training");
         service = new RecommendationService(modelRuntimeProvider, abTestService);
+    }
+
+    // ---- overload degradation: cache lookup must never build a runtime ----
+
+    private static final ABTestService.Assignment ASSIGNED_TEST =
+            new ABTestService.Assignment("test", 3, "default", true);
+
+    /** Fills the per-user cache for {@code servedVariant} through the normal path, then forgets those provider calls. */
+    private RecommendResponse warmCache(String userId, ABTestService.Assignment assignment) {
+        when(artifactService.getUserVocab()).thenReturn(Map.of(userId, 1));
+        when(featureEncoder.encode(any())).thenReturn(new FeatureEncoder.EncodedFeatures(1L));
+        when(retrievalStage.retrieve(any(), anyInt())).thenReturn(List.of(new MovieCandidate("1", 0.9, "embedding", Map.of())));
+        when(rankingStage.rank(any(), any(), anyInt())).thenReturn(List.of(new ScoredItem("1", 0.95)));
+        when(artifactService.getModelVersion()).thenReturn("v1");
+        RecommendResponse warmed = service.recommend(request(userId, 2), assignment);
+        org.mockito.Mockito.clearInvocations(modelRuntimeProvider);
+        return warmed;
+    }
+
+    @Test
+    void tryServeFromCache_loadedAssignedRuntime_servesItsOwnCache() {
+        ABTestService.Assignment control = new ABTestService.Assignment("training", -1, "default", false);
+        RecommendResponse warmed = warmCache("123", control);
+        when(modelRuntimeProvider.getLoadedRuntime("training")).thenReturn(runtime);
+
+        Optional<RecommendResponse> degraded = service.tryServeFromCache(request("123", 2), control, "training");
+
+        assertThat(degraded).isPresent();
+        assertThat(degraded.get().recommendations()).isEqualTo(warmed.recommendations());
+        assertThat(degraded.get().abTestVariant()).isEqualTo("training");
+        verify(modelRuntimeProvider, org.mockito.Mockito.never()).getRuntime(any());
+    }
+
+    @Test
+    void tryServeFromCache_absentTreatment_fallsBackToLoadedControlCache() {
+        // The treatment never loaded (e.g. warm-up failed), but control did and has this user's
+        // window cached. Overload must serve that, keyed and attributed as control, and must not
+        // trigger the cold build that the assigned variant would otherwise need.
+        ABTestService.Assignment control = new ABTestService.Assignment("training", -1, "default", false);
+        RecommendResponse warmed = warmCache("123", control);
+        when(modelRuntimeProvider.getLoadedRuntime("test")).thenReturn(null);
+        when(modelRuntimeProvider.getLoadedRuntime("training")).thenReturn(runtime);
+
+        Optional<RecommendResponse> degraded = service.tryServeFromCache(request("123", 2), ASSIGNED_TEST, "training");
+
+        assertThat(degraded).isPresent();
+        assertThat(degraded.get().abTestVariant()).isEqualTo("training");
+        assertThat(degraded.get().recommendations()).isEqualTo(warmed.recommendations());
+        verify(modelRuntimeProvider, org.mockito.Mockito.never()).getRuntime(any());
+    }
+
+    @Test
+    void tryServeFromCache_failedTreatment_usesControlEvenThoughTreatmentIsLoaded() {
+        // A variant the resolver has marked failed is not served from, even if a stale runtime
+        // object is still registered — the degraded path mirrors normal resolution.
+        VariantRuntimeResolver resolver = new VariantRuntimeResolver(modelRuntimeProvider, new SimpleMeterRegistry());
+        service = new RecommendationService(modelRuntimeProvider, abTestService, new RecommendationCacheProperties(),
+                new FeatureFlagService((flag, id, props) -> Optional.empty()),
+                new com.recsys.api.converter.RecommendationConverter(), resolver);
+        ABTestService.Assignment control = new ABTestService.Assignment("training", -1, "default", false);
+        warmCache("123", control);
+        resolver.recordLoadFailure("test", new IllegalStateException("bad model"), "warmup");
+        ModelRuntime staleTreatment = new ModelRuntime("test", artifactService, retrievalStage, rankingStage, featureEncoder, inferenceService);
+        when(modelRuntimeProvider.getLoadedRuntime("test")).thenReturn(staleTreatment);
+        when(modelRuntimeProvider.getLoadedRuntime("training")).thenReturn(runtime);
+
+        Optional<RecommendResponse> degraded = service.tryServeFromCache(request("123", 2), ASSIGNED_TEST, "training");
+
+        assertThat(degraded).isPresent();
+        assertThat(degraded.get().abTestVariant()).isEqualTo("training");
+        verify(modelRuntimeProvider, org.mockito.Mockito.never()).getRuntime(any());
+    }
+
+    @Test
+    void tryServeFromCache_nothingLoaded_returnsEmptyWithoutBuilding() {
+        when(modelRuntimeProvider.getLoadedRuntime(any())).thenReturn(null);
+
+        Optional<RecommendResponse> degraded = service.tryServeFromCache(request("123", 2), ASSIGNED_TEST, "training");
+
+        assertThat(degraded).isEmpty();
+        verify(modelRuntimeProvider, org.mockito.Mockito.never()).getRuntime(any());
+    }
+
+    @Test
+    void tryServeFromCache_twoArgOverload_stillFallsBackToControl() {
+        // RecommendationController calls the two-argument form; it must resolve the default
+        // variant itself rather than silently losing the control fallback.
+        ABTestService.Assignment control = new ABTestService.Assignment("training", -1, "default", false);
+        warmCache("123", control);
+        when(modelRuntimeProvider.getLoadedRuntime("test")).thenReturn(null);
+        when(modelRuntimeProvider.getLoadedRuntime("training")).thenReturn(runtime);
+
+        assertThat(service.tryServeFromCache(request("123", 2), ASSIGNED_TEST))
+                .get().extracting(RecommendResponse::abTestVariant).isEqualTo("training");
     }
 
     // ---- validation ----

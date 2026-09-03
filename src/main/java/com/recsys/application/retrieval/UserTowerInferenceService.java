@@ -3,47 +3,135 @@ import com.recsys.application.model.ScoredItems;
 import com.recsys.application.experiment.ModelVariants;
 import com.recsys.application.feature.FeatureEncoder;
 import com.recsys.application.model.ModelArtifactLocator;
+import com.recsys.application.model.ModelArtifactManifest.ModelContract;
+import com.recsys.application.model.ModelArtifactManifest.TensorType;
 import com.recsys.application.model.Strings;
+import com.recsys.config.ModelServingProperties;
 
-import ai.onnxruntime.*;
+import ai.onnxruntime.NodeInfo;
+import ai.onnxruntime.OnnxJavaType;
+import ai.onnxruntime.OrtException;
+import ai.onnxruntime.TensorInfo;
+import ai.onnxruntime.ValueInfo;
+import io.micrometer.core.instrument.Counter;
+import io.micrometer.core.instrument.MeterRegistry;
+import io.micrometer.core.instrument.simple.SimpleMeterRegistry;
 
-import java.nio.LongBuffer;
 import java.util.ArrayList;
 import java.util.List;
 import java.util.Map;
+import java.util.Objects;
 import java.util.PriorityQueue;
 import java.util.Set;
+import java.util.concurrent.atomic.AtomicLong;
 import com.recsys.domain.prediction.ScoredItem;
 
+/**
+ * Owns one ONNX session for one model variant. {@link #init()} is transactional: the session
+ * is opened, its input/output metadata is checked against the {@link ModelContract}, and one
+ * smoke inference must return exactly one finite score before {@link #isReady()} becomes true.
+ * Any failure closes whatever was opened and leaves the service not ready.
+ */
 public class UserTowerInferenceService {
 
     private static final String DEFAULT_MODEL_FILE = "dssm_model.onnx";
+    /** Encoded index shared by unknown users and unknown items in every bundled feature config. */
+    private static final long UNKNOWN_INDEX = 0L;
 
     private final ModelArtifactLocator artifactLocator;
     private final String variant;
     private final String modelFile;
-    private OrtEnvironment environment;
-    private OrtSession session;
+    /** Nulled at the end of {@link #init()}: ONNX Runtime holds its own native copy, so keeping ours doubles the model's heap. */
+    private byte[] modelBytes;
+    private final ModelContract contract;
+    private final ModelServingProperties.Onnx onnx;
+    private final OnnxSessionFactory sessionFactory;
+    private final Counter runCounter;
+    private final AtomicLong runCount = new AtomicLong();
+    private volatile OnnxSessionHandle session;
     private volatile boolean ready = false;
 
+    /** Legacy: reads {@code dssm_model.onnx} through the locator with the legacy contract and default execution settings. */
     public UserTowerInferenceService(ModelArtifactLocator artifactLocator, String variant) {
         this(artifactLocator, variant, DEFAULT_MODEL_FILE);
     }
 
+    /** Legacy: reads {@code modelFile} through the locator with the legacy contract and default execution settings. */
     public UserTowerInferenceService(ModelArtifactLocator artifactLocator, String variant, String modelFile) {
+        this(Objects.requireNonNull(artifactLocator, "artifactLocator"),
+                ModelVariants.trimOrEmpty(variant),
+                Strings.orDefault(modelFile, DEFAULT_MODEL_FILE),
+                null,
+                ModelContract.legacy(),
+                new ModelServingProperties.Onnx(),
+                new SimpleMeterRegistry(),
+                OrtSessionHandle::open);
+    }
+
+    /**
+     * Verified-bytes constructor used by {@code ModelRuntimeProvider}: the caller has already
+     * resolved (and, for manifest bundles, checksummed) the model bytes and its contract.
+     */
+    public UserTowerInferenceService(byte[] modelBytes,
+                                     ModelContract contract,
+                                     ModelServingProperties.Onnx onnx,
+                                     String variant,
+                                     MeterRegistry registry) {
+        this(modelBytes, contract, onnx, variant, registry, OrtSessionHandle::open);
+    }
+
+    UserTowerInferenceService(byte[] modelBytes,
+                              ModelContract contract,
+                              ModelServingProperties.Onnx onnx,
+                              String variant,
+                              MeterRegistry registry,
+                              OnnxSessionFactory sessionFactory) {
+        this(null, ModelVariants.trimOrEmpty(variant), DEFAULT_MODEL_FILE,
+                Objects.requireNonNull(modelBytes, "modelBytes").clone(),
+                contract, onnx, registry, sessionFactory);
+    }
+
+    private UserTowerInferenceService(ModelArtifactLocator artifactLocator,
+                                      String variant,
+                                      String modelFile,
+                                      byte[] modelBytes,
+                                      ModelContract contract,
+                                      ModelServingProperties.Onnx onnx,
+                                      MeterRegistry registry,
+                                      OnnxSessionFactory sessionFactory) {
         this.artifactLocator = artifactLocator;
-        this.variant = ModelVariants.trimOrEmpty(variant);
-        this.modelFile = Strings.orDefault(modelFile, DEFAULT_MODEL_FILE);
+        this.variant = variant;
+        this.modelFile = modelFile;
+        this.modelBytes = modelBytes;
+        this.contract = Objects.requireNonNull(contract, "contract");
+        this.onnx = Objects.requireNonNull(onnx, "onnx");
+        this.sessionFactory = Objects.requireNonNull(sessionFactory, "sessionFactory");
+        // Tagged with the normalized variant: the label set is the closed configured variant
+        // set, never a request-supplied value, so cardinality stays bounded.
+        this.runCounter = Counter.builder("recsys.model.onnx.runs")
+                .description("Native ONNX session runs, one per OrtSession.run call")
+                .tag("variant", ModelVariants.normalizeOrDefault(variant))
+                .register(Objects.requireNonNull(registry, "registry"));
     }
 
     public void init() throws Exception {
-        environment = OrtEnvironment.getEnvironment();
+        byte[] bytes = modelBytes != null ? modelBytes : readLegacyModelBytes();
+        modelBytes = null;   // the runtime is discarded on failure; on success the session has its own copy
+        OnnxSessionHandle opened = sessionFactory.open(bytes, onnx);
         try {
-            session = environment.createSession(
-                    artifactLocator.readModelBytes(variant, modelFile),
-                    new OrtSession.SessionOptions()
-            );
-            ready = true;
+            validateMetadata(opened);
+            smokeTest(opened);
+        } catch (Exception e) {
+            opened.close();
+            throw e;
+        }
+        this.session = opened;
+        this.ready = true;
+    }
+
+    private byte[] readLegacyModelBytes() throws java.io.IOException {
+        try {
+            return artifactLocator.readModelBytes(variant, modelFile);
         } catch (IllegalStateException e) {
             throw new IllegalStateException(modelFile + " not found at "
                     + artifactLocator.describeModelLocation(variant, modelFile)
@@ -51,8 +139,75 @@ public class UserTowerInferenceService {
         }
     }
 
+    private void validateMetadata(OnnxSessionHandle handle) throws OrtException {
+        Map<String, NodeInfo> inputs = handle.inputInfo();
+        requireTensor(inputs, contract.userInput(), "input", contract.inputType(), contract.inputRank());
+        requireTensor(inputs, contract.itemInput(), "input", contract.inputType(), contract.inputRank());
+        for (String name : inputs.keySet()) {
+            if (!name.equals(contract.userInput()) && !name.equals(contract.itemInput())) {
+                // Serving has nothing to feed an extra input; the run would fail on every request.
+                throw new IllegalStateException("ONNX model declares unexpected input '" + name
+                        + "'; serving can only populate " + contract.userInput() + " and " + contract.itemInput());
+            }
+        }
+        // Extra outputs are harmless: only the contract output is ever read.
+        requireTensor(handle.outputInfo(), contract.outputName(), "output", contract.outputType(), contract.outputRank());
+    }
+
+    private static void requireTensor(Map<String, NodeInfo> nodes, String name, String kind,
+                                      TensorType expectedType, int expectedRank) {
+        NodeInfo node = nodes.get(name);
+        if (node == null) {
+            throw new IllegalStateException("ONNX model has no " + kind + " named '" + name
+                    + "'; found " + nodes.keySet());
+        }
+        ValueInfo info = node.getInfo();
+        if (!(info instanceof TensorInfo tensor)) {
+            throw new IllegalStateException("ONNX " + kind + " '" + name + "' is not a tensor: " + info);
+        }
+        OnnxJavaType expected = toOrt(expectedType);
+        if (tensor.type != expected) {
+            throw new IllegalStateException("ONNX " + kind + " '" + name + "' must be " + expectedType
+                    + " (" + expected + "), got " + tensor.type);
+        }
+        int rank = tensor.getShape().length;
+        if (rank != expectedRank) {
+            throw new IllegalStateException("ONNX " + kind + " '" + name + "' must have rank "
+                    + expectedRank + ", got rank " + rank);
+        }
+    }
+
+    private static OnnxJavaType toOrt(TensorType type) {
+        return switch (type) {
+            case INT64 -> OnnxJavaType.INT64;
+            case FLOAT -> OnnxJavaType.FLOAT;
+        };
+    }
+
+    private void smokeTest(OnnxSessionHandle handle) throws OrtException {
+        float[] scores = run(handle, new long[]{UNKNOWN_INDEX}, new long[]{UNKNOWN_INDEX});
+        if (scores.length != 1) {
+            throw new IllegalStateException("ONNX smoke inference returned " + scores.length
+                    + " scores for a single-row batch");
+        }
+        if (!Float.isFinite(scores[0])) {
+            throw new IllegalStateException("ONNX smoke inference returned a non-finite score: " + scores[0]);
+        }
+    }
+
+    private float[] run(OnnxSessionHandle handle, long[] users, long[] items) throws OrtException {
+        runCount.incrementAndGet();
+        runCounter.increment();
+        return handle.run(contract.userInput(), contract.itemInput(), contract.outputName(), users, items);
+    }
+
     public boolean isReady() {
         return ready;
+    }
+
+    /** Native runs so far, including the smoke inference. Public so InferenceLoadTest (another package) can assert on it. */
+    public long runCount() {
+        return runCount.get();
     }
 
     public double score(FeatureEncoder.EncodedFeatures features, long itemId) {
@@ -61,27 +216,33 @@ public class UserTowerInferenceService {
     }
 
     private float[] scoreBatch(FeatureEncoder.EncodedFeatures features, long[] itemIds) {
-        if (!ready || session == null) {
+        OnnxSessionHandle current = session;
+        if (!ready || current == null) {
             throw new IllegalStateException("ONNX session is not initialized or has been closed");
         }
         if (features == null || itemIds == null || itemIds.length == 0) {
             return new float[0];
         }
+        long[] userArr = new long[itemIds.length];
+        for (int i = 0; i < userArr.length; i++) {
+            userArr[i] = features.getUserId();
+        }
+        float[] scores;
         try {
-            long[] userArr = new long[itemIds.length];
-            for (int i = 0; i < userArr.length; i++) {
-                userArr[i] = features.getUserId();
-            }
-            try (OnnxTensor userTensor = OnnxTensor.createTensor(environment, LongBuffer.wrap(userArr), new long[]{userArr.length});
-                 OnnxTensor itemTensor = OnnxTensor.createTensor(environment, LongBuffer.wrap(itemIds), new long[]{itemIds.length})) {
-                Map<String, OnnxTensor> inputs = Map.of("user_id", userTensor, "item_id", itemTensor);
-                try (OrtSession.Result result = session.run(inputs)) {
-                    return (float[]) result.get("score").get().getValue();
-                }
-            }
+            scores = run(current, userArr, itemIds);
         } catch (OrtException e) {
             throw new RuntimeException("Failed to run ONNX inference", e);
         }
+        if (scores.length != itemIds.length) {
+            throw new IllegalStateException("ONNX output contract violation: submitted " + itemIds.length
+                    + " items but received " + scores.length + " scores");
+        }
+        for (float score : scores) {
+            if (!Float.isFinite(score)) {
+                throw new IllegalStateException("ONNX output contract violation: non-finite score " + score);
+            }
+        }
+        return scores;
     }
 
     public List<ScoredItem> scoreCandidates(
@@ -116,8 +277,7 @@ public class UserTowerInferenceService {
 
         float[] scores = scoreBatch(features, encodedItemIds);
         PriorityQueue<ScoredItem> best = ScoredItems.minHeap();
-        int scoredCount = Math.min(scores.length, itemIds.size());
-        for (int i = 0; i < scoredCount; i++) {
+        for (int i = 0; i < scores.length; i++) {
             double score = scores[i];
             ScoredItems.keepTopK(best, new ScoredItem(itemIds.get(i), score), k);
         }
@@ -125,10 +285,13 @@ public class UserTowerInferenceService {
         return ScoredItems.descending(best);
     }
 
-    public void close() throws OrtException {
-        // OrtEnvironment is a JVM-wide singleton managed by the ONNX Runtime native layer.
-        // Closing it here would invalidate every other OrtSession in the process (e.g. other
-        // A/B-test variants loaded by ModelRuntimeProvider). Only close the session.
-        if (session != null) session.close();
+    /** Idempotent. Flips readiness first so a concurrent scorer fails fast instead of racing the native close. */
+    public synchronized void close() throws OrtException {
+        ready = false;
+        OnnxSessionHandle current = session;
+        session = null;
+        if (current != null) {
+            current.close();
+        }
     }
 }

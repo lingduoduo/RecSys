@@ -18,11 +18,13 @@ import java.util.List;
 import java.util.Map;
 import java.util.Objects;
 import java.util.Set;
-import java.util.concurrent.CompletableFuture;
+import java.util.concurrent.ExecutionException;
 import java.util.concurrent.ExecutorService;
 import java.util.concurrent.ForkJoinPool;
+import java.util.concurrent.Future;
 import java.util.concurrent.RejectedExecutionException;
 import java.util.concurrent.TimeUnit;
+import java.util.concurrent.TimeoutException;
 
 import static com.recsys.application.retrieval.multichannel.RecallResult.DegradationOutcome.ALL_CHANNELS;
 import static com.recsys.application.retrieval.multichannel.RecallResult.DegradationOutcome.HEALTHY;
@@ -40,6 +42,7 @@ public class MultiChannelRecallService {
     private final EmbeddingStore userEmbeddingStore;
     private final QuotaPolicy quotaPolicy;
     private final RecallDegradationMetrics degradationMetrics;
+    private final RecallTaskMetrics taskMetrics;
 
     // Convenience constructor for tests. Production callers should supply a WorkerBulkhead
     // via the 5-arg constructor — ForkJoinPool.commonPool() is unsuitable for blocking I/O.
@@ -85,6 +88,19 @@ public class MultiChannelRecallService {
                                      EmbeddingStore userEmbeddingStore,
                                      QuotaPolicy quotaPolicy,
                                      RecallDegradationMetrics degradationMetrics) {
+        this(channels, healthMonitor, executor, channelTimeoutMs, faultInjector,
+                userEmbeddingStore, quotaPolicy, degradationMetrics, RecallTaskMetrics.NOOP);
+    }
+
+    public MultiChannelRecallService(List<RecallChannel> channels,
+                                     ChannelHealthMonitor healthMonitor,
+                                     ExecutorService executor,
+                                     long channelTimeoutMs,
+                                     FaultInjector faultInjector,
+                                     EmbeddingStore userEmbeddingStore,
+                                     QuotaPolicy quotaPolicy,
+                                     RecallDegradationMetrics degradationMetrics,
+                                     RecallTaskMetrics taskMetrics) {
         if (channels == null || channels.isEmpty()) {
             throw new IllegalArgumentException("at least one recall channel is required");
         }
@@ -97,6 +113,7 @@ public class MultiChannelRecallService {
         this.quotaPolicy         = quotaPolicy == null ? QuotaPolicy.defaultMovie() : quotaPolicy;
         this.degradationMetrics  = degradationMetrics == null
                 ? new RecallDegradationMetrics() : degradationMetrics;
+        this.taskMetrics         = taskMetrics == null ? RecallTaskMetrics.NOOP : taskMetrics;
     }
 
     /** Builds a service from a per-port {@link RecallConfig}. */
@@ -110,7 +127,8 @@ public class MultiChannelRecallService {
                 config.faultInjector(),
                 config.userEmbeddingStore(),
                 config.quotaPolicy(),
-                config.recallMetrics());
+                config.recallMetrics(),
+                config.taskMetrics());
     }
 
     public List<MovieCandidate> recall(RecommendationQuery query, int limit) {
@@ -146,10 +164,18 @@ public class MultiChannelRecallService {
             }
         }
 
-        List<CompletableFuture<ChannelResult>> futures = new ArrayList<>(channels.size());
+        // Retained task handles, not detached CompletableFuture.orTimeout chains: a timeout here
+        // cancels the underlying task with interruption, so a channel stuck on a stalled Redis is
+        // asked to stop rather than left occupying a worker for the full command timeout
+        // (measured: caller degraded at 220 ms, next task waited 1790 ms for a thread). Channels
+        // must preserve the interrupt rather than swallow it; a client that ignores interruption
+        // still cannot exhaust memory because the executor's queue is the hard bound.
+        List<Submitted> submitted = new ArrayList<>(channels.size());
+        List<ChannelResult> results = new ArrayList<>(channels.size());
         for (RecallChannel channel : channels) {
             if (!healthMonitor.isAvailable(channel.name())) {
                 if (primary) {
+                    cancelAll(submitted);
                     throw new PrimaryRecallUnavailableException(
                             "Required primary channel is unavailable: " + channel.name());
                 }
@@ -157,41 +183,66 @@ public class MultiChannelRecallService {
                 continue;
             }
             String name = channel.name();
-            CompletableFuture<ChannelResult> future;
             try {
-                future = CompletableFuture
-                        .supplyAsync(() -> {
-                            faultInjector.maybeInject("channel:" + name);
-                            // Over-fetch to limit so gap fill can pick unselected candidates
-                            return new ChannelResult(name, primary
-                                    ? channel.recallPrimary(query, limit)
-                                    : channel.recall(query, limit), null);
-                        }, executor)
-                        .orTimeout(channelTimeoutMs, TimeUnit.MILLISECONDS);
-                if (!primary) {
-                    future = future.exceptionally(ex -> new ChannelResult(name, List.of(), ex));
-                }
+                Future<ChannelResult> task = executor.submit(() -> {
+                    faultInjector.maybeInject("channel:" + name);
+                    // Over-fetch to limit so gap fill can pick unselected candidates
+                    return new ChannelResult(name, primary
+                            ? channel.recallPrimary(query, limit)
+                            : channel.recall(query, limit), null);
+                });
+                submitted.add(new Submitted(name, task));
             } catch (RejectedExecutionException rex) {
-                if (primary) throw new PrimaryRecallUnavailableException(
-                        "Required primary channel was rejected: " + name, rex);
+                taskMetrics.recordRejected(name);
+                if (primary) {
+                    cancelAll(submitted);
+                    throw new PrimaryRecallUnavailableException(
+                            "Required primary channel was rejected: " + name, rex);
+                }
                 log.warn("Channel '{}' rejected by recall bulkhead (queue full)", name);
-                future = CompletableFuture.completedFuture(new ChannelResult(name, List.of(), rex));
+                results.add(new ChannelResult(name, List.of(), rex));
             }
-            futures.add(future);
         }
 
-        if (!futures.isEmpty()) {
+        // One shared deadline for the whole fan-out: every channel got the same budget from the
+        // moment of submission, and awaiting them in order against it costs no channel any time.
+        long deadlineNanos = System.nanoTime() + TimeUnit.MILLISECONDS.toNanos(channelTimeoutMs);
+        for (int i = 0; i < submitted.size(); i++) {
+            Submitted s = submitted.get(i);
             try {
-                CompletableFuture.allOf(futures.toArray(new CompletableFuture[0])).join();
-            } catch (java.util.concurrent.CompletionException e) {
-                throw new PrimaryRecallUnavailableException("Required primary recall channel failed", e.getCause());
+                results.add(s.task().get(Math.max(0L, deadlineNanos - System.nanoTime()), TimeUnit.NANOSECONDS));
+            } catch (TimeoutException te) {
+                s.task().cancel(true);
+                taskMetrics.recordTimeout(s.channel());
+                if (primary) {
+                    cancelAll(submitted.subList(i + 1, submitted.size()));
+                    throw new PrimaryRecallUnavailableException(
+                            "Required primary recall channel timed out: " + s.channel(), te);
+                }
+                results.add(new ChannelResult(s.channel(), List.of(), te));
+            } catch (ExecutionException ee) {
+                Throwable cause = ee.getCause() != null ? ee.getCause() : ee;
+                if (primary) {
+                    cancelAll(submitted.subList(i + 1, submitted.size()));
+                    throw new PrimaryRecallUnavailableException("Required primary recall channel failed", cause);
+                }
+                results.add(new ChannelResult(s.channel(), List.of(), cause));
+            } catch (java.util.concurrent.CancellationException ce) {
+                results.add(new ChannelResult(s.channel(), List.of(), ce));
+            } catch (InterruptedException ie) {
+                // The caller is being cancelled (request timeout, shutdown): stop the work we
+                // started, hand the flag back, and fail rather than merge a partial fan-out. This
+                // holds for the non-primary path too — the old uninterruptible join() would have
+                // returned a partial merge here; an interrupted caller has no use for one.
+                cancelAll(submitted.subList(i, submitted.size()));
+                Thread.currentThread().interrupt();
+                throw new PrimaryRecallUnavailableException("Recall interrupted", ie);
             }
         }
 
         Map<String, List<MovieCandidate>> channelResults = new LinkedHashMap<>();
         Set<String> degradedChannels = new LinkedHashSet<>();
-        for (CompletableFuture<ChannelResult> future : futures) {
-            ChannelResult result = future.join();
+        for (ChannelResult result : results) {
             if (result.error() != null) {
                 healthMonitor.recordFailure(result.channel());
                 if (!primary) {
@@ -288,6 +339,14 @@ public class MultiChannelRecallService {
         result.sort(RecallScoring.BY_SCORE_DESC);
         return result.size() > limit ? List.copyOf(result.subList(0, limit)) : List.copyOf(result);
     }
+
+    private static void cancelAll(List<Submitted> tasks) {
+        for (Submitted s : tasks) {
+            s.task().cancel(true);
+        }
+    }
+
+    private record Submitted(String channel, Future<ChannelResult> task) {}
 
     private record ChannelResult(String channel, List<MovieCandidate> candidates, Throwable error) {
         ChannelResult { Objects.requireNonNull(candidates, "candidates"); }

@@ -10,7 +10,13 @@ import java.io.InputStream;
 import java.net.URISyntaxException;
 import java.net.URL;
 import java.nio.file.Files;
+import java.nio.file.LinkOption;
 import java.nio.file.Path;
+import java.security.MessageDigest;
+import java.security.NoSuchAlgorithmException;
+import java.util.HashMap;
+import java.util.Map;
+import java.util.Optional;
 
 /**
  * Unified locator for all model pipeline artifacts.
@@ -26,6 +32,7 @@ import java.nio.file.Path;
 public class ModelArtifactLocator {
 
     private static final String MODEL_CLASSPATH_DIR = "artifacts/model";
+    private static final String MODEL_MANIFEST = "model_manifest.json";
     public static final String DEFAULT_VARIANT = "training";
     private static final String SPARK_CLASSPATH_DIR = "artifacts/pyspark";
 
@@ -59,6 +66,45 @@ public class ModelArtifactLocator {
     public byte[] readModelBytes(String variant, String fileName) throws IOException {
         try (InputStream is = openModel(variant, fileName)) {
             return is.readAllBytes();
+        }
+    }
+
+    public Optional<ModelArtifactSnapshot> loadManifestSnapshot(String variant) {
+        String normalizedVariant = ModelVariants.trimOrEmpty(variant);
+        byte[] manifestBytes = readStrictVariantFileIfPresent(normalizedVariant, MODEL_MANIFEST);
+        if (manifestBytes == null) {
+            return Optional.empty();
+        }
+
+        try {
+            ModelArtifactManifest manifest = ModelArtifactManifest.parse(manifestBytes);
+            ModelArtifactManifest.ModelContract contract = manifest.validate();
+            Map<String, byte[]> files = new HashMap<>();
+            for (Map.Entry<String, String> checksum : manifest.sha256().entrySet()) {
+                byte[] bytes = readStrictVariantFile(normalizedVariant, checksum.getKey());
+                verifyChecksum(checksum.getKey(), bytes, checksum.getValue());
+                files.put(checksum.getKey(), bytes);
+            }
+            byte[] featureConfig = files.get("feature_config.json");
+            manifest.validateFeatureVersion(featureConfig);
+            Map<String, byte[]> companions = new HashMap<>(files);
+            companions.remove("feature_config.json");
+            companions.remove(manifest.modelFile());
+            return Optional.of(new ModelArtifactSnapshot(
+                    featureConfig,
+                    files.get(manifest.modelFile()),
+                    manifest.modelFile(),
+                    manifest.modelVersion(),
+                    contract,
+                    companions
+            ));
+        } catch (IllegalStateException e) {
+            throw new IllegalStateException("Invalid " + MODEL_MANIFEST + " for variant '"
+                    + effectiveVariant(normalizedVariant) + "': " + e.getMessage(), e);
+        } catch (IOException e) {
+            throw new IllegalStateException("Cannot parse " + MODEL_MANIFEST + " for variant '"
+                    + effectiveVariant(normalizedVariant) + "' due to malformed or duplicate content: "
+                    + e.getMessage(), e);
         }
     }
 
@@ -163,6 +209,107 @@ public class ModelArtifactLocator {
 
         throw new IllegalStateException(describeModelLocation(variant, fileName) + " not found. "
                 + "Run the training pipeline or set recsys.model.artifacts-dir to an external model directory.");
+    }
+
+    private byte[] readStrictVariantFileIfPresent(String variant, String fileName) {
+        if (!modelDir.isBlank()) {
+            Path variantDir = strictExternalVariantDir(variant);
+            if (variantDir == null) {
+                return null;
+            }
+            Path candidate = variantDir.resolve(fileName);
+            if (!Files.exists(candidate, LinkOption.NOFOLLOW_LINKS)) {
+                return null;
+            }
+            if (Files.isSymbolicLink(candidate)) {
+                throw new IllegalStateException("manifest artifact must not be a symbolic link: " + fileName);
+            }
+            if (!Files.isRegularFile(candidate, LinkOption.NOFOLLOW_LINKS)) {
+                throw new IllegalStateException("manifest artifact is not a regular file: " + fileName);
+            }
+            try {
+                Path realCandidate = candidate.toRealPath(LinkOption.NOFOLLOW_LINKS);
+                if (!realCandidate.startsWith(variantDir)) {
+                    throw new IllegalStateException("manifest artifact escapes variant directory: " + fileName);
+                }
+                try (InputStream input = Files.newInputStream(realCandidate, LinkOption.NOFOLLOW_LINKS)) {
+                    return input.readAllBytes();
+                }
+            } catch (IOException e) {
+                throw new IllegalStateException("cannot read " + fileName + " from " + variantDir, e);
+            }
+        }
+
+        ClassPathResource resource = strictClasspathResource(variant, fileName);
+        if (!resource.exists()) {
+            return null;
+        }
+        try (InputStream input = resource.getInputStream()) {
+            return input.readAllBytes();
+        } catch (IOException e) {
+            throw new IllegalStateException("cannot read " + fileName + " for variant '"
+                    + effectiveVariant(variant) + "'", e);
+        }
+    }
+
+    private byte[] readStrictVariantFile(String variant, String fileName) {
+        byte[] bytes = readStrictVariantFileIfPresent(variant, fileName);
+        if (bytes == null) {
+            throw new IllegalStateException("manifest artifact not found: " + fileName);
+        }
+        return bytes;
+    }
+
+    private Path strictExternalVariantDir(String variant) {
+        Path configuredBase = Path.of(modelDir).toAbsolutePath().normalize();
+        if (!Files.exists(configuredBase)) {
+            return null;
+        }
+        try {
+            Path realBase = configuredBase.toRealPath();
+            if (!Files.isDirectory(realBase, LinkOption.NOFOLLOW_LINKS)) {
+                throw new IllegalStateException("model artifacts directory is not a directory: " + configuredBase);
+            }
+
+            Path requestedVariant = variant.isBlank() ? realBase : realBase.resolve(variant).normalize();
+            if (!requestedVariant.startsWith(realBase)) {
+                throw new IllegalStateException("Illegal variant path traversal attempt: " + variant);
+            }
+            if (!Files.exists(requestedVariant, LinkOption.NOFOLLOW_LINKS)) {
+                return null;
+            }
+            Path realVariant = requestedVariant.toRealPath();
+            if (!realVariant.startsWith(realBase)) {
+                throw new IllegalStateException("variant directory escapes model artifacts directory: " + variant);
+            }
+            if (!Files.isDirectory(realVariant, LinkOption.NOFOLLOW_LINKS)) {
+                throw new IllegalStateException("variant path is not a directory: " + variant);
+            }
+            return realVariant;
+        } catch (IOException e) {
+            throw new IllegalStateException("cannot resolve model artifact directory for variant '"
+                    + effectiveVariant(variant) + "'", e);
+        }
+    }
+
+    private ClassPathResource strictClasspathResource(String variant, String fileName) {
+        return new ClassPathResource(MODEL_CLASSPATH_DIR + "/" + effectiveVariant(variant) + "/" + fileName);
+    }
+
+    private static String effectiveVariant(String variant) {
+        return variant.isBlank() ? DEFAULT_VARIANT : variant;
+    }
+
+    private static void verifyChecksum(String fileName, byte[] bytes, String expectedHex) {
+        try {
+            byte[] expected = java.util.HexFormat.of().parseHex(expectedHex);
+            byte[] actual = MessageDigest.getInstance("SHA-256").digest(bytes);
+            if (!MessageDigest.isEqual(expected, actual)) {
+                throw new IllegalStateException("SHA-256 checksum mismatch for " + fileName);
+            }
+        } catch (NoSuchAlgorithmException e) {
+            throw new IllegalStateException("SHA-256 is unavailable", e);
+        }
     }
 
     private InputStream openStream(String classpathBase, String externalDir, String path) throws IOException {

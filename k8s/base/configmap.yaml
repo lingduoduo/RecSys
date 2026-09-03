@@ -57,7 +57,13 @@ data:
   # 2026-07-27; the legacy path validates no signature, expiry, user binding or query fingerprint.
   RECOMMENDATION_CURSOR_ACCEPT_LEGACY: "false"
   RECOMMENDATION_PAGINATION_MAX_CANDIDATES: "500"
-  RECSYS_HEALTH_MAX_CONCURRENT_REQUESTS: "64"
+  # Model serving (8080) per-instance admission cap. 8 per two-CPU pod, not 64: each admitted
+  # request runs a batched ONNX invocation on one intra-op thread (RECSYS_MODEL_ONNX_* in
+  # model-serving.yaml), so 64 in flight against a 2-CPU limit is 32x oversubscription that
+  # surfaces as CFS throttling and tail latency, not as more throughput. Excess requests are
+  # served from the degraded cache when one exists, else 503 + Retry-After. A safety default,
+  # not a measured capacity — raise it only with InferenceLoadTest numbers from this CPU shape.
+  RECSYS_HEALTH_MAX_CONCURRENT_REQUESTS: "8"
   RECSYS_HEALTH_MAX_IN_FLIGHT_UTILIZATION: "0.95"
   # RecSys Serving (6010) concurrency admission (mirrors ONLINE_MAX_CONCURRENT_REQUESTS).
   # Guards the recall/ranking routes (/getrecommendation, /v2/recommend, /similar); 429 above the cap.

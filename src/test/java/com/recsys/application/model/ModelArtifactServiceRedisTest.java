@@ -52,6 +52,8 @@ class ModelArtifactServiceRedisTest {
     private void writeFeatureConfig() throws IOException {
         Path variantDir = tempDir.resolve("training");
         Files.createDirectories(variantDir);
+        Files.write(variantDir.resolve("dssm_model.onnx"),
+                new ModelArtifactLocator("", "").readModelBytes("dssm_model.onnx"));
         Files.writeString(variantDir.resolve("feature_config.json"), """
                 {
                   "model_version": "demo-model-ratings-v1",

@@ -202,15 +202,19 @@ on every run. The gateway health contract is described in the
 
 ### Start the artifact-dependent full stack
 
-Do not use the four-service script until you have restored a compatible model
-artifact bundle. The default variant requires `training/feature_config.json`
-and compatible companion artifacts under
-`src/main/resources/artifacts/model/` or `RECSYS_MODEL_ARTIFACTS_DIR`. Every
-configured A/B variant needs a bundle from the same pipeline.
-
-This repository has no acquisition or generation workflow for those files.
-Without the required model bundle, model serving **will fail during startup**,
-and the gateway aggregate health endpoint will remain `503`.
+The checkout ships a runnable demo model bundle, all tracked in git:
+`src/main/resources/dssm_model.onnx` (the two-tower ONNX model) and
+`src/main/resources/artifacts/model/{training,test}/feature_config.json` (the
+per-variant vocabularies). Model serving starts against them as *legacy*
+bundles — there is no `model_manifest.json`, so it logs one warning per variant
+that checksums are unverified. Production bundles come from the training
+pipeline, not from this repository, and are published as immutable,
+manifest-backed generations under `RECSYS_MODEL_ARTIFACTS_DIR`; the
+[model artifact rollout runbook](docs/runbooks/model-artifact-rollout.md) has
+the layout, the manifest schema, and how a bad bundle fails. Every configured
+A/B variant needs a bundle from the same pipeline. A default-variant bundle that
+fails validation makes model serving **fail during startup**, and the gateway
+aggregate health endpoint stays `503`.
 
 After supplying the artifacts, start the infrastructure and four services:
 
@@ -350,23 +354,26 @@ not opt into the load or Docker tags.
 
 ### Known clean-checkout artifact limitation
 
-The pre-existing baseline does not track these fixtures:
+The model-serving fixtures are tracked — `src/main/resources/dssm_model.onnx`
+and both `src/main/resources/artifacts/model/<variant>/feature_config.json`
+files — so the model service and its test classes run on a clean checkout. One
+fixture is still not tracked:
 
 ```text
-src/main/resources/artifacts/model/training/feature_config.json
-src/main/resources/artifacts/model/test/feature_config.json
 src/main/resources/artifacts/pyspark/als_model_metadata.json
 ```
 
-Consequently, ordinary `mvn --batch-mode test` has fixture-related errors on a
-clean checkout. Model serving on port `8080` will fail during startup without
-the default variant's model bundle. Restore the files from a known-good
-pipeline output; this checkout has no artifact-preparation script, and the
-`offline-embedding` profile generates only Word2Vec item embeddings. External
-bundles can use `RECSYS_MODEL_ARTIFACTS_DIR` for `training/` and `test/` model
-variants and `RECSYS_SPARK_ARTIFACTS_DIR` for `als_model_metadata.json`; both
-are bound in [application.yml](src/main/resources/application.yml). This README
-does not claim that the fixture-dependent suite passes.
+Consequently, ordinary `mvn --batch-mode test` has two Spark-fixture errors in
+`ModelArtifactLocatorTest` on a clean checkout
+(`openSpark_classpath_readsContent` and
+`resolveSparkPath_classpathExploded_returnsExistingFilesystemPath`). Restore
+that file from a known-good PySpark pipeline output, or point
+`RECSYS_SPARK_ARTIFACTS_DIR` at a directory holding it; this checkout has no
+artifact-preparation script, and the `offline-embedding` profile generates only
+Word2Vec item embeddings. `RECSYS_MODEL_ARTIFACTS_DIR` and
+`RECSYS_SPARK_ARTIFACTS_DIR` are both bound in
+[application.yml](src/main/resources/application.yml). This README does not
+claim that the Spark-fixture-dependent tests pass.
 
 ### Opt-in load suite
 
@@ -610,6 +617,9 @@ Operational runbooks — **all of them**, same index rule as above:
 - [Gateway auth](docs/runbooks/gateway-auth.md) — API keys, Cognito JWT, and the fail-closed startup rule.
 - [Redis auth](docs/runbooks/redis-auth.md) — provisioning the shared credential, the missing-Secret failure mode, and rotation.
 - [Splunk HEC logging](docs/runbooks/splunk-hec-logging.md) — shipping structured application logs to Splunk, and the at-most-once limits of what lands there.
+
+*Model serving*
+- [Model artifact rollout](docs/runbooks/model-artifact-rollout.md) — immutable manifest-backed bundles, what a pod verifies before it is ready, how a bad bundle fails, and the counter that proves the model actually ran.
 
 *Data and delivery*
 - [Serving data freshness](docs/runbooks/serving-data-freshness.md) — the online feature-view and outbox-delivery SLOs, and why a freshness gauge can read healthy while nothing is measuring it.

@@ -49,7 +49,18 @@ public class OnnxInferencePipeline implements RecommendationPipeline {
         RecommendResponse response = window.response();
         List<RankedMovie> ranked = toRanked(response.recommendations());
         RecommendationPage page = pagination.page(decoded, ranked, window.sourceTruncated());
-        return toResult(query.userId(), response, assignment.variant(), page);
+        return toResult(query.userId(), response, servedVariant(response, assignment), page);
+    }
+
+    /**
+     * The variant that actually produced the response, which differs from the assignment when
+     * {@code VariantRuntimeResolver} fell back to control. Metrics and exposure events downstream
+     * key on this trace value, so it must never name a model that did not run. A blank response
+     * value is a compatibility fallback only — the service always sets it today.
+     */
+    private static String servedVariant(RecommendResponse response, ABTestService.Assignment assignment) {
+        String served = response.abTestVariant();
+        return served != null && !served.isBlank() ? served : assignment.variant();
     }
 
     private static RecommendRequest toRequest(RecommendationQuery query) {
@@ -78,11 +89,11 @@ public class OnnxInferencePipeline implements RecommendationPipeline {
     private static RecommendationResult toResult(
             String userId,
             RecommendResponse response,
-            String assignmentVariant,
+            String servedVariant,
             RecommendationPage page
     ) {
         Map<String, String> trace = new java.util.LinkedHashMap<>();
-        trace.put("abTestVariant", assignmentVariant != null ? assignmentVariant : "");
+        trace.put("abTestVariant", servedVariant != null ? servedVariant : "");
         trace.put("modelVersion", response.modelVersion() != null ? response.modelVersion() : "");
         if (page.budgetExhausted()) {
             trace.put("paginationBudgetExhausted", "true");
