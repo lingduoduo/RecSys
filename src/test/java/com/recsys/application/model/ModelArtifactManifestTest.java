@@ -74,6 +74,32 @@ class ModelArtifactManifestTest {
     }
 
     @Test
+    void rejectsUnknownTopLevelFieldsInsteadOfIgnoringThem() throws IOException {
+        // Version 1 has exactly six top-level fields. Silently ignoring an unknown one would
+        // let a typo'd "sha256s" or a stray "notes" key pass validation with the check it
+        // meant to configure never applied; the runbook documents this rejection.
+        Path variantDir = writeArtifacts();
+        String checksums = validChecksums().entrySet().stream()
+                .map(e -> "\"" + e.getKey() + "\": \"" + e.getValue() + "\"")
+                .reduce((l, r) -> l + "," + r).orElse("");
+        Files.writeString(variantDir.resolve("model_manifest.json"), """
+                {
+                  "schema_version": 1,
+                  "model_version": "dssm-v1",
+                  "model_file": "%s",
+                  "sha256": {%s},
+                  "inputs": {%s},
+                  "output": {%s},
+                  "notes": "published by hand"
+                }
+                """.formatted(MODEL_FILE, checksums, validInputs(), validOutput()));
+
+        assertThatThrownBy(() -> locator().loadManifestSnapshot(VARIANT))
+                .isInstanceOf(IllegalStateException.class)
+                .hasMessageContaining("model_manifest.json");
+    }
+
+    @Test
     void rejectsUnsupportedSchemaVersion() throws IOException {
         Path variantDir = writeArtifacts();
         writeManifest(variantDir, 2, "dssm-v1", MODEL_FILE, validChecksums(), validInputs(), validOutput());
