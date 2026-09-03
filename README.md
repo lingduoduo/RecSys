@@ -132,7 +132,9 @@ export JAVA_HOME=$(/usr/libexec/java_home -v 17)
 mvn package -DskipTests
 ```
 
-Generate a local recommendation cursor signing key:
+Generate a local recommendation cursor signing key, and accept the passwordless
+local Redis (every serving process refuses an unauthenticated Redis connection
+unless this is set; see the [Redis auth runbook](docs/runbooks/redis-auth.md)):
 
 ```bash
 export RECOMMENDATION_CURSOR_SIGNING_KEY="$(openssl rand -hex 32)"
@@ -252,12 +254,22 @@ Run one command per terminal. Start Redis first for the catalog and online
 services. Start all three backends before the gateway if you want the gateway
 aggregate health check to return success.
 
-Generate and export one signing key for every catalog and online instance in
-the local topology:
+Export the shared environment once per terminal before any of the commands
+below. Use one signing key for every catalog and online instance in the local
+topology, and opt in to the passwordless local Redis — the catalog, online, and
+model services all refuse an unauthenticated Redis connection at startup
+without it (the gateway only opens Redis when `SERVICE_REGISTRY_ENABLED=true`).
+`scripts/run-microservices-local.sh` sets the Redis opt-in itself; these
+per-service commands do not.
 
 ```bash
+export JAVA_HOME=$(/usr/libexec/java_home -v 17)
 export RECOMMENDATION_CURSOR_SIGNING_KEY="$(openssl rand -hex 32)"
+export REDIS_ALLOW_NO_AUTH=true
 ```
+
+If your local Redis has a password, export `REDIS_PASSWORD` instead of
+`REDIS_ALLOW_NO_AUTH`.
 
 Catalog and recommendation serving:
 
@@ -274,6 +286,8 @@ env ONLINE_DEMO_PORT=7010 \
   mvn exec:java -Dexec.mainClass=com.recsys.api.online.OnlinePredictionServer
 ```
 
+Check it with `curl --fail http://localhost:7010/health/ready`.
+
 Model serving:
 
 ```bash
@@ -282,7 +296,8 @@ env SERVER_PORT=8080 sh scripts/run-with-jvm-tuning.sh model-serving -- \
 ```
 
 This model command has the same artifact prerequisite as the full-stack
-workflow and will fail without the default variant's model bundle.
+workflow and will fail without the default variant's model bundle. Check it
+with `curl --fail http://localhost:8080/health/ready`.
 
 API gateway:
 
@@ -291,6 +306,11 @@ env GATEWAY_PORT=8010 GATEWAY_ALLOW_ANONYMOUS=true \
   sh scripts/run-with-jvm-tuning.sh api-gateway -- \
   mvn exec:java -Dexec.mainClass=com.recsys.api.gateway.MicroserviceGatewayServer
 ```
+
+Check it with `curl --fail http://localhost:8010/health`; it returns `503`
+until all three backends answer their health checks, or set
+`GATEWAY_UPSTREAM_HEALTHCHECK_ENABLED=false` to run the gateway with some
+backends absent.
 
 The anonymous setting in the gateway command is development-only. The wrapper
 loads the repository's checked-in JVM options. Use
