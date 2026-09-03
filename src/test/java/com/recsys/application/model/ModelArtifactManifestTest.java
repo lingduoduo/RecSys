@@ -1,6 +1,7 @@
 package com.recsys.application.model;
 
 import org.junit.jupiter.api.Test;
+import org.junit.jupiter.api.Assumptions;
 import org.junit.jupiter.api.io.TempDir;
 
 import java.io.IOException;
@@ -98,6 +99,41 @@ class ModelArtifactManifestTest {
                     .hasMessageContaining("model_file")
                     .hasMessageContaining(unsafe);
         }
+    }
+
+    @Test
+    void rejectsSymlinkThatEscapesVariantDirectory() throws IOException {
+        Path variantDir = writeArtifacts();
+        Path outsideModel = Files.write(artifactRoot.resolveSibling("outside-model.onnx"), MODEL_BYTES);
+        Path modelPath = variantDir.resolve(MODEL_FILE);
+        Files.delete(modelPath);
+        try {
+            Files.createSymbolicLink(modelPath, outsideModel);
+        } catch (UnsupportedOperationException | SecurityException e) {
+            Assumptions.abort("symbolic links are not supported: " + e.getMessage());
+        } catch (java.nio.file.FileSystemException e) {
+            Assumptions.abort("symbolic links are not available: " + e.getMessage());
+        }
+        writeManifest(variantDir, 1, "dssm-v1", MODEL_FILE, validChecksums(), validInputs(), validOutput());
+
+        assertThatThrownBy(() -> locator().loadManifestSnapshot(VARIANT))
+                .isInstanceOf(IllegalStateException.class)
+                .hasMessageContaining(MODEL_FILE)
+                .hasMessageContaining("symbolic link");
+    }
+
+    @Test
+    void rejectsNonRegularArtifactFile() throws IOException {
+        Path variantDir = writeArtifacts();
+        Path modelPath = variantDir.resolve(MODEL_FILE);
+        Files.delete(modelPath);
+        Files.createDirectory(modelPath);
+        writeManifest(variantDir, 1, "dssm-v1", MODEL_FILE, validChecksums(), validInputs(), validOutput());
+
+        assertThatThrownBy(() -> locator().loadManifestSnapshot(VARIANT))
+                .isInstanceOf(IllegalStateException.class)
+                .hasMessageContaining(MODEL_FILE)
+                .hasMessageContaining("not a regular file");
     }
 
     @Test

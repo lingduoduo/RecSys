@@ -14,6 +14,7 @@ import java.security.MessageDigest;
 import java.security.NoSuchAlgorithmException;
 
 import static org.assertj.core.api.Assertions.assertThat;
+import static org.assertj.core.api.Assertions.assertThatThrownBy;
 
 class ModelArtifactServiceTest {
 
@@ -103,6 +104,90 @@ class ModelArtifactServiceTest {
     }
 
     @Test
+    void manifestBundleNeverUsesStaleFlatRootItemEmbeddings(@TempDir Path root) throws IOException {
+        Path variantDir = Files.createDirectories(root.resolve("training"));
+        byte[] featureConfig = """
+                {
+                  "model_version": "manifest-v3",
+                  "embedding_dim": 2,
+                  "user_vocab": { "__UNK__": 0 },
+                  "item_vocab": {}
+                }
+                """.getBytes(StandardCharsets.UTF_8);
+        byte[] model = "manifest-model".getBytes(StandardCharsets.UTF_8);
+        Files.write(variantDir.resolve("feature_config.json"), featureConfig);
+        Files.write(variantDir.resolve("manifest.onnx"), model);
+        Files.writeString(root.resolve("item_embeddings.json"), "{\"stale\": [0.1, 0.2]}");
+        Files.writeString(variantDir.resolve("model_manifest.json"), """
+                {
+                  "schema_version": 1,
+                  "model_version": "manifest-v3",
+                  "model_file": "manifest.onnx",
+                  "sha256": {
+                    "feature_config.json": "%s",
+                    "manifest.onnx": "%s"
+                  },
+                  "inputs": {
+                    "user_id": { "type": "INT64", "rank": 1 },
+                    "item_id": { "type": "INT64", "rank": 1 }
+                  },
+                  "output": { "name": "score", "type": "FLOAT", "rank": 1 }
+                }
+                """.formatted(sha256(featureConfig), sha256(model)));
+        ModelArtifactService manifest = new ModelArtifactService(
+                new ModelArtifactLocator(root.toString(), ""), "training");
+
+        assertThatThrownBy(manifest::loadArtifacts)
+                .isInstanceOf(IllegalStateException.class)
+                .hasMessageContaining("item_embeddings.json")
+                .hasMessageContaining("verified manifest");
+    }
+
+    @Test
+    void manifestBundleConsumesVerifiedEmbeddingBytesWithoutSecondRead(@TempDir Path root) throws IOException {
+        Path variantDir = Files.createDirectories(root.resolve("training"));
+        byte[] featureConfig = """
+                {
+                  "model_version": "manifest-v4",
+                  "embedding_dim": 2,
+                  "user_vocab": { "__UNK__": 0 },
+                  "item_vocab": {}
+                }
+                """.getBytes(StandardCharsets.UTF_8);
+        byte[] model = "manifest-model".getBytes(StandardCharsets.UTF_8);
+        byte[] embeddings = "{\"fresh\": [0.3, 0.4]}".getBytes(StandardCharsets.UTF_8);
+        Path embeddingsFile = variantDir.resolve("item_embeddings.json");
+        Files.write(variantDir.resolve("feature_config.json"), featureConfig);
+        Files.write(variantDir.resolve("manifest.onnx"), model);
+        Files.write(embeddingsFile, embeddings);
+        Files.writeString(root.resolve("item_embeddings.json"), "{\"stale\": [0.1, 0.2]}");
+        Files.writeString(variantDir.resolve("model_manifest.json"), """
+                {
+                  "schema_version": 1,
+                  "model_version": "manifest-v4",
+                  "model_file": "manifest.onnx",
+                  "sha256": {
+                    "feature_config.json": "%s",
+                    "manifest.onnx": "%s",
+                    "item_embeddings.json": "%s"
+                  },
+                  "inputs": {
+                    "user_id": { "type": "INT64", "rank": 1 },
+                    "item_id": { "type": "INT64", "rank": 1 }
+                  },
+                  "output": { "name": "score", "type": "FLOAT", "rank": 1 }
+                }
+                """.formatted(sha256(featureConfig), sha256(model), sha256(embeddings)));
+        ModelArtifactService manifest = new ModelArtifactService(
+                new DeleteAfterSnapshotLocator(root, embeddingsFile), "training");
+
+        manifest.loadArtifacts();
+
+        assertThat(manifest.getItemEmbeddings()).containsOnlyKeys("fresh");
+        assertThat(embeddingsFile).doesNotExist();
+    }
+
+    @Test
     void userVocab_containsKnownUsers() {
         var vocab = service.getUserVocab();
         assertThat(vocab).containsKey("__UNK__");
@@ -147,6 +232,26 @@ class ModelArtifactServiceTest {
         public byte[] readModelBytes(String variant, String fileName) throws IOException {
             modelReads++;
             return super.readModelBytes(variant, fileName);
+        }
+    }
+
+    private static final class DeleteAfterSnapshotLocator extends ModelArtifactLocator {
+        private final Path embeddingsFile;
+
+        private DeleteAfterSnapshotLocator(Path root, Path embeddingsFile) {
+            super(root.toString(), "");
+            this.embeddingsFile = embeddingsFile;
+        }
+
+        @Override
+        public java.util.Optional<ModelArtifactSnapshot> loadManifestSnapshot(String variant) {
+            java.util.Optional<ModelArtifactSnapshot> snapshot = super.loadManifestSnapshot(variant);
+            try {
+                Files.delete(embeddingsFile);
+            } catch (IOException e) {
+                throw new IllegalStateException(e);
+            }
+            return snapshot;
         }
     }
 }

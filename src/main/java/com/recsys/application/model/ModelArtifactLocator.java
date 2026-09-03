@@ -10,6 +10,7 @@ import java.io.InputStream;
 import java.net.URISyntaxException;
 import java.net.URL;
 import java.nio.file.Files;
+import java.nio.file.LinkOption;
 import java.nio.file.Path;
 import java.security.MessageDigest;
 import java.security.NoSuchAlgorithmException;
@@ -86,12 +87,16 @@ public class ModelArtifactLocator {
             }
             byte[] featureConfig = files.get("feature_config.json");
             manifest.validateFeatureVersion(featureConfig);
+            Map<String, byte[]> companions = new HashMap<>(files);
+            companions.remove("feature_config.json");
+            companions.remove(manifest.modelFile());
             return Optional.of(new ModelArtifactSnapshot(
                     featureConfig,
                     files.get(manifest.modelFile()),
                     manifest.modelFile(),
                     manifest.modelVersion(),
-                    contract
+                    contract,
+                    companions
             ));
         } catch (IllegalStateException e) {
             throw new IllegalStateException("Invalid " + MODEL_MANIFEST + " for variant '"
@@ -209,12 +214,27 @@ public class ModelArtifactLocator {
     private byte[] readStrictVariantFileIfPresent(String variant, String fileName) {
         if (!modelDir.isBlank()) {
             Path variantDir = strictExternalVariantDir(variant);
-            Path file = variantDir.resolve(fileName).normalize();
-            if (!Files.exists(file)) {
+            if (variantDir == null) {
                 return null;
             }
+            Path candidate = variantDir.resolve(fileName);
+            if (!Files.exists(candidate, LinkOption.NOFOLLOW_LINKS)) {
+                return null;
+            }
+            if (Files.isSymbolicLink(candidate)) {
+                throw new IllegalStateException("manifest artifact must not be a symbolic link: " + fileName);
+            }
+            if (!Files.isRegularFile(candidate, LinkOption.NOFOLLOW_LINKS)) {
+                throw new IllegalStateException("manifest artifact is not a regular file: " + fileName);
+            }
             try {
-                return Files.readAllBytes(file);
+                Path realCandidate = candidate.toRealPath(LinkOption.NOFOLLOW_LINKS);
+                if (!realCandidate.startsWith(variantDir)) {
+                    throw new IllegalStateException("manifest artifact escapes variant directory: " + fileName);
+                }
+                try (InputStream input = Files.newInputStream(realCandidate, LinkOption.NOFOLLOW_LINKS)) {
+                    return input.readAllBytes();
+                }
             } catch (IOException e) {
                 throw new IllegalStateException("cannot read " + fileName + " from " + variantDir, e);
             }
@@ -241,12 +261,35 @@ public class ModelArtifactLocator {
     }
 
     private Path strictExternalVariantDir(String variant) {
-        Path baseDir = Path.of(modelDir).toAbsolutePath().normalize();
-        Path variantDir = variant.isBlank() ? baseDir : baseDir.resolve(variant).normalize();
-        if (!variantDir.startsWith(baseDir)) {
-            throw new IllegalStateException("Illegal variant path traversal attempt: " + variant);
+        Path configuredBase = Path.of(modelDir).toAbsolutePath().normalize();
+        if (!Files.exists(configuredBase)) {
+            return null;
         }
-        return variantDir;
+        try {
+            Path realBase = configuredBase.toRealPath();
+            if (!Files.isDirectory(realBase, LinkOption.NOFOLLOW_LINKS)) {
+                throw new IllegalStateException("model artifacts directory is not a directory: " + configuredBase);
+            }
+
+            Path requestedVariant = variant.isBlank() ? realBase : realBase.resolve(variant).normalize();
+            if (!requestedVariant.startsWith(realBase)) {
+                throw new IllegalStateException("Illegal variant path traversal attempt: " + variant);
+            }
+            if (!Files.exists(requestedVariant, LinkOption.NOFOLLOW_LINKS)) {
+                return null;
+            }
+            Path realVariant = requestedVariant.toRealPath();
+            if (!realVariant.startsWith(realBase)) {
+                throw new IllegalStateException("variant directory escapes model artifacts directory: " + variant);
+            }
+            if (!Files.isDirectory(realVariant, LinkOption.NOFOLLOW_LINKS)) {
+                throw new IllegalStateException("variant path is not a directory: " + variant);
+            }
+            return realVariant;
+        } catch (IOException e) {
+            throw new IllegalStateException("cannot resolve model artifact directory for variant '"
+                    + effectiveVariant(variant) + "'", e);
+        }
     }
 
     private ClassPathResource strictClasspathResource(String variant, String fileName) {

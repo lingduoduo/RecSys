@@ -56,12 +56,13 @@ public class ModelArtifactService {
 
     public void loadArtifacts() throws IOException {
         Optional<ModelArtifactSnapshot> snapshot = artifactLocator.loadManifestSnapshot(variant);
+        ModelArtifactSnapshot verifiedSnapshot = null;
         if (snapshot.isPresent()) {
-            ModelArtifactSnapshot verified = snapshot.get();
-            loadFeatureConfig(verified.featureConfig());
-            this.resolvedModelFile = verified.modelFile();
-            this.modelBytes = verified.model();
-            this.modelContract = verified.contract();
+            verifiedSnapshot = snapshot.get();
+            loadFeatureConfig(verifiedSnapshot.featureConfig());
+            this.resolvedModelFile = verifiedSnapshot.modelFile();
+            this.modelBytes = verifiedSnapshot.model();
+            this.modelContract = verifiedSnapshot.contract();
             this.manifestBacked = true;
         } else {
             loadFeatureConfig(null);
@@ -71,7 +72,11 @@ public class ModelArtifactService {
             this.manifestBacked = false;
         }
         if (redisItemEmbeddingStore == null) {
-            loadItemEmbeddings();
+            if (verifiedSnapshot == null) {
+                loadItemEmbeddings();
+            } else {
+                loadVerifiedItemEmbeddings(verifiedSnapshot);
+            }
         } else {
             loadItemEmbeddingsFromRedis();
         }
@@ -123,6 +128,40 @@ public class ModelArtifactService {
             }
             this.itemEmbeddings = Map.of();
         }
+    }
+
+    private void loadVerifiedItemEmbeddings(ModelArtifactSnapshot snapshot) throws IOException {
+        Optional<byte[]> verifiedEmbeddings = snapshot.companion("item_embeddings.json");
+        if (verifiedEmbeddings.isEmpty()) {
+            if (itemVocab.isEmpty()) {
+                throw new IllegalStateException("item_embeddings.json not found in verified manifest snapshot "
+                        + "for variant '" + getVariant() + "'");
+            }
+            this.itemEmbeddings = Map.of();
+            return;
+        }
+
+        try (InputStream is = new java.io.ByteArrayInputStream(verifiedEmbeddings.get())) {
+            loadItemEmbeddings(is);
+        }
+    }
+
+    private void loadItemEmbeddings(InputStream is) throws IOException {
+        Map<String, List<Double>> raw = objectMapper.readValue(is, new TypeReference<>() {});
+        Map<String, float[]> map = new HashMap<>(raw.size() * 2);
+        for (Map.Entry<String, List<Double>> entry : raw.entrySet()) {
+            List<Double> values = entry.getValue();
+            if (values.size() != embeddingDim) {
+                throw new IllegalStateException("item embedding dimension mismatch for item "
+                        + entry.getKey() + ": expected " + embeddingDim + ", got " + values.size());
+            }
+            float[] vec = new float[values.size()];
+            for (int i = 0; i < values.size(); i++) {
+                vec[i] = values.get(i).floatValue();
+            }
+            map.put(entry.getKey(), vec);
+        }
+        this.itemEmbeddings = Collections.unmodifiableMap(map);
     }
 
     private void loadItemEmbeddingsFromRedis() {
