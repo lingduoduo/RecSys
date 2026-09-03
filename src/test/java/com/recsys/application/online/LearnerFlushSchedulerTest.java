@@ -62,6 +62,31 @@ class LearnerFlushSchedulerTest {
     }
 
     @Test
+    void aJvmErrorInFlushDoesNotStopFutureFlushesEither() throws Exception {
+        // catch (Exception) let an Error cancel the schedule silently; the guarded loop does not.
+        AtomicInteger flushAttempts = new AtomicInteger();
+        CountDownLatch twoSuccessful = new CountDownLatch(2);
+        OnlineLearner learner = new OnlineLearner() {
+            @Override
+            public void flushToRedis(RedisExecutor exec, String keyPrefix) {
+                if (flushAttempts.incrementAndGet() == 1) throw new StackOverflowError("serializer recursed");
+                twoSuccessful.countDown();
+            }
+        };
+        io.micrometer.core.instrument.simple.SimpleMeterRegistry registry =
+                new io.micrometer.core.instrument.simple.SimpleMeterRegistry();
+
+        scheduler = new LearnerFlushScheduler(learner, stubExecutor(), "bias:", 1L);
+        scheduler.loop().bindTo(registry);
+        scheduler.start();
+
+        assertThat(twoSuccessful.await(5, TimeUnit.SECONDS)).isTrue();
+        assertThat(scheduler.snapshot().errorCount()).isGreaterThanOrEqualTo(1);
+        assertThat(registry.get(com.recsys.resilience.GuardedLoop.FAILURES)
+                .tag("loop", "learner-flush").functionCounter().count()).isGreaterThanOrEqualTo(1.0);
+    }
+
+    @Test
     void snapshotContainsIntervalSeconds() {
         scheduler = new LearnerFlushScheduler(new OnlineLearner(), stubExecutor(), "bias:", 30L);
         assertThat(scheduler.snapshot().intervalSeconds()).isEqualTo(30L);

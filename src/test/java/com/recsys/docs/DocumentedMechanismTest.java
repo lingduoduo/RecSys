@@ -98,34 +98,40 @@ class DocumentedMechanismTest {
      * <p>Do not add an entry to silence the test. If a doc presents something as live and
      * nothing calls it, fix the doc — that is the defect this test exists to catch.
      */
-    private static final Map<String, String> DOCUMENTED_WITHOUT_A_CALLER = Map.of(
+    private static final Map<String, String> DOCUMENTED_WITHOUT_A_CALLER = Map.ofEntries(
             // 13_DB_Indexing §3 and 19_Pagination §3 present these access patterns as a reference
             // implementation. The live catalog path (MovieCatalogRepository) hand-writes its SQL
             // as tuned FORCE INDEX constants and only borrows the SqlPlan/SeekCursor types, so
             // these builders are demonstrative. The docs say so explicitly.
-            "cursorPage", "reference implementation — see 13_DB_Indexing §3",
-            "cursorPageBefore", "reference implementation — see 13_DB_Indexing §3",
-            "countWithCoveringIndex", "reference implementation — see 13_DB_Indexing §3",
-            "coveringIndexDdl", "reference implementation — see 13_DB_Indexing §3",
-            "delayedJoinPage", "reference implementation — see 19_Pagination §3",
+            Map.entry("cursorPage", "reference implementation — see 13_DB_Indexing §3"),
+            Map.entry("cursorPageBefore", "reference implementation — see 13_DB_Indexing §3"),
+            Map.entry("countWithCoveringIndex", "reference implementation — see 13_DB_Indexing §3"),
+            Map.entry("coveringIndexDdl", "reference implementation — see 13_DB_Indexing §3"),
+            Map.entry("delayedJoinPage", "reference implementation — see 19_Pagination §3"),
             // 06_Consistent_Hashing §"Diagnosis" and 14_Partitioning describe this as a helper
             // available for hot-shard diagnosis; no endpoint or metric exposes it today, and the
             // docs say that rather than implying a live surface.
-            "distribution", "library helper, no wired surface — see 06_Consistent_Hashing",
+            Map.entry("distribution", "library helper, no wired surface — see 06_Consistent_Hashing"),
             // redis-consumer-inventory §3 names both of these precisely BECAUSE nothing calls
             // them — "no caller in src/main/java" is the finding, not an oversight. It is what
             // makes bias:item:* a write-only namespace in production, and it is why the Redis ACL
             // grants online no read on the arbitrary-key feature-store path. Wiring either one
             // changes what k8s/base/redis-users.acl.template has to grant, so if a caller ever
             // appears, re-derive that user's rules rather than just deleting the entry here.
-            "getFeatures", "documented as callerless — see redis-consumer-inventory §3",
-            "loadFromRedis", "documented as callerless — see redis-consumer-inventory §3",
+            Map.entry("getFeatures", "documented as callerless — see redis-consumer-inventory §3"),
+            Map.entry("loadFromRedis", "documented as callerless — see redis-consumer-inventory §3"),
             // 18_Fault_Tolerance §8.3 documents this as the explicit teardown affordance for
             // replacing a queue registration. QueueMetrics's own javadoc says it is deliberately
             // NOT wired into any Source's close() — meters survive close() on purpose — so no
             // production call site is the intended shape, not a gap. Its only callers today are
             // QueueMetricsTest.
-            "unregister", "documented as callerless by design — see 18_Fault_Tolerance §8.3");
+            Map.entry("unregister", "documented as callerless by design — see 18_Fault_Tolerance §8.3"),
+            // 18_Fault_Tolerance §9.4 names both while stating, in the same row, that WatchdogLock
+            // has no production caller today — the section is about what the class does when a
+            // JVM Error hits its renewal loop, not a claim that anything holds such a lock.
+            // The day a caller appears, delete these two entries and the invariant applies.
+            Map.entry("isHeld", "WatchdogLock has no production caller — 18_Fault_Tolerance §9.4 says so"),
+            Map.entry("hasLostOwnership", "WatchdogLock has no production caller — 18_Fault_Tolerance §9.4 says so"));
 
     // ── Invariant 1: doc → source links resolve ──────────────────────────────────────
 

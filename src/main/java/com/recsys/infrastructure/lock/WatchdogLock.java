@@ -157,7 +157,10 @@ public final class WatchdogLock implements AutoCloseable {
                 log.warn("Watchdog: renewal failed for {} (token mismatch or key gone)", lockKey);
                 markOwnershipLost();
             }
-        } catch (Exception e) {
+        } catch (Throwable e) {
+            // Throwable, not Exception: a JVM Error escaping here would cancel the fixed-delay
+            // schedule silently, and the lease would then expire in Redis while `held` stayed
+            // true — two holders, neither told (18_Fault_Tolerance §9.4).
             log.warn("Watchdog: renewal error for {}: {}", lockKey, e.toString());
             if (System.currentTimeMillis() >= leaseDeadlineMillis) {
                 markOwnershipLost();
@@ -203,8 +206,18 @@ public final class WatchdogLock implements AutoCloseable {
         release();
     }
 
-    /** {@code true} while the lock is held and the watchdog is running. */
-    public boolean isHeld() { return held.get(); }
+    /**
+     * {@code true} while the lock is held <em>and</em> the local lease deadline has not passed.
+     * Checked at call time, so a renewal thread that died or never ran cannot leave this holder
+     * believing it owns a key Redis has already expired.
+     */
+    public boolean isHeld() {
+        if (held.get() && System.currentTimeMillis() >= leaseDeadlineMillis) {
+            log.warn("Watchdog: lease deadline for {} passed without renewal; treating lock as lost", lockKey);
+            markOwnershipLost();
+        }
+        return held.get();
+    }
     /** {@code true} once renewal proves the lock expired, disappeared, or was re-acquired. */
     public boolean hasLostOwnership() { return lostOwnership.get(); }
     /** Fencing token used for this lock instance. */

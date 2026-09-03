@@ -183,6 +183,7 @@ public final class OnlinePredictionServer {
                     pagination.maxCandidates());
             learnerFlushScheduler =
                     new LearnerFlushScheduler(onlineLearner, jedisPool, "bias:item", 30L);
+            learnerFlushScheduler.loop().bindTo(registry);
             learnerFlushScheduler.start();
             MySqlOutboxRepository metricsOutboxRepository = outboxRepository;
             ConsistencyMetrics consistencyMetrics = metricsOutboxRepository == null
@@ -206,6 +207,7 @@ public final class OnlinePredictionServer {
                     cacheMetrics::updateKeyspace);
             featureVersionSampler = new RedisFeatureVersionSampler(jedisPool, consistencyMetrics,
                     Clock.systemUTC(), readIntEnv("REDIS_FEATURE_VERSION_SAMPLE_LIMIT", 1000));
+            featureVersionSampler.loop().bindTo(registry);
             featureVersionSampler.start(Duration.ofSeconds(readIntEnv("REDIS_FEATURE_VERSION_SAMPLE_SECONDS", 30)));
             OnlineServingMetricsService metricsService = new OnlineServingMetricsService();
             OnlineLoadShedder loadShedder = new OnlineLoadShedder();
@@ -219,6 +221,7 @@ public final class OnlinePredictionServer {
             topologyProvider = new ShardTopologyProvider(
                     topologyStore, 150, shardCount, refreshMs,
                     System::currentTimeMillis);
+            topologyProvider.loop().bindTo(registry);
             topologyProvider.start();
             SequenceGenerator seqGen = new SequenceGenerator(jedisPool, "sr:");
             ShardedRecordStore shardedRecordStore = new ShardedRecordStore(

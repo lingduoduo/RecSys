@@ -12,6 +12,9 @@ import java.util.concurrent.*;
 public final class RedisFeatureVersionSampler implements AutoCloseable {
     private final RedisExecutor redis; private final ConsistencyMetrics metrics;
     private final Clock clock; private final int limit; private ScheduledExecutorService executor;
+    /** Guards the scheduled sample so an Error cannot cancel the schedule and freeze the gauges. */
+    private final com.recsys.resilience.GuardedLoop loop =
+            new com.recsys.resilience.GuardedLoop("redis-feature-version-sampler", this::sample);
     public RedisFeatureVersionSampler(RedisExecutor redis, ConsistencyMetrics metrics, Clock clock, int limit) {
         this.redis = Objects.requireNonNull(redis); this.metrics = Objects.requireNonNull(metrics);
         this.clock = Objects.requireNonNull(clock); if (limit < 1) throw new IllegalArgumentException("limit must be positive");
@@ -40,7 +43,9 @@ public final class RedisFeatureVersionSampler implements AutoCloseable {
                 metrics.updateFeatureVersions(min, max, Duration.ofMillis(Math.max(0, clock.millis() - max)));
                 return true;
             });
-        } catch (RuntimeException e) {
+        } catch (RuntimeException | Error e) {
+            // Error too: an OutOfMemoryError lands on whichever thread fails the allocation, and
+            // this one allocates a scan cursor. Availability must flip to 0 for it as well.
             metrics.markFeatureVersionSampleUnavailable();
             throw e;
         }
@@ -51,8 +56,10 @@ public final class RedisFeatureVersionSampler implements AutoCloseable {
         if (interval.isZero() || interval.isNegative()) throw new IllegalArgumentException("interval must be positive");
         if (executor != null) throw new IllegalStateException("sampler already started");
         executor = Executors.newSingleThreadScheduledExecutor(r -> { Thread t = new Thread(r, "redis-feature-version-sampler"); t.setDaemon(true); return t; });
-        executor.scheduleWithFixedDelay(() -> { try { sample(); } catch (RuntimeException ignored) { } }, 0, interval.toMillis(), TimeUnit.MILLISECONDS);
+        executor.scheduleWithFixedDelay(loop, 0, interval.toMillis(), TimeUnit.MILLISECONDS);
     }
+    /** The loop's health (age since last good sample, failure count); bind it to a registry to publish. */
+    public com.recsys.resilience.GuardedLoop loop() { return loop; }
     @Override public synchronized void close() {
         if (executor == null) return; executor.shutdownNow();
         try { executor.awaitTermination(5, TimeUnit.SECONDS); } catch (InterruptedException e) { Thread.currentThread().interrupt(); }

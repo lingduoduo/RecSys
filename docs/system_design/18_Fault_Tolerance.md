@@ -628,6 +628,12 @@ all in the one class because they share the online server's `ConsistencyMetrics`
 | `recsys.model.runtime_load_failures` (→ `recsys_model_runtime_load_failures_total`, tagged `variant`, `phase` ∈ {`warmup`, `request`}) — a variant failed to build; the default variant never reaches this because its failure fails startup | [`application/model/ModelRuntimeProvider.java`](../../src/main/java/com/recsys/application/model/ModelRuntimeProvider.java) (`warmup`), [`application/experiment/VariantRuntimeResolver.java`](../../src/main/java/com/recsys/application/experiment/VariantRuntimeResolver.java) (`request`) |
 | `recsys.model.recall.tasks` (→ `recsys_model_recall_tasks_total`, tagged `result` ∈ {`rejected`, `timeout`}, `channel`) — recall channel work that produced nothing: rejected by the bounded executor at submit time, or cancelled with interruption at the channel deadline. `channel` is closed to the configured channel names plus `unknown`; every series is registered at zero | [`application/retrieval/multichannel/RecallTaskMetrics.java`](../../src/main/java/com/recsys/application/retrieval/multichannel/RecallTaskMetrics.java) |
 
+**Background loops** — 7010's fixed-delay loops, guarded so no `Throwable` can cancel them (§9.4).
+
+| Metric | Registered in |
+|---|---|
+| `recsys.loop.seconds_since_success` (→ `recsys_loop_seconds_since_success`, tagged `loop` ∈ {`shard-topology-refresh`, `redis-feature-version-sampler`, `learner-flush`}) — computed at scrape time from the loop's last-success timestamp, `-1` before the first success; `recsys.loop.failures` (→ `recsys_loop_failures_total`, same tag) — iterations that threw any `Throwable` and were absorbed | [`resilience/GuardedLoop.java`](../../src/main/java/com/recsys/resilience/GuardedLoop.java), bound in `OnlinePredictionServer` |
+
 **Load shedding** — the model-serving semaphore gate.
 
 | Metric | Registered in |
@@ -766,7 +772,7 @@ a separate, deliberately deferred product decision, not something this move fixe
 
 ### 8.4 Alerts
 
-Twenty-two, in six groups, all in [prometheus-rules.yaml](../../k8s/base/prometheus-rules.yaml). Every
+Twenty-three, in six groups, all in [prometheus-rules.yaml](../../k8s/base/prometheus-rules.yaml). Every
 expression was checked against a real metric name in `src/main/java` first — an alert on a
 metric that is never emitted looks like coverage and can never fire.
 
@@ -813,6 +819,7 @@ request path and the JVM underneath it rather than data at rest or the freshness
 | `JvmGcTimeFractionHigh` | `rate(jvm_gc_pause_seconds_sum[5m])` — stop-the-world seconds per second of wall time — `> 0.10` for 10 m | Usually heap pressure; check `JvmHeapPressureHigh` on the same instance first | If heap pressure isn't also firing, look at allocation rate and object lifetime rather than heap sizing. Measured detection latency on a sustained overshoot is roughly 13–15 m depending on how far past the threshold the true rate sits — see the comment in `prometheus-rules.yaml`, measured with `promtool`, not derived from a formula. |
 | `RequestLatencyP99High` | `histogram_quantile(0.99, ...)` over each service's own request-duration buckets, against a per-service threshold (0.4 s online serving, 1 s catalog serving, 2 s gateway, 1 s model service) for 10 m. **All four services now have a branch.** The first three name `online_serving_request_duration_seconds_bucket`, `catalog_serving_request_duration_seconds_bucket`, and `api_gateway_request_duration_seconds_bucket` — all three come from `MetricCollectingService`/`RequestDurationHistogram` on the Armeria mains. The fourth queries the Spring model service's (8080) own `http_server_requests_seconds_bucket` — `application.yml` sets `management.metrics.distribution.percentiles-histogram.http.server.requests: true`, so `/actuator/prometheus` exposes it (confirmed by running the service and inspecting the scrape: 207 series, on Micrometer's own exponential bucket boundaries, not the other three's explicit 0.05/0.1/.../5 SLO set). That metric name is generic — every Spring Boot app emits it — so this branch is scoped with `namespace="recsys"` the same way `JvmHeapPressureHigh`/`JvmGcTimeFractionHigh` are scoped below, and additionally excludes Actuator's own `/actuator/prometheus` scrape traffic with `uri!~"/actuator.*"` so that fast self-scrapes (every 15 s) don't dilute the p99 of real serving traffic. | A slow downstream, a GC pause, or genuine load past capacity | Search Splunk with `outcome=slow` for the same window to see which routes and requests — except on the gateway, where `route` is the catch-all pattern for every proxied request (see the Splunk runbook), so group by `service` there instead, or correlate with the backend's own event. Check `JvmGcTimeFractionHigh` on the same instance before assuming a downstream fault. Measured detection latency on a clean sustained step is roughly 11 m, essentially the `for:` window with no extra `rate()`-side delay — a different shape from the counter-rate alert above and not a number to generalize from. |
 | `RecsysQueueFillingUp` | `recsys_queue_utilization > 0.7` for 10 m — a bounded queue (`recall-catalog`, `recall-online`, or `ab-exposures`) is sustained above 70% full | The consumer is draining slower than the queue fills: the recall workers for a bulkhead, or the `async-event-publisher` drain thread and its broker for `ab-exposures`. Unlike the earlier `async-events` registration on 7010 (see §8.3), `ab-exposures` is genuinely fed, so sustained pressure here is real signal, not a structurally-zero series | Check whether the consumer has actually slowed before raising `RECALL_BULKHEAD_QUEUE_CAPACITY` or `ASYNC_EVENT_QUEUE_CAPACITY` — a larger queue buys latency, not throughput, and just delays the same rejection if the consumer is the real problem. Nothing has been lost yet; this is early warning, not evidence of loss. |
+| `RecsysLoopStale` | `recsys_loop_seconds_since_success > 300 or == -1` for 5 m — a guarded background loop has not completed successfully for ten of its 30 s intervals, or never has | The loop's body is failing every time (Redis down for that call path), or the loop stopped — which, with `GuardedLoop`, can only mean its executor is gone | `recsys_loop_failures_total{loop}` says whether it is failing or absent; the loop's own WARN line carries the stack. For `redis-feature-version-sampler` cross-check `OnlineFeatureVersionSampleUnavailable`; for `shard-topology-refresh`, a reshard published meanwhile is invisible to this instance until it recovers. The `-1` branch fires on an instance that never completed a first run — a boot that stalled before the first interval, not a loop that died. |
 | `RecsysQueueRejecting` | `increase(recsys_queue_rejected_total{reason="full"}[10m]) > 0` for 3 m — a queue is discarding work now | Genuine saturation, or a burst that outran the queue's bound | The `reason="full"` label match is deliberate and load-bearing: `reason="shutdown"` is excluded on purpose, since both queue implementations count late-arriving submissions during a clean drain under that reason, and seeing it during a rolling deploy is expected, not a page. Cross-check `recsys_queue_utilization` for how long pressure had been building. |
 
 **ONNX model serving** — four in the `recsys.model` group, from the
@@ -1031,10 +1038,10 @@ with no signal, and the code's guard decides whether that can happen:
 | Loop | Guard in the task | An Error here means… | Does anything notice? |
 |---|---|---|---|
 | `RedisReplicaLagProbe`, `RedisCacheStatsProbe`, `RedisPersistentKeyProbe`, outbox relay cycle | `catch (Throwable)` | nothing — the loop survives by design | n/a |
-| `WatchdogLock.renewLease` | `catch (Exception)` | renewal stops; Redis expires the lease on schedule; **the holder's `held` flag stays `true`** because `markOwnershipLost` runs only from the dead task. Mutual exclusion is broken in the one direction that matters: two holders, neither told. | Nothing. `lostOwnership` is never set. |
-| `RedisFeatureVersionSampler` | `catch (RuntimeException)` | sampling stops; `redis_feature_version_age_seconds` **freezes at its last good value** and `redis_feature_version_sample_available` freezes at 1 | No — this is precisely the "frozen age reads healthy" failure §8.3 warns about, and `OnlineFeatureVersionSampleUnavailable` is blind to it because the availability gauge is written by the same dead task |
-| `ShardTopologyProvider.refresh` | `catch (Exception)` | topology never refreshes again; a reshard published after that moment is invisible to this instance until restart, so it keeps writing generation *N* keys while the fleet moved to *N+1* | No staleness gauge exists for the topology snapshot |
-| `LearnerFlushScheduler.tryFlush` | `catch (Exception)` | online-learner parameters stop being flushed to Redis | No — `errorCount` is not incremented (the guard never ran), and the class's `Snapshot` (`flushCount`, `errorCount`, `lastFlushMs`) has no consumer in `src/main`: it is not on `/online/ops` and not a metric |
+| `WatchdogLock.renewLease` | **was** `catch (Exception)`, now `catch (Throwable)` | *Before:* renewal stopped; Redis expired the lease on schedule; the holder's `held` flag stayed `true` because `markOwnershipLost` ran only from the dead task — two holders, neither told. *Now:* the schedule survives, and `isHeld()` also checks the local lease deadline at call time, so a renewal that never runs at all still reads as lost. | `hasLostOwnership()`; no metric (per-lock labels would be unbounded, and the class has no production caller today) |
+| `RedisFeatureVersionSampler` | **was** `catch (RuntimeException)`, now `GuardedLoop` + `catch (RuntimeException \| Error)` in `sample()` | *Before:* sampling stopped with both freshness gauges frozen at "healthy". *Now:* an Error flips `redis_feature_version_sample_available` to 0 and the schedule continues | `recsys_loop_seconds_since_success{loop="redis-feature-version-sampler"}`, `RecsysLoopStale` |
+| `ShardTopologyProvider.refresh` | **was** `catch (Exception)`, now `GuardedLoop` | *Before:* topology never refreshed again; a later reshard was invisible until restart. *Now:* last-good is kept and the next refresh runs | `recsys_loop_seconds_since_success{loop="shard-topology-refresh"}`, `RecsysLoopStale` |
+| `LearnerFlushScheduler.tryFlush` | **was** `catch (Exception)`, now `GuardedLoop` | *Before:* flushes stopped, and the class's `Snapshot` has no consumer anywhere. *Now:* the schedule continues and failures are counted | `recsys_loop_seconds_since_success{loop="learner-flush"}`, `RecsysLoopStale` |
 | `ServiceRegistrar.heartbeat` | `catch (Exception)` | this instance's registry key expires after `SERVICE_REGISTRY_TTL_MS` | Yes — the gateway falls back to the static address and reports `source: static` |
 | `ServiceRegistryProvider.refresh` | `catch (Exception)` | gateway keeps its last snapshot | Yes — `gateway_registry_snapshot_age_seconds` grows and `GatewayRegistryStale` fires |
 | `CapacityController.tickSafely` | `catch (RuntimeException)` | reference implementation, not started in production | n/a |
@@ -1043,7 +1050,15 @@ How likely is an Error in one of these? `OutOfMemoryError` is the realistic one:
 allocate (Lua results, JSON, scan cursors) and an OOM is raised on whichever thread happens
 to fail the allocation, not on the thread that caused the pressure. The three probes and the
 relay were written with exactly that in mind — the same author's `SplunkHecAppender` says so in
-its comment — and the other five were not.
+its comment — and the other five were not, until the four above were moved onto
+[`resilience/GuardedLoop`](../../src/main/java/com/recsys/resilience/GuardedLoop.java): a
+`Runnable` wrapper that absorbs every `Throwable` but `ThreadDeath`, logs and counts it, and
+exposes the loop's health as a value **read at scrape time** from a success timestamp
+(`recsys_loop_seconds_since_success{loop}`, `-1` before the first success) rather than written by
+the loop — so a loop that stops running shows a growing age instead of a frozen healthy number.
+`GuardedLoopTest` pins that a scheduled loop keeps running after a `StackOverflowError`; each
+loop's own test pins its Error case, and `WatchdogLockTest`'s two new cases were run against the
+old code first (mutation check: both fail there).
 
 ### 9.5 The process boundary: nothing turns an OOM into a restart
 
@@ -1070,12 +1085,13 @@ code can observe, and it is handled at every call site.
 - **Request path:** correct as written. `catch (Exception)` is enough because both frameworks
   convert an escaping Error into a 500 and survive; the two boundary tests pin that.
 - **Background loops:** four of the eleven (`WatchdogLock`, `RedisFeatureVersionSampler`,
-  `ShardTopologyProvider`, `LearnerFlushScheduler`) can be killed silently by one Error, and two
-  of those (`WatchdogLock`, `RedisFeatureVersionSampler`) fail in the direction of *reporting
-  health they no longer have*. The fix is the pattern the probes already use — `catch (Throwable)`
-  in the scheduled lambda, or a shared `Runnable` wrapper that logs, counts and rethrows nothing —
-  plus, for the two silent ones, a gauge that is written by something other than the task
-  itself. Not done in this change; see the sharp edges below.
+  `ShardTopologyProvider`, `LearnerFlushScheduler`) could be killed silently by one Error, and two
+  of those (`WatchdogLock`, `RedisFeatureVersionSampler`) failed in the direction of *reporting
+  health they no longer had*. Fixed: the three 7010 loops run through `GuardedLoop` and publish a
+  scrape-time age that `RecsysLoopStale` watches; the watchdog catches `Throwable` and checks its
+  lease deadline on `isHeld()`. `ServiceRegistrar`/`ServiceRegistryProvider` keep their
+  `catch (Exception)` because their failure is already externally visible (§9.4);
+  `CapacityController` is not started in production.
 - **Process:** decide the OOM policy explicitly. For a stateless replica behind a readiness
   probe, `-XX:+ExitOnOutOfMemoryError` in the container `JAVA_OPTS` turns "a JVM in an unknown
   state, with some threads dead, reporting live" into a restart the platform already handles.
@@ -1118,14 +1134,13 @@ code can observe, and it is handled at every call site.
   `ServiceMonitor` and the `PrometheusRule` are CRs a Prometheus Operator interprets, and
   nothing installs one; a committed alert file is evidence alerts are written, not that
   anything evaluates them.
-- **A JVM `Error` in a fixed-delay loop cancels the loop silently, and four loops let it** (§9.4).
-  `WatchdogLock.renewLease`, `RedisFeatureVersionSampler`, `ShardTopologyProvider.refresh` and
-  `LearnerFlushScheduler.tryFlush` guard with `catch (Exception)`/`catch (RuntimeException)`,
-  which a `ScheduledExecutorService` Error passes straight through; the schedule is then cancelled
-  with the Error parked in a `ScheduledFuture` nobody reads. The watchdog case breaks mutual
-  exclusion without telling either holder; the sampler case freezes the freshness gauges at
-  "healthy". Measured, not inferred — the three Redis probes and the outbox relay already use
-  `catch (Throwable)` for this reason.
+- **A JVM `Error` in a fixed-delay loop cancels the loop silently** (§9.4) — closed for the four
+  loops that let it (`GuardedLoop` + `RecsysLoopStale`; `WatchdogLock` checks its lease deadline
+  on `isHeld()`), but the rule stands for any *new* scheduled body: guard with
+  `catch (Throwable)` or `GuardedLoop`, never `catch (Exception)`, and have the loop's freshness
+  read at scrape time rather than written by the loop. `ServiceRegistrar` and
+  `ServiceRegistryProvider` still use `catch (Exception)` deliberately: their failure is
+  visible without a guard (registry key expiry, `GatewayRegistryStale`).
 - **No OOM policy: the JVM survives `OutOfMemoryError` and liveness stays `200`** (§9.5). No
   container sets `-XX:+ExitOnOutOfMemoryError`, and every `/health/live` is a constant UP, so a
   JVM with dead background threads is never restarted by the platform; only the heap/GC alerts

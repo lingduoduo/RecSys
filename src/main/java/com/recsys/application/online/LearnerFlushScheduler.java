@@ -1,6 +1,7 @@
 package com.recsys.application.online;
 
 import com.recsys.infrastructure.redis.RedisExecutor;
+import com.recsys.resilience.GuardedLoop;
 import org.slf4j.Logger;
 import org.slf4j.LoggerFactory;
 
@@ -19,8 +20,9 @@ public final class LearnerFlushScheduler implements AutoCloseable {
     private final long intervalSeconds;
     private final ScheduledExecutorService scheduler;
     private final AtomicLong flushCount = new AtomicLong();
-    private final AtomicLong errorCount = new AtomicLong();
     private volatile long lastFlushMs = 0L;
+    /** Every flush, scheduled or the final one in close(), runs through this so no Throwable can cancel the schedule. */
+    private final GuardedLoop loop = new GuardedLoop("learner-flush", this::flushOnce);
 
     public LearnerFlushScheduler(OnlineLearner learner, RedisExecutor exec,
                                  String keyPrefix, long intervalSeconds) {
@@ -38,19 +40,19 @@ public final class LearnerFlushScheduler implements AutoCloseable {
     public void start() {
         // scheduleWithFixedDelay: interval measured after flush completes, preventing back-to-back writes
         scheduler.scheduleWithFixedDelay(
-                this::tryFlush, intervalSeconds, intervalSeconds, TimeUnit.SECONDS);
+                loop, intervalSeconds, intervalSeconds, TimeUnit.SECONDS);
     }
 
-    private void tryFlush() {
+    /** The loop's health (age since last good flush, failure count); bind it to a registry to publish. */
+    public GuardedLoop loop() {
+        return loop;
+    }
+
+    private void flushOnce() {
         if (exec == null) return;
-        try {
-            learner.flushToRedis(exec, keyPrefix);
-            flushCount.incrementAndGet();
-            lastFlushMs = System.currentTimeMillis();
-        } catch (Exception e) {
-            errorCount.incrementAndGet();
-            log.warn("LearnerFlushScheduler: flush error", e);
-        }
+        learner.flushToRedis(exec, keyPrefix);   // a throw here is counted and logged by the loop
+        flushCount.incrementAndGet();
+        lastFlushMs = System.currentTimeMillis();
     }
 
     @Override
@@ -61,11 +63,11 @@ public final class LearnerFlushScheduler implements AutoCloseable {
         } catch (InterruptedException ie) {
             Thread.currentThread().interrupt();
         }
-        tryFlush(); // final flush on calling thread
+        loop.run(); // final flush on calling thread; never throws
     }
 
     public Snapshot snapshot() {
-        return new Snapshot(flushCount.get(), errorCount.get(), lastFlushMs, intervalSeconds);
+        return new Snapshot(flushCount.get(), loop.failureCount(), lastFlushMs, intervalSeconds);
     }
 
     public record Snapshot(long flushCount, long errorCount, long lastFlushMs, long intervalSeconds) {}
