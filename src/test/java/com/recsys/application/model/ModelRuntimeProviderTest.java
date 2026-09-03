@@ -112,6 +112,33 @@ class ModelRuntimeProviderTest {
         }
     }
 
+    @Test
+    void recallExecutorIsBoundedByConfiguredCapacityAndAbortsOnOverflow() {
+        com.recsys.config.ModelServingProperties props = new com.recsys.config.ModelServingProperties();
+        props.getRecall().setCoreThreads(3);
+        props.getRecall().setQueueCapacity(7);
+        ModelRuntimeProvider provider = new ModelRuntimeProvider(
+                new ModelArtifactLocator("", ""), new com.recsys.config.ABTestConfig(),
+                "dssm_model.onnx", "classpath", "i2vEmb", props,
+                new io.micrometer.core.instrument.simple.SimpleMeterRegistry());
+        java.util.concurrent.ThreadPoolExecutor executor;
+        try {
+            provider.getRuntime("training");
+
+            assertThat(provider.recallExecutor()).isInstanceOf(java.util.concurrent.ThreadPoolExecutor.class);
+            executor = (java.util.concurrent.ThreadPoolExecutor) provider.recallExecutor();
+            assertThat(executor.getCorePoolSize()).isEqualTo(3);
+            assertThat(executor.getMaximumPoolSize()).isEqualTo(3);
+            assertThat(executor.getQueue()).isInstanceOf(java.util.concurrent.ArrayBlockingQueue.class);
+            assertThat(executor.getQueue().remainingCapacity() + executor.getQueue().size()).isEqualTo(7);
+            assertThat(executor.getRejectedExecutionHandler())
+                    .isInstanceOf(java.util.concurrent.ThreadPoolExecutor.AbortPolicy.class);
+        } finally {
+            provider.close();
+        }
+        assertThat(executor.isShutdown()).as("close() shuts the recall pool down").isTrue();
+    }
+
     private static void writeVariantArtifacts(Path root, String variant, String modelVersion) throws IOException {
         writeVariantArtifacts(root, variant, modelVersion, "dssm_model.onnx");
     }

@@ -25,6 +25,7 @@ import com.recsys.application.retrieval.coldstart.QuotaPolicy;
 import com.recsys.application.retrieval.multichannel.ChannelHealthMonitor;
 import com.recsys.application.retrieval.multichannel.MultiChannelRecallService;
 import com.recsys.application.retrieval.multichannel.RecallConfig;
+import com.recsys.application.retrieval.multichannel.RecallTaskMetrics;
 import io.micrometer.core.instrument.MeterRegistry;
 import io.micrometer.core.instrument.simple.SimpleMeterRegistry;
 import jakarta.annotation.PreDestroy;
@@ -42,8 +43,11 @@ import java.util.Map;
 import java.util.Set;
 import java.util.concurrent.CompletableFuture;
 import java.util.concurrent.ConcurrentHashMap;
+import java.util.concurrent.ArrayBlockingQueue;
 import java.util.concurrent.ExecutorService;
 import java.util.concurrent.Executors;
+import java.util.concurrent.ThreadPoolExecutor;
+import java.util.concurrent.TimeUnit;
 import java.util.concurrent.atomic.AtomicInteger;
 import java.util.stream.Collectors;
 
@@ -75,6 +79,8 @@ public class ModelRuntimeProvider implements SmartInitializingSingleton {
     private GlobalPopularityStore globalPopStore;
     private OnlineFeatureStore onlineFeatureStore;
     private ExecutorService recallExecutor;
+    private List<com.recsys.application.retrieval.RecallChannel> recallChannels;
+    private RecallTaskMetrics recallTaskMetrics;
     private ChannelHealthMonitor sharedHealthMonitor;
     private final Object recallLock = new Object();
     private volatile VariantLoadFailureListener loadFailureListener = VariantLoadFailureListener.NOOP;
@@ -238,28 +244,53 @@ public class ModelRuntimeProvider implements SmartInitializingSingleton {
             topkStore = new ShardedTopKStore(recallPool, "topk:");
             globalPopStore = new GlobalPopularityStore(recallPool);
             onlineFeatureStore = new OnlineFeatureStore(recallPool);
-            recallExecutor = Executors.newFixedThreadPool(
-                    Runtime.getRuntime().availableProcessors() * 2,
-                    r -> new Thread(r, "model-recall-channel"));
+            // Bounded, abort-on-full: the queue is the hard memory-safety guarantee when a
+            // channel's client ignores interruption. Rejected submissions degrade that channel
+            // (MultiChannelRecallService) instead of growing an unbounded backlog.
+            ModelServingProperties.Recall recall = servingProperties.getRecall();
+            AtomicInteger threadIndex = new AtomicInteger();
+            recallExecutor = new ThreadPoolExecutor(
+                    recall.getCoreThreads(), recall.getCoreThreads(),
+                    0L, TimeUnit.MILLISECONDS,
+                    new ArrayBlockingQueue<>(recall.getQueueCapacity()),
+                    r -> {
+                        Thread t = new Thread(r, "model-recall-channel-" + threadIndex.incrementAndGet());
+                        t.setDaemon(true);
+                        return t;
+                    },
+                    new ThreadPoolExecutor.AbortPolicy());
+            // The channels wrap shared stores, so one list serves every variant; its names are
+            // the closed label set for recsys.model.recall.tasks{channel}.
+            recallChannels = List.of(
+                    new Channels.Embedding(candidateGenerator),
+                    new Channels.OnlineRecentHistory(onlineFeatureStore, dataManager),
+                    new Channels.UserSimilarity(dataManager),
+                    new Channels.Trending(topkStore, List.of("last_hour", "last_day")),
+                    new Channels.Popularity(dataManager, globalPopStore),
+                    new ColdStartChannel(topkStore, globalPopStore));
+            recallTaskMetrics = new RecallTaskMetrics(meterRegistry,
+                    recallChannels.stream().map(com.recsys.application.retrieval.RecallChannel::name).toList());
             sharedHealthMonitor = new ChannelHealthMonitor();
+        }
+    }
+
+    /** The shared recall executor, or {@code null} before the first runtime is built. Test hook. */
+    ExecutorService recallExecutor() {
+        synchronized (recallLock) {
+            return recallExecutor;
         }
     }
 
     private MultiChannelRecallService buildRecallService(ModelArtifactService artifactService) {
         ensureRecallInfra();
-        DataManager dataManager = DataManager.getInstance();
         return MultiChannelRecallService.from(
                 RecallConfig.builder()
-                        .channels(java.util.List.of(
-                                new Channels.Embedding(candidateGenerator),
-                                new Channels.OnlineRecentHistory(onlineFeatureStore, dataManager),
-                                new Channels.UserSimilarity(dataManager),
-                                new Channels.Trending(topkStore, java.util.List.of("last_hour", "last_day")),
-                                new Channels.Popularity(dataManager, globalPopStore),
-                                new ColdStartChannel(topkStore, globalPopStore)))
+                        .channels(recallChannels)
                         .quotaPolicy(QuotaPolicy.defaultModelRetrieval())
                         .healthMonitor(sharedHealthMonitor)
                         .executor(recallExecutor)
+                        .channelTimeoutMs(servingProperties.getRecall().getTimeoutMs())
+                        .taskMetrics(recallTaskMetrics)
                         .faultInjector(FaultInjector.NOOP)
                         .userEmbeddingStore(new VocabMembershipEmbeddingStore(artifactService.getUserVocab()))
                         .build());

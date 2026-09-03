@@ -9,9 +9,17 @@ import com.recsys.resilience.FaultInjector;
 import com.recsys.resilience.WorkerBulkhead;
 import com.recsys.application.retrieval.RecallChannel;
 import com.recsys.application.retrieval.coldstart.QuotaPolicy;
+import io.micrometer.core.instrument.simple.SimpleMeterRegistry;
 import org.junit.jupiter.api.Test;
 
 import java.util.Collection;
+import java.util.concurrent.ArrayBlockingQueue;
+import java.util.concurrent.CountDownLatch;
+import java.util.concurrent.ExecutorService;
+import java.util.concurrent.Executors;
+import java.util.concurrent.ThreadPoolExecutor;
+import java.util.concurrent.TimeUnit;
+import java.util.concurrent.TimeoutException;
 import java.util.LinkedHashMap;
 import java.util.List;
 import java.util.Map;
@@ -335,6 +343,146 @@ class MultiChannelRecallServiceTest {
         // popularity got all 3 slots; embedding (0 quota, no gap left) contributes nothing.
         assertThat(recalled).extracting(MovieCandidate::itemId).containsExactly("p1", "p2", "p3");
         assertThat(recalled).extracting(MovieCandidate::channel).containsOnly("popularity");
+    }
+
+    // ---- bounded submission, cancellation, interruption ----
+
+    private static final String TASKS = "recsys.model.recall.tasks";
+
+    /** Blocks interruptibly until cancelled; counts down {@code interrupted} when the interrupt lands. */
+    private static RecallChannel blockingUntilInterrupted(String name, CountDownLatch interrupted) {
+        return new RecallChannel() {
+            @Override public String name() { return name; }
+            @Override public List<MovieCandidate> recall(RecommendationQuery query, int limit) {
+                return block();
+            }
+            @Override public List<MovieCandidate> recallPrimary(RecommendationQuery query, int limit) {
+                return block();
+            }
+            private List<MovieCandidate> block() {
+                try {
+                    new CountDownLatch(1).await();
+                } catch (InterruptedException e) {
+                    interrupted.countDown();
+                    Thread.currentThread().interrupt();
+                    throw new IllegalStateException("interrupted", e);
+                }
+                return List.of();
+            }
+        };
+    }
+
+    private static RecallChannel sleeping(String name, long millis, MovieCandidate candidate) {
+        return new RecallChannel() {
+            @Override public String name() { return name; }
+            @Override public List<MovieCandidate> recall(RecommendationQuery query, int limit) {
+                try { Thread.sleep(millis); } catch (InterruptedException e) { Thread.currentThread().interrupt(); }
+                return List.of(candidate);
+            }
+        };
+    }
+
+    private static MultiChannelRecallService bounded(List<RecallChannel> channels, ExecutorService executor,
+                                                     long timeoutMs, RecallTaskMetrics metrics) {
+        return MultiChannelRecallService.from(RecallConfig.builder()
+                .channels(channels)
+                .executor(executor)
+                .channelTimeoutMs(timeoutMs)
+                .taskMetrics(metrics)
+                .build());
+    }
+
+    @Test
+    void queueSaturationRejectsTheOverflowChannelImmediatelyAndRecordsIt() {
+        // One worker, one queue slot: the third channel cannot be admitted and must degrade at
+        // submit time — the bound, not the timeout, is what protects memory when Redis stalls.
+        ThreadPoolExecutor executor = new ThreadPoolExecutor(1, 1, 0L, TimeUnit.MILLISECONDS,
+                new ArrayBlockingQueue<>(1), new ThreadPoolExecutor.AbortPolicy());
+        SimpleMeterRegistry registry = new SimpleMeterRegistry();
+        RecallTaskMetrics metrics = new RecallTaskMetrics(registry, List.of("a", "b", "c"));
+        MultiChannelRecallService service = bounded(List.of(
+                sleeping("a", 150, new MovieCandidate("a1", 0.9, "a", Map.of())),
+                sleeping("b", 150, new MovieCandidate("b1", 0.8, "b", Map.of())),
+                channel("c", new MovieCandidate("c1", 0.7, "c", Map.of()))),
+                executor, 5_000L, metrics);
+        try {
+            RecallResult result = service.recallDetailed(new RecommendationQuery("u1", 10, Set.of(), null), 10);
+
+            assertThat(result.candidates()).extracting(MovieCandidate::itemId).containsExactlyInAnyOrder("a1", "b1");
+            assertThat(result.degradedChannels()).containsExactly("c");
+            assertThat(registry.get(TASKS).tags("result", "rejected", "channel", "c").counter().count()).isEqualTo(1.0);
+            assertThat(registry.get(TASKS).tags("result", "timeout", "channel", "c").counter().count()).isZero();
+        } finally {
+            executor.shutdownNow();
+        }
+    }
+
+    @Test
+    void timedOutChannelIsCancelledAndItsWorkerInterrupted() throws Exception {
+        CountDownLatch interrupted = new CountDownLatch(1);
+        ExecutorService executor = Executors.newFixedThreadPool(2);
+        SimpleMeterRegistry registry = new SimpleMeterRegistry();
+        RecallTaskMetrics metrics = new RecallTaskMetrics(registry, List.of("slow", "fast"));
+        MultiChannelRecallService service = bounded(List.of(
+                blockingUntilInterrupted("slow", interrupted),
+                channel("fast", new MovieCandidate("fast-1", 0.5, "fast", Map.of()))),
+                executor, 100L, metrics);
+        try {
+            RecallResult result = service.recallDetailed(new RecommendationQuery("u1", 10, Set.of(), null), 10);
+
+            assertThat(result.candidates()).extracting(MovieCandidate::itemId).containsExactly("fast-1");
+            assertThat(result.degradedChannels()).containsExactly("slow");
+            assertThat(interrupted.await(2, TimeUnit.SECONDS))
+                    .as("the timed-out task must be cancelled with interruption, not left running")
+                    .isTrue();
+            assertThat(registry.get(TASKS).tags("result", "timeout", "channel", "slow").counter().count()).isEqualTo(1.0);
+        } finally {
+            executor.shutdownNow();
+        }
+    }
+
+    @Test
+    void primaryTimeoutFailsClosedAndCancelsTheTask() throws Exception {
+        CountDownLatch interrupted = new CountDownLatch(1);
+        ExecutorService executor = Executors.newSingleThreadExecutor();
+        SimpleMeterRegistry registry = new SimpleMeterRegistry();
+        RecallTaskMetrics metrics = new RecallTaskMetrics(registry, List.of("slow"));
+        MultiChannelRecallService service = bounded(
+                List.of(blockingUntilInterrupted("slow", interrupted)), executor, 100L, metrics);
+        try {
+            assertThatThrownBy(() -> service.recallPrimary(new RecommendationQuery("1", 5, Set.of(), null), 5))
+                    .isInstanceOf(MultiChannelRecallService.PrimaryRecallUnavailableException.class)
+                    .hasRootCauseInstanceOf(TimeoutException.class);
+            assertThat(interrupted.await(2, TimeUnit.SECONDS)).isTrue();
+            assertThat(registry.get(TASKS).tags("result", "timeout", "channel", "slow").counter().count()).isEqualTo(1.0);
+        } finally {
+            executor.shutdownNow();
+        }
+    }
+
+    @Test
+    void callerInterruptionCancelsOutstandingWorkAndPreservesTheFlag() throws Exception {
+        CountDownLatch interrupted = new CountDownLatch(1);
+        ExecutorService executor = Executors.newSingleThreadExecutor();
+        MultiChannelRecallService service = bounded(
+                List.of(blockingUntilInterrupted("slow", interrupted)), executor, 5_000L, RecallTaskMetrics.NOOP);
+        try {
+            Thread.currentThread().interrupt();
+            assertThatThrownBy(() -> service.recall(new RecommendationQuery("u1", 5, Set.of(), null), 5))
+                    .isInstanceOf(MultiChannelRecallService.PrimaryRecallUnavailableException.class)
+                    .hasMessageContaining("interrupted");
+            assertThat(Thread.interrupted()).as("interrupt flag must be preserved for the caller").isTrue();
+            // cancel(true) either interrupts the running task or discards it before it starts —
+            // which one wins is a race with the worker, so observe the outcome that holds either
+            // way: nothing is left running and the pool can drain.
+            executor.shutdown();
+            assertThat(executor.awaitTermination(2, TimeUnit.SECONDS))
+                    .as("outstanding task cancelled: pool drains instead of holding the blocked channel")
+                    .isTrue();
+        } finally {
+            Thread.interrupted();   // never leak the flag into the next test
+            executor.shutdownNow();
+        }
     }
 
     // Stub: any id resolves to a non-null vector, so cold-start detection treats the user as warm.

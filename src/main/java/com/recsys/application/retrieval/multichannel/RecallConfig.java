@@ -22,7 +22,12 @@ public record RecallConfig(
         ChannelHealthMonitor healthMonitor,
         FaultInjector faultInjector,
         EmbeddingStore userEmbeddingStore,
-        RecallDegradationMetrics recallMetrics) {
+        RecallDegradationMetrics recallMetrics,
+        RecallTaskMetrics taskMetrics) {
+
+    public RecallConfig {
+        taskMetrics = taskMetrics == null ? RecallTaskMetrics.NOOP : taskMetrics;
+    }
 
     public static Builder builder() { return new Builder(); }
 
@@ -48,6 +53,7 @@ public record RecallConfig(
         private FaultInjector faultInjector = FaultInjector.NOOP;
         private EmbeddingStore userEmbeddingStore;
         private RecallDegradationMetrics recallMetrics = new RecallDegradationMetrics();
+        private RecallTaskMetrics taskMetrics = RecallTaskMetrics.NOOP;
 
         public Builder channels(List<RecallChannel> channels) { this.channels = channels; return this; }
         public Builder quotaPolicy(QuotaPolicy quotaPolicy) { this.quotaPolicy = quotaPolicy; return this; }
@@ -58,6 +64,10 @@ public record RecallConfig(
         public Builder userEmbeddingStore(EmbeddingStore store) { this.userEmbeddingStore = store; return this; }
         public Builder recallMetrics(RecallDegradationMetrics metrics) {
             this.recallMetrics = metrics == null ? new RecallDegradationMetrics() : metrics;
+            return this;
+        }
+        public Builder taskMetrics(RecallTaskMetrics metrics) {
+            this.taskMetrics = metrics == null ? RecallTaskMetrics.NOOP : metrics;
             return this;
         }
 
@@ -75,7 +85,8 @@ public record RecallConfig(
                     channelTimeoutMs, executor, healthMonitor,
                     faultInjector == null ? FaultInjector.NOOP : faultInjector,
                     userEmbeddingStore,
-                    recallMetrics);
+                    recallMetrics,
+                    taskMetrics);
         }
     }
 }
