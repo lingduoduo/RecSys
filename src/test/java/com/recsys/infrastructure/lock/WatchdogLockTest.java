@@ -170,6 +170,52 @@ class WatchdogLockTest {
         assertThat(lock.hasLostOwnership()).isTrue();
     }
 
+    @Test
+    void watchdog_renewalErrorDoesNotCancelTheScheduleAndTheNextRenewalSucceeds() throws Exception {
+        // A JVM Error inside one renewal used to cancel the fixed-delay schedule silently
+        // (18_Fault_Tolerance §9.4): the lease then expired in Redis while held stayed true.
+        when(cmd.set(anyString(), anyString(), any(SetArgs.class))).thenReturn("OK");
+        java.util.concurrent.CountDownLatch twoRenewals = new java.util.concurrent.CountDownLatch(2);
+        java.util.concurrent.atomic.AtomicInteger evals = new java.util.concurrent.atomic.AtomicInteger();
+        when(cmd.eval(anyString(), any(ScriptOutputType.class), any(String[].class), any(String[].class)))
+                .thenAnswer(i -> {
+                    int n = evals.incrementAndGet();
+                    twoRenewals.countDown();
+                    if (n == 1) throw new StackOverflowError("renewal blew the stack");
+                    return 1L;
+                });
+        ScheduledExecutorService executor = Executors.newSingleThreadScheduledExecutor();
+        try {
+            WatchdogLock lock = WatchdogLock.tryAcquire(exec, "wdlock:", "res", 3L, executor);
+            assertThat(lock).isNotNull();
+
+            assertThat(twoRenewals.await(5, TimeUnit.SECONDS))
+                    .as("the schedule survived the Error and renewed again").isTrue();
+            assertThat(lock.isHeld()).isTrue();
+            assertThat(lock.hasLostOwnership()).isFalse();
+            lock.release();
+        } finally {
+            executor.shutdownNow();
+        }
+    }
+
+    @Test
+    void isHeld_isFalseOncePastTheLeaseDeadlineEvenIfRenewalNeverRuns() throws InterruptedException {
+        // The holder asks "am I still inside my lease?" at call time, so a renewal thread that
+        // died (or never ran) can no longer leave two holders each believing they own the key.
+        when(cmd.set(anyString(), anyString(), any(SetArgs.class))).thenReturn("OK");
+        ScheduledExecutorService neverRuns = mock(ScheduledExecutorService.class);
+
+        WatchdogLock lock = WatchdogLock.tryAcquire(exec, "wdlock:", "res", 1L, neverRuns);
+        assertThat(lock).isNotNull();
+        assertThat(lock.isHeld()).isTrue();
+
+        Thread.sleep(1_050L);
+
+        assertThat(lock.isHeld()).as("lease deadline passed with no renewal").isFalse();
+        assertThat(lock.hasLostOwnership()).isTrue();
+    }
+
     // ── Release ──────────────────────────────────────────────────────────────────
 
     @Test

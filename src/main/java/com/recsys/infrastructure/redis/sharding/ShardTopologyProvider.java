@@ -1,5 +1,6 @@
 package com.recsys.infrastructure.redis.sharding;
 
+import com.recsys.resilience.GuardedLoop;
 import org.slf4j.Logger;
 import org.slf4j.LoggerFactory;
 
@@ -25,6 +26,8 @@ public final class ShardTopologyProvider {
     private final LongSupplier clockMs;
 
     private volatile Snapshot snapshot;          // null until first successful refresh / fixed()
+    /** Guards every refresh, scheduled or direct: an Error must never cancel the schedule. */
+    private final GuardedLoop loop = new GuardedLoop("shard-topology-refresh", this::doRefresh);
     ScheduledExecutorService scheduler;   // package-private for shutdown assertions in tests
 
     public ShardTopologyProvider(ShardTopologyStore store, int vnodes, int initialShardCount,
@@ -85,11 +88,21 @@ public final class ShardTopologyProvider {
                 t.setDaemon(true);
                 return t;
             });
-            scheduler.scheduleWithFixedDelay(this::refresh, refreshMs, refreshMs, TimeUnit.MILLISECONDS);
+            scheduler.scheduleWithFixedDelay(loop, refreshMs, refreshMs, TimeUnit.MILLISECONDS);
         }
     }
 
+    /** Refreshes now. Never throws: any failure, Exception or Error, keeps the last-good snapshot. */
     public void refresh() {
+        loop.run();
+    }
+
+    /** The loop's health (age since last good refresh, failure count); bind it to a registry to publish. */
+    public GuardedLoop loop() {
+        return loop;
+    }
+
+    private void doRefresh() {
         if (store == null) return; // fixed provider
         try {
             ShardTopologyStore.Snapshot s = store.load();
@@ -104,8 +117,9 @@ public final class ShardTopologyProvider {
                 prevExpiresAtMs = s.prevExpiresAtMs();
             }
             this.snapshot = new Snapshot(current, previous, prevExpiresAtMs);
-        } catch (Exception e) {
+        } catch (RuntimeException e) {
             log.warn("topology refresh failed — keeping last-good snapshot: {}", e.toString());
+            throw e;   // counted and re-logged with its stack by the GuardedLoop; last-good retained
         }
     }
 

@@ -68,6 +68,56 @@ class ShardTopologyProviderTest {
     }
 
     @Test
+    void refresh_survivesAJvmErrorFromTheStoreAndAdoptsTheNextGoodLoad() {
+        ShardTopologyStore store = mock(ShardTopologyStore.class);
+        when(store.load()).thenReturn(snap(1, 2, 0L, null, null, null));
+        ShardTopologyProvider p = new ShardTopologyProvider(store, 150, 2, 30_000L, () -> 0L);
+        p.refresh();
+
+        when(store.load()).thenThrow(new StackOverflowError("deserializer recursed"));
+        p.refresh(); // must not throw, must keep last-good
+        assertThat(p.current().version()).isEqualTo(1);
+
+        org.mockito.Mockito.reset(store);
+        when(store.load()).thenReturn(snap(2, 4, 5L, 1, 2, 999L));
+        p.refresh();
+        assertThat(p.current().version()).isEqualTo(2);
+    }
+
+    @Test
+    void start_scheduleSurvivesAnErrorAndPublishesLoopHealth() throws Exception {
+        ShardTopologyStore store = mock(ShardTopologyStore.class);
+        java.util.concurrent.atomic.AtomicInteger loads = new java.util.concurrent.atomic.AtomicInteger();
+        // Four loads: start()'s own, the Error, the first good scheduled load, and one more —
+        // the latch trips inside load(), before the snapshot swap, so waiting for the load
+        // AFTER the good one is what guarantees the swap has happened.
+        java.util.concurrent.CountDownLatch loadedAfterError = new java.util.concurrent.CountDownLatch(4);
+        when(store.load()).thenAnswer(i -> {
+            int n = loads.incrementAndGet();
+            loadedAfterError.countDown();
+            if (n == 2) throw new OutOfMemoryError("scan allocation");   // first SCHEDULED refresh
+            return snap(n >= 3 ? 2 : 1, 2, 0L, null, null, null);
+        });
+        io.micrometer.core.instrument.simple.SimpleMeterRegistry registry =
+                new io.micrometer.core.instrument.simple.SimpleMeterRegistry();
+        ShardTopologyProvider p = new ShardTopologyProvider(store, 150, 2, 20L, System::currentTimeMillis);
+        p.loop().bindTo(registry);
+        try {
+            p.start();
+
+            assertThat(loadedAfterError.await(5, java.util.concurrent.TimeUnit.SECONDS))
+                    .as("refresh kept running after the Error").isTrue();
+            assertThat(p.current().version()).isEqualTo(2);
+            assertThat(registry.get(com.recsys.resilience.GuardedLoop.FAILURES)
+                    .tag("loop", "shard-topology-refresh").functionCounter().count()).isGreaterThanOrEqualTo(1.0);
+            assertThat(registry.get(com.recsys.resilience.GuardedLoop.SECONDS_SINCE_SUCCESS)
+                    .tag("loop", "shard-topology-refresh").gauge().value()).isBetween(0.0, 5.0);
+        } finally {
+            p.stop();
+        }
+    }
+
+    @Test
     void fixed_providesConstantVersionOneTopology() {
         ShardTopologyProvider p = ShardTopologyProvider.fixed(new ConsistentHashRing(2, 150));
         assertThat(p.current().version()).isEqualTo(1);

@@ -413,6 +413,31 @@ spec:
               ab-exposures) before raising the bound -- a larger queue buys latency, not
               throughput. See docs/runbooks/overload-protection.md.
 
+        - alert: RecsysLoopStale
+          # recsys_loop_seconds_since_success is computed at scrape time from a success
+          # timestamp (GuardedLoop), so a loop that stopped running shows a growing age rather
+          # than a frozen last value -- that is the whole reason it exists (18_Fault_Tolerance
+          # §9.4). All three loops run every 30 s; 300 s is ten missed intervals. The -1 branch
+          # is the same sentinel shape as GatewayRegistryStale: "never succeeded" must not read
+          # as 0, which a bare `>` would happily treat as fresh.
+          expr: >-
+            recsys_loop_seconds_since_success{namespace="recsys"} > 300
+            or
+            recsys_loop_seconds_since_success{namespace="recsys"} == -1
+          for: 5m
+          labels:
+            severity: warning
+          annotations:
+            summary: "Background loop {{ $labels.loop }} on {{ $labels.job }} has not succeeded for 5 minutes"
+            description: >-
+              The loop is either failing on every iteration (recsys_loop_failures_total rising;
+              its WARN line carries the stack) or reporting -1 because it never completed a first
+              run. With GuardedLoop an iteration failure cannot cancel the schedule, so a growing
+              age with a flat failure counter means the executor itself is gone. For
+              redis-feature-version-sampler cross-check OnlineFeatureVersionSampleUnavailable;
+              for shard-topology-refresh a reshard published meanwhile is invisible to this
+              instance until it recovers.
+
         - alert: RecsysQueueRejecting
           # Evidence of actual loss, not early warning. Scoped to reason="full" ON PURPOSE:
           # both implementations also count shutdown refusals, so an unscoped expression fires on

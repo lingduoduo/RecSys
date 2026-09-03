@@ -120,6 +120,51 @@ class RedisFeatureVersionSamplerTest {
         assertThat(gauge(AVAILABLE)).isZero();
     }
 
+    @Test
+    void jvmErrorMarksSampleUnavailableAndRethrows() {
+        // An OutOfMemoryError is raised on whichever thread fails the allocation — this one
+        // allocates a scan cursor — and used to leave availability frozen at 1.
+        RedisExecutor executor = mock(RedisExecutor.class);
+        OutOfMemoryError failure = new OutOfMemoryError("scan");
+        when(executor.executePrimaryRead(any())).thenThrow(failure);
+        new RedisFeatureVersionSampler(executorRunning(commandsReturning(List.of("a:updated_at"))),
+                metrics, clockAtMillis(11_000), 100);   // registers the gauges
+        metrics.updateFeatureVersions(1, 1, java.time.Duration.ZERO);   // available = 1
+
+        assertThatThrownBy(new RedisFeatureVersionSampler(executor, metrics, clockAtMillis(11_000), 100)::sample)
+                .isSameAs(failure);
+        assertThat(gauge(AVAILABLE)).isZero();
+    }
+
+    @Test
+    void start_keepsSamplingAfterAnErrorAndPublishesLoopHealth() throws Exception {
+        RedisCommands<String, String> commands = commandsReturning(List.of("a:updated_at"));
+        when(commands.get("a:updated_at")).thenReturn("10000");
+        RedisExecutor executor = mock(RedisExecutor.class);
+        java.util.concurrent.atomic.AtomicInteger reads = new java.util.concurrent.atomic.AtomicInteger();
+        java.util.concurrent.CountDownLatch sampledAfterError = new java.util.concurrent.CountDownLatch(3);
+        when(executor.executePrimaryRead(any())).thenAnswer(invocation -> {
+            int n = reads.incrementAndGet();
+            sampledAfterError.countDown();
+            if (n == 1) throw new StackOverflowError("scan");
+            return invocation.getArgument(0, Function.class).apply(commands);
+        });
+        io.micrometer.core.instrument.simple.SimpleMeterRegistry loopRegistry =
+                new io.micrometer.core.instrument.simple.SimpleMeterRegistry();
+
+        try (RedisFeatureVersionSampler sampler =
+                     new RedisFeatureVersionSampler(executor, metrics, clockAtMillis(11_000), 100)) {
+            sampler.loop().bindTo(loopRegistry);
+            sampler.start(java.time.Duration.ofMillis(20));
+
+            assertThat(sampledAfterError.await(5, java.util.concurrent.TimeUnit.SECONDS))
+                    .as("sampling continued after the Error").isTrue();
+            assertThat(loopRegistry.get(com.recsys.resilience.GuardedLoop.FAILURES)
+                    .tag("loop", "redis-feature-version-sampler").functionCounter().count()).isGreaterThanOrEqualTo(1.0);
+        }
+        assertThat(gauge(AVAILABLE)).as("a successful sample after the Error restored availability").isEqualTo(1.0);
+    }
+
     /**
      * The alert reads age and availability as independent signals, so a failure after a good
      * sample must flip availability without rewriting the last age we could actually observe.

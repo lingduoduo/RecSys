@@ -1254,3 +1254,75 @@ tests:
       - eval_time: 20m
         alertname: ModelRuntimeLoadFailure
         exp_alerts: []
+
+  # --- RecsysLoopStale: stale age fires, fresh age does not, -1 (never succeeded) fires ---
+  - interval: 1m
+    input_series:
+      - series: 'recsys_loop_seconds_since_success{namespace="recsys", job="recsys-online-serving", loop="shard-topology-refresh"}'
+        values: '400x20'
+      - series: 'recsys_loop_seconds_since_success{namespace="recsys", job="recsys-online-serving", loop="learner-flush"}'
+        values: '12x20'        # near miss: fresh
+      - series: 'recsys_loop_seconds_since_success{namespace="recsys", job="recsys-online-serving", loop="redis-feature-version-sampler"}'
+        values: '-1x20'        # never succeeded: must fire, a bare > 300 would miss it
+    alert_rule_test:
+      - eval_time: 10m
+        alertname: RecsysLoopStale
+        exp_alerts:
+          - exp_labels:
+              severity: warning
+              namespace: recsys
+              job: recsys-online-serving
+              loop: shard-topology-refresh
+            exp_annotations:
+              summary: "Background loop shard-topology-refresh on recsys-online-serving has not succeeded for 5 minutes"
+              description: >-
+                The loop is either failing on every iteration (recsys_loop_failures_total rising;
+                its WARN line carries the stack) or reporting -1 because it never completed a first
+                run. With GuardedLoop an iteration failure cannot cancel the schedule, so a growing
+                age with a flat failure counter means the executor itself is gone. For
+                redis-feature-version-sampler cross-check OnlineFeatureVersionSampleUnavailable;
+                for shard-topology-refresh a reshard published meanwhile is invisible to this
+                instance until it recovers.
+          - exp_labels:
+              severity: warning
+              namespace: recsys
+              job: recsys-online-serving
+              loop: redis-feature-version-sampler
+            exp_annotations:
+              summary: "Background loop redis-feature-version-sampler on recsys-online-serving has not succeeded for 5 minutes"
+              description: >-
+                The loop is either failing on every iteration (recsys_loop_failures_total rising;
+                its WARN line carries the stack) or reporting -1 because it never completed a first
+                run. With GuardedLoop an iteration failure cannot cancel the schedule, so a growing
+                age with a flat failure counter means the executor itself is gone. For
+                redis-feature-version-sampler cross-check OnlineFeatureVersionSampleUnavailable;
+                for shard-topology-refresh a reshard published meanwhile is invisible to this
+                instance until it recovers.
+
+  # --- RecsysLoopStale: a loop that recovers must NOT still fire ---
+  - interval: 1m
+    input_series:
+      - series: 'recsys_loop_seconds_since_success{namespace="recsys", job="recsys-online-serving", loop="learner-flush"}'
+        values: '400x8 5x12'   # stale for 8m, then a success resets the age
+    alert_rule_test:
+      - eval_time: 7m
+        alertname: RecsysLoopStale
+        exp_alerts:
+          - exp_labels:
+              severity: warning
+              namespace: recsys
+              job: recsys-online-serving
+              loop: learner-flush
+            exp_annotations:
+              summary: "Background loop learner-flush on recsys-online-serving has not succeeded for 5 minutes"
+              description: >-
+                The loop is either failing on every iteration (recsys_loop_failures_total rising;
+                its WARN line carries the stack) or reporting -1 because it never completed a first
+                run. With GuardedLoop an iteration failure cannot cancel the schedule, so a growing
+                age with a flat failure counter means the executor itself is gone. For
+                redis-feature-version-sampler cross-check OnlineFeatureVersionSampleUnavailable;
+                for shard-topology-refresh a reshard published meanwhile is invisible to this
+                instance until it recovers.
+      - eval_time: 15m
+        alertname: RecsysLoopStale
+        exp_alerts: []
