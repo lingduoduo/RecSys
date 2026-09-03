@@ -241,10 +241,12 @@ public final class LlmProxyService implements HttpService {
                         // Return the streaming response directly without wrapping in a future.
                         // We complete the CompletableFuture immediately with the streaming writer.
                         return CompletableFuture.completedFuture(
-                                forwardStreaming(webClient.execute(upstreamReq), circuitPermit));
+                                forwardStreaming(webClient.execute(upstreamReq), circuitPermit,
+                                        meta.maxTokens()));
                     } else {
                         return CompletableFuture.completedFuture(
-                                forwardBuffered(upstreamReq, requestBody, circuitPermit));
+                                forwardBuffered(upstreamReq, requestBody, circuitPermit,
+                                        meta.maxTokens()));
                     }
                 }));
     }
@@ -253,10 +255,13 @@ public final class LlmProxyService implements HttpService {
 
     private HttpResponse forwardStreaming(
             HttpResponse upstream,
-            RouteCircuitBreaker.Permit circuitPermit) {
+            RouteCircuitBreaker.Permit circuitPermit,
+            int declaredTokens) {
         HttpResponseWriter writer = HttpResponse.streaming();
         upstream.subscribe(new org.reactivestreams.Subscriber<HttpObject>() {
             private final AtomicBoolean breakerCompleted = new AtomicBoolean();
+            private final AtomicBoolean budgetSettled = new AtomicBoolean();
+            private final LlmTokenUsageScanner usageScanner = new LlmTokenUsageScanner(MAPPER);
             private volatile HttpStatus responseStatus;
 
             @Override
@@ -275,6 +280,9 @@ public final class LlmProxyService implements HttpService {
                     ResponseHeaders filtered = filterResponseHeaders(h);
                     writer.write(filtered);
                 } else if (obj instanceof HttpData d) {
+                    // Scanned, then forwarded unchanged — the client's copy is never delayed by
+                    // this and the stream is never buffered.
+                    usageScanner.accept(d.array());
                     writer.write(d);
                 }
             }
@@ -282,6 +290,8 @@ public final class LlmProxyService implements HttpService {
             @Override
             public void onError(Throwable t) {
                 recordFailureOnce();
+                // A stream that died mid-generation still consumed whatever it had produced.
+                settleBudgetOnce();
                 writer.close(t);
             }
 
@@ -292,7 +302,17 @@ public final class LlmProxyService implements HttpService {
                 } else {
                     recordFailureOnce();
                 }
+                // Settle before closing the writer, so the charge is applied before the client can
+                // observe the end of the stream and issue its next request.
+                usageScanner.finish();
+                settleBudgetOnce();
                 writer.close();
+            }
+
+            private void settleBudgetOnce() {
+                if (!budgetSettled.compareAndSet(false, true)) return;
+                usageScanner.completionTokens().ifPresent(
+                        actual -> tokenRateLimiter.reconcile(declaredTokens, actual));
             }
 
             private void recordSuccessOnce() {
@@ -315,7 +335,8 @@ public final class LlmProxyService implements HttpService {
     private HttpResponse forwardBuffered(
             HttpRequest upstreamReq,
             byte[] requestBody,
-            RouteCircuitBreaker.Permit circuitPermit) {
+            RouteCircuitBreaker.Permit circuitPermit,
+            int declaredTokens) {
         RequestHeaders upstreamHeaders = upstreamReq.headers();
         return HttpResponse.of(
                 webClient.execute(upstreamReq).aggregate()
@@ -353,6 +374,10 @@ public final class LlmProxyService implements HttpService {
                                 throw new RuntimeException(e);
                             }
 
+                            // Settle the pre-checked estimate against what the upstream says the
+                            // completion actually cost, before the response is handed back.
+                            settleTokenBudget(declaredTokens, responseBytes);
+
                             // Cache successful 200 responses
                             if (agg.status().code() == 200 && requestBody != null) {
                                 responseCache.put(requestBody, agg.status().code(),
@@ -373,6 +398,19 @@ public final class LlmProxyService implements HttpService {
     }
 
     // ── Helpers ─────────────────────────────────────────────────────────────────────────────────
+
+    /**
+     * Charges the real completion-token count against the budget, refunding or debiting the
+     * difference from the caller's declared {@code max_tokens}. A no-op when the upstream reported
+     * no usage — see {@link LlmTokenUsageScanner}.
+     */
+    private void settleTokenBudget(int declaredTokens, byte[] responseBody) {
+        LlmTokenUsageScanner scanner = new LlmTokenUsageScanner(MAPPER);
+        scanner.accept(responseBody);
+        scanner.finish();
+        scanner.completionTokens().ifPresent(
+                actual -> tokenRateLimiter.reconcile(declaredTokens, actual));
+    }
 
     static RequestHeaders buildUpstreamHeaders(RequestHeaders incoming, String targetPath,
                                                        ServiceRequestContext ctx, GatewayPrincipal principal) {
