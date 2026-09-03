@@ -1,4 +1,7 @@
 package com.recsys.application.model;
+import ch.qos.logback.classic.LoggerContext;
+import ch.qos.logback.classic.spi.ILoggingEvent;
+import ch.qos.logback.core.read.ListAppender;
 import com.recsys.application.model.ModelRuntime;
 import com.recsys.application.model.ModelRuntimeProvider;
 import com.recsys.application.model.ModelArtifactLocator;
@@ -10,6 +13,9 @@ import java.io.IOException;
 import java.io.InputStream;
 import java.nio.file.Files;
 import java.nio.file.Path;
+import java.util.List;
+
+import org.slf4j.LoggerFactory;
 
 import static org.assertj.core.api.Assertions.assertThat;
 
@@ -77,6 +83,32 @@ class ModelRuntimeProviderTest {
             assertThat(training.inferenceService().isReady()).isTrue();
         } finally {
             provider.close();
+        }
+    }
+
+    @Test
+    void legacyBundleWarningIsEmittedOncePerNormalizedVariant() {
+        LoggerContext context = (LoggerContext) LoggerFactory.getILoggerFactory();
+        ch.qos.logback.classic.Logger logger = context.getLogger(ModelRuntimeProvider.class);
+        ListAppender<ILoggingEvent> appender = new ListAppender<>();
+        appender.setContext(context);
+        appender.start();
+        logger.addAppender(appender);
+        ModelRuntimeProvider provider = new ModelRuntimeProvider(
+                new ModelArtifactLocator("", ""), new com.recsys.config.ABTestConfig());
+        try {
+            provider.getRuntime(" ");
+            provider.getRuntime("training");
+
+            List<String> warnings = appender.list.stream()
+                    .map(ILoggingEvent::getFormattedMessage)
+                    .filter(message -> message.contains("model_manifest.json"))
+                    .toList();
+            assertThat(warnings).hasSize(1);
+            assertThat(warnings.get(0)).contains("training").contains("legacy");
+        } finally {
+            provider.close();
+            logger.detachAppender(appender);
         }
     }
 

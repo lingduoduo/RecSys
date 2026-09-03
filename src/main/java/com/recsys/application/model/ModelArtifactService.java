@@ -12,30 +12,64 @@ import java.util.*;
 public class ModelArtifactService {
 
     private static final ObjectMapper objectMapper = new ObjectMapper();
+    private static final String DEFAULT_MODEL_FILE = "dssm_model.onnx";
     private final ModelArtifactLocator artifactLocator;
     private final String variant;
+    private final String legacyModelFile;
     private final RedisEmbeddingStore redisItemEmbeddingStore;
 
     private String modelVersion;
+    private String resolvedModelFile;
+    private byte[] modelBytes;
+    private ModelArtifactManifest.ModelContract modelContract;
+    private boolean manifestBacked;
     private Map<String, Integer> userVocab = new HashMap<>();
     private Map<String, Integer> itemVocab = new HashMap<>();
     private int embeddingDim;
     private Map<String, float[]> itemEmbeddings = Map.of();
 
     public ModelArtifactService(ModelArtifactLocator artifactLocator, String variant) {
-        this(artifactLocator, variant, null);
+        this(artifactLocator, variant, DEFAULT_MODEL_FILE, null);
     }
 
     public ModelArtifactService(ModelArtifactLocator artifactLocator,
                                 String variant,
                                 RedisEmbeddingStore redisItemEmbeddingStore) {
+        this(artifactLocator, variant, DEFAULT_MODEL_FILE, redisItemEmbeddingStore);
+    }
+
+    public ModelArtifactService(ModelArtifactLocator artifactLocator,
+                                String variant,
+                                String legacyModelFile) {
+        this(artifactLocator, variant, legacyModelFile, null);
+    }
+
+    public ModelArtifactService(ModelArtifactLocator artifactLocator,
+                                String variant,
+                                String legacyModelFile,
+                                RedisEmbeddingStore redisItemEmbeddingStore) {
         this.artifactLocator = artifactLocator;
         this.variant = ModelVariants.trimOrEmpty(variant);
+        this.legacyModelFile = Strings.orDefault(legacyModelFile, DEFAULT_MODEL_FILE);
         this.redisItemEmbeddingStore = redisItemEmbeddingStore;
     }
 
     public void loadArtifacts() throws IOException {
-        loadFeatureConfig();
+        Optional<ModelArtifactSnapshot> snapshot = artifactLocator.loadManifestSnapshot(variant);
+        if (snapshot.isPresent()) {
+            ModelArtifactSnapshot verified = snapshot.get();
+            loadFeatureConfig(verified.featureConfig());
+            this.resolvedModelFile = verified.modelFile();
+            this.modelBytes = verified.model();
+            this.modelContract = verified.contract();
+            this.manifestBacked = true;
+        } else {
+            loadFeatureConfig(null);
+            this.resolvedModelFile = legacyModelFile;
+            this.modelBytes = artifactLocator.readModelBytes(variant, legacyModelFile);
+            this.modelContract = ModelArtifactManifest.ModelContract.legacy();
+            this.manifestBacked = false;
+        }
         if (redisItemEmbeddingStore == null) {
             loadItemEmbeddings();
         } else {
@@ -43,9 +77,16 @@ public class ModelArtifactService {
         }
     }
 
-    private void loadFeatureConfig() throws IOException {
-        try (InputStream is = artifactLocator.openModel(variant, "feature_config.json")) {
-            Map<String, Object> config = objectMapper.readValue(is, new TypeReference<>() {});
+    private void loadFeatureConfig(byte[] verifiedFeatureConfig) throws IOException {
+        try {
+            Map<String, Object> config;
+            if (verifiedFeatureConfig != null) {
+                config = objectMapper.readValue(verifiedFeatureConfig, new TypeReference<>() {});
+            } else {
+                try (InputStream is = artifactLocator.openModel(variant, "feature_config.json")) {
+                    config = objectMapper.readValue(is, new TypeReference<>() {});
+                }
+            }
             this.modelVersion = String.valueOf(config.getOrDefault("model_version", "unknown"));
             this.embeddingDim = readPositiveInt(config.get("embedding_dim"), "embedding_dim");
             this.userVocab = convertToIntMap(config.get("user_vocab"));
@@ -156,5 +197,31 @@ public class ModelArtifactService {
 
     public String getVariant() {
         return variant;
+    }
+
+    public String resolvedModelFile() {
+        ensureModelLoaded();
+        return resolvedModelFile;
+    }
+
+    public byte[] modelBytes() {
+        ensureModelLoaded();
+        return modelBytes.clone();
+    }
+
+    public ModelArtifactManifest.ModelContract modelContract() {
+        ensureModelLoaded();
+        return modelContract;
+    }
+
+    public boolean isManifestBacked() {
+        ensureModelLoaded();
+        return manifestBacked;
+    }
+
+    private void ensureModelLoaded() {
+        if (modelBytes == null) {
+            throw new IllegalStateException("model artifacts have not been loaded");
+        }
     }
 }

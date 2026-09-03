@@ -4,8 +4,14 @@ import com.recsys.application.model.ModelArtifactService;
 
 import org.junit.jupiter.api.BeforeEach;
 import org.junit.jupiter.api.Test;
+import org.junit.jupiter.api.io.TempDir;
 
 import java.io.IOException;
+import java.nio.charset.StandardCharsets;
+import java.nio.file.Files;
+import java.nio.file.Path;
+import java.security.MessageDigest;
+import java.security.NoSuchAlgorithmException;
 
 import static org.assertj.core.api.Assertions.assertThat;
 
@@ -36,6 +42,67 @@ class ModelArtifactServiceTest {
     }
 
     @Test
+    void legacyBundleExposesModelBytesAndDefaultContractAfterOneRead() throws IOException {
+        CountingModelArtifactLocator countingLocator = new CountingModelArtifactLocator();
+        ModelArtifactService legacy = new ModelArtifactService(countingLocator, "training");
+
+        legacy.loadArtifacts();
+        byte[] first = legacy.modelBytes();
+        first[0] ^= 1;
+
+        assertThat(legacy.resolvedModelFile()).isEqualTo("dssm_model.onnx");
+        assertThat(legacy.modelBytes()).isEqualTo(locator.readModelBytes("training", "dssm_model.onnx"));
+        assertThat(legacy.modelContract()).isEqualTo(ModelArtifactManifest.ModelContract.legacy());
+        assertThat(legacy.isManifestBacked()).isFalse();
+        assertThat(countingLocator.modelReads).isEqualTo(1);
+    }
+
+    @Test
+    void manifestBundleUsesSnapshotFeatureConfigAndAuthoritativeModel(@TempDir Path root) throws IOException {
+        Path variantDir = Files.createDirectories(root.resolve("training"));
+        byte[] featureConfig = """
+                {
+                  "model_version": "manifest-v2",
+                  "embedding_dim": 2,
+                  "user_vocab": { "__UNK__": 0 },
+                  "item_vocab": { "7": 0 }
+                }
+                """.getBytes(StandardCharsets.UTF_8);
+        byte[] model = "manifest-model".getBytes(StandardCharsets.UTF_8);
+        Files.write(variantDir.resolve("feature_config.json"), featureConfig);
+        Files.write(variantDir.resolve("manifest.onnx"), model);
+        Files.writeString(variantDir.resolve("model_manifest.json"), """
+                {
+                  "schema_version": 1,
+                  "model_version": "manifest-v2",
+                  "model_file": "manifest.onnx",
+                  "sha256": {
+                    "feature_config.json": "%s",
+                    "manifest.onnx": "%s"
+                  },
+                  "inputs": {
+                    "user_id": { "type": "INT64", "rank": 1 },
+                    "item_id": { "type": "INT64", "rank": 1 }
+                  },
+                  "output": { "name": "score", "type": "FLOAT", "rank": 1 }
+                }
+                """.formatted(sha256(featureConfig), sha256(model)));
+        ModelArtifactService manifest = new ModelArtifactService(
+                new ModelArtifactLocator(root.toString(), ""), "training", "ignored-legacy.onnx");
+
+        manifest.loadArtifacts();
+
+        assertThat(manifest.getModelVersion()).isEqualTo("manifest-v2");
+        assertThat(manifest.getItemVocab()).containsOnlyKeys("7");
+        assertThat(manifest.resolvedModelFile()).isEqualTo("manifest.onnx");
+        assertThat(manifest.modelBytes()).isEqualTo(model);
+        assertThat(manifest.modelContract()).isEqualTo(new ModelArtifactManifest.ModelContract(
+                "user_id", "item_id", ModelArtifactManifest.TensorType.INT64, 1,
+                "score", ModelArtifactManifest.TensorType.FLOAT, 1));
+        assertThat(manifest.isManifestBacked()).isTrue();
+    }
+
+    @Test
     void userVocab_containsKnownUsers() {
         var vocab = service.getUserVocab();
         assertThat(vocab).containsKey("__UNK__");
@@ -59,5 +126,27 @@ class ModelArtifactServiceTest {
         org.assertj.core.api.Assertions.assertThatThrownBy(
                 () -> service.getItemEmbeddings().put("99", new float[16]))
                 .isInstanceOf(UnsupportedOperationException.class);
+    }
+
+    private static String sha256(byte[] bytes) {
+        try {
+            return java.util.HexFormat.of().formatHex(MessageDigest.getInstance("SHA-256").digest(bytes));
+        } catch (NoSuchAlgorithmException e) {
+            throw new AssertionError(e);
+        }
+    }
+
+    private static final class CountingModelArtifactLocator extends ModelArtifactLocator {
+        private int modelReads;
+
+        private CountingModelArtifactLocator() {
+            super("", "");
+        }
+
+        @Override
+        public byte[] readModelBytes(String variant, String fileName) throws IOException {
+            modelReads++;
+            return super.readModelBytes(variant, fileName);
+        }
     }
 }

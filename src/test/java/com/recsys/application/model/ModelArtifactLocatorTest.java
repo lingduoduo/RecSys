@@ -76,6 +76,27 @@ class ModelArtifactLocatorTest {
     }
 
     @Test
+    void openModel_legacyVariantStillFallsBackToFlatExternalFile(@TempDir Path tmp) throws IOException {
+        Files.createDirectories(tmp.resolve("training"));
+        Files.writeString(tmp.resolve("config.json"), "{\"slot\":\"flat\"}");
+
+        var locator = new ModelArtifactLocator(tmp.toString(), "");
+
+        assertThat(locator.readModelBytes("training", "config.json"))
+                .isEqualTo("{\"slot\":\"flat\"}".getBytes());
+    }
+
+    @Test
+    void loadManifestSnapshot_namedVariantDoesNotUseFlatRootManifest(@TempDir Path tmp) throws IOException {
+        Files.createDirectories(tmp.resolve("training"));
+        Files.writeString(tmp.resolve("model_manifest.json"), "{malformed-root-manifest");
+
+        var locator = new ModelArtifactLocator(tmp.toString(), "");
+
+        assertThat(locator.loadManifestSnapshot("training")).isEmpty();
+    }
+
+    @Test
     void describeModelLocation_variantClasspath_returnsGenericPath() {
         var locator = new ModelArtifactLocator("", "");
         assertThat(locator.describeModelLocation("training", "feature_config.json"))

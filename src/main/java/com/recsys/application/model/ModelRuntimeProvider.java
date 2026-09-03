@@ -62,6 +62,7 @@ public class ModelRuntimeProvider implements SmartInitializingSingleton {
     private final String itemEmbeddingsSource;
     private final String redisItemEmbeddingPrefix;
     private final Map<String, ModelRuntime> runtimes = new ConcurrentHashMap<>();
+    private final Set<String> legacyWarningVariants = ConcurrentHashMap.newKeySet();
     private RedisExecutor redisItemEmbeddingPool;
     private RedisExecutor recallPool;
     private CandidateGenerator candidateGenerator;
@@ -212,8 +213,13 @@ public class ModelRuntimeProvider implements SmartInitializingSingleton {
             ModelArtifactService artifactService = new ModelArtifactService(
                     artifactLocator,
                     variant,
+                    modelFile,
                     redisItemEmbeddingStoreIfEnabled());
             artifactService.loadArtifacts();
+            if (!artifactService.isManifestBacked() && legacyWarningVariants.add(variant)) {
+                log.warn("Model variant '{}' uses a legacy bundle without model_manifest.json; "
+                        + "artifact consistency and checksums are not verified", variant);
+            }
 
             UserTowerInferenceService inferenceService = new UserTowerInferenceService(artifactLocator, variant, modelFile);
             inferenceService.init();
