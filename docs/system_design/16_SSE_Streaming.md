@@ -197,10 +197,34 @@ the connection open across gaps between token frames.
    the upstream headers are written is surfaced mid-stream; the client must
    handle a partial/failed stream itself. This is intentional but asymmetric
    with the buffered path.
-3. **Token pre-check uses the client-declared `max_tokens`.** The budget is
-   debited on the *request's* `max_tokens`, not on actual tokens streamed, so a
-   client that under-declares `max_tokens` can under-pay its budget on the
-   streaming path (no post-hoc reconciliation of streamed token count).
+3. **Token pre-check uses the client-declared `max_tokens` — now settled up
+   afterwards.** The pre-check can only spend the caller's own `max_tokens`, which
+   the caller controls and the gateway cannot verify before forwarding. With no
+   reconciliation, declaring `max_tokens: 1` and then consuming hundreds cost one
+   token, and the budget stopped bounding anything a caller cared to under-declare.
+
+   `LlmTokenUsageScanner` now reads the completion-token count the upstream
+   reports and `LlmTokenRateLimiter.reconcile` settles the difference — refunding
+   an over-estimate, debiting an under-estimate. Three properties are worth
+   knowing:
+   - **The stream is still never buffered.** Frames are scanned as they pass and
+     forwarded unchanged; only a bounded partial-line carry-over (64 KB) is held
+     between chunks, since a chunk boundary can split a usage frame.
+   - **An overage drives the bucket negative,** deliberately. That is what makes
+     an under-declaration self-correcting rather than free: the deficit must
+     refill before the next request is admitted. A refund is capped at the burst,
+     so over-declaring cannot mint capacity.
+   - **Settling happens-before the client sees the end of the response** — in the
+     upstream subscriber's `onComplete`, ahead of `writer.close()` — so a caller
+     cannot race its own next request in ahead of the charge.
+
+   Both upstream dialects the deployed `LLM_SERVICE_URL` (Ollama) can speak are
+   covered: OpenAI-compatible SSE (`usage.completion_tokens`) and native NDJSON
+   (`eval_count`). **Residual gap:** an upstream that reports no usage at all
+   leaves the declared estimate standing. That is a deployment property, not a
+   caller-controlled one — the upstream is fixed by `LLM_SERVICE_URL`, so a caller
+   cannot select a silent one to evade the budget. A mid-stream failure is charged
+   for whatever it had produced before dying.
 4. **No SSE-specific keepalive/heartbeat frame.** Liveness relies on the HTTP/2
    PING interval, not on SSE comment frames (`: keep-alive\n\n`); intermediaries
    that don't honor HTTP/2 PING could still idle-close a very slow stream.

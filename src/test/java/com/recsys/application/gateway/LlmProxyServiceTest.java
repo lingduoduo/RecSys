@@ -122,9 +122,11 @@ class LlmProxyServiceTest {
                 1_000L);
         HttpResponseWriter upstream = HttpResponse.streaming();
         var method = LlmProxyService.class.getDeclaredMethod(
-                "forwardStreaming", HttpResponse.class, RouteCircuitBreaker.Permit.class);
+                "forwardStreaming", HttpResponse.class, RouteCircuitBreaker.Permit.class, int.class);
         method.setAccessible(true);
-        HttpResponse forwarded = (HttpResponse) method.invoke(service, upstream, probe);
+        // The declared token estimate only matters to the budget settle-up, which a disabled
+        // LlmTokenRateLimiter ignores; this test is about circuit-breaker state.
+        HttpResponse forwarded = (HttpResponse) method.invoke(service, upstream, probe, 1_000);
 
         upstream.write(ResponseHeaders.of(HttpStatus.OK));
         assertThat(circuit.state()).isEqualTo(HALF_OPEN);

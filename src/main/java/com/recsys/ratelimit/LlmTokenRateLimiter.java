@@ -49,4 +49,17 @@ public final class LlmTokenRateLimiter {
         if (bucket == null) return TokenBucket.Decision.unlimited();
         return bucket.tryAcquire(Math.max(1, tokens));
     }
+
+    /**
+     * Settles the pre-checked estimate against the token count the upstream actually reported.
+     *
+     * <p>The pre-check can only spend the caller's own {@code max_tokens}, which the caller
+     * controls and the gateway cannot verify before forwarding. Without this settle-up, declaring
+     * {@code max_tokens: 1} and then consuming hundreds costs one token, and the budget stops
+     * bounding anything a caller cares to under-declare.
+     */
+    public void reconcile(int estimated, int actual) {
+        if (bucket == null) return;
+        bucket.reconcile(Math.max(1, estimated), Math.max(0, actual));
+    }
 }
