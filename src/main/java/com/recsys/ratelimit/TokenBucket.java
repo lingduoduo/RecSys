@@ -34,6 +34,20 @@ public final class TokenBucket {
         return tryAcquire(1);
     }
 
+    /**
+     * Settles an estimated charge against what was actually used.
+     *
+     * <p>Refunds the unused remainder, or debits the overage when the estimate was too low. The
+     * balance is deliberately allowed to go <em>negative</em> on an overage: that is what makes an
+     * under-estimate self-correcting rather than free, since the deficit must refill before the
+     * next request is admitted. A refund can never push the balance above {@code burst}, so
+     * repeated over-estimates cannot mint capacity.
+     */
+    public synchronized void reconcile(int estimated, int actual) {
+        refill();
+        tokens = Math.min(burst, tokens + (estimated - actual));
+    }
+
     private void refill() {
         long now = tickerNanos.getAsLong();
         long elapsed = Math.max(0L, now - lastRefillNanos);
