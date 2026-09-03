@@ -256,6 +256,17 @@ group fails selection immediately (`EmptyEndpointGroupException` →
 retried once after 50 ms (max 2 attempts, never on socket timeout). Host
 resolution and the 30 s Cloud Map DNS cache are unchanged.
 
+The probe is a **`GET`** (`useGet(true)`), not Armeria's default `HEAD`. The
+catalog and online health handlers are `BaseApiService` subclasses that override
+`doGet` alone, so they answer `405` to `HEAD`, which the checker counts as
+unhealthy — under the default, both Armeria upstreams were permanently
+unselectable and every `/api/catalog`, `/api/users`, `/api/movies`,
+`/api/online`, and `/api/features` request fast-failed `503` while the gateway's
+own `/health` aggregation (which always used `GET`) reported them `UP`. Model
+serving alone survived because Spring MVC maps `HEAD` onto `GET` handlers. The
+integration test's stub upstream is now `GET`-only for the same reason: a lambda
+`HttpService` accepts every method and cannot see a probe-method mismatch.
+
 | Env var | Default | Purpose |
 |---|---:|---|
 | `GATEWAY_UPSTREAM_HEALTHCHECK_ENABLED` | `true` | Wrap each upstream in a health-checked endpoint group (set `false` for local dev without all backends) |
