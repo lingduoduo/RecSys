@@ -254,34 +254,43 @@ Run one command per terminal. Start Redis first for the catalog and online
 services. Start all three backends before the gateway if you want the gateway
 aggregate health check to return success.
 
-Export the shared environment once per terminal before any of the commands
-below. Use one signing key for every catalog and online instance in the local
-topology, and opt in to the passwordless local Redis — the catalog, online, and
-model services all refuse an unauthenticated Redis connection at startup
-without it (the gateway only opens Redis when `SERVICE_REGISTRY_ENABLED=true`).
-`scripts/run-microservices-local.sh` sets the Redis opt-in itself; these
-per-service commands do not.
+Each command below carries its own environment, so it works in a fresh
+terminal. Two settings are shared by design: use **one** signing key for every
+catalog, online, and model instance in the local topology (a mismatch makes one
+instance reject the cursors another issued), and opt in to the passwordless
+local Redis, because the catalog, online, and model services all refuse an
+unauthenticated Redis connection at startup (the gateway only opens Redis when
+`SERVICE_REGISTRY_ENABLED=true`). `scripts/run-microservices-local.sh` sets the
+Redis opt-in itself; these per-service commands do not, which is why it appears
+in each of them.
+
+Generate the signing key once, then paste the same value into every terminal:
 
 ```bash
 export JAVA_HOME=$(/usr/libexec/java_home -v 17)
 export RECOMMENDATION_CURSOR_SIGNING_KEY="$(openssl rand -hex 32)"
-export REDIS_ALLOW_NO_AUTH=true
+echo "$RECOMMENDATION_CURSOR_SIGNING_KEY"   # reuse this value in the other terminals
 ```
 
-If your local Redis has a password, export `REDIS_PASSWORD` instead of
-`REDIS_ALLOW_NO_AUTH`.
+If your local Redis has a password, replace `REDIS_ALLOW_NO_AUTH=true` with
+`REDIS_PASSWORD=<password>` in each command.
 
 Catalog and recommendation serving:
 
 ```bash
-env PORT=6010 sh scripts/run-with-jvm-tuning.sh recsys-serving -- \
+env PORT=6010 REDIS_ALLOW_NO_AUTH=true \
+  RECOMMENDATION_CURSOR_SIGNING_KEY="$RECOMMENDATION_CURSOR_SIGNING_KEY" \
+  sh scripts/run-with-jvm-tuning.sh recsys-serving -- \
   mvn exec:java -Dexec.mainClass=com.recsys.api.serving.RecSysServer
 ```
+
+Check it with `curl --fail http://localhost:6010/health`.
 
 Online prediction:
 
 ```bash
-env ONLINE_DEMO_PORT=7010 \
+env ONLINE_DEMO_PORT=7010 REDIS_ALLOW_NO_AUTH=true \
+  RECOMMENDATION_CURSOR_SIGNING_KEY="$RECOMMENDATION_CURSOR_SIGNING_KEY" \
   sh scripts/run-with-jvm-tuning.sh online-serving -- \
   mvn exec:java -Dexec.mainClass=com.recsys.api.online.OnlinePredictionServer
 ```
@@ -291,7 +300,9 @@ Check it with `curl --fail http://localhost:7010/health/ready`.
 Model serving:
 
 ```bash
-env SERVER_PORT=8080 sh scripts/run-with-jvm-tuning.sh model-serving -- \
+env SERVER_PORT=8080 REDIS_ALLOW_NO_AUTH=true \
+  RECOMMENDATION_CURSOR_SIGNING_KEY="$RECOMMENDATION_CURSOR_SIGNING_KEY" \
+  sh scripts/run-with-jvm-tuning.sh model-serving -- \
   mvn spring-boot:run
 ```
 
