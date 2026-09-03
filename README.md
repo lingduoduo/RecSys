@@ -76,7 +76,7 @@ without updating it.
 | 15 | [Eventual Consistency](docs/system_design/15_Eventual_Consistency.md) | How eventual consistency manifests and is deliberately bounded per layer |
 | 16 | [SSE Streaming](docs/system_design/16_SSE_Streaming.md) | The LLM-proxy SSE passthrough, its lifecycle, and why no WebSockets or gRPC |
 | 17 | [Scalability](docs/system_design/17_Scalability.md) | Compute-tier HPA, data-tier levers, and the overload-protection layers that let it scale without collapsing |
-| 18 | [Fault Tolerance](docs/system_design/18_Fault_Tolerance.md) | Resilience contracts, graceful drain, observability, failure-path evidence, and status |
+| 18 | [Fault Tolerance](docs/system_design/18_Fault_Tolerance.md) | Resilience contracts, graceful drain, observability, failure-path evidence, what a JVM `Error` does at each boundary (§9), and status |
 | 19 | [Pagination](docs/system_design/19_Pagination.md) | Keyset and offset implementations, and the shared signed live-keyset recommendation contract |
 | 20 | [AuthN / AuthZ](docs/system_design/20_AuthN_AuthZ.md) | The six credentials, fail-closed startup, credential stripping, and the operator-token tier |
 

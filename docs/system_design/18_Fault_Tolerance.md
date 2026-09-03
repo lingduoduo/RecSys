@@ -945,6 +945,143 @@ six. Neither of the two newer tests narrows that gap — `PromtoolJobLabelManife
 in-process `PrometheusMeterRegistry`, not a cluster. That gap is inherent to testing manifests
 that assume infrastructure this repo does not provision.
 
+## 9. Exceptions versus JVM Errors — what each boundary actually does
+
+Everything above is written in terms of *exceptions*: a channel throws, a Redis call times
+out, a bundle fails validation. Java has a second failure family the code almost never names —
+`java.lang.Error`: `OutOfMemoryError`, `StackOverflowError`, `NoClassDefFoundError`,
+`ExceptionInInitializerError`, `AssertionError`. They are not `Exception`s, so
+`catch (Exception e)` — this repo's dominant idiom, 73 sites — does not see them, and
+`catch (RuntimeException e)` — 46 sites — does not either. Whether that matters depends
+entirely on *which boundary* the Error reaches, and the answer differs per boundary. This
+section records what was measured (2026-09-03, JDK 17, Armeria 1.28.4, Spring Boot 3.3.4),
+not what the type hierarchy suggests.
+
+### 9.1 The census
+
+| Idiom | Sites in `src/main` | Sees a JVM `Error`? |
+|---|---:|---|
+| `catch (Exception …)` | 73 | No |
+| `catch (RuntimeException …)` | 46 | No |
+| `catch (Throwable …)` | 14 | Yes — all in background loops that must not die (`WorkerBulkhead.submit`, the outbox relay and its cycle loop, the three Redis probes, the Splunk drain thread, `TransactionalMySql`, `DeliveryAttempt.cancel`) |
+| `catch (Exception \| Error …)` | 1 | Yes — `OnlineAdmissionControl`, to release the admission permit on any failure before rethrowing |
+| `instanceof Error` rethrow | 1 | `TransactionalMySql.propagate`: rolls back, then rethrows the Error unwrapped rather than wrapping it in a `RuntimeException` |
+| Thread `UncaughtExceptionHandler` | 0 | JVM default: stack trace to stderr, nothing else |
+| `-XX:+ExitOnOutOfMemoryError` / `CrashOnOutOfMemoryError` | 0 | Not set anywhere; `-XX:+HeapDumpOnOutOfMemoryError` is set in `config/jvm/*.jvmopts` (local runs only), not in any `JAVA_OPTS` under `k8s/` |
+
+The 21 custom exceptions all extend `RuntimeException` (or `IllegalArgumentException`); the
+only custom checked type is `RowMappingException extends SQLException`. Checked exceptions
+cross method boundaries as `SQLException` (30 `throws`), `IOException` (17), `OrtException`
+(12). All 26 `catch (InterruptedException …)` sites restore the interrupt flag.
+
+### 9.2 Request boundaries: both frameworks convert Errors to 500 and keep serving
+
+Measured with a real server in each case, throwing `IllegalStateException`, `AssertionError`,
+`NoClassDefFoundError`, `StackOverflowError` and `OutOfMemoryError` from a handler.
+
+**Armeria (6010, 7010, 8010).** Every service body is `try { … } catch (Exception e) { 500 }`
+(`BaseApiService`, `CatalogService`, `RecommendationService`, `ShardedRecordService`, …), so an
+Error escapes the body. Armeria then answers **`500 Internal Server Error`** and the server keeps
+listening — for a throw directly out of `serve()` and for the
+`HttpResponse.of(CompletableFuture.supplyAsync(…))` shape alike, and for `OutOfMemoryError`
+and `StackOverflowError` too. Armeria does *not* rethrow "fatal" errors or leave the request
+hanging, which was the working assumption before measuring. Pinned by
+`ArmeriaErrorBoundaryTest`.
+
+**Spring MVC (8080).** `GlobalExceptionHandler`'s catch-all is `@ExceptionHandler(Exception.class)`,
+which by type cannot match an Error — yet the client receives the handler's own
+`{"error":"internal server error"}` body with **500** for all five cases. The reason is one
+layer down: `DispatcherServlet.doDispatch` catches `Throwable` from the handler and wraps it in
+`ServletException("Handler dispatch failed")` before consulting the exception resolvers, and
+*that* is an `Exception`. The cause chain is logged. Pinned by `SpringErrorBoundaryTest`,
+against the real embedded Tomcat — MockMvc would have thrown the wrapper at the test instead.
+
+Consequence: on the request path, the `catch (Exception)` idiom is *adequate*. An Error
+becomes one failed request, counted by `InferenceMetricsService`/the Armeria decorators exactly
+as an exception would be, and the `finally`/`whenComplete` permit releases in
+`RecommendationController`, `ProtectedRecommendationPipeline` and `OnlineAdmissionControl` run
+for Errors as they do for exceptions (`finally` is Throwable-agnostic; `OnlineAdmissionControl`
+spells it out as `catch (Exception | Error)`).
+
+### 9.3 Executor boundaries: the answer depends on the submission idiom
+
+Measured with the JDK executors the code uses:
+
+| Idiom | An `Error` thrown by the task… | Where it is used |
+|---|---|---|
+| `ScheduledExecutorService.scheduleWithFixedDelay` | **Cancels the schedule permanently and silently.** The Error is stored in the `ScheduledFuture` nobody reads; no log line, no thread death, no further runs. A `catch (Exception)` inside the task does not intercept it. | 11 sites — see 9.4 |
+| `ThreadPoolExecutor.execute(Runnable)` | Kills that worker thread (stack trace to stderr via the default handler), pool replaces it, next task runs normally | `WorkerBulkhead.submit`, `OutboxRelay.submitTerminal` — both already wrap the body in `catch (Throwable)` |
+| `ExecutorService.submit(Callable)` | Captured; `get()` throws `ExecutionException(cause = the Error)` | `MultiChannelRecallService` (recall channels): treated as a degraded channel, correct |
+| `CompletableFuture.supplyAsync`/`runAsync` + `join()` | Captured; `join()` throws **`CompletionException`**, which *is* a `RuntimeException` wrapping the Error | 12 sites: the Armeria service bodies (framework answers 500, §9.2) and `ModelRuntimeProvider.warmUp` |
+
+The `CompletionException` rewrap is the one place the type hierarchy inverts: an
+`OutOfMemoryError` inside async work reaches a `catch (RuntimeException)` at the `join()` as a
+plain runtime failure. In `warmUp` this means a treatment variant whose load throws an *Error*
+is **not** isolated the way a `RuntimeException` is (the `catch (RuntimeException)` sits inside
+the lambda, before the rewrap), so it propagates out of `warmUp` and fails startup — for an OOM
+that is the right outcome, and it is noted here so nobody reads the treatment-isolation
+guarantee as covering Errors.
+
+### 9.4 Where a JVM Error silently kills something that is supposed to keep running
+
+This is the actual exposure. Eleven fixed-delay loops keep this system's shared state fresh;
+by the first row of 9.3 an Error in any of them stops that loop for the life of the process
+with no signal, and the code's guard decides whether that can happen:
+
+| Loop | Guard in the task | An Error here means… | Does anything notice? |
+|---|---|---|---|
+| `RedisReplicaLagProbe`, `RedisCacheStatsProbe`, `RedisPersistentKeyProbe`, outbox relay cycle | `catch (Throwable)` | nothing — the loop survives by design | n/a |
+| `WatchdogLock.renewLease` | `catch (Exception)` | renewal stops; Redis expires the lease on schedule; **the holder's `held` flag stays `true`** because `markOwnershipLost` runs only from the dead task. Mutual exclusion is broken in the one direction that matters: two holders, neither told. | Nothing. `lostOwnership` is never set. |
+| `RedisFeatureVersionSampler` | `catch (RuntimeException)` | sampling stops; `redis_feature_version_age_seconds` **freezes at its last good value** and `redis_feature_version_sample_available` freezes at 1 | No — this is precisely the "frozen age reads healthy" failure §8.3 warns about, and `OnlineFeatureVersionSampleUnavailable` is blind to it because the availability gauge is written by the same dead task |
+| `ShardTopologyProvider.refresh` | `catch (Exception)` | topology never refreshes again; a reshard published after that moment is invisible to this instance until restart, so it keeps writing generation *N* keys while the fleet moved to *N+1* | No staleness gauge exists for the topology snapshot |
+| `LearnerFlushScheduler.tryFlush` | `catch (Exception)` | online-learner parameters stop being flushed to Redis | No — `errorCount` is not incremented (the guard never ran), and the class's `Snapshot` (`flushCount`, `errorCount`, `lastFlushMs`) has no consumer in `src/main`: it is not on `/online/ops` and not a metric |
+| `ServiceRegistrar.heartbeat` | `catch (Exception)` | this instance's registry key expires after `SERVICE_REGISTRY_TTL_MS` | Yes — the gateway falls back to the static address and reports `source: static` |
+| `ServiceRegistryProvider.refresh` | `catch (Exception)` | gateway keeps its last snapshot | Yes — `gateway_registry_snapshot_age_seconds` grows and `GatewayRegistryStale` fires |
+| `CapacityController.tickSafely` | `catch (RuntimeException)` | reference implementation, not started in production | n/a |
+
+How likely is an Error in one of these? `OutOfMemoryError` is the realistic one: these threads
+allocate (Lua results, JSON, scan cursors) and an OOM is raised on whichever thread happens
+to fail the allocation, not on the thread that caused the pressure. The three probes and the
+relay were written with exactly that in mind — the same author's `SplunkHecAppender` says so in
+its comment — and the other five were not.
+
+### 9.5 The process boundary: nothing turns an OOM into a restart
+
+With no `-XX:+ExitOnOutOfMemoryError` in any container `JAVA_OPTS`, a JVM that has thrown
+`OutOfMemoryError` keeps running. §9.2 shows request threads keep answering (500s while heap is
+short, 200s once GC recovers something), and every liveness probe in the system —
+`HealthController.liveness`, `OnlineServices.Live`, the gateway and relay `/health/live` — is a
+constant `200 OK` that inspects nothing, so Kubernetes never restarts the container. What the
+operator sees instead is `JvmHeapPressureHigh` and `JvmGcTimeFractionHigh` (§8.4) plus a
+climbing 5xx rate, and, per §9.4, possibly a background loop that quietly died at the same
+moment and will stay dead after the heap recovers. `-XX:+HeapDumpOnOutOfMemoryError` is set
+only in `config/jvm/*.jvmopts`, which containers do not read (they take `JAVA_OPTS`), and the
+container root filesystem is read-only with only `/tmp` writable — so a dump path would have
+to be `/tmp` explicitly.
+
+The ONNX native layer is the other process-level case and behaves differently from all of the
+above: a fault inside `onnxruntime` is a SIGSEGV, not a Java `Error`. No `catch` sees it; the
+process dies with an `hs_err_pid` file and Kubernetes restarts it — which is, ironically, the
+cleanest failure mode in this section. `OrtException` (checked) is the only ONNX failure Java
+code can observe, and it is handled at every call site.
+
+### 9.6 What to conclude
+
+- **Request path:** correct as written. `catch (Exception)` is enough because both frameworks
+  convert an escaping Error into a 500 and survive; the two boundary tests pin that.
+- **Background loops:** four of the eleven (`WatchdogLock`, `RedisFeatureVersionSampler`,
+  `ShardTopologyProvider`, `LearnerFlushScheduler`) can be killed silently by one Error, and two
+  of those (`WatchdogLock`, `RedisFeatureVersionSampler`) fail in the direction of *reporting
+  health they no longer have*. The fix is the pattern the probes already use — `catch (Throwable)`
+  in the scheduled lambda, or a shared `Runnable` wrapper that logs, counts and rethrows nothing —
+  plus, for the two silent ones, a gauge that is written by something other than the task
+  itself. Not done in this change; see the sharp edges below.
+- **Process:** decide the OOM policy explicitly. For a stateless replica behind a readiness
+  probe, `-XX:+ExitOnOutOfMemoryError` in the container `JAVA_OPTS` turns "a JVM in an unknown
+  state, with some threads dead, reporting live" into a restart the platform already handles.
+  Not done in this change either — it is a deployment policy, and it interacts with the
+  §5 drain sequence (an exit skips it).
+
 ## Sharp edges — status
 
 1. **Bulkhead saturates before the concurrency gate (by design).** On 6010 the
@@ -981,3 +1118,15 @@ that assume infrastructure this repo does not provision.
   `ServiceMonitor` and the `PrometheusRule` are CRs a Prometheus Operator interprets, and
   nothing installs one; a committed alert file is evidence alerts are written, not that
   anything evaluates them.
+- **A JVM `Error` in a fixed-delay loop cancels the loop silently, and four loops let it** (§9.4).
+  `WatchdogLock.renewLease`, `RedisFeatureVersionSampler`, `ShardTopologyProvider.refresh` and
+  `LearnerFlushScheduler.tryFlush` guard with `catch (Exception)`/`catch (RuntimeException)`,
+  which a `ScheduledExecutorService` Error passes straight through; the schedule is then cancelled
+  with the Error parked in a `ScheduledFuture` nobody reads. The watchdog case breaks mutual
+  exclusion without telling either holder; the sampler case freezes the freshness gauges at
+  "healthy". Measured, not inferred — the three Redis probes and the outbox relay already use
+  `catch (Throwable)` for this reason.
+- **No OOM policy: the JVM survives `OutOfMemoryError` and liveness stays `200`** (§9.5). No
+  container sets `-XX:+ExitOnOutOfMemoryError`, and every `/health/live` is a constant UP, so a
+  JVM with dead background threads is never restarted by the platform; only the heap/GC alerts
+  and the 5xx rate show it.
