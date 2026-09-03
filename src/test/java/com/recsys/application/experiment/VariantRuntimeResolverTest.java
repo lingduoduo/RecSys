@@ -110,6 +110,40 @@ class VariantRuntimeResolverTest {
     }
 
     @Test
+    void recordedWarmupFailureStartsCooldownWithoutABuildAttempt() {
+        ModelRuntimeProvider provider = mock(ModelRuntimeProvider.class);
+        when(provider.getRuntime("training")).thenReturn(controlRuntime);
+        AtomicLong clock = new AtomicLong(0);
+        VariantRuntimeResolver r = resolver(provider, clock);
+
+        r.recordLoadFailure("test", new IllegalStateException("bad model"), "warmup");
+
+        VariantRuntimeResolver.Resolved resolved = r.resolve("test", "training");
+        assertThat(resolved.fellBack()).isTrue();
+        assertThat(resolved.servedVariant()).isEqualTo("training");
+        verify(provider, never()).getRuntime("test");
+
+        // After the cooldown the assigned variant is retried, so a redeployed artifact recovers.
+        when(provider.getRuntime("test")).thenReturn(testRuntime);
+        clock.set(60_001L);
+        assertThat(r.resolve("test", "training").servedVariant()).isEqualTo("test");
+    }
+
+    @Test
+    void requestPathLoadFailureIsCountedWithItsPhase() {
+        ModelRuntimeProvider provider = mock(ModelRuntimeProvider.class);
+        when(provider.getRuntime("test")).thenThrow(new IllegalStateException("missing"));
+        when(provider.getRuntime("training")).thenReturn(controlRuntime);
+        SimpleMeterRegistry registry = new SimpleMeterRegistry();
+        VariantRuntimeResolver r = new VariantRuntimeResolver(provider, registry, 60_000L, () -> 0L);
+
+        r.resolve("test", "training");
+
+        assertThat(registry.get("recsys.model.runtime_load_failures")
+                .tags("variant", "test", "phase", "request").counter().count()).isEqualTo(1.0);
+    }
+
+    @Test
     void brokenControl_propagates() {
         ModelRuntimeProvider provider = mock(ModelRuntimeProvider.class);
         when(provider.getRuntime("test")).thenThrow(new IllegalStateException("missing"));

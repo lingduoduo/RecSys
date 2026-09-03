@@ -78,6 +78,37 @@ class OnnxInferencePipelineTest {
     }
 
     @Test
+    void tracesTheServedVariantNotTheAssignment() {
+        // Assigned to the treatment, but the service fell back to control: the trace must name
+        // the model that actually ran, or metrics and exposure events attribute control's
+        // results to the treatment.
+        ABTestService.Assignment assignment =
+                new ABTestService.Assignment("test", 3, "default", true);
+        when(abTest.getAssignmentForUser("u9")).thenReturn(assignment);
+        when(service.recommendWindow(any(RecommendRequest.class), same(assignment), eq(MAX_CANDIDATES)))
+                .thenReturn(new RecommendationWindow(
+                        new RecommendResponse("u9", "v1.0", "training", List.of()), false));
+
+        RecommendationResult result = pipeline.recommend(new RecommendationQuery("u9", 5, Set.of(), null));
+
+        assertThat(result.trace()).containsEntry("abTestVariant", "training");
+    }
+
+    @Test
+    void blankServedVariantFallsBackToTheAssignmentForCompatibility() {
+        ABTestService.Assignment assignment =
+                new ABTestService.Assignment("test", 3, "default", true);
+        when(abTest.getAssignmentForUser("u10")).thenReturn(assignment);
+        when(service.recommendWindow(any(RecommendRequest.class), same(assignment), eq(MAX_CANDIDATES)))
+                .thenReturn(new RecommendationWindow(
+                        new RecommendResponse("u10", "v1.0", null, List.of()), false));
+
+        RecommendationResult result = pipeline.recommend(new RecommendationQuery("u10", 5, Set.of(), null));
+
+        assertThat(result.trace()).containsEntry("abTestVariant", "test");
+    }
+
+    @Test
     void forwardsExcludedItemIds() {
         ABTestService.Assignment assignment =
                 new ABTestService.Assignment("training", 0, "default", true);

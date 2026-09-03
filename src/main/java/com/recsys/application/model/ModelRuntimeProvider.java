@@ -77,6 +77,7 @@ public class ModelRuntimeProvider implements SmartInitializingSingleton {
     private ExecutorService recallExecutor;
     private ChannelHealthMonitor sharedHealthMonitor;
     private final Object recallLock = new Object();
+    private volatile VariantLoadFailureListener loadFailureListener = VariantLoadFailureListener.NOOP;
 
     public ModelRuntimeProvider(ModelArtifactLocator artifactLocator, ABTestConfig abTestConfig) {
         this(artifactLocator, abTestConfig, "dssm_model.onnx", "classpath", "i2vEmb");
@@ -109,9 +110,18 @@ public class ModelRuntimeProvider implements SmartInitializingSingleton {
     }
 
     /**
+     * Registers the request-path resolver so a warm-up failure of a non-default variant starts
+     * its cooldown immediately. Called by {@code VariantRuntimeResolver}'s constructor; there is
+     * deliberately no constructor injection in either direction, which would be a bean cycle.
+     */
+    public void setLoadFailureListener(VariantLoadFailureListener listener) {
+        this.loadFailureListener = listener == null ? VariantLoadFailureListener.NOOP : listener;
+    }
+
+    /**
      * Pre-warms all variants referenced by the current A/B test config so the first
      * request to each variant does not pay cold-start latency. When A/B testing is
-     * disabled only the default variant is loaded; all three buckets are loaded when
+     * disabled only the default variant is loaded; all configured buckets are loaded when
      * it is enabled.
      */
     @Override
@@ -119,13 +129,28 @@ public class ModelRuntimeProvider implements SmartInitializingSingleton {
         warmUp();
     }
 
+    /**
+     * Control first, synchronously, and fatally: a pod whose default variant cannot load has
+     * nothing to serve, so that exception propagates and startup fails. Every other configured
+     * variant then warms concurrently, and a failure there is recorded (metric + resolver
+     * cooldown) and logged but never aborts startup — the resolver serves control for that
+     * bucket until the variant recovers after its cooldown.
+     */
     public void warmUp() {
-        Set<String> variants = new LinkedHashSet<>();
-        variants.add(ModelVariants.normalizeOrDefault(abTestConfig.getDefaultVariant()));
+        String defaultVariant = ModelVariants.normalizeOrDefault(abTestConfig.getDefaultVariant());
+        Set<String> treatments = new LinkedHashSet<>();
         if (abTestConfig.isEnabled()) {
-            variants.add(ModelVariants.normalizeOrDefault(abTestConfig.getBucketAVariant()));
-            variants.add(ModelVariants.normalizeOrDefault(abTestConfig.getBucketBVariant()));
+            treatments.add(ModelVariants.normalizeOrDefault(abTestConfig.getBucketAVariant()));
+            treatments.add(ModelVariants.normalizeOrDefault(abTestConfig.getBucketBVariant()));
         }
+        treatments.remove(defaultVariant);
+
+        log.info("Pre-warming control model runtime for variant '{}'", defaultVariant);
+        getRuntime(defaultVariant);
+        if (treatments.isEmpty()) {
+            return;
+        }
+
         // Own executor rather than CompletableFuture's default. That default is not stable:
         // ASYNC_POOL is ForkJoinPool.commonPool() only while getCommonPoolParallelism() > 1, and
         // a thread-per-task executor otherwise -- so the same code borrows a JVM-wide shared pool
@@ -133,16 +158,22 @@ public class ModelRuntimeProvider implements SmartInitializingSingleton {
         // assumed. Neither is wrong for a startup preload, but both are accidental, and blocking
         // the common pool means blocking a pool nothing else here owns.
         AtomicInteger threadIndex = new AtomicInteger();
-        ExecutorService warmUpPool = Executors.newFixedThreadPool(variants.size(), r -> {
+        ExecutorService warmUpPool = Executors.newFixedThreadPool(treatments.size(), r -> {
             Thread t = new Thread(r, "model-warmup-" + threadIndex.incrementAndGet());
             t.setDaemon(true);
             return t;
         });
         try {
-            List<CompletableFuture<Void>> futures = variants.stream()
+            List<CompletableFuture<Void>> futures = treatments.stream()
                     .map(variant -> CompletableFuture.runAsync(() -> {
                         log.info("Pre-warming model runtime for variant '{}'", variant);
-                        getRuntime(variant);
+                        try {
+                            getRuntime(variant);
+                        } catch (RuntimeException e) {
+                            // Caught inside the future so join() below never sees it: a broken
+                            // treatment is a degraded experiment, not an outage.
+                            recordWarmUpFailure(variant, defaultVariant, e);
+                        }
                     }, warmUpPool))
                     .toList();
             CompletableFuture.allOf(futures.toArray(CompletableFuture[]::new)).join();
@@ -150,6 +181,14 @@ public class ModelRuntimeProvider implements SmartInitializingSingleton {
             // Startup-only pool: shut it down so a preload failure cannot leave threads behind.
             warmUpPool.shutdown();
         }
+    }
+
+    private void recordWarmUpFailure(String variant, String defaultVariant, RuntimeException failure) {
+        meterRegistry.counter("recsys.model.runtime_load_failures",
+                "variant", variant, "phase", "warmup").increment();
+        log.warn("Model variant '{}' failed to load during warm-up; requests assigned to it will be "
+                + "served by control '{}' until the variant recovers", variant, defaultVariant, failure);
+        loadFailureListener.onLoadFailure(variant, failure, "warmup");
     }
 
     public ModelRuntime getRuntime(String variant) {

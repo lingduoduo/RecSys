@@ -125,6 +125,31 @@ class ProtectedRecommendationPipelineTest {
     }
 
     @Test
+    void servedControlUnderATreatmentAssignmentIsReportedAsAFallback() {
+        // The pipeline writes the SERVED variant into the trace (OnnxInferencePipelineTest pins
+        // that). Here: assigned "test", served "training" -> fellBack, and the success metric and
+        // exposure event both name control, never the model that did not run.
+        InferenceMetricsService metrics = metrics();
+        RecordingExposureLogger exposure = new RecordingExposureLogger();
+        ABTestService assignsTreatment = new ABTestService(new ABTestConfig()) {
+            @Override
+            public Assignment getAssignmentForUser(String userId) {
+                return new Assignment("test", 3, "default", true);
+            }
+        };
+        ProtectedRecommendationPipeline pipeline = new ProtectedRecommendationPipeline(
+                q -> resultWithTrace("training", "dssm-demo-v1"), disabledLimiter(), shedder(4), metrics,
+                assignsTreatment, exposure);
+
+        pipeline.recommend(QUERY);
+
+        assertThat(exposure.servedVariant).isEqualTo("training");
+        assertThat(exposure.fellBack).isTrue();
+        assertThat(exposure.modelVersion).isEqualTo("dssm-demo-v1");
+        assertThat(metrics.snapshot().successCount()).isEqualTo(1);
+    }
+
+    @Test
     void delegateFailureRecordsFailureAndRethrows() {
         InferenceMetricsService metrics = metrics();
         ProtectedRecommendationPipeline pipeline = new ProtectedRecommendationPipeline(

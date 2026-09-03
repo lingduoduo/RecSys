@@ -40,6 +40,22 @@ public class VariantRuntimeResolver {
         this.registry = registry;
         this.cooldownMs = cooldownMs;
         this.clock = clock;
+        // Warm-up failures land here so the first live request for a broken treatment does not
+        // re-pay a build already known to fail. A mock provider makes this a no-op.
+        provider.setLoadFailureListener(this::recordLoadFailure);
+    }
+
+    /**
+     * Records that {@code variant} failed to load in {@code phase} ({@code warmup} or
+     * {@code request}), starting its fallback cooldown and counting the failure. The next
+     * {@link #resolve} for that variant serves control without attempting a build until the
+     * cooldown expires; one retry is then allowed so a redeployed artifact recovers in place.
+     */
+    public void recordLoadFailure(String variant, RuntimeException failure, String phase) {
+        failedUntilMs.put(variant, clock.getAsLong() + cooldownMs);
+        registry.counter("recsys.model.runtime_load_failures", "variant", variant, "phase", phase).increment();
+        log.warn("variant '{}' failed to load during {}; serving control until {} ms",
+                variant, phase, failedUntilMs.get(variant), failure);
     }
 
     public Resolved resolve(String assignedVariant, String defaultVariant) {
@@ -57,8 +73,8 @@ public class VariantRuntimeResolver {
                 failedUntilMs.remove(assignedVariant);
                 return new Resolved(provider.getRuntime(assignedVariant), assignedVariant, false);
             } catch (RuntimeException e) {
-                failedUntilMs.put(assignedVariant, now + cooldownMs);
-                log.warn("variant '{}' failed to load; serving control '{}'", assignedVariant, defaultVariant, e);
+                recordLoadFailure(assignedVariant, e, "request");
+                log.warn("variant '{}' failed to load; serving control '{}'", assignedVariant, defaultVariant);
             } finally {
                 attempting.remove(assignedVariant);
             }
