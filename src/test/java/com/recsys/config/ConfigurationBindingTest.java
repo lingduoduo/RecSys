@@ -56,6 +56,7 @@ class ConfigurationBindingTest {
                         "recsys.model.onnx.intra-op-threads=-1",
                         "recsys.model.onnx.inter-op-threads=0",
                         "recsys.model.onnx.inter-op-threads=-1",
+                        "recsys.model.recall.core-threads=-1",
                         "recsys.model.recall.queue-capacity=0",
                         "recsys.model.recall.queue-capacity=-1",
                         "recsys.model.recall.timeout-ms=0",
