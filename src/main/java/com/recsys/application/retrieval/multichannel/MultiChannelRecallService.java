@@ -231,7 +231,9 @@ public class MultiChannelRecallService {
                 results.add(new ChannelResult(s.channel(), List.of(), ce));
             } catch (InterruptedException ie) {
                 // The caller is being cancelled (request timeout, shutdown): stop the work we
-                // started, hand the flag back, and fail rather than merge a partial fan-out.
+                // started, hand the flag back, and fail rather than merge a partial fan-out. This
+                // holds for the non-primary path too — the old uninterruptible join() would have
+                // returned a partial merge here; an interrupted caller has no use for one.
                 cancelAll(submitted.subList(i, submitted.size()));
                 Thread.currentThread().interrupt();
                 throw new PrimaryRecallUnavailableException("Recall interrupted", ie);

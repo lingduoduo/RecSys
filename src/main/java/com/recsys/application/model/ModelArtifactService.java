@@ -21,6 +21,7 @@ public class ModelArtifactService {
     private String modelVersion;
     private String resolvedModelFile;
     private byte[] modelBytes;
+    private boolean modelLoaded;
     private ModelArtifactManifest.ModelContract modelContract;
     private boolean manifestBacked;
     private Map<String, Integer> userVocab = new HashMap<>();
@@ -71,6 +72,7 @@ public class ModelArtifactService {
             this.modelContract = ModelArtifactManifest.ModelContract.legacy();
             this.manifestBacked = false;
         }
+        this.modelLoaded = true;
         if (redisItemEmbeddingStore == null) {
             if (verifiedSnapshot == null) {
                 loadItemEmbeddings();
@@ -243,9 +245,25 @@ public class ModelArtifactService {
         return resolvedModelFile;
     }
 
+    /** A copy of the model bytes; unavailable after {@link #releaseModelBytes()}. */
     public byte[] modelBytes() {
         ensureModelLoaded();
+        if (modelBytes == null) {
+            throw new IllegalStateException("model bytes were released after the ONNX session was built");
+        }
         return modelBytes.clone();
+    }
+
+    /**
+     * Drops the in-memory model once an ONNX session owns its own native copy. This object lives
+     * as long as the runtime (vocabularies, embeddings), and a production DSSM is tens of
+     * megabytes per variant — heap that would otherwise be held twice for nothing. Metadata
+     * accessors ({@link #resolvedModelFile()}, {@link #modelContract()}, {@link #isManifestBacked()})
+     * keep working.
+     */
+    public void releaseModelBytes() {
+        ensureModelLoaded();
+        this.modelBytes = null;
     }
 
     public ModelArtifactManifest.ModelContract modelContract() {
@@ -259,7 +277,7 @@ public class ModelArtifactService {
     }
 
     private void ensureModelLoaded() {
-        if (modelBytes == null) {
+        if (!modelLoaded) {
             throw new IllegalStateException("model artifacts have not been loaded");
         }
     }

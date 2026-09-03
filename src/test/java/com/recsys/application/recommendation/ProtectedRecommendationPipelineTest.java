@@ -145,13 +145,19 @@ class ProtectedRecommendationPipelineTest {
                 return new Assignment("test", 3, "default", true);
             }
         };
+        com.recsys.application.retrieval.multichannel.RecallDegradationMetrics degradation =
+                new com.recsys.application.retrieval.multichannel.RecallDegradationMetrics();
         ProtectedRecommendationPipeline pipeline = new ProtectedRecommendationPipeline(
                 q -> { throw new AssertionError("delegate must not run under shed"); },
-                disabledLimiter(), shedder, metrics, assignsTreatment, exposure, cache);
+                disabledLimiter(), shedder, metrics, assignsTreatment, exposure, cache, degradation);
 
         RecommendationResult result = pipeline.recommend(QUERY);
 
         assertThat(cache.calls).isEqualTo(1);
+        assertThat(degradation.snapshot().byOutcome()
+                .get(com.recsys.application.retrieval.multichannel.RecallResult.DegradationOutcome.FALLBACK))
+                .as("V2 records the FALLBACK outcome exactly as V1 does")
+                .isEqualTo(1L);
         assertThat(result.items()).extracting(item -> item.itemId()).containsExactly("9", "7");
         assertThat(result.items().get(0).rank()).isEqualTo(1);
         assertThat(result.hasMore()).isFalse();
@@ -173,7 +179,7 @@ class ProtectedRecommendationPipelineTest {
         InferenceMetricsService metrics = metrics();
         ProtectedRecommendationPipeline pipeline = new ProtectedRecommendationPipeline(
                 q -> resultWithTrace("A", "v1"), disabledLimiter(), shedder, metrics,
-                new ABTestService(new ABTestConfig()), new RecordingExposureLogger(), new CachedOnlyService(null));
+                new ABTestService(new ABTestConfig()), new RecordingExposureLogger(), new CachedOnlyService(null), null);
 
         assertThatThrownBy(() -> pipeline.recommend(QUERY))
                 .isInstanceOf(ServiceOverloadedException.class)
@@ -190,7 +196,7 @@ class ProtectedRecommendationPipelineTest {
         CachedOnlyService cache = new CachedOnlyService(new RecommendResponse("u1", "v1", "training", List.of()));
         ProtectedRecommendationPipeline pipeline = new ProtectedRecommendationPipeline(
                 q -> resultWithTrace("A", "v1"), disabledLimiter(), shedder, metrics(),
-                new ABTestService(new ABTestConfig()), new RecordingExposureLogger(), cache);
+                new ABTestService(new ABTestConfig()), new RecordingExposureLogger(), cache, null);
 
         assertThatThrownBy(() -> pipeline.recommend(new RecommendationQuery("u1", 5, Set.of(), "some-cursor")))
                 .isInstanceOf(ServiceOverloadedException.class);

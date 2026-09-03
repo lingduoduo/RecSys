@@ -89,6 +89,7 @@ Rules the loader enforces or assumes:
 | `sha256` | Must cover `feature_config.json` and `model_file`. Any other listed file (`item_embeddings.json`) is read, verified, and used from the verified bytes; a listed file that is missing or mismatched rejects the variant. Lowercase hex, 64 characters. |
 | `inputs` | Exactly `user_id` and `item_id`, both `INT64` rank 1. Version 1 requires these two names because the Java feature adapter feeds exactly those semantics; an extra required input rejects the variant, since serving could never populate it. |
 | `output` | The scored output: `FLOAT`, rank 1. Its `name` is what the loader reads back from the session, so a model that emits `prob` instead of `score` declares that here. Extra model outputs are allowed and ignored. |
+| *(anything else)* | Rejected. Version 1 has exactly these six top-level fields; an unknown field (a `"notes"` key, a typo) fails parsing with `Invalid model_manifest.json for variant '<v>'`. Keep publisher metadata outside the manifest. |
 
 Generate checksums with whichever of these the publishing host has:
 
@@ -150,9 +151,11 @@ Roll forward:
 1. Publish `releases/<new>/` completely, for every configured variant, and verify checksums (§3).
 2. Deploy an image that understands manifests (any build from this change onward) before
    publishing the first manifest-backed generation, so the reader is in place first.
-3. Canary the new generation as the **experimental** variant: point `bucket-a-variant`'s
-   directory at it, switch `current`, roll the pods. A bad bundle degrades that bucket to control
-   (§5) instead of taking the pod down.
+3. Canary the new model as the **experimental** variant. There is one artifact root, so a
+   generation holds every variant: publish `releases/<new>/` with the **current control bundle
+   unchanged** under the control variant's directory and the **new bundle** under
+   `bucket-a-variant`'s directory, switch `current`, roll the pods. A bad new bundle degrades
+   that bucket to control (§5) instead of taking the pod down.
 4. Watch, for at least one cooldown window (60 s) plus a scrape interval:
    `recsys_model_runtime_load_failures_total` flat, `recsys_abtest_variant_fallback_total` flat,
    `recsys_model_onnx_runs_total{variant="<treatment>"}` rising, `ModelInferenceLatencyHigh` and

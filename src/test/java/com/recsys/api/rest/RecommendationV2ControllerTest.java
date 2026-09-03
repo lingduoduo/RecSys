@@ -27,6 +27,7 @@ class RecommendationV2ControllerTest {
 
         assertThat(response.getStatusCode().value()).isEqualTo(200);
         assertThat(response.getHeaders().getFirst("X-Served-From")).isEqualTo("degraded-cache");
+        assertThat(response.getHeaders().getFirst("X-Recall-Degradation-Reason")).isEqualTo("fallback");
         assertThat(response.getBody()).isSameAs(degraded);
     }
 
@@ -39,5 +40,6 @@ class RecommendationV2ControllerTest {
         ResponseEntity<RecommendationResult> response = controller.recommend(QUERY);
 
         assertThat(response.getHeaders().containsKey("X-Served-From")).isFalse();
+        assertThat(response.getHeaders().containsKey("X-Recall-Degradation-Reason")).isFalse();
     }
 }

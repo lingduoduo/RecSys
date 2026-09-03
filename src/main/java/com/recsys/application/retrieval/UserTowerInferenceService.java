@@ -41,7 +41,8 @@ public class UserTowerInferenceService {
     private final ModelArtifactLocator artifactLocator;
     private final String variant;
     private final String modelFile;
-    private final byte[] modelBytes;
+    /** Nulled at the end of {@link #init()}: ONNX Runtime holds its own native copy, so keeping ours doubles the model's heap. */
+    private byte[] modelBytes;
     private final ModelContract contract;
     private final ModelServingProperties.Onnx onnx;
     private final OnnxSessionFactory sessionFactory;
@@ -115,6 +116,7 @@ public class UserTowerInferenceService {
 
     public void init() throws Exception {
         byte[] bytes = modelBytes != null ? modelBytes : readLegacyModelBytes();
+        modelBytes = null;   // the runtime is discarded on failure; on success the session has its own copy
         OnnxSessionHandle opened = sessionFactory.open(bytes, onnx);
         try {
             validateMetadata(opened);
@@ -203,7 +205,7 @@ public class UserTowerInferenceService {
         return ready;
     }
 
-    /** Native runs so far, including the smoke inference. Package-visible for characterization tests. */
+    /** Native runs so far, including the smoke inference. Public so InferenceLoadTest (another package) can assert on it. */
     public long runCount() {
         return runCount.get();
     }

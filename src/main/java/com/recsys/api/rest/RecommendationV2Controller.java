@@ -31,11 +31,12 @@ public class RecommendationV2Controller {
     )
     public ResponseEntity<RecommendationResult> recommend(@RequestBody RecommendationQuery query) {
         RecommendationResult result = onnxPipeline.recommend(query);
-        // Same header V1 sets on its degraded path, so clients and dashboards see one signal.
+        // Same two headers V1 sets on its degraded path, so clients and dashboards see one signal.
         if (ProtectedRecommendationPipeline.SERVED_FROM_DEGRADED_CACHE.equals(
                 result.trace().get(ProtectedRecommendationPipeline.TRACE_SERVED_FROM))) {
             return ResponseEntity.ok()
                     .header("X-Served-From", ProtectedRecommendationPipeline.SERVED_FROM_DEGRADED_CACHE)
+                    .header("X-Recall-Degradation-Reason", "fallback")
                     .body(result);
         }
         return ResponseEntity.ok(result);

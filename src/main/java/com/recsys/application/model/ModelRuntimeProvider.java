@@ -318,6 +318,7 @@ public class ModelRuntimeProvider implements SmartInitializingSingleton {
                     variant,
                     meterRegistry);
             inferenceService.init();
+            artifactService.releaseModelBytes();   // the session holds the only copy from here on
 
             FeatureEncoder featureEncoder = new FeatureEncoder(artifactService);
             ModelRetrievalStage retrievalStage = new ModelRetrievalStage(buildRecallService(artifactService), onlineFeatureStore);
@@ -350,9 +351,11 @@ public class ModelRuntimeProvider implements SmartInitializingSingleton {
             }
         }
         runtimes.clear();
-        if (recallExecutor != null) {
-            GracefulExecutors.shutdownGracefully(recallExecutor);
-            recallExecutor = null;
+        synchronized (recallLock) {
+            if (recallExecutor != null) {
+                GracefulExecutors.shutdownGracefully(recallExecutor);
+                recallExecutor = null;
+            }
         }
         if (recallPool != null) {
             recallPool.close();

@@ -127,9 +127,11 @@ class ModelRuntimeProviderWarmUpTest {
 
     @Test
     void warmUpRecordsTreatmentCooldownSoFirstRequestDoesNotRetry() {
-        ScriptedProvider provider = new ScriptedProvider(
-                abTestEnabledWithTwoBuckets(), new SimpleMeterRegistry(), Set.of("test"));
-        VariantRuntimeResolver resolver = new VariantRuntimeResolver(provider, new SimpleMeterRegistry());
+        // ONE registry for both, as in Spring: the provider counts the warm-up failure and the
+        // resolver starts the cooldown. A separate registry per class hid a doubled counter once.
+        SimpleMeterRegistry shared = new SimpleMeterRegistry();
+        ScriptedProvider provider = new ScriptedProvider(abTestEnabledWithTwoBuckets(), shared, Set.of("test"));
+        VariantRuntimeResolver resolver = new VariantRuntimeResolver(provider, shared);
         try {
             provider.warmUp();
 
@@ -140,6 +142,10 @@ class ModelRuntimeProviderWarmUpTest {
             assertThat(provider.builds.get("test").get())
                     .as("the warm-up failure starts the cooldown; the first request must not re-pay the build")
                     .isEqualTo(1);
+            assertThat(shared.get("recsys.model.runtime_load_failures")
+                    .tags("variant", "test", "phase", "warmup").counter().count())
+                    .as("counted exactly once even though provider and resolver share the registry")
+                    .isEqualTo(1.0);
         } finally {
             provider.close();
         }

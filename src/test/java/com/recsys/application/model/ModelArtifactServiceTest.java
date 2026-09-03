@@ -188,6 +188,22 @@ class ModelArtifactServiceTest {
     }
 
     @Test
+    void releasingModelBytesKeepsMetadataButDropsTheCopy() throws IOException {
+        ModelArtifactService bundled = new ModelArtifactService(new ModelArtifactLocator("", ""), "training");
+        bundled.loadArtifacts();
+        assertThat(bundled.modelBytes()).isNotEmpty();
+
+        bundled.releaseModelBytes();
+
+        assertThat(bundled.resolvedModelFile()).isEqualTo("dssm_model.onnx");
+        assertThat(bundled.modelContract()).isNotNull();
+        assertThat(bundled.isManifestBacked()).isFalse();
+        assertThatThrownBy(bundled::modelBytes)
+                .isInstanceOf(IllegalStateException.class)
+                .hasMessageContaining("released");
+    }
+
+    @Test
     void userVocab_containsKnownUsers() {
         var vocab = service.getUserVocab();
         assertThat(vocab).containsKey("__UNK__");

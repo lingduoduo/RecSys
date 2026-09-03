@@ -7,6 +7,7 @@ import com.recsys.application.pagination.RecommendationPaginationRuntime;
 import com.recsys.application.recommendation.ProtectedRecommendationPipeline;
 import com.recsys.application.recommendation.RecommendationPipeline;
 import com.recsys.application.recommendation.RecommendationService;
+import com.recsys.application.retrieval.multichannel.RecallDegradationMetrics;
 import com.recsys.loadshed.LoadShedder;
 import com.recsys.metrics.InferenceMetricsService;
 import com.recsys.ratelimit.ModelRateLimiter;
@@ -30,7 +31,8 @@ public class ModelRecommendationPipelineConfig {
             ModelRateLimiter rateLimiter,
             LoadShedder loadShedder,
             InferenceMetricsService metrics,
-            AbExposureLogger exposureLogger
+            AbExposureLogger exposureLogger,
+            RecallDegradationMetrics recallDegradationMetrics
     ) {
         RecommendationPaginationRuntime pagination =
                 RecommendationPaginationRuntime.fromEnvironment(
@@ -44,6 +46,7 @@ public class ModelRecommendationPipelineConfig {
         // belong here rather than in the controller. /v2/sequential/recommend is deliberately
         // NOT wrapped — see the spec.
         return new ProtectedRecommendationPipeline(
-                onnx, rateLimiter, loadShedder, metrics, abTestService, exposureLogger, recommendationService);
+                onnx, rateLimiter, loadShedder, metrics, abTestService, exposureLogger,
+                recommendationService, recallDegradationMetrics);
     }
 }

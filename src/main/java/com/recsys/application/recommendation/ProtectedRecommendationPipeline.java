@@ -2,6 +2,8 @@ package com.recsys.application.recommendation;
 
 import com.recsys.application.experiment.ABTestService;
 import com.recsys.application.experiment.AbExposureLogger;
+import com.recsys.application.retrieval.multichannel.RecallDegradationMetrics;
+import com.recsys.application.retrieval.multichannel.RecallResult;
 import com.recsys.api.request.RecommendRequest;
 import com.recsys.api.response.RecommendResponse;
 import com.recsys.domain.item.RankedMovie;
@@ -56,6 +58,7 @@ public class ProtectedRecommendationPipeline implements RecommendationPipeline {
     private final ABTestService abTestService;
     private final AbExposureLogger exposureLogger;
     private final RecommendationService degradedCache;
+    private final RecallDegradationMetrics recallDegradationMetrics;
 
     /** No degraded-cache fallback: overload is a plain 503, as before. */
     public ProtectedRecommendationPipeline(RecommendationPipeline delegate,
@@ -64,13 +67,16 @@ public class ProtectedRecommendationPipeline implements RecommendationPipeline {
                                            InferenceMetricsService metrics,
                                            ABTestService abTestService,
                                            AbExposureLogger exposureLogger) {
-        this(delegate, rateLimiter, loadShedder, metrics, abTestService, exposureLogger, null);
+        this(delegate, rateLimiter, loadShedder, metrics, abTestService, exposureLogger, null, null);
     }
 
     /**
      * @param degradedCache when non-null, an overloaded request is first offered this service's
      *                      {@link RecommendationService#tryServeFromCache} — the same fallback the
      *                      V1 controller performs inline — before the 503 is thrown.
+     * @param recallDegradationMetrics when non-null, a degraded-cache answer is recorded as a
+     *                      {@code FALLBACK} outcome, as the V1 controller records it; without it
+     *                      the fallback ratio undercounts every V2 shed.
      */
     public ProtectedRecommendationPipeline(RecommendationPipeline delegate,
                                            ModelRateLimiter rateLimiter,
@@ -78,7 +84,8 @@ public class ProtectedRecommendationPipeline implements RecommendationPipeline {
                                            InferenceMetricsService metrics,
                                            ABTestService abTestService,
                                            AbExposureLogger exposureLogger,
-                                           RecommendationService degradedCache) {
+                                           RecommendationService degradedCache,
+                                           RecallDegradationMetrics recallDegradationMetrics) {
         this.delegate = Objects.requireNonNull(delegate, "delegate");
         this.rateLimiter = Objects.requireNonNull(rateLimiter, "rateLimiter");
         this.loadShedder = Objects.requireNonNull(loadShedder, "loadShedder");
@@ -86,6 +93,7 @@ public class ProtectedRecommendationPipeline implements RecommendationPipeline {
         this.abTestService = Objects.requireNonNull(abTestService, "abTestService");
         this.exposureLogger = Objects.requireNonNull(exposureLogger, "exposureLogger");
         this.degradedCache = degradedCache;
+        this.recallDegradationMetrics = recallDegradationMetrics;
     }
 
     @Override
@@ -172,6 +180,9 @@ public class ProtectedRecommendationPipeline implements RecommendationPipeline {
         String modelVersion = response.modelVersion() == null ? "" : response.modelVersion();
         exposureLogger.log(query.userId(), assignment, servedVariant,
                 !servedVariant.equals(assignment.variant()), modelVersion);
+        if (recallDegradationMetrics != null) {
+            recallDegradationMetrics.recordOutcome(RecallResult.DegradationOutcome.FALLBACK);
+        }
 
         Map<String, String> trace = new LinkedHashMap<>();
         trace.put(TRACE_VARIANT, servedVariant);
